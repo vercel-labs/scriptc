@@ -740,6 +740,12 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.crypto.parsePKCS12",
+      "kind": "node-builtin",
+      "name": "crypto.parsePKCS12",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.crypto.pbkdf2",
       "kind": "node-builtin",
       "name": "crypto.pbkdf2",
@@ -1454,6 +1460,13 @@
       "kind": "node-builtin",
       "name": "fs.mkdtempSync",
       "status": "static"
+    },
+    {
+      "id": "node-builtin.fs.openAsBlob",
+      "kind": "node-builtin",
+      "name": "fs.openAsBlob",
+      "status": "static",
+      "note": "a Blob over a file's bytes, read on demand: the open and fstat happen at the call, and every read re-checks the file's size and modification time"
     },
     {
       "id": "node-builtin.fs.openSync",
@@ -3042,6 +3055,12 @@
       "note": "recognized module (bare and node:-prefixed specifiers)"
     },
     {
+      "id": "node-builtin.stream.web.ReadableStreamTee",
+      "kind": "node-builtin",
+      "name": "stream/web.ReadableStreamTee",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.string_decoder",
       "kind": "node-builtin",
       "name": "string_decoder",
@@ -3099,6 +3118,13 @@
       "name": "tls",
       "status": "static",
       "note": "recognized module (bare and node:-prefixed specifiers)"
+    },
+    {
+      "id": "node-builtin.tls.DEFAULT_ECDH_CURVE",
+      "kind": "node-builtin",
+      "name": "tls.DEFAULT_ECDH_CURVE",
+      "status": "static",
+      "note": "constant value read"
     },
     {
       "id": "node-builtin.tls.DEFAULT_MAX_VERSION",
@@ -6215,9 +6241,8 @@
       "id": "stdlib.response.static.error",
       "kind": "stdlib",
       "name": "Response.error",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Node 24.22.1 / Undici 7.30.1; Response static constructor-object operations have no compiler lowering"
+      "status": "static",
+      "note": "Node 24.22.1 / Undici 7.30.1; facets: identity, state-machine; supported scope: the error response: type error, status 0, null body, immutable empty headers; differential evidence: fixture:static"
     },
     {
       "id": "stdlib.response.static.json",
@@ -6230,9 +6255,8 @@
       "id": "stdlib.response.static.redirect",
       "kind": "stdlib",
       "name": "Response.redirect",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Node 24.22.1 / Undici 7.30.1; Response static constructor-object operations have no compiler lowering"
+      "status": "static",
+      "note": "Node 24.22.1 / Undici 7.30.1; facets: webidl-conversion, error-shape, state-machine; supported scope: an absolute URL as the Location header and one of the redirect statuses 301, 302, 303, 307 or 308 (WebIDL truncation; any other code is Node's RangeError), immutable headers; differential evidence: fixture:static"
     },
     {
       "id": "stdlib.response.status",
@@ -6259,9 +6283,8 @@
       "id": "stdlib.response.type",
       "kind": "stdlib",
       "name": "Response.type",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Node 24.22.1 / Undici 7.30.1; the member is outside the native static handle projection"
+      "status": "static",
+      "note": "Node 24.22.1 / Undici 7.30.1; facets: property-read; differential evidence: fixture:static"
     },
     {
       "id": "stdlib.response.url",
@@ -6578,7 +6601,7 @@
       "kind": "stdlib",
       "name": "globalThis.crypto.subtle",
       "status": "static",
-      "note": "importKey, generateKey and exportKey (raw and jwk) for HMAC and AES keys, importKey for PBKDF2 and HKDF keys, AES-GCM, AES-CBC and AES-CTR encrypt and decrypt, wrapKey and unwrapKey of secret keys with AES-KW or those ciphers, PBKDF2 and HKDF deriveBits and deriveKey, HMAC sign and verify, generateKey, importKey, exportKey, sign and verify for ECDSA, Ed25519, RSASSA-PKCS1-v1_5 and RSA-PSS, and SHA-1/SHA-2 digest; other methods, algorithms and key formats are refused"
+      "note": "importKey, generateKey and exportKey (raw and jwk) for HMAC and AES keys, importKey for PBKDF2 and HKDF keys, AES-GCM, AES-CBC and AES-CTR encrypt and decrypt, wrapKey and unwrapKey of secret keys with AES-KW or those ciphers, PBKDF2 and HKDF deriveBits and deriveKey, HMAC sign and verify, generateKey, importKey, exportKey, sign and verify for ECDSA, Ed25519, RSASSA-PKCS1-v1_5 and RSA-PSS, ML-KEM encapsulateBits and decapsulateBits with their *Key forms, and SHA-1/SHA-2 digest; other methods, algorithms and key formats are refused"
     },
     {
       "id": "syntax.async-generators",

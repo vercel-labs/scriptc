@@ -6424,6 +6424,11 @@ export class LlEmitter {
       this.B.line(
         `${p} = getelementptr inbounds %${mangleRecordStruct(shapeId)}, ptr ${objName}, i64 0, i32 ${idx + base}`,
       );
+      // A closed shape's slots are fixed, so tag the slot as class fields
+      // are (classFieldPtr): a load of one field need not be ordered
+      // against a store to another. A view target takes the branch above,
+      // its fields living in the record it views.
+      this.markFieldPointer(p, field);
     }
     const type = shape.fields[idx]!.type;
     return { ptr: p, type, inline: this.inlineUnions.record(type) };

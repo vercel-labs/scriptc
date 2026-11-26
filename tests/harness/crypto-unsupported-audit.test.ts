@@ -35,9 +35,6 @@ await attempt("dsa keygen", () => crypto.generateKeyPairSync("dsa", { modulusLen
 await attempt("dh keygen", () => crypto.generateKeyPairSync("dh", { primeLength: 512 }));
 await attempt("ed448 keygen", () => crypto.generateKeyPairSync("ed448"));
 await attempt("setFips", () => crypto.setFips(false));
-await attempt("subtle mlkem", () =>
-  crypto.webcrypto.subtle.generateKey({ name: "ML-KEM-768" }, true, ["encapsulateBits"]),
-);
 await attempt("subtle ed448", () =>
   crypto.webcrypto.subtle.generateKey({ name: "Ed448" }, true, ["sign", "verify"]),
 );
@@ -72,7 +69,6 @@ test("the audited crypto key-type and WebCrypto algorithm boundary is refused wi
         `dh keygen SC2020 | 'generateKeyPairSync for this key type' ${KEY_TYPE}`,
         `ed448 keygen SC2020 | 'generateKeyPairSync for this key type' ${KEY_TYPE}`,
         `setFips SC2020 | 'crypto.setFips' ${KEY_TYPE}`,
-        "subtle mlkem SC2020 | crypto.subtle.generateKey with the ML-KEM-768 algorithm is not supported yet",
         "subtle ed448 SC2020 | crypto.subtle.generateKey with the Ed448 algorithm is not supported yet",
         "subtle mldsa SC2020 | crypto.subtle.generateKey with the ML-DSA-44 algorithm is not supported yet",
         "",

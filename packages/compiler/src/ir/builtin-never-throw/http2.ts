@@ -13,6 +13,7 @@ export const http2NeverThrow: readonly IrLibFn[] = [
   "http2.sessionConnecting",
   "http2.streamHeadersSent",
   "http2.reqComplete",
+  "http2.reqUrl",
   // The default settings packed: there is no record to validate.
   "http2.getPackedSettings0",
   // Copies the values a name has in a string pairs array.

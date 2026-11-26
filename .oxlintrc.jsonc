@@ -122,6 +122,9 @@
                   // from the same baked table the value lowering builds the
                   // singleton from; crypto-tables.ts is data with no imports.
                   "CRYPTO_CONSTANTS",
+                  // The same for perf_hooks.constants: perf-hooks-constants.ts
+                  // is the baked number table, data with no imports.
+                  "PERF_HOOKS_CONSTANTS",
                 ],
                 "message": "a frontend module outside lowering may import lowering only with `import type`; a value import pulls the lowering module graph into every program that loads program.ts.",
               },

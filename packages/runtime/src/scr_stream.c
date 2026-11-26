@@ -1053,13 +1053,18 @@ static void scr_stream_emit_data_entry(ScrStream *s, void *chunk, ScrEntryKind k
    * its 'drain'. Encoded sources write the string (utf8 bytes at the
    * destination — Node writes the decoded string through). */
   for (size_t i = 0; i < st->pipes.n;) {
-    ScrStream *dst = st->pipes.dst[i];
+    /* Hold the destination across the write and its failure handling: a
+     * write's error renders an invalid chunk through the chunk's own hooks,
+     * and a hook that unpipes drops the pipe's reference before this
+     * iteration is done with the destination. */
+    ScrStream *dst = scr_stream_retain(st->pipes.dst[i]);
     if (dst->st->destroyed) {
       /* Node's pipe cleanup: a destroyed destination unhooks (the
        * onerror/onclose → unpipe path) and pauses the source — writing
        * after destroy would drop the error without reporting it and spin
        * an infinite synchronous flow over an endless source. */
       scr_stream_release(scr_stream_unpipe(s, dst));
+      scr_stream_release(dst);
       if (scr_exc_pending()) return;
       continue; /* the pipes array shifted down over i */
     }
@@ -1077,6 +1082,7 @@ static void scr_stream_emit_data_entry(ScrStream *s, void *chunk, ScrEntryKind k
         scr_stream_error_or_destroy(dst, werr);
         scr_error_release(werr);
       }
+      scr_stream_release(dst);
       return;
     }
     i++;
@@ -1098,6 +1104,7 @@ static void scr_stream_emit_data_entry(ScrStream *s, void *chunk, ScrEntryKind k
         st->r.flowing = 0;
       }
     }
+    scr_stream_release(dst);
   }
 }
 
@@ -1272,21 +1279,54 @@ static void *scr_stream_read_n(ScrStream *s, double size) {
 static void *scr_stream_read_n_kind(ScrStream *s, double size, ScrEntryKind *kind) {
   ScrStreamState *st = s->st;
   *kind = scr_stream_rkind(st);
-  bool absent = size < 0;
+  bool absent = isnan(size);
+  /* Node's read() takes the readable-event path only when its parsed size
+   * is 0 (or -0); a negative size reads nothing but does not. */
+  bool zero = false;
   size_t n = 0;
   if (!absent) {
-    n = (size_t)size;
-    if (n > st->r.hwm) {
-      /* Node grows hwm to the next power of two above n */
-      size_t h = st->r.hwm;
-      while (h < n) h *= 2;
-      st->r.hwm = h;
+    if (!isfinite(size)) {
+      /* parseInt(±Infinity) is NaN: Node's absent form, which drains */
+      absent = true;
+    } else {
+      /* a non-integer size goes through parseInt (toward zero) */
+      double whole = trunc(size);
+      zero = whole == 0;
+      n = whole > 0 ? (size_t)whole : 0;
+      if (n > st->r.hwm) {
+        /* computeNewHighWaterMark's MAX_HWM (1GiB): only a size that grows
+         * the watermark is bounded, so a stream configured above it reads a
+         * larger size as it is. */
+        if (whole > 1073741824.0) {
+          char num[32];
+          size_t len = scr_f64_to_str(whole, num);
+          char msg[192];
+          int wrote = snprintf(msg, sizeof msg,
+                               "The value of \"size\" is out of range. It must be <= 1GiB. Received %.*s",
+                               (int)len, num);
+          scr_throw_error_msg_code(SCR_ERR_RANGE, msg, wrote < 0 ? 0 : (size_t)wrote,
+                                   "ERR_OUT_OF_RANGE");
+          return NULL;
+        }
+        /* Node grows hwm to the next power of two above n (readable.js's
+         * computeNewHighWaterMark). The growth starts at 1: a highWaterMark
+         * of 0 still grows, and starting from 0 would never reach n. */
+        size_t h = st->r.hwm > 1 ? st->r.hwm : 1;
+        while (h < n) {
+          if (h > SIZE_MAX / 2) {
+            h = n;
+            break;
+          }
+          h *= 2;
+        }
+        st->r.hwm = h;
+      }
     }
   }
   /* Node's read(): `if (n !== 0) state.emittedReadable = false` — the
    * absent form is NaN there, which also clears; only read(0) keeps it. */
-  if (absent || n != 0) st->r.emitted_readable = false;
-  if (!absent && n == 0 && st->r.need_readable &&
+  if (absent || !zero) st->r.emitted_readable = false;
+  if (!absent && zero && st->r.need_readable &&
       (st->r.length >= st->r.hwm || st->r.ended)) {
     if (st->r.length == 0 && st->r.ended) scr_stream_end_readable(s);
     else scr_stream_emit_readable_nt(s);
@@ -1357,7 +1397,7 @@ static void scr_stream_flow(ScrStream *s) {
   ScrStreamState *st = s->st;
   while (st->r.flowing == 1 && !scr_exc_pending()) {
     ScrEntryKind kind;
-    void *b = scr_stream_read_n_kind(s, -1, &kind);
+    void *b = scr_stream_read_n_kind(s, NAN, &kind);
     if (b == NULL) break;
     scr_stream_entry_release_kind(st, b, kind);
   }
@@ -1619,7 +1659,7 @@ static void scr_stream_iter_step(ScrStream *s) {
      * An empty buffer first runs the stream's _read through a zero-size
      * read, so the chunks it pushes synchronously buffer as entries of
      * their own instead of arriving as one merged read. */
-    double want = -1;
+    double want = NAN;
     if (st->r.next_single && !st->r.object_entries && st->r.n == 0 && !st->r.ended &&
         !st->r.reading && !st->destroyed && !st->errored && !st->constructing &&
         st->r.read_cb != NULL) {
@@ -4859,6 +4899,8 @@ static void scr_stream_throw_web_stage(void);
 static bool scr_stream_dyn_stage_returned_stream(const ScrDyn *value);
 static void scr_stream_throw_invalid_return(const char *expected, const char *name,
                                            const ScrDyn *got);
+static void scr_stream_throw_invalid_return_class(const char *expected, const char *name,
+                                                  const char *cls);
 
 /* What pipelineImpl does with an untyped destination function's result:
  * a promise settles the pipeline's value (the `then` branch), and an
@@ -5717,7 +5759,7 @@ static void scr_dupx_pull(ScrDuplexify *x) {
   ScrStream *d = x->d;
   while (d && x->r) {
     ScrEntryKind kind = SCR_ENTRY_BYTES;
-    void *chunk = scr_stream_read_n_kind(x->r, -1, &kind);
+    void *chunk = scr_stream_read_n_kind(x->r, NAN, &kind);
     if (scr_exc_pending()) return;
     if (!chunk) {
       x->onreadable = true;
@@ -7182,7 +7224,11 @@ void scr_console_bind(ScrDyn *console, double which, ScrStream *stream) {
   if (inst->on_written[i]) scr_closure_release(inst->on_written[i]);
   inst->stream[i] = scr_stream_retain(stream);
   ScrClosure *cb = scr_closure_new((void *)&scr_console_on_written, 1);
-  cb->caps[0] = scr_box_new_obj(scr_stream_retain_v, scr_stream_release_v, NULL);
+  /* The handler's stream is a traced edge like the console's own: a
+   * detached output method used as a listener on this stream closes a
+   * cycle through the console, and the collector has to see the handler's
+   * reference to give the whole group up. */
+  cb->caps[0] = scr_box_new_obj(scr_stream_retain_v, scr_stream_release_v, &scr_stream_trace);
   scr_box_set_ref(cb->caps[0], scr_stream_retain(stream));
   inst->on_written[i] = cb;
   inst->stream_write = &scr_console_stream_write;
@@ -7293,7 +7339,13 @@ void scr_stream_check_encoding_option(ScrDyn *v) {
     if (canonical) scr_str_release(canonical);
     return;
   }
-  ScrStr *shown = scr_dyn_string_coerce_js(v);
+  /* The conversion runs the value's own toString/valueOf, and that code can
+   * remove the last reference to the value (a delete of the property that
+   * held it): hold it across the conversion, which rereads it between the
+   * candidate methods. */
+  ScrDyn *held = scr_dyn_retain(v);
+  ScrStr *shown = scr_dyn_string_coerce_js(held);
+  scr_dyn_release(held);
   if (!shown) return;
   char msg[128];
   int len = snprintf(msg, sizeof msg, "Unknown encoding: %.*s", (int)(shown->len < 64 ? shown->len : 64),
@@ -7648,7 +7700,30 @@ ScrStream *scr_stream_on_dyn(ScrStream *s, ScrStr *name, ScrDyn *cb, bool once, 
 }
 
 ScrDyn *scr_stream_read_dyn(ScrStream *s, ScrDyn *size) {
-  double n = size && size->kind != SCR_DYN_UNDEF ? scr_dyn_number_coerce(size) : -1;
+  /* Node's read() takes parseInt of a value that is not an integer, and
+   * a NaN size (no argument, or one parseInt cannot read) is the absent
+   * form that drains. */
+  double n;
+  if (!size || size->kind == SCR_DYN_UNDEF) n = NAN;
+  else if (size->kind == SCR_DYN_STR) {
+    n = scr_parse_int(size->v.str, 10);
+    /* parseInt of a digit run too long for a double is Infinity, which
+     * Node's computeNewHighWaterMark refuses (a numeric Infinity is the
+     * absent form instead: parseInt(String(Infinity)) is NaN), and a
+     * negative Infinity reads nothing. */
+    if (isnan(n)) {
+      /* parseInt could not read a digit: Node's absent form */
+    } else if (!isfinite(n)) {
+      if (n > 0) {
+        static const char msg[] =
+            "The value of \"size\" is out of range. It must be <= 1GiB. Received Infinity";
+        scr_throw_error_msg_code(SCR_ERR_RANGE, msg, sizeof msg - 1, "ERR_OUT_OF_RANGE");
+        return scr_dyn_undefined();
+      }
+      /* -Infinity: a negative size reads nothing */
+      n = -1.0;
+    }
+  } else n = scr_dyn_number_coerce(size);
   if (scr_exc_pending()) return scr_dyn_undefined();
   ScrEntryKind kind = SCR_ENTRY_BYTES;
   void *chunk = s->st->has_r ? scr_stream_read_n_kind(s, n, &kind) : NULL;
@@ -10090,6 +10165,21 @@ static void scr_stream_throw_invalid_return(const char *expected, const char *na
   scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)n, "ERR_INVALID_RETURN_VALUE");
 }
 
+/* The same error with a ready-made tail: a native stream renders as its
+ * Node class ("an instance of Writable"), which the checked-dynamic value
+ * the stage answered does not carry. */
+static void scr_stream_throw_invalid_return_class(const char *expected, const char *name,
+                                                  const char *cls) {
+  char detail[160];
+  snprintf(detail, sizeof detail, "an instance of %s", cls);
+  char msg[384];
+  int n = snprintf(msg, sizeof msg, "Expected %s to be returned from the \"%s\" function but got %s.",
+                   expected, name, detail);
+  if (n < 0) n = 0;
+  if ((size_t)n >= sizeof msg) n = (int)sizeof msg - 1;
+  scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)n, "ERR_INVALID_RETURN_VALUE");
+}
+
 /* An untyped pipeline function stage's result before the last stage
  * (pipelineImpl's `isIterable(ret, true)` check): an async iterable
  * answers itself (+1); other values throw ERR_INVALID_RETURN_VALUE naming
@@ -10100,6 +10190,44 @@ ScrDyn *scr_stream_dyn_transform_result(const ScrDyn *value, const ScrStr *label
   if (kind < 0) return NULL;
   if (kind != 2) {
     scr_stream_throw_invalid_return("AsyncIterable", label->data, value);
+    return NULL;
+  }
+  return scr_dyn_retain((ScrDyn *)value);
+}
+
+/* duplexify's function-body check: the function a Duplex was built from
+ * must answer an iterable (synchronous or asynchronous), or a native
+ * readable stream (which answers its iterator in Node); it reads that
+ * value as the duplex's readable side. Any other value throws the "body"
+ * form of ERR_INVALID_RETURN_VALUE. +1, or NULL with an exception
+ * pending. */
+ScrDyn *scr_stream_duplex_body_value(const ScrDyn *value) {
+  /* from.js's string and Buffer bodies push the value whole, not each of
+   * its characters or bytes: one entry reads back as that chunk. */
+  if (value->kind == SCR_DYN_STR || value->kind == SCR_DYN_BYTES) {
+    ScrDyn *one = scr_dyn_new_arr();
+    scr_dyn_arr_push(one, scr_dyn_retain((ScrDyn *)value));
+    return one;
+  }
+  ScrStream *native = scr_stream_of_handle(value);
+  if (!native) native = scr_stream_boxed(value);
+  if (native) {
+    char cls[64];
+    snprintf(cls, sizeof cls, "%s", native->cls ? native->cls : "Stream");
+    bool readable = native->st->has_r;
+    scr_stream_release(native);
+    if (!readable) {
+      if (!scr_exc_pending())
+        scr_stream_throw_invalid_return_class("Iterable, AsyncIterable or AsyncFunction", "body",
+                                              cls);
+      return NULL;
+    }
+    return scr_dyn_retain((ScrDyn *)value);
+  }
+  int kind = scr_dyn_iterable_kind(value);
+  if (kind < 0) return NULL;
+  if (kind == 0) {
+    scr_stream_throw_invalid_return("Iterable, AsyncIterable or AsyncFunction", "body", value);
     return NULL;
   }
   return scr_dyn_retain((ScrDyn *)value);

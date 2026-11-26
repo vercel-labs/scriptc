@@ -2,6 +2,7 @@
 import { readFileSync } from "node:fs";
 import { availableParallelism, freemem, totalmem } from "node:os";
 
+import type { NativeOptimization } from "./optimization.js";
 import type { NativeHelperSpec, NativeTargetSpec } from "./targets.js";
 
 export const NATIVE_CODEGEN_PROTOCOL_VERSION = "1";
@@ -399,6 +400,33 @@ export interface NativeCodegenVersion {
   supported_targets: string[];
   default_target: string;
   data_layout: string;
+  /** Optional protocol features this helper build understands. */
+  features?: string[];
+}
+
+/** How an optimized program object compiles the emitter's generated
+ * dynamic-dispatch helpers (`%dyn.class.*`): the helper's own
+ * `--dispatch-opt` values. */
+export type NativeDispatchOpt = "off" | "light";
+
+/** The dispatch-helper optimization a release program object asks for —
+ * `speed` builds keep the program's own level for them. The large helpers are
+ * bodies the program calls directly and never inlines, so their own O2 passes
+ * cost build time the program cannot observe; the helper runs them through the
+ * O1 function simplification instead and leaves the O2 pipeline to the
+ * program's own code. Development builds leave them at the program's level
+ * (opt-level 0). */
+export const GENERATED_DISPATCH_OPT: NativeDispatchOpt = "light";
+
+/** The dispatch-helper level a program object asks for, from the build's
+ * posture: release only. Speed is an optimized posture that deliberately
+ * trades build time for run time, so its program code keeps the fully
+ * optimized pipeline, large helpers included; development builds compile
+ * everything at opt-level 0. */
+export function generatedDispatchOptFor(
+  optimization: NativeOptimization | undefined,
+): NativeDispatchOpt | undefined {
+  return (optimization ?? "release") === "release" ? GENERATED_DISPATCH_OPT : undefined;
 }
 
 export function validateNativeCodegenVersion(
@@ -440,5 +468,12 @@ export function validateNativeCodegenVersion(
     mismatch("supported_targets", `an array containing ${target.llvmTriple}`);
   }
   if (typeof value["host_triple"] !== "string") mismatch("host_triple", "a string");
+  if (
+    value["features"] !== undefined &&
+    (!Array.isArray(value["features"]) ||
+      !value["features"].every((feature) => typeof feature === "string"))
+  ) {
+    mismatch("features", "an array of strings");
+  }
   return value as unknown as NativeCodegenVersion;
 }

@@ -16,7 +16,10 @@ declare module "http2" {
     destroy(): void;
   }
   export interface Http2ServerRequest {
-    readonly url: string;
+    /* Node's compat request keeps the frame's :path: a CONNECT block
+     * carries none, so the read is undefined there (Node's value; the
+     * h2enabled request object answers it through the same union). */
+    readonly url: string | undefined;
     readonly method: string;
     /* The trailer block the request carried (empty before the request
      * ends): a record of joined values, and the raw [name, value, ...]
@@ -499,6 +502,9 @@ declare module "http2" {
     readonly localSettings: any;
     readonly remoteSettings: any;
     goaway(code?: number, lastStreamID?: number, opaqueData?: Uint8Array): void;
+    /* Node validates the argument and applies no observable change (the
+     * local settings record and the peer's view stay as they were). */
+    setLocalWindowSize(windowSize: number): void;
     on(event: "close" | "timeout", listener: () => void): void;
     on(event: "error", listener: (err: Error) => void): void;
     on(
@@ -879,6 +885,13 @@ declare module "http2" {
     options: Record<string, unknown>,
     listener?: (session: ClientHttp2Session, socket: import("net").Socket) => void,
   ): ClientHttp2Session;
+
+  /* A server session over an existing connected socket; the session's own
+   * 'stream' listeners see its streams (it has no owning server). */
+  export function performServerHandshake(
+    socket: import("net").Socket,
+    options?: { settings?: any; maxSessionMemory?: number; peerMaxConcurrentStreams?: number },
+  ): ServerHttp2Session;
 
   export function getDefaultSettings(): any;
   export function getPackedSettings(settings?: any): Buffer;

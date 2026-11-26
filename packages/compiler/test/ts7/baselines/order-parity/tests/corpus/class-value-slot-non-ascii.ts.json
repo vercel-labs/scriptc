@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/class-value-slot-non-ascii.ts"
+ ],
+ "diags": []
+}

@@ -22,6 +22,7 @@ import {
 import {
   cgroupReclaimableBytes,
   failureText,
+  generatedDispatchOptFor,
   nativeBuildPartitions,
   nativeCodegenAvailableBytes,
   nativeCodegenJobs,
@@ -51,6 +52,7 @@ async function fakePackage(
     missingOutput?: boolean;
     changePackageDuringEmit?: boolean;
     profileReport?: string;
+    features?: string[];
   } = {},
 ) {
   const root = await mkdtemp(join(tmpdir(), "scriptc-native-helper-test-"));
@@ -70,6 +72,7 @@ async function fakePackage(
     supported_targets: [MACOS_ARM64_TARGET.llvmTriple],
     default_target: MACOS_ARM64_TARGET.llvmTriple,
     data_layout: MACOS_ARM64_TARGET.dataLayout,
+    ...(options.features === undefined ? {} : { features: options.features }),
   });
   await writeFile(
     bin,
@@ -127,6 +130,32 @@ function request(
     cacheRoot: join(root, "cache"),
   };
 }
+
+test("the release posture asks for the light dispatch level", () => {
+  expect(generatedDispatchOptFor(undefined)).toBe("light");
+  expect(generatedDispatchOptFor("release")).toBe("light");
+  expect(generatedDispatchOptFor("dev")).toBeUndefined();
+  expect(generatedDispatchOptFor("speed")).toBeUndefined();
+});
+
+test("a dispatch level reaches a helper that advertises it and keys the cache", async () => {
+  const pkg = await fakePackage({ features: ["dispatch-opt"] });
+  await emitNativeArtifact({
+    ...request(pkg.root, pkg.packageJson),
+    dispatchOpt: generatedDispatchOptFor("release"),
+  });
+  expect(await readFile(pkg.log, "utf8")).toContain("--dispatch-opt light");
+
+  // A speed build asks for no level: the option is absent, and the artifact
+  // is not the release cache entry (the helper runs again).
+  await emitNativeArtifact({
+    ...request(pkg.root, pkg.packageJson, join(pkg.root, "speed.o")),
+    dispatchOpt: generatedDispatchOptFor("speed"),
+  });
+  const calls = (await readFile(pkg.log, "utf8")).trim().split("\n");
+  expect(calls).toHaveLength(2);
+  expect(calls[1]).not.toContain("--dispatch-opt");
+});
 
 test("caps codegen lanes by the memory available", () => {
   const bytes = 512 * 1024 * 1024;

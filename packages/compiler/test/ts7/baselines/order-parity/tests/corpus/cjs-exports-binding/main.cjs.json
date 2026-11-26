@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/cjs-exports-binding/dep.cjs",
+  "<repo>/tests/corpus/cjs-exports-binding/main.cjs"
+ ],
+ "diags": []
+}

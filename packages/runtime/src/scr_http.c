@@ -45,6 +45,7 @@
  * req 'data'/'end' listeners fire from the socket read path (macrotasks,
  * snapshot semantics, once-before-run), and errors/teardown follow the
  * socket's own story. */
+#include "scr_optional.h"
 #include "scr_runtime.h"
 
 #include <ctype.h>
@@ -431,7 +432,28 @@ void scr_http_req_release(ScrHttpReq *r) {
 void *scr_http_req_retain_v(void *p) { return scr_http_req_retain((ScrHttpReq *)p); }
 void scr_http_req_release_v(void *p) { scr_http_req_release((ScrHttpReq *)p); }
 
-ScrStr *scr_http_req_url(ScrHttpReq *r) { return scr_str_retain(r->url); }
+ScrStr *scr_http_req_url(ScrHttpReq *r) {
+  /* The HTTP/1 request line always carries a target. An h2 compat CONNECT
+   * frame carries no :path and its url is Node's undefined (the
+   * http2.reqUrl read answers that arm); this accessor backs the plain
+   * string read, which only an unsound h2-to-http cast can reach. */
+  if (r->url == NULL) return scr_str_new("", 0);
+  return scr_str_retain(r->url);
+}
+
+/* Http2ServerRequest.url (+1, or NULL for Node's undefined): the frame's
+ * :path. The compat dispatch clears the seeded "/" when the block carried
+ * none, so this is the bare field. */
+ScrStr *scr_http_req_url_opt(ScrHttpReq *r) {
+  return r->url != NULL ? scr_str_retain(r->url) : NULL;
+}
+
+/* The compat request's url is the frame's :path: a block without one
+ * (CONNECT; an extended CONNECT carries :path) reads undefined. */
+void scr_http_req_clear_url(ScrHttpReq *r) {
+  scr_str_release(r->url);
+  r->url = NULL;
+}
 ScrStr *scr_http_req_method(ScrHttpReq *r) { return scr_str_retain(r->method); }
 
 /* Case-insensitive equality of HTTP field names. Incoming names happen to
@@ -4775,6 +4797,13 @@ static void scr_http_conn_missing_host(ScrHttpConn *conn) {
 
 /* Delivers a body slice to a request's data listeners (the parser's
  * feed, and the h2 compat DATA-frame feed). */
+/* An h2 compat request consumed n body bytes (delivered to its readers or
+ * discarded with no consumer): the stream gives the peer that credit back. */
+static void scr_http_req_h2_consume(ScrHttpReq *r, size_t n) {
+  if (r->h2_stream == NULL || scr_http_h2_ops == NULL || scr_http_h2_ops->consumed == NULL) return;
+  scr_http_h2_ops->consumed(r->h2_stream, n);
+}
+
 static void scr_http_req_deliver(ScrHttpReq *r, const char *data, size_t n) {
   if (!r || n == 0 || r->ended) return;
   r->body_seen = true;
@@ -4794,7 +4823,12 @@ static void scr_http_req_deliver(ScrHttpReq *r, const char *data, size_t n) {
     return;
   }
   bool piped = r->pipe_res != NULL || r->pipe_client != NULL || r->pipe_sock != NULL;
-  if (r->data_ls.n == 0 && !piped) return;
+  if (r->data_ls.n == 0 && !piped) {
+    /* nobody reads this body: the bytes are discarded, so their receive
+     * credit returns now rather than stalling the peer's window */
+    scr_http_req_h2_consume(r, n);
+    return;
+  }
   ScrBytes *chunk = scr_bytes_new(SCR_BYTES_U8, (double)n);
   chunk->is_buffer = true; /* Node delivers a Buffer */
   memcpy(chunk->data, data, n);
@@ -4817,6 +4851,7 @@ static void scr_http_req_deliver(ScrHttpReq *r, const char *data, size_t n) {
     if (r->pipe_sock) scr_net_sock_write_bytes(r->pipe_sock, chunk);
   }
   scr_bytes_release(chunk);
+  scr_http_req_h2_consume(r, n);
 }
 
 static void scr_http_conn_body_data(ScrHttpConn *conn, const char *data, size_t n) {
@@ -6905,10 +6940,13 @@ void scr_http_client_append_header_dyn(ScrHttpClientReq *c, ScrStr *name, ScrDyn
   if (scr_exc_pending()) return;
   ScrDyn *value = scr_http_header_value_plain(raw);
   if (scr_exc_pending()) { scr_dyn_release(value); return; }
+  /* The value's validation coerces it, which runs user code (a toString
+   * that may remove this header): the slot is looked up AFTER that, so it
+   * cannot name an entry the coercion dropped. */
+  if (!scr_http_client_value_valid(name, value)) { scr_dyn_release(value); return; }
   size_t pos = SIZE_MAX;
   for (size_t i = 0; i < c->nheaders; i++)
     if (scr_http_name_eq(c->hnames[i], name)) { pos = i; break; }
-  if (!scr_http_client_value_valid(name, value)) { scr_dyn_release(value); return; }
   if (pos == SIZE_MAX) {
     scr_http_client_store_header(c, name, value, SIZE_MAX);
     scr_dyn_release(value);
@@ -10365,6 +10403,7 @@ static ScrDyn *scr_http_dynh_req_get(void *h, const char *key, size_t key_len) {
   ScrHttpReq *r = (ScrHttpReq *)h;
   (void)key_len;
   if (strcmp(key, "url") == 0) {
+    if (r->url == NULL) return scr_dyn_undefined(); /* h2 CONNECT: no :path */
     ScrStr *s = scr_http_req_url(r);
     ScrDyn *d = scr_dyn_new_str(s);
     scr_str_release(s);
@@ -10617,10 +10656,18 @@ static ScrArr *scr_http_dynh_flat_pairs(const ScrDyn *list) {
  * undefined value is ERR_HTTP_INVALID_HEADER_VALUE, not the text), then the
  * template's string form — an array joins with commas. */
 static bool scr_http_dynh_push_pair(ScrArr *pairs, const ScrStr *name, const ScrDyn *value) {
+  /* The value belongs to the headers object; its validation and conversion
+   * both run user code (toString), which may delete the entry and free the
+   * value — hold a reference across them. */
+  ScrDyn *held = scr_dyn_retain((ScrDyn *)value);
   scr_http_validate_header_name((ScrStr *)name, NULL);
-  if (!scr_exc_pending()) scr_http_validate_header_value((ScrStr *)name, value);
-  if (scr_exc_pending()) return false;
-  ScrStr *text = scr_dyn_string_coerce_js(value);
+  if (!scr_exc_pending()) scr_http_validate_header_value((ScrStr *)name, held);
+  if (scr_exc_pending()) {
+    scr_dyn_release(held);
+    return false;
+  }
+  ScrStr *text = scr_dyn_string_coerce_js(held);
+  scr_dyn_release(held);
   if (text == NULL) return false;
   scr_arr_push_ref(pairs, scr_str_retain((ScrStr *)name));
   scr_arr_push_ref(pairs, text);
@@ -11634,10 +11681,11 @@ static ScrDyn *scr_http_agent_hook_value(ScrHttpAgent *a, bool keep) {
 
 /* agent.createConnection(options[, callback]): Node's default dialer is
  * net.createConnection, so the net unit's dynamic entry does the work — its
- * argument ladder, validation and dial. The `signal` option rides the signal
- * unit's abort-listener entry when the program links it. */
-extern ScrDyn *scr_events_add_abort_listener(ScrDyn *signal, ScrDyn *listener)
-    __attribute__((weak));
+ * argument ladder, validation and dial. The `signal` option rides the
+ * event-target unit's abort-listener entry when the program links it; that
+ * unit installs the entry in its table (scr_optional.h), so a program that
+ * never makes an AbortSignal does not link it and no object format has to
+ * resolve a reference to a unit that is not there. */
 
 static ScrDyn *scr_http_agent_create_connection(ScrHttpAgent *a, ScrDyn *const *args,
                                                  size_t argc) {
@@ -11656,7 +11704,8 @@ static ScrDyn *scr_http_agent_create_connection(ScrHttpAgent *a, ScrDyn *const *
   ScrNetSocket *sock = scr_net_connect_dyn(
       argc > 0 ? args[0] : scr_dyn_undefined(), argc > 1 ? args[1] : NULL,
       argc > 2 ? args[2] : NULL, NULL,
-      scr_http_events_available() ? scr_events_add_abort_listener : NULL, fence);
+      scr_optional_event_target != NULL ? scr_optional_event_target->add_abort_listener : NULL,
+      fence);
   scr_str_release(fence);
   if (sock == NULL) return NULL; /* an exception is pending */
   ScrDyn *out = scr_dyn_new_handle(sock, SCR_DYNH_NET_SOCKET);
@@ -11666,16 +11715,24 @@ static ScrDyn *scr_http_agent_create_connection(ScrHttpAgent *a, ScrDyn *const *
 
 /* The typed rewrite's receiver check: the net dialer it lowers to builds a
  * plaintext socket, so an Agent value whose class is secure (an https.Agent,
- * however it is typed at the call site) must refuse instead of dialing. */
+ * however it is typed at the call site) must refuse instead of dialing.
+ * The check is fail-closed: only an agent this runtime built and knows to be
+ * plaintext may dial. A Node-island (or otherwise foreign) value could be an
+ * https.Agent whose TLS dialer this lowering bypasses, which would silently
+ * downgrade the connection to plaintext, so it refuses too. */
 void scr_http_agent_create_connection_check(const ScrDyn *agent /*borrowed*/) {
-  if (agent == NULL || agent->kind != SCR_DYN_HANDLE ||
-      agent->v.handle.tag != SCR_DYNH_HTTP_AGENT)
+  if (agent == NULL) return;
+  if (agent->kind == SCR_DYN_HANDLE && agent->v.handle.tag == SCR_DYNH_HTTP_AGENT) {
+    ScrHttpAgent *a = (ScrHttpAgent *)agent->v.handle.ptr;
+    if (a == NULL || !a->secure) return;
+    static const char secure_text[] =
+        "https.Agent createConnection (a TLS dial from an options record) is not supported yet";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, secure_text, sizeof secure_text - 1, "SC2020");
     return;
-  ScrHttpAgent *a = (ScrHttpAgent *)agent->v.handle.ptr;
-  if (a == NULL || !a->secure) return;
-  static const char secure_text[] =
-      "https.Agent createConnection (a TLS dial from an options record) is not supported yet";
-  scr_throw_error_msg_code(SCR_ERR_ERROR, secure_text, sizeof secure_text - 1, "SC2020");
+  }
+  static const char foreign_text[] =
+      "createConnection on an Agent this compiled program did not create is not supported yet";
+  scr_throw_error_msg_code(SCR_ERR_ERROR, foreign_text, sizeof foreign_text - 1, "SC2020");
 }
 
 /* The dialer as a value, held like the other hooks. */

@@ -113,3 +113,23 @@ setTimeout(() => {
   });
   setTimeout(() => listened.abort(new Error("why")), 200);
 }, 3000);
+
+// The abort callback removing the child's last 'error' listener does not turn
+// the AbortError it already received into an unhandled error: Node captured
+// the listeners before the callback ran and still dispatches to them.
+setTimeout(() => {
+  const cleaned = new AbortController();
+  const events = [];
+  let child;
+  child = cp.exec("sleep 5", { encoding: "utf8", signal: cleaned.signal }, (e) => {
+    events.push("callback:" + (e && e.name));
+    child.removeAllListeners("error");
+    events.push("removed:" + child.listenerCount("error"));
+  });
+  child.on("error", (e) => events.push("error:" + e.name));
+  child.on("exit", (code, signal) => {
+    events.push("exit:" + code + ":" + signal);
+    console.log("abort-listener-cleanup", events.join(","));
+  });
+  setTimeout(() => cleaned.abort(), 100);
+}, 4000);

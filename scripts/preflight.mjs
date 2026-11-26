@@ -16,7 +16,7 @@ export const preflightChecks = [
   { run: "pnpm test:ts7 --baselines-only" },
   { run: "pnpm build" },
   {
-    run: "pnpm test tests/harness/code-quality.test.ts tests/harness/ci-stack-scope.test.ts tests/harness/ci-preflight.test.ts",
+    run: "pnpm test tests/harness/code-quality.test.ts tests/harness/ci-stack-scope.test.ts tests/harness/ci-preflight.test.ts tests/harness/ci-canary-suite.test.ts",
     env: { SCRIPTC_TEST_WORKERS: "1" },
   },
   { run: "pnpm generate:ts7-ast --check" },

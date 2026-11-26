@@ -625,9 +625,19 @@ static ScrDyn *ws_comp_invoke(void *ptr, ScrDyn *self, const char *method, ScrDy
   (void)args;
   (void)argc;
   (void)self; /* a borrowed receiver: the caller owns it */
-  char buf[160];
-  int n = snprintf(buf, sizeof buf, "%s is not a function", what);
-  scr_throw_error_msg(SCR_ERR_TYPE, buf, (size_t)n);
+  /* The callee's source spelling can be arbitrarily long; the message holds
+   * all of it, as Node's does, so it is sized for this call instead of a
+   * fixed stack buffer (a truncated snprintf's return would read past one). */
+  static const char suffix[] = " is not a function";
+  size_t what_len = strlen(what);
+  size_t total = what_len + sizeof suffix - 1;
+  char *message = malloc(total + 1);
+  if (!message) ws_comp_oom();
+  memcpy(message, what, what_len);
+  memcpy(message + what_len, suffix, sizeof suffix - 1);
+  message[total] = '\0';
+  scr_throw_error_msg(SCR_ERR_TYPE, message, total);
+  free(message);
   return NULL;
 }
 

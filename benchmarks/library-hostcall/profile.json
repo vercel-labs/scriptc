@@ -1,0 +1,18 @@
+{
+  "profile_format": 1,
+  "name": "hostcall-bench",
+  "entry": "lib.ts",
+  "emission": "llvm",
+  "abi": {
+    "prefix": "hb_",
+    "init_symbol": "hb_init",
+    "sink_register_symbol": "hb_set_panic_sink",
+    "collect_symbol": "hb_collect",
+    "result_reset_symbol": null,
+    "callback_register_symbol": "hb_set_callback"
+  },
+  "callbacks": [{ "name": "tick", "params": ["u32"], "returns": "void" }],
+  "exports": [
+    { "export": "run", "symbol": "hb_run", "params": ["f64"], "returns": "f64" }
+  ]
+}

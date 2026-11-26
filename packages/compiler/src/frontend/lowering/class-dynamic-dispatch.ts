@@ -2115,6 +2115,37 @@ export function groupStaticFieldBranches(
   return rebuilt ?? body;
 }
 
+/** A static field a class value can write: one per class the value can hold
+ * on which `name` is a static field of a class whose table is installed.
+ * `own` says the class itself declares it. */
+interface StaticWriteTarget {
+  actual: string;
+  own: boolean;
+  globalId: string;
+  type: IrType;
+  field: string;
+}
+
+/** The lookups a fixpoint wave's dispatch queries share. They are derived
+ * from `boxedConstructors` and `staticTablesInstalled`, so they are rebuilt
+ * when either set grows; within a wave every query is a map lookup instead
+ * of a walk over every class. */
+interface DispatchIndex {
+  boxed: number;
+  tables: number;
+  /** For each boxed class, the installed classes strictly below it, in
+   * `staticTablesInstalled` order. */
+  descendants: Map<string, string[]>;
+  /** For each static field name, the boxed classes whose instances can reach
+   * a class with an installed field of that name. */
+  writeKeys: Map<string, Set<string>>;
+  /** The property names some boxed class resolves to a static declaration,
+   * plus `prototype`. */
+  readNames: Set<string>;
+  /** `staticWriteTargets` answers within this wave. */
+  targets: Map<string, StaticWriteTarget[]>;
+}
+
 export class ClassDynamicDispatch {
   constructor(private readonly asyncFree = false) {}
 
@@ -2152,6 +2183,95 @@ export class ClassDynamicDispatch {
   }
   /** The class values whose static property table this pass installed. */
   private readonly staticTablesInstalled = new Set<string>();
+  /** The wave's shared indexes (see DispatchIndex). */
+  private dispatchIndex: DispatchIndex | null = null;
+  /** The boxed/installed sizes a computed-write dispatch was last scanned
+   * with: a wave that added no class has nothing new for it. */
+  private readonly computedScans = new WeakMap<object, string>();
+
+  /** The wave's shared indexes, rebuilt when the boxed or installed classes
+   * grew since they were built. */
+  private waveIndex(lowerer: Lowerer): DispatchIndex {
+    const boxed = this.boxedConstructors.size;
+    const tables = this.staticTablesInstalled.size;
+    const current = this.dispatchIndex;
+    if (current !== null && current.boxed === boxed && current.tables === tables) return current;
+    // One pass over the installed classes collects each boxed class's
+    // installed descendants in staticTablesInstalled order, the order the
+    // per-query subclass walk produced.
+    const descendants = new Map<string, string[]>();
+    const boxedAncestors = new Map<string, string[]>();
+    const declaredFields = new Map<string, string[]>();
+    for (const actual of this.staticTablesInstalled) {
+      const info = lowerer.classes.get(actual);
+      const ancestors = new Set<string>();
+      if (info !== undefined)
+        for (let c: ClassInfo | null = info; c !== null; c = c.base) {
+          ancestors.add(c.def.name);
+          for (let family = c.genericInstance?.family; family; family = family.base ?? undefined)
+            ancestors.add(family.def.name);
+        }
+      ancestors.delete(actual);
+      const below: string[] = [];
+      for (const name of ancestors) if (this.boxedConstructors.has(name)) below.push(name);
+      boxedAncestors.set(actual, below);
+      for (const name of below) {
+        let list = descendants.get(name);
+        if (list === undefined) descendants.set(name, (list = []));
+        list.push(actual);
+      }
+      declaredFields.set(
+        actual,
+        info === undefined ? [] : info.staticFields.map((field) => field.name),
+      );
+    }
+    // A write reaches a static field only by that field's name, so the names
+    // installed classes declare are the only keys a query can match; for
+    // each, the boxed classes whose descendants can resolve it.
+    const fieldNames = new Set<string>();
+    for (const names of declaredFields.values()) for (const name of names) fieldNames.add(name);
+    const writeKeys = new Map<string, Set<string>>();
+    for (const name of fieldNames) {
+      const keys = new Set<string>();
+      for (const actual of this.staticTablesInstalled) {
+        const info = lowerer.classes.get(actual);
+        if (info === undefined) continue;
+        const found = findStaticOn(lowerer, info, name);
+        if (
+          found === null ||
+          found.field === undefined ||
+          !this.staticTablesInstalled.has(found.declarer.def.name)
+        )
+          continue;
+        if (this.boxedConstructors.has(actual)) keys.add(actual);
+        for (const key of boxedAncestors.get(actual) ?? []) keys.add(key);
+      }
+      writeKeys.set(name, keys);
+    }
+    // A read can answer from any static declaration a boxed class resolves,
+    // and from `prototype`; any other name reaches no branch at all.
+    const readNames = new Set<string>(["prototype"]);
+    for (const key of this.boxedConstructors)
+      for (let c: ClassInfo | null = lowerer.classes.get(key) ?? null; c !== null; c = c.base) {
+        for (const name of c.declaredStatics ?? []) readNames.add(name);
+        for (const field of c.staticFields) readNames.add(field.name);
+        for (const name of c.staticMethods?.keys() ?? []) {
+          readNames.add(name);
+          if (name.startsWith("get:") || name.startsWith("set:")) readNames.add(name.slice(4));
+        }
+        for (const name of c.genericStatics?.keys() ?? []) readNames.add(name);
+      }
+    const index: DispatchIndex = {
+      boxed,
+      tables,
+      descendants,
+      writeKeys,
+      readNames,
+      targets: new Map(),
+    };
+    this.dispatchIndex = index;
+    return index;
+  }
 
   /** The static-field writes a value boxed as `keyClass` can receive for
    * `name`: one per class the value can hold (`keyClass` or a descendant
@@ -2161,21 +2281,22 @@ export class ClassDynamicDispatch {
     lowerer: Lowerer,
     keyClass: string,
     name: string,
-  ): { actual: string; own: boolean; globalId: string; type: IrType; field: string }[] {
+  ): StaticWriteTarget[] {
+    const index = this.waveIndex(lowerer);
+    const memoKey = `${keyClass}\0${name}`;
+    const cached = index.targets.get(memoKey);
+    if (cached !== undefined) return cached;
     const keyInfo = lowerer.classes.get(keyClass);
-    if (!keyInfo || runtimeStaticDefines(lowerer, keyInfo, name)) return [];
-    if (findGenericStaticOn(lowerer, keyInfo, name)) return [];
-    const actuals = [
-      keyClass,
-      ...[...this.staticTablesInstalled].filter((other) => lowerer.isSubclassOf(other, keyClass)),
-    ];
-    const targets: {
-      actual: string;
-      own: boolean;
-      globalId: string;
-      type: IrType;
-      field: string;
-    }[] = [];
+    if (!keyInfo || runtimeStaticDefines(lowerer, keyInfo, name)) {
+      index.targets.set(memoKey, []);
+      return [];
+    }
+    if (findGenericStaticOn(lowerer, keyInfo, name)) {
+      index.targets.set(memoKey, []);
+      return [];
+    }
+    const actuals = [keyClass, ...(index.descendants.get(keyClass) ?? [])];
+    const targets: StaticWriteTarget[] = [];
     for (const actual of actuals) {
       const info = lowerer.classes.get(actual);
       if (!info || !this.staticTablesInstalled.has(actual)) continue;
@@ -2190,6 +2311,7 @@ export class ClassDynamicDispatch {
         field: name,
       });
     }
+    index.targets.set(memoKey, targets);
     return targets;
   }
 
@@ -2205,7 +2327,7 @@ export class ClassDynamicDispatch {
   private staticWriteStatements(
     lowerer: Lowerer,
     fn: IrFunction,
-    target: { actual: string; own: boolean; globalId: string; type: IrType; field: string },
+    target: StaticWriteTarget,
     stored: IrExpr,
     tableWrite: IrStmt[],
     loc: SrcLoc,
@@ -2287,18 +2409,25 @@ export class ClassDynamicDispatch {
       const info = lowerer.classes.get(className);
       if (info) for (const field of staticTableFields(lowerer, info)) names.add(field.name);
     }
+    const index = this.waveIndex(lowerer);
     let changed = false;
     for (const dispatch of this.computed.values()) {
       const fn = dispatch.fn;
       if (!fn.params.some((param) => param.localId === "p.1")) continue;
       if (fn.params.some((param) => param.localId === "p.index")) continue;
+      // The branches a computed write can grow depend only on the boxed and
+      // installed classes; a wave that added none has nothing new to add.
+      const scan = `${index.boxed}:${index.tables}`;
+      if (this.computedScans.get(dispatch) === scan) continue;
+      this.computedScans.set(dispatch, scan);
       const reflect = fn.params.some((param) => param.localId === "p.reflectReceiver");
       const loc = fn.loc;
       const value = varRef("p.0", DYN, loc);
       const stored = varRef("p.1", DYN, loc);
       const keyRead = varRef(dispatch.keyLocal, STRING, loc);
       for (const keyClass of this.boxedConstructors)
-        for (const name of names)
+        for (const name of names) {
+          if (index.writeKeys.get(name)?.has(keyClass) !== true) continue;
           for (const target of this.staticWriteTargets(lowerer, keyClass, name)) {
             const id = `${fn.name}\0${keyClass}\0${target.actual}\0${name}`;
             if (this.computedStaticWrites.has(id)) continue;
@@ -2432,6 +2561,7 @@ export class ClassDynamicDispatch {
             fn.body = [...fn.body.slice(0, at + 1), branch, ...fn.body.slice(at + 1)];
             changed = true;
           }
+        }
     }
     return changed;
   }
@@ -5609,8 +5739,9 @@ export class ClassDynamicDispatch {
         changed = true;
       }
     }
+    const dispatchIndex = this.waveIndex(lowerer);
     for (const dispatch of this.properties.values()) {
-      if (!dispatch.write)
+      if (!dispatch.write && dispatchIndex.readNames.has(dispatch.name))
         for (const name of this.boxedConstructors) {
           const info = lowerer.classes.get(name);
           // A table the chain defines the name in answers the read itself.
@@ -5659,7 +5790,7 @@ export class ClassDynamicDispatch {
           });
           changed = true;
         }
-      if (!dispatch.write)
+      if (!dispatch.write && dispatchIndex.readNames.has(dispatch.name))
         // A value boxed as a class can hold one of its subclasses. A subclass
         // that declares its own static field of the name answers from its own
         // storage: those branches test the class object itself and run ahead
@@ -5703,6 +5834,7 @@ export class ClassDynamicDispatch {
         // with its base must not write the base's storage.
         for (const name of this.boxedConstructors) {
           if (dispatch.name.startsWith("#")) continue;
+          if (dispatchIndex.writeKeys.get(dispatch.name)?.has(name) !== true) continue;
           const loc = dispatch.fn.loc;
           for (const branch of this.staticWriteTargets(lowerer, name, dispatch.name)) {
             const key = `constructor:${name}:${branch.actual}`;

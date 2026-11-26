@@ -2,7 +2,8 @@
 // answers the highest version on offer before the handshake, the
 // negotiated one after it and null after close,
 // getCipher names the suite three ways, alpnProtocol is false without
-// ALPN, and the module's default protocol range is TLSv1.2 to TLSv1.3.
+// ALPN, and the module's default protocol range is TLSv1.2 to TLSv1.3
+// with the provider choosing the ECDH curve ("auto").
 import * as tls from "node:tls";
 import { readFileSync } from "node:fs";
 
@@ -10,7 +11,7 @@ const cert = readFileSync("tests/fixtures/server/certs/localhost.pem");
 const key = readFileSync("tests/fixtures/server/certs/localhost-key.pem");
 const ca = readFileSync("tests/fixtures/server/certs/ca.pem");
 
-console.log("defaults", tls.DEFAULT_MIN_VERSION, tls.DEFAULT_MAX_VERSION);
+console.log("defaults", tls.DEFAULT_MIN_VERSION, tls.DEFAULT_MAX_VERSION, tls.DEFAULT_ECDH_CURVE);
 
 // The server's secureConnection and the client's secureConnect race, so
 // each side records its lines and both print once both have run.

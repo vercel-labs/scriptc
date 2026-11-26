@@ -2309,6 +2309,34 @@ ScrDyn *scr_url_to_http_options_dyn(const ScrDyn *value) {
   return NULL;
 }
 
+/* URL's interface getters: a Reflect.get with an explicit receiver reads
+ * them from the receiver, and a receiver that is not a URL is the class's
+ * TypeError. */
+static const ScrDynHandleName scr_native_url_attributes[] = {
+    SCR_DYN_HANDLE_NAME("href"),        SCR_DYN_HANDLE_NAME("origin"),
+    SCR_DYN_HANDLE_NAME("protocol"),    SCR_DYN_HANDLE_NAME("username"),
+    SCR_DYN_HANDLE_NAME("password"),    SCR_DYN_HANDLE_NAME("host"),
+    SCR_DYN_HANDLE_NAME("hostname"),    SCR_DYN_HANDLE_NAME("port"),
+    SCR_DYN_HANDLE_NAME("pathname"),    SCR_DYN_HANDLE_NAME("search"),
+    SCR_DYN_HANDLE_NAME("searchParams"), SCR_DYN_HANDLE_NAME("hash"), {NULL, 0}};
+
+static void scr_native_url_brand_error(const char *key, size_t key_len, const ScrDyn *receiver) {
+  (void)key;
+  (void)key_len;
+  if (receiver->kind == SCR_DYN_NULL) {
+    static const char message[] = "Cannot read properties of null (reading 'URL')";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return;
+  }
+  if (receiver->kind == SCR_DYN_UNDEF) {
+    static const char message[] = "Cannot read properties of undefined (reading 'URL')";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return;
+  }
+  static const char message[] = "Receiver must be an instance of class URL";
+  scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+}
+
 ScrDyn *scr_dyn_native_url(ScrUrl *value) {
   static const ScrDynHandleOps ops = {
     .cls = "URL",
@@ -2319,6 +2347,8 @@ ScrDyn *scr_dyn_native_url(ScrUrl *value) {
     .set = &scr_native_url_set,
     .inspect_view = &scr_native_url_inspect_view,
     .inspect_view_nested = true,
+    .attributes = scr_native_url_attributes,
+    .accessor_brand_error = scr_native_url_brand_error,
   };
   scr_dyn_handle_install(SCR_DYNH_URL, &ops);
   return scr_dyn_new_handle(value, SCR_DYNH_URL);
@@ -2432,9 +2462,12 @@ static ScrDyn *scr_native_sp_invoke(void *ptr, ScrDyn *self, const char *method,
 }
 
 ScrDyn *scr_dyn_native_search_params(ScrSearchParams *value) {
+  static const ScrDynHandleName attributes[] = {SCR_DYN_HANDLE_NAME("size"), {NULL, 0}};
   static const ScrDynHandleOps ops = {
     "URLSearchParams", &scr_sp_retain_v, &scr_sp_release_v, &scr_native_sp_invoke,
     &scr_native_sp_get, NULL, NULL, NULL, &scr_native_sp_step,
+    .attributes = attributes,
+    .invalid_this = "Value of \"this\" must be of type URLSearchParams",
   };
   scr_dyn_handle_install(SCR_DYNH_SEARCH_PARAMS, &ops);
   return scr_dyn_new_handle(value, SCR_DYNH_SEARCH_PARAMS);

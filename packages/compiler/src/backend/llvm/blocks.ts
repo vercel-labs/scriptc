@@ -75,6 +75,23 @@ export class BlockBuilder {
     }
   }
 
+  /** Appends IR rendered by the allocation helpers (llvm/alloc.ts): a line
+   * that starts with a block label opens that block, a `br` ends the
+   * current one, and everything else is an instruction of the open block. */
+  rendered(lines: readonly string[]): void {
+    for (const raw of lines) {
+      const s = raw.trim();
+      if (s === "") continue;
+      const label = /^[A-Za-z$._][A-Za-z0-9$._-]*:/.exec(s);
+      if (label !== null) {
+        this.startBlock(s.slice(0, s.indexOf(":")));
+        continue;
+      }
+      if (s.startsWith("br ")) this.terminate(s);
+      else this.line(s);
+    }
+  }
+
   private withDebugLocation(s: string): string {
     if (this.debugLocation === null || s.trimStart().startsWith(";")) return s;
     // Instruction comments must follow the attachment. Quoted LLVM operands

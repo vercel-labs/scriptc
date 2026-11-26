@@ -25,4 +25,7 @@ export const processNeverThrow: readonly IrLibFn[] = [
   // allocation, coercion or program code runs.
   "stdin.ref",
   "stdin.unref",
+  // The retained frozen config object (built once in scr_process_config);
+  // a plain read that cannot raise.
+  "process.configValue",
 ];

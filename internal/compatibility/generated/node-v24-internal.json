@@ -20738,6 +20738,10 @@
           "tests/corpus/crypto-ml-kem-runtime-input.ts",
           "tests/corpus/crypto-ml-kem.ts",
           "tests/corpus/crypto-module-catalogs.ts",
+          "tests/corpus/crypto-parse-pkcs12-arguments.mjs",
+          "tests/corpus/crypto-parse-pkcs12-digests-and-points.ts",
+          "tests/corpus/crypto-parse-pkcs12-pbe.ts",
+          "tests/corpus/crypto-parse-pkcs12.ts",
           "tests/corpus/crypto-random-arguments.cjs",
           "tests/corpus/crypto-rsa-key-types.cjs",
           "tests/corpus/crypto-rsa-padding-errors.ts",
@@ -22284,8 +22288,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "supported",
+        "evidence": "compiler-feature:crypto.crypto.parsePKCS12",
+        "tests": [
+          "tests/corpus/crypto-parse-pkcs12.ts",
+          "tests/corpus/crypto-parse-pkcs12-arguments.mjs",
+          "tests/corpus/crypto-parse-pkcs12-pbe.ts",
+          "tests/corpus/crypto-parse-pkcs12-digests-and-points.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -35058,6 +35068,7 @@
           "tests/corpus/compat-errors-stream.mjs",
           "tests/corpus/compat-errors-tls-keying-state.mjs",
           "tests/corpus/compat-errors-tls-options.mjs",
+          "tests/corpus/compat-errors-tls-secure-protocol.mjs",
           "tests/corpus/compat-errors-tls-state.mjs",
           "tests/corpus/compat-errors-tracing-categories.mjs",
           "tests/corpus/compat-errors-web-streams.mjs",
@@ -41868,8 +41879,11 @@
       "anchor": "err_tls_invalid_protocol_method",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.ERR_TLS_INVALID_PROTOCOL_METHOD"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.ERR_TLS_INVALID_PROTOCOL_METHOD",
+        "tests": [
+          "tests/corpus/compat-errors-tls-secure-protocol.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -64041,6 +64055,8 @@
           "tests/corpus/http2-compat-trailers.ts",
           "tests/corpus/http2-informational.ts",
           "tests/corpus/http2-respond-with-file/main.ts",
+          "tests/corpus/http2-server-close-late-stream.ts",
+          "tests/corpus/http2-server-close.ts",
           "tests/corpus/http2-session-error.ts",
           "tests/corpus/http2-session-properties.ts",
           "tests/corpus/http2-stream-readbacks.ts",
@@ -65054,8 +65070,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "supported",
+        "evidence": "compiler-feature:http2.'goaway'",
+        "tests": [
+          "tests/corpus/http2-server-close-late-stream.ts",
+          "tests/corpus/http2-server-close.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -72508,6 +72528,7 @@
           "tests/corpus/cjs-module-alias-values/main.cjs",
           "tests/corpus/cjs-module-object-metadata/main.cjs",
           "tests/corpus/module-children-dynamic-fields/main.cjs",
+          "tests/corpus/module-class-instance/main.cjs",
           "tests/corpus/module-require-literal/main.cjs",
           "tests/corpus/module-require-shadowed/main.cjs"
         ]
@@ -72695,7 +72716,12 @@
         "inherited": true
       },
       "static": {
-        "status": "unreviewed"
+        "status": "partial",
+        "evidence": "compiler-feature:modules.module",
+        "tests": [
+          "tests/corpus/cjs-module-object-metadata/main.cjs",
+          "tests/corpus/module-class-instance/main.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -72813,7 +72839,8 @@
         "tests": [
           "tests/corpus/2880-cjs-module-graph/main.cjs",
           "tests/corpus/cjs-module-object-metadata/main.cjs",
-          "tests/corpus/module-children-dynamic-fields/main.cjs"
+          "tests/corpus/module-children-dynamic-fields/main.cjs",
+          "tests/corpus/module-class-instance/main.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -72894,7 +72921,12 @@
         "inherited": true
       },
       "static": {
-        "status": "unreviewed"
+        "status": "partial",
+        "evidence": "compiler-feature:modules.module",
+        "tests": [
+          "tests/corpus/cjs-module-object-metadata/main.cjs",
+          "tests/corpus/module-class-instance/main.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -72956,7 +72988,8 @@
         "tests": [
           "tests/corpus/2880-cjs-module-graph/main.cjs",
           "tests/corpus/cjs-module-object-metadata/main.cjs",
-          "tests/corpus/module-children-dynamic-fields/main.cjs"
+          "tests/corpus/module-children-dynamic-fields/main.cjs",
+          "tests/corpus/module-class-instance/main.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -73089,7 +73122,8 @@
         "tests": [
           "tests/corpus/2880-cjs-module-graph/main.cjs",
           "tests/corpus/cjs-module-object-metadata/main.cjs",
-          "tests/corpus/module-children-dynamic-fields/main.cjs"
+          "tests/corpus/module-children-dynamic-fields/main.cjs",
+          "tests/corpus/module-class-instance/main.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -73117,7 +73151,8 @@
         "tests": [
           "tests/corpus/2880-cjs-module-graph/main.cjs",
           "tests/corpus/cjs-module-object-metadata/main.cjs",
-          "tests/corpus/module-children-dynamic-fields/main.cjs"
+          "tests/corpus/module-children-dynamic-fields/main.cjs",
+          "tests/corpus/module-class-instance/main.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -73145,7 +73180,8 @@
         "tests": [
           "tests/corpus/2880-cjs-module-graph/main.cjs",
           "tests/corpus/cjs-module-object-metadata/main.cjs",
-          "tests/corpus/module-children-dynamic-fields/main.cjs"
+          "tests/corpus/module-children-dynamic-fields/main.cjs",
+          "tests/corpus/module-class-instance/main.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -73173,7 +73209,8 @@
         "tests": [
           "tests/corpus/2880-cjs-module-graph/main.cjs",
           "tests/corpus/cjs-module-object-metadata/main.cjs",
-          "tests/corpus/module-children-dynamic-fields/main.cjs"
+          "tests/corpus/module-children-dynamic-fields/main.cjs",
+          "tests/corpus/module-class-instance/main.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -73201,7 +73238,8 @@
         "tests": [
           "tests/corpus/2880-cjs-module-graph/main.cjs",
           "tests/corpus/cjs-module-object-metadata/main.cjs",
-          "tests/corpus/module-children-dynamic-fields/main.cjs"
+          "tests/corpus/module-children-dynamic-fields/main.cjs",
+          "tests/corpus/module-class-instance/main.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -73229,7 +73267,8 @@
         "tests": [
           "tests/corpus/2880-cjs-module-graph/main.cjs",
           "tests/corpus/cjs-module-object-metadata/main.cjs",
-          "tests/corpus/module-children-dynamic-fields/main.cjs"
+          "tests/corpus/module-children-dynamic-fields/main.cjs",
+          "tests/corpus/module-class-instance/main.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -73257,7 +73296,8 @@
         "tests": [
           "tests/corpus/2880-cjs-module-graph/main.cjs",
           "tests/corpus/cjs-module-object-metadata/main.cjs",
-          "tests/corpus/module-children-dynamic-fields/main.cjs"
+          "tests/corpus/module-children-dynamic-fields/main.cjs",
+          "tests/corpus/module-class-instance/main.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -77121,6 +77161,8 @@
           "tests/corpus/net-bound-socket-pipe.cjs",
           "tests/corpus/net-bound-socket.ts",
           "tests/corpus/net-connect-dynamic-arguments.cjs",
+          "tests/corpus/net-create-server-block-list.ts",
+          "tests/corpus/net-create-server-options.ts",
           "tests/corpus/net-is-ip-inputs.ts",
           "tests/corpus/net-listen-argument-shapes.ts",
           "tests/corpus/net-listen-dynamic-arguments.cjs",
@@ -79771,19 +79813,11 @@
       "anchor": "netcreateserveroptions-connectionlistener",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:net.createServer",
+        "status": "supported",
+        "evidence": "compiler-feature:net.net.createServer",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/net-socket-construct.ts",
-          "tests/corpus/net-socket-construct-dyn.cjs"
+          "tests/corpus/net-create-server-options.ts",
+          "tests/corpus/net-create-server-block-list.ts"
         ]
       },
       "anchorSource": "exact"
@@ -104032,8 +104066,10 @@
           "tests/corpus/tls-session-listener-timing.ts",
           "tests/corpus/tls-socket-audit.ts",
           "tests/corpus/tls-socket-extras.ts",
+          "tests/corpus/tls-ticket-keys.ts",
           "tests/corpus/tls-unix-connect.ts",
-          "tests/diagnostics/compat-absent-tls-engine-members.ts"
+          "tests/diagnostics/compat-absent-tls-engine-members.ts",
+          "tests/harness/tls-ticket-keys-rotation.test.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -104540,8 +104576,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "supported",
+        "evidence": "compiler-feature:tls.server.getTicketKeys",
+        "tests": [
+          "tests/corpus/tls-ticket-keys.ts",
+          "tests/harness/tls-ticket-keys-rotation.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -104653,8 +104693,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "supported",
+        "evidence": "compiler-feature:tls.server.setTicketKeys",
+        "tests": [
+          "tests/corpus/tls-ticket-keys.ts",
+          "tests/harness/tls-ticket-keys-rotation.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -106675,8 +106719,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "supported",
+        "evidence": "compiler-feature:tls.tls.DEFAULT_ECDH_CURVE",
+        "tests": [
+          "tests/corpus/tls-handshake-events.ts",
+          "tests/corpus/5651-tls-socket-protocol.ts",
+          "tests/corpus/2557-tls-ca-store.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -107548,7 +107597,7 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "derived:descendants",
         "tests": [
           "tests/corpus/2597-dgram-send-ladders.cjs",
@@ -107558,9 +107607,23 @@
           "tests/corpus/compat-dgram-socket.ts",
           "tests/corpus/compat-errors-net.mjs",
           "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-bind-fd.ts",
           "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-block-list-bind.ts",
+          "tests/corpus/dgram-block-list-edges.ts",
+          "tests/corpus/dgram-block-list-receive.ts",
+          "tests/corpus/dgram-block-list-send.ts",
+          "tests/corpus/dgram-custom-lookup.ts",
+          "tests/corpus/dgram-implicit-bind-failure.ts",
+          "tests/corpus/dgram-lookup-capture.ts",
+          "tests/corpus/dgram-lookup-error-identity.cjs",
+          "tests/corpus/dgram-lookup-error-identity.ts",
+          "tests/corpus/dgram-lookup-lifecycle.cjs",
           "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-options-audit.ts",
           "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/dgram-signal-close-removes-listener.cjs",
+          "tests/corpus/dgram-signal.ts",
           "tests/corpus/dgram-socket-class.ts",
           "tests/corpus/dgram-sync-members.mjs",
           "tests/corpus/dgram-udp6.ts"
@@ -107609,10 +107672,27 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:dgram.createSocket",
+        "status": "supported",
+        "evidence": "compiler-feature:dgram.dgram.createSocket",
         "tests": [
-          "tests/corpus/2597-dgram-send-ladders.cjs"
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-block-list-receive.ts",
+          "tests/corpus/dgram-block-list-send.ts",
+          "tests/corpus/dgram-block-list-edges.ts",
+          "tests/corpus/dgram-block-list-bind.ts",
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-signal.ts",
+          "tests/corpus/dgram-bind-fd.ts",
+          "tests/corpus/dgram-signal-close-removes-listener.cjs",
+          "tests/corpus/dgram-custom-lookup.ts",
+          "tests/corpus/dgram-lookup-lifecycle.cjs",
+          "tests/corpus/dgram-lookup-error-identity.ts",
+          "tests/corpus/dgram-lookup-error-identity.cjs",
+          "tests/corpus/dgram-implicit-bind-failure.ts",
+          "tests/corpus/dgram-lookup-capture.ts",
+          "tests/corpus/dgram-options-audit.ts"
         ]
       },
       "anchorSource": "exact"
@@ -107863,10 +107943,27 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:socket.bind",
+        "status": "supported",
+        "evidence": "compiler-feature:dgram.socket.bind",
         "tests": [
-          "tests/corpus/2597-dgram-send-ladders.cjs"
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-block-list-receive.ts",
+          "tests/corpus/dgram-block-list-send.ts",
+          "tests/corpus/dgram-block-list-edges.ts",
+          "tests/corpus/dgram-block-list-bind.ts",
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-signal.ts",
+          "tests/corpus/dgram-bind-fd.ts",
+          "tests/corpus/dgram-signal-close-removes-listener.cjs",
+          "tests/corpus/dgram-custom-lookup.ts",
+          "tests/corpus/dgram-lookup-lifecycle.cjs",
+          "tests/corpus/dgram-lookup-error-identity.ts",
+          "tests/corpus/dgram-lookup-error-identity.cjs",
+          "tests/corpus/dgram-implicit-bind-failure.ts",
+          "tests/corpus/dgram-lookup-capture.ts",
+          "tests/corpus/dgram-options-audit.ts"
         ]
       },
       "anchorSource": "exact"
@@ -117699,6 +117796,7 @@
           "tests/corpus/webcrypto-get-public-key.ts",
           "tests/corpus/webcrypto-kmac.ts",
           "tests/corpus/webcrypto-kt.ts",
+          "tests/corpus/webcrypto-ml-kem.ts",
           "tests/corpus/webcrypto-rsa-oaep.ts",
           "tests/corpus/webcrypto-sha3-digest.ts",
           "tests/corpus/webcrypto-turboshake.ts",
@@ -122224,6 +122322,7 @@
           "tests/corpus/webcrypto-wrap-asymmetric.ts",
           "tests/corpus/webcrypto-wrap-rsa-oaep.ts",
           "tests/corpus/webcrypto-wrap-rsa-oaep-edges.mjs",
+          "tests/corpus/webcrypto-ml-kem.ts",
           "tests/corpus/7132-jose-pbes2/main.mjs",
           "tests/corpus/7128-webcrypto-derive.ts",
           "tests/corpus/7129-webcrypto-derive-errors.mjs",
@@ -122276,6 +122375,7 @@
           "tests/corpus/webcrypto-wrap-asymmetric.ts",
           "tests/corpus/webcrypto-wrap-rsa-oaep.ts",
           "tests/corpus/webcrypto-wrap-rsa-oaep-edges.mjs",
+          "tests/corpus/webcrypto-ml-kem.ts",
           "tests/corpus/7132-jose-pbes2/main.mjs",
           "tests/corpus/7128-webcrypto-derive.ts",
           "tests/corpus/7129-webcrypto-derive-errors.mjs",
@@ -122328,6 +122428,7 @@
           "tests/corpus/webcrypto-wrap-asymmetric.ts",
           "tests/corpus/webcrypto-wrap-rsa-oaep.ts",
           "tests/corpus/webcrypto-wrap-rsa-oaep-edges.mjs",
+          "tests/corpus/webcrypto-ml-kem.ts",
           "tests/corpus/7132-jose-pbes2/main.mjs",
           "tests/corpus/7128-webcrypto-derive.ts",
           "tests/corpus/7129-webcrypto-derive-errors.mjs",
@@ -122380,6 +122481,7 @@
           "tests/corpus/webcrypto-wrap-asymmetric.ts",
           "tests/corpus/webcrypto-wrap-rsa-oaep.ts",
           "tests/corpus/webcrypto-wrap-rsa-oaep-edges.mjs",
+          "tests/corpus/webcrypto-ml-kem.ts",
           "tests/corpus/7132-jose-pbes2/main.mjs",
           "tests/corpus/7128-webcrypto-derive.ts",
           "tests/corpus/7129-webcrypto-derive-errors.mjs",
@@ -122478,6 +122580,7 @@
           "tests/corpus/webcrypto-wrap-asymmetric.ts",
           "tests/corpus/webcrypto-wrap-rsa-oaep.ts",
           "tests/corpus/webcrypto-wrap-rsa-oaep-edges.mjs",
+          "tests/corpus/webcrypto-ml-kem.ts",
           "tests/corpus/7132-jose-pbes2/main.mjs",
           "tests/corpus/7128-webcrypto-derive.ts",
           "tests/corpus/7129-webcrypto-derive-errors.mjs",
@@ -122530,6 +122633,7 @@
           "tests/corpus/webcrypto-wrap-asymmetric.ts",
           "tests/corpus/webcrypto-wrap-rsa-oaep.ts",
           "tests/corpus/webcrypto-wrap-rsa-oaep-edges.mjs",
+          "tests/corpus/webcrypto-ml-kem.ts",
           "tests/corpus/7132-jose-pbes2/main.mjs",
           "tests/corpus/7128-webcrypto-derive.ts",
           "tests/corpus/7129-webcrypto-derive-errors.mjs",
@@ -122611,6 +122715,7 @@
           "tests/corpus/webcrypto-wrap-asymmetric.ts",
           "tests/corpus/webcrypto-wrap-rsa-oaep.ts",
           "tests/corpus/webcrypto-wrap-rsa-oaep-edges.mjs",
+          "tests/corpus/webcrypto-ml-kem.ts",
           "tests/corpus/7132-jose-pbes2/main.mjs",
           "tests/corpus/7128-webcrypto-derive.ts",
           "tests/corpus/7129-webcrypto-derive-errors.mjs",
@@ -122663,6 +122768,7 @@
           "tests/corpus/webcrypto-wrap-asymmetric.ts",
           "tests/corpus/webcrypto-wrap-rsa-oaep.ts",
           "tests/corpus/webcrypto-wrap-rsa-oaep-edges.mjs",
+          "tests/corpus/webcrypto-ml-kem.ts",
           "tests/corpus/7132-jose-pbes2/main.mjs",
           "tests/corpus/7128-webcrypto-derive.ts",
           "tests/corpus/7129-webcrypto-derive-errors.mjs",
@@ -122715,6 +122821,7 @@
           "tests/corpus/webcrypto-wrap-asymmetric.ts",
           "tests/corpus/webcrypto-wrap-rsa-oaep.ts",
           "tests/corpus/webcrypto-wrap-rsa-oaep-edges.mjs",
+          "tests/corpus/webcrypto-ml-kem.ts",
           "tests/corpus/7132-jose-pbes2/main.mjs",
           "tests/corpus/7128-webcrypto-derive.ts",
           "tests/corpus/7129-webcrypto-derive-errors.mjs",
@@ -122767,6 +122874,7 @@
           "tests/corpus/webcrypto-wrap-asymmetric.ts",
           "tests/corpus/webcrypto-wrap-rsa-oaep.ts",
           "tests/corpus/webcrypto-wrap-rsa-oaep-edges.mjs",
+          "tests/corpus/webcrypto-ml-kem.ts",
           "tests/corpus/7132-jose-pbes2/main.mjs",
           "tests/corpus/7128-webcrypto-derive.ts",
           "tests/corpus/7129-webcrypto-derive-errors.mjs",
@@ -122819,6 +122927,7 @@
           "tests/corpus/webcrypto-wrap-asymmetric.ts",
           "tests/corpus/webcrypto-wrap-rsa-oaep.ts",
           "tests/corpus/webcrypto-wrap-rsa-oaep-edges.mjs",
+          "tests/corpus/webcrypto-ml-kem.ts",
           "tests/corpus/7132-jose-pbes2/main.mjs",
           "tests/corpus/7128-webcrypto-derive.ts",
           "tests/corpus/7129-webcrypto-derive-errors.mjs",
@@ -122871,6 +122980,7 @@
           "tests/corpus/webcrypto-wrap-asymmetric.ts",
           "tests/corpus/webcrypto-wrap-rsa-oaep.ts",
           "tests/corpus/webcrypto-wrap-rsa-oaep-edges.mjs",
+          "tests/corpus/webcrypto-ml-kem.ts",
           "tests/corpus/7132-jose-pbes2/main.mjs",
           "tests/corpus/7128-webcrypto-derive.ts",
           "tests/corpus/7129-webcrypto-derive-errors.mjs",
@@ -122929,6 +123039,7 @@
           "tests/corpus/stream-web-readable.ts",
           "tests/corpus/stream-web-require.cjs",
           "tests/corpus/web-stream-readable-untyped.mjs",
+          "tests/corpus/web-stream-tee.mjs",
           "tests/corpus/web-stream-transform-pipes-untyped.mjs",
           "tests/corpus/web-stream-writable-untyped.mjs",
           "tests/corpus/web-streams-values.ts",
@@ -125482,8 +125593,11 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "supported",
+        "evidence": "compiler-feature:webstreams.ReadableStreamTee",
+        "tests": [
+          "tests/corpus/web-stream-tee.mjs"
+        ]
       },
       "anchorSource": "exact"
     },

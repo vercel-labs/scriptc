@@ -211,9 +211,22 @@ void scr_library_set_sink(ScrLibSinkFn fn, void *ctx); /* latest wins */
 /* The stored shape: generated call sites cast a slot's pointer to the
  * channel's typed shape before calling. */
 typedef void (*ScrLibCbFn)(void);
+/* Every channel's fn and ctx and the callback-depth counter, as one
+ * exported object. Generated host-call sites that own the slot constant
+ * address a channel through this object directly — one TLS base access,
+ * then constant-offset loads — instead of calling the accessors below.
+ * `cb_depth` is last so its offset is fixed for a given channel count; the
+ * static assertions beside its definition pin the layout that the
+ * generated module's %ScrLibHostState type mirrors. */
+typedef struct ScrLibHostState {
+  ScrLibCbFn fns[SCR_LIB_MAX_CALLBACKS];
+  void *ctxs[SCR_LIB_MAX_CALLBACKS];
+  size_t cb_depth;
+} ScrLibHostState;
+extern SCR_TL ScrLibHostState scr_library_host_state;
 void scr_library_cb_set(size_t slot, ScrLibCbFn fn, void *ctx);
-/* The call-site fetch: the registered pointer, or the funnel trap with
- * trap_msg (never returns NULL). */
+/* The call-site fetch, for the generic paths: the registered pointer, or
+ * the funnel trap with trap_msg (never returns NULL). */
 ScrLibCbFn scr_library_cb_require(size_t slot, const char *trap_msg);
 void *scr_library_cb_ctx(size_t slot);
 /* Generated typed call sites bracket only the actual host-function call.

@@ -1374,6 +1374,10 @@ void scr_dyn_fn_seed_prototype(ScrDyn *function, ScrDyn *prototype);
 /* The interned builtin constructor `name` (Object, Date, RegExp, Map, Set,
  * Promise, WeakMap, WeakSet) as a dynamic function value: +1. */
 ScrDyn *scr_dyn_global_constructor(const ScrStr *name);
+/* The same lookup by C string; NULL when Node has no interned constructor
+ * of that name (no trap). */
+ScrDyn *scr_dyn_global_constructor_opt(const char *name);
+extern ScrDyn *(*scr_dyn_global_constructor_opt_hook)(const char *name);
 /* That table as another unit reaches it: scr_dyn_invoke.c installs the hook
  * at startup when a program links it, and scr_json.c answers a value's
  * `constructor` (a DataView's, a DOMException's) with the global's own value

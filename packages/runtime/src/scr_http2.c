@@ -2855,15 +2855,18 @@ void scr_http2_stream_additional_headers(ScrH2Stream *st, ScrArr *pairs /*borrow
 
 /* Http2Stream.sendTrailers: the trailer block ends the stream. */
 void scr_http2_stream_send_trailers(ScrH2Stream *st, ScrArr *pairs /*borrowed, nullable*/) {
-  if (st->destroyed || st->close_queued || scr_h2_stream_local_closed(st)) {
-    static const char text[] = "The stream has been destroyed";
-    scr_throw_error_msg_code(SCR_ERR_ERROR, text, sizeof text - 1, "ERR_HTTP2_INVALID_STREAM");
-    return;
-  }
+  /* Node checks "already sent" before the stream's state: the first block
+   * closes the stream, and a second sendTrailers names that, not the
+   * closed stream. */
   if (st->sent_trailers) {
     static const char text[] = "Trailing headers have already been sent";
     scr_throw_error_msg_code(SCR_ERR_ERROR, text, sizeof text - 1,
                              "ERR_HTTP2_TRAILERS_ALREADY_SENT");
+    return;
+  }
+  if (st->destroyed || st->close_queued || scr_h2_stream_local_closed(st)) {
+    static const char text[] = "The stream has been destroyed";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, text, sizeof text - 1, "ERR_HTTP2_INVALID_STREAM");
     return;
   }
   if (!st->trailers_ready) {

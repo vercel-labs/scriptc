@@ -64099,6 +64099,7 @@
           "tests/corpus/http2-perform-handshake-upgrade.ts",
           "tests/corpus/http2-perform-handshake.ts",
           "tests/corpus/http2-respond-with-file/main.ts",
+          "tests/corpus/http2-send-trailers-shapes.ts",
           "tests/corpus/http2-server-close-late-stream.ts",
           "tests/corpus/http2-server-close.ts",
           "tests/corpus/http2-session-controls.ts",
@@ -65645,9 +65646,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.http2stream.sendTrailers",
         "tests": [
+          "tests/corpus/http2-send-trailers-shapes.ts",
           "tests/corpus/http2-trailers.ts"
         ]
       },
@@ -66166,9 +66168,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.'trailers'",
         "tests": [
+          "tests/corpus/http2-send-trailers-shapes.ts",
           "tests/corpus/http2-trailers.ts"
         ]
       },
@@ -66192,9 +66195,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.'wantTrailers'",
         "tests": [
+          "tests/corpus/http2-send-trailers-shapes.ts",
           "tests/corpus/http2-trailers.ts"
         ]
       },

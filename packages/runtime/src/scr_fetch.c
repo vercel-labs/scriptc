@@ -663,16 +663,63 @@ static void sf_any_source_abort(SfSignalWatch *w, SfSignal *source) {
   scr_dyn_release(reason);
 }
 
-ScrDyn *scr_fetch_abort_any(ScrDyn *signals) {
-  if (!signals || signals->kind != SCR_DYN_ARR) {
-    static const char message[] =
-        "signals cannot be converted to sequence.";
-    scr_throw_error_msg_code(SCR_ERR_TYPE, message, sizeof message - 1,
-                             "ERR_INVALID_ARG_TYPE");
+/* AbortSignal.any's `signals` sequence: an array (or a materialized
+ * typed-ref array) is taken as it is; typed arrays and the native
+ * collections (Set, Map) drain in iteration order; a user iterable keeps
+ * the SC2020 refusal new Blob's sources do; primitives (strings included),
+ * null, undefined and non-iterable objects throw Node's sequence
+ * TypeError. +1 array, or NULL with the exception pending. */
+static ScrDyn *sf_any_signal_list(const ScrDyn *signals) {
+  if (signals != NULL && signals->kind == SCR_DYN_ARR)
+    return scr_dyn_retain((ScrDyn *)signals);
+  if (signals != NULL && signals->kind == SCR_DYN_TYPED_REF && scr_dyn_ref_is_array(signals)) {
+    ScrDyn *view = scr_dyn_typed_ref_materialize(signals);
+    if (view && view->kind == SCR_DYN_ARR) return view;
+    scr_dyn_release(view);
+    if (scr_exc_pending()) return NULL;
+  }
+  if (signals != NULL &&
+      (signals->kind == SCR_DYN_BYTES ||
+       (signals->kind == SCR_DYN_HANDLE && scr_dyn_handle_ops_of(signals)->iter_pack)))
+    return scr_dyn_iter_pack(signals, NULL);
+  bool primitive = signals == NULL || signals->kind == SCR_DYN_UNDEF ||
+                   signals->kind == SCR_DYN_NULL || signals->kind == SCR_DYN_BOOL ||
+                   signals->kind == SCR_DYN_NUM || signals->kind == SCR_DYN_STR ||
+                   signals->kind == SCR_DYN_BIGINT || signals->kind == SCR_DYN_SYMBOL;
+  if (!primitive) {
+    ScrDyn *iterator = scr_dyn_iterator_optional(signals);
+    if (iterator) {
+      scr_dyn_release(iterator);
+      static const char message[] =
+          "AbortSignal.any over this iterable has no lowering; pass an array";
+      scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+      return NULL;
+    }
+    if (scr_exc_pending()) return NULL;
+  }
+  static const char message[] = "signals cannot be converted to sequence.";
+  scr_throw_error_msg_code(SCR_ERR_TYPE, message, sizeof message - 1, "ERR_INVALID_ARG_TYPE");
+  return NULL;
+}
+
+/* The sequence's element conversion (WebIDL): anything but an AbortSignal
+ * throws Node's "signals[<i>] is not of type AbortSignal." */
+static SfSignal *sf_any_source_of(const ScrDyn *value, size_t index) {
+  if (value == NULL || value->kind != SCR_DYN_HANDLE ||
+      value->v.handle.tag != SCR_DYNH_ABORT_SIGNAL) {
+    char message[64];
+    int n = snprintf(message, sizeof message, "signals[%zu] is not of type AbortSignal.", index);
+    scr_throw_error_msg_code(SCR_ERR_TYPE, message, (size_t)n, "ERR_INVALID_ARG_TYPE");
     return NULL;
   }
+  return (SfSignal *)value->v.handle.ptr;
+}
+
+ScrDyn *scr_fetch_abort_any(ScrDyn *signals) {
+  ScrDyn *list = sf_any_signal_list(signals);
+  if (!list) return NULL;
   SfSignal *out = sf_signal_new();
-  out->source_count = signals->v.arr.len;
+  out->source_count = list->v.arr.len;
   if (out->source_count) {
     out->sources = calloc(out->source_count, sizeof *out->sources);
     out->source_watches =
@@ -680,11 +727,12 @@ ScrDyn *scr_fetch_abort_any(ScrDyn *signals) {
     if (!out->sources || !out->source_watches) sf_oom();
   }
   for (size_t i = 0; i < out->source_count; i++) {
-    SfSignal *source =
-        sf_signal_of(signals->v.arr.items[i],
-                     "AbortSignal.any requires an array of AbortSignals");
+    const ScrDyn *item =
+        scr_dyn_arr_has_index(list, i) ? list->v.arr.items[i] : scr_dyn_undefined();
+    SfSignal *source = sf_any_source_of(item, i);
     if (!source) {
       sf_signal_release(out);
+      scr_dyn_release(list);
       return NULL;
     }
     out->sources[i] = sf_signal_retain(source);
@@ -697,6 +745,7 @@ ScrDyn *scr_fetch_abort_any(ScrDyn *signals) {
           sf_signal_watch(source, out, &sf_any_source_abort);
     }
   }
+  scr_dyn_release(list);
   ScrDyn *boxed = scr_dyn_new_handle(out, SCR_DYNH_ABORT_SIGNAL);
   sf_signal_release(out);
   return boxed;

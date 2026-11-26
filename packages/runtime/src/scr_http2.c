@@ -5602,6 +5602,17 @@ static ScrDyn *scr_h2_dynh_stream_invoke(void *h, ScrDyn *self, const char *meth
   }
   if (strcmp(method, "resume") == 0) { scr_http2_stream_resume(st); return scr_dyn_retain(self); }
   if (strcmp(method, "pause") == 0) { scr_http2_stream_pause(st); return scr_dyn_retain(self); }
+  if (strcmp(method, "setTimeout") == 0) {
+    /* Node's Http2Stream.setTimeout: a callback argument registers a once
+     * 'timeout' listener, the same as the typed lowering's two shapes */
+    double msecs = argc > 0 && args[0]->kind == SCR_DYN_NUM ? args[0]->v.num : 0;
+    if (argc > 1 && args[1]->kind == SCR_DYN_FUNC) {
+      scr_http2_stream_set_timeout_cb(st, msecs, scr_dyn_listener_closure0(args[1]));
+    } else {
+      scr_http2_stream_set_timeout(st, msecs);
+    }
+    return scr_dyn_retain(self);
+  }
   if (strcmp(method, "on") == 0 || strcmp(method, "once") == 0 || strcmp(method, "addListener") == 0) {
     bool once = method[0] == 'o' && method[1] == 'n' && method[2] == 'c';
     if (argc < 2 || args[0]->kind != SCR_DYN_STR) { scr_dyn_check_listener(argc > 1 ? args[1] : scr_dyn_undefined(), "listener"); return NULL; }
@@ -5631,9 +5642,12 @@ static ScrDyn *scr_h2_dynh_stream_invoke(void *h, ScrDyn *self, const char *meth
       scr_http2_stream_on_want_trailers(st, scr_dyn_listener_closure0(args[1]), once);
     } else if (strcmp(ev, "continue") == 0) {
       scr_http2_stream_on_continue(st, scr_dyn_listener_closure0(args[1]), once);
-    } else if (strcmp(ev, "frameError") == 0 || strcmp(ev, "timeout") == 0) {
-      /* never raised here (no frame fails to send, and setTimeout is
-       * refused): accept the registration */
+    } else if (strcmp(ev, "timeout") == 0) {
+      scr_http2_stream_on_timeout(st, scr_dyn_listener_closure0(args[1]), once);
+    } else if (strcmp(ev, "ready") == 0) {
+      scr_http2_stream_on_ready(st, scr_dyn_listener_closure0(args[1]), once);
+    } else if (strcmp(ev, "frameError") == 0) {
+      /* never raised here: no frame this runtime sends fails to send */
     } else {
       char msg[128];
       int n = snprintf(msg, sizeof msg, "listening for '%s' on an Http2Stream is not supported yet", ev);
@@ -5643,7 +5657,7 @@ static ScrDyn *scr_h2_dynh_stream_invoke(void *h, ScrDyn *self, const char *meth
     return scr_dyn_retain(self);
   }
   static const char *const unmodeled[] = {
-    "pushStream", "respondWithFD", "respondWithFile", "priority", "setTimeout", NULL,
+    "pushStream", "respondWithFD", "respondWithFile", "priority", NULL,
   };
   for (size_t i = 0; unmodeled[i] != NULL; i++) {
     if (strcmp(method, unmodeled[i]) == 0) {

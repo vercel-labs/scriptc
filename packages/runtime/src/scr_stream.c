@@ -4386,6 +4386,15 @@ static void scr_pipe_error_l(ScrClosure *cb, void *errp) {
   scr_stream_pipectx_release_v(ctx);
 }
 
+/* The feed wrapper mirrors the previous stage's error, which the pipeline's
+ * own listener on that stage reports: this copy is consumed here, where the
+ * wrapper's own listener list would otherwise turn it into an unhandled
+ * 'error' event that ends the process. */
+static void scr_pipe_feed_error_l(ScrClosure *cb, void *errp) {
+  (void)cb;
+  (void)errp;
+}
+
 /* pipe(): the destination closed before the source ended */
 static void scr_pipe_dst_close_l(ScrClosure *cb) {
   size_t i;
@@ -5141,6 +5150,12 @@ static ScrStream *scr_stream_pipeline_ex(size_t n, ScrStream **streams, ScrClosu
         if (ret->st->r.object_entries) scr_stream_set_object_mode(feed, true, false);
         if (ret->st->web_chunks) scr_stream_set_web_chunks(feed, true);
         scr_stream_set_web_chunks(s, true);
+        /* The wrapper's copy of an upstream failure is the pipeline's error
+         * too: it is consumed here so the wrapper never answers it as an
+         * unhandled 'error' event of its own. */
+        ScrClosure *feed_error = scr_pipe_closure((void *)&scr_pipe_feed_error_l, ctx, 0);
+        scr_pipe_on(feed, "error", scr_closure_retain(feed_error), scr_ee_inv_fixed1, false);
+        scr_closure_release(feed_error);
       }
       /* pipe(feed, s, finish, finishOnlyHandleError, { end }) */
       ctx->finish_count += 2;

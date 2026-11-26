@@ -1918,6 +1918,7 @@ const MAY_THROW_LIB_FNS_PART_6: readonly IrLibFn[] = [
   "crypto.x509Raw",
   "crypto.x509RawDer",
   "crypto.x509RawStr",
+  "crypto.x509RawDyn",
   // Node's argument errors (name, options, pkey) and the key parse.
   "crypto.x509CheckHost",
   "crypto.x509CheckEmail",

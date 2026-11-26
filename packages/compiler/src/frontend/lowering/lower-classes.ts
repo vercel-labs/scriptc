@@ -13386,11 +13386,14 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   // CONSTRUCTION, when Node parses too, so unparseable input throws
   // Node's exact PEM error here (ERR_OSSL_PEM_NO_START_LINE) and the
   // handle never exists. Both import forms (`crypto.X509Certificate`
-  // through the namespace, named `X509Certificate`); Buffer input only
-  // — the readFileSync idiom. mapType interns the matching record, so
-  // locals and the composed member reads all flow. The data argument
-  // feeds THREE field computations, so construction goes through an
-  // interned helper whose parameter evaluates it exactly once.
+  // through the namespace, named `X509Certificate`); a PEM string or
+  // Buffer takes the static helper, and any other argument type goes
+  // through the runtime's dispatch (crypto.x509RawDyn) so a dynamic
+  // value parses or throws Node's argument error. mapType interns the
+  // matching record, so locals and the composed member reads all flow.
+  // The data argument feeds THREE field computations, so construction
+  // goes through an interned helper whose parameter evaluates it exactly
+  // once.
   // It runs before the standard-library constructor fence below, which
   // also sees `const X = require("crypto").X509Certificate` as the
   // builtin class.
@@ -13407,25 +13410,36 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
         })());
     if (isX509) {
       const args: readonly ts.Expression[] = expr.arguments?.nodes ?? [];
-      if (args.length !== 1) {
+      if (args.length > 1) {
         lowerer.noLowering(
           "X509Certificate with this argument shape",
           expr,
-          "the supported form is new X509Certificate(readFileSync(path))",
-        );
-      }
-      const data = lowerer.lowerExpr(args[0]!);
-      const isBytes = data.type.kind === "bytes" && data.type.elem === "u8";
-      if (!isBytes && data.type.kind !== "string") {
-        lowerer.noLowering(
-          `X509Certificate over '${lowerer.fmt(data.type)}' data`,
-          args[0]!,
-          "pass the certificate Buffer or PEM string (an fs.readFileSync result)",
+          "the supported form is new X509Certificate(data)",
         );
       }
       const t = lowerer.mapTypeOf(lowerer.typeOf(expr));
       if (t?.kind !== "record") lowerer.badType(expr, lowerer.typeOf(expr));
-      return x509RecordCall(lowerer, data, t, loc);
+      const arg = args[0];
+      // A statically known PEM string or Buffer takes the field-by-field
+      // helper. Any other argument — `unknown`, `any`, a primitive, a
+      // union — becomes a dynamic value the runtime dispatches on: a
+      // string or Buffer parses as those do, and every other value throws
+      // Node's ERR_INVALID_ARG_TYPE for "buffer" (Node validates the
+      // argument before it parses, so the error names the received value).
+      // No argument at all reads as Node's undefined.
+      const staticType = arg === undefined ? null : lowerer.mapTypeOf(lowerer.typeOf(arg));
+      const isStatic =
+        staticType?.kind === "string" || (staticType?.kind === "bytes" && staticType.elem === "u8");
+      if (arg !== undefined && isStatic)
+        return x509RecordCall(lowerer, lowerer.lowerExpr(arg), t, loc);
+      const decoded: IrExpr = {
+        kind: "libCall",
+        fn: "crypto.x509RawDyn",
+        args: [arg === undefined ? dynUndefinedExpr(loc) : lowerer.lowerExprExpecting(arg, DYN)],
+        type: BYTES_U8,
+        loc,
+      };
+      return x509RecordCall(lowerer, decoded, t, loc, true);
     }
   }
   // `new crypto.Certificate()` — the SPKAC class. Its instance holds no

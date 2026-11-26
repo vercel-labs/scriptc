@@ -5686,7 +5686,7 @@ export class Lowerer {
    * `start:end:file`: refused when the lowered program gives a function its
    * own `call` or `apply` (refuseForwardsToOwnCall). */
   readonly receiverForwardSites = new Set<string>();
-  readonly sharedInitFlags = new Map<ts.Statement, string[]>();
+  readonly sharedInitFlags = new Map<ts.VariableDeclaration, string[]>();
   /** Per-directory answers of experimental-import.ts's declaration-file test. */
   readonly experimentalFiles = new Map<string, boolean>();
   /** Interned LifetimeRegion.run helpers, by callback type key. */
@@ -6895,7 +6895,7 @@ export class Lowerer {
     "closedIslandDeciding",
     // The modules shared with the islands (NI-6): a pure function of the
     // program's modules, computed once, and the TDZ flags its plan gives a
-    // statement.
+    // declarator.
     "sharedModules",
     "sharedInitFlags",
     // Settled from every lowered function once lowering ends, before the

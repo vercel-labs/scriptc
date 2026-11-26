@@ -60,13 +60,13 @@
     "sourceChapters": 63,
     "sourceRows": 4996,
     "matrixChapters": 56,
-    "matrixRows": 3668,
+    "matrixRows": 3667,
     "excluded": {
       "documentation": 640,
       "metadata": 210,
       "configuration": 251,
       "non-api": 0,
-      "not-applicable": 220,
+      "not-applicable": 221,
       "chapters": 7
     }
   },
@@ -332,8 +332,8 @@
     {
       "slug": "tls",
       "title": "TLS/SSL",
-      "entries": 57,
-      "apiEntries": 57
+      "entries": 56,
+      "apiEntries": 56
     },
     {
       "slug": "tracing",
@@ -64704,29 +64704,6 @@
         "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
-      }
-    },
-    {
-      "id": "tls:e8919206b881",
-      "chapter": "tls",
-      "kind": "string",
-      "name": "Type",
-      "signature": "`DEFAULT_CIPHERS` Type: {string} The default value of the `ciphers` option of [`tls.createSecureContext()`][]. It can be assigned any of the supported OpenSSL ciphers. Defaults to the content of `crypto.constants.defaultCoreCipherList`, unless changed using CLI options using `--tls-default-ciphers`.",
-      "label": "DEFAULT_CIPHERS",
-      "apiSymbol": "DEFAULT_CIPHERS",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "",
-      "nodeStability": {
-        "index": "2",
-        "level": 2,
-        "text": "Stable",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
       }
     },
     {

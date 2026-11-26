@@ -503,9 +503,17 @@ static bool scr_ee_bucket_all_flex(const ScrEeBucket *b) {
  * (+1), or NULL for a typed listener. Identity lives in the closure, so the
  * rebuilt box compares equal to the value that was registered. */
 static ScrDyn *scr_ee_entry_dyn(const ScrEeEntry *e) {
-  if (!e->flex_invoke) return NULL;
-  return scr_dyn_new_func(scr_closure_retain(e->flex_cb), e->flex_invoke, e->flex_arity,
-                          e->flex_sig, e->flex_name);
+  if (e->flex_invoke)
+    return scr_dyn_new_func(scr_closure_retain(e->flex_cb), e->flex_invoke, e->flex_arity,
+                            e->flex_sig, e->flex_name);
+  /* A typed registration answers the same function through its checked-
+   * dynamic call adapter (the listener's parameters convert from the
+   * arguments as given), so a bucket of mixed registrations can be read
+   * through the untyped lane Node's JavaScript sees. */
+  if (e->fallback_invoke)
+    return scr_dyn_new_func(scr_closure_retain(scr_ee_entry_fn(e)), e->fallback_invoke, 0, "()",
+                            "");
+  return NULL;
 }
 
 /* A meta event with a listener registered as a checked-dynamic function:

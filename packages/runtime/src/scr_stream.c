@@ -1277,9 +1277,17 @@ static void *scr_stream_read_n_kind(ScrStream *s, double size, ScrEntryKind *kin
   if (!absent) {
     n = (size_t)size;
     if (n > st->r.hwm) {
-      /* Node grows hwm to the next power of two above n */
-      size_t h = st->r.hwm;
-      while (h < n) h *= 2;
+      /* Node grows hwm to the next power of two above n (readable.js's
+       * computeNewHighWaterMark). The growth starts at 1: a highWaterMark
+       * of 0 still grows, and starting from 0 would never reach n. */
+      size_t h = st->r.hwm > 1 ? st->r.hwm : 1;
+      while (h < n) {
+        if (h > SIZE_MAX / 2) {
+          h = n;
+          break;
+        }
+        h *= 2;
+      }
       st->r.hwm = h;
     }
   }

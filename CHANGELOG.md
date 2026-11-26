@@ -4,6 +4,10 @@ All notable changes to scriptc will be documented in this file.
 
 ## Unreleased
 
+- Late promise rejection handlers now reach listeners in Node order, including after a recovered listener exception or a switch to Node islands.
+
+- The bundled Node declarations type the promise passed to process rejection listeners, name the two uncaught-exception origins, and export `fs.StatOptions` for shared stat options.
+
 <!-- release:start -->
 
 ## 0.4.17

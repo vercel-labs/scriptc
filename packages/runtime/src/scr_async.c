@@ -173,6 +173,8 @@ static void scr_fiber_stack_free(void *stack) {
 
 /* ── promises ─────────────────────────────────────────────────────────── */
 
+enum { SCR_RJ_NONE, SCR_RJ_NATIVE, SCR_RJ_NODE };
+
 enum { SCR_PROM_PENDING = 0, SCR_PROM_FULFILLED = 1, SCR_PROM_REJECTED = 2 };
 
 #define SCR_CB_SYNC SIZE_MAX
@@ -197,10 +199,9 @@ struct ScrPromise {
   bool top_level_handled; /* uncaughtException handled entry evaluation */
   /* Unhandled-rejection tracking: set when rejected, cleared on await. */
   bool rejection_observed;
-  /* Set when the checkpoint report delivered THIS promise to
-   * 'unhandledRejection' listeners — a handler attached after that is
-   * Node's 'rejectionHandled' moment (scr_prom_observe below). */
-  bool reported_unhandled;
+  /* Keep the reporting engine across an island handover: only V8 can
+   * raise the late-handling event for a rejection it tracked itself. */
+  uint8_t reported_unhandled;
   bool b; /* the boolean payload */
 #ifdef SCR_NODE_ISLANDS
   /* Node islands: SCR_LAZY_MIRROR for the mirror of an island promise that
@@ -287,9 +288,9 @@ static inline bool scr_prom_observed(const ScrPromise *p) {
 /* After `p` was delivered as an unhandled rejection: it is not reported
  * again, and neither is another promise of its identity cell (a second view
  * of the same promise). */
-static inline void scr_prom_reported(ScrPromise *p) {
+static inline void scr_prom_reported(ScrPromise *p, bool by_node) {
   p->rejection_observed = true;
-  p->reported_unhandled = true;
+  p->reported_unhandled = by_node ? SCR_RJ_NODE : SCR_RJ_NATIVE;
   if (p->identity != NULL) p->identity->observed = true;
 }
 
@@ -382,7 +383,7 @@ static void scr_promise_free_side(ScrPromise *p) {
 bool scr_promise_tracked_by_node(ScrPromise *p) {
   bool handled = scr_prom_observed(p);
   p->rejection_observed = true;
-  p->reported_unhandled = !handled;
+  if (!handled) p->reported_unhandled = SCR_RJ_NODE;
   return handled;
 }
 #endif
@@ -561,6 +562,12 @@ static SCR_TL size_t scr_rjh_head = 0, scr_rjh_len = 0, scr_rjh_cap = 0;
 static bool scr_rjh_pending(void) { return scr_rjh_head < scr_rjh_len; }
 
 static void scr_rjh_enqueue(ScrPromise *p) {
+  /* Reentrant listeners may refill the FIFO indefinitely in one checkpoint. */
+  if (scr_rjh_len == scr_rjh_cap && scr_rjh_head != 0 && scr_rjh_head >= scr_rjh_cap / 2) {
+    scr_rjh_len -= scr_rjh_head;
+    memmove(scr_rjh_queue, scr_rjh_queue + scr_rjh_head, scr_rjh_len * sizeof *scr_rjh_queue);
+    scr_rjh_head = 0;
+  }
   if (scr_rjh_len == scr_rjh_cap) {
     size_t cap = scr_rjh_cap == 0 ? 8 : scr_rjh_cap * 2;
     ScrPromise **next = realloc(scr_rjh_queue, cap * sizeof *next);
@@ -577,30 +584,24 @@ static void scr_rjh_clear(void) {
   scr_rjh_head = scr_rjh_len = 0;
 }
 
-/* Delivers what was queued since the previous checkpoint. A listener
- * throw leaves a pending exception: the caller takes the loop's uncaught
- * path. The batch leaves the queue before any listener runs: a listener
- * that attaches a handler to another reported promise enqueues into a
- * fresh queue, and that entry must reach the next checkpoint instead of
- * overwriting a promise whose delivery is still due. Each entry's
- * reference moves with it into this batch, so a promise is released once. */
+/* Pop before calling the listener. It can enqueue more promises or throw;
+ * later entries stay in FIFO order for this checkpoint or for recovery. */
 static bool scr_drain_rejection_handled(void) {
-  if (!scr_rjh_pending()) return true;
-  ScrPromise **batch = scr_rjh_queue;
-  size_t head = scr_rjh_head, len = scr_rjh_len;
-  scr_rjh_queue = NULL;
-  scr_rjh_head = scr_rjh_len = scr_rjh_cap = 0;
-  bool ok = true;
-  for (size_t i = head; i < len; i++) {
-    ScrPromise *p = batch[i];
-    /* A throwing listener stops delivery, but every queued reference is
-     * still dropped. */
-    if (ok && scr_rjh_notify_fn != NULL) scr_rjh_notify_fn(p);
+  while (scr_rjh_pending()) {
+    ScrPromise *p = scr_rjh_queue[scr_rjh_head++];
+#ifdef SCR_NODE_ISLANDS
+    if (scr_rjh_notify_fn == scr_ni_promise_handled) {
+      scr_ni_emit_rejection_handled(p);
+    } else
+#endif
+    if (scr_rjh_notify_fn != NULL) {
+      scr_rjh_notify_fn(p);
+    }
     scr_promise_release(p);
-    if (ok && scr_exc_pending()) ok = false;
+    if (scr_exc_pending()) return false;
   }
-  free(batch);
-  return ok;
+  scr_rjh_head = scr_rjh_len = 0;
+  return true;
 }
 
 /* The 'beforeExit' hook (scr_events.c sets it in scr_events_install — the
@@ -644,8 +645,9 @@ static void scr_prom_observe(ScrPromise *p) {
   p->rejection_observed = true;
   if (p->identity != NULL) p->identity->observed = true;
   if (p->reported_unhandled) {
-    p->reported_unhandled = false;
-    if (scr_rjh_reports_to_node()) scr_rjh_notify_fn(p);
+    bool by_node = p->reported_unhandled == SCR_RJ_NODE;
+    p->reported_unhandled = SCR_RJ_NONE;
+    if (by_node && scr_rjh_reports_to_node()) scr_rjh_notify_fn(p);
     else scr_rjh_enqueue(p);
   }
 }
@@ -6711,7 +6713,7 @@ void scr_loop_hosted_microtasks_done(void) {
       ScrPromise *p = reported[i];
       if (p->state == SCR_PROM_REJECTED && !scr_prom_observed(p)) {
         scr_urj_node_fn(p);
-        scr_prom_reported(p);
+        scr_prom_reported(p, true);
       }
       scr_promise_release(p);
     }
@@ -7951,12 +7953,12 @@ bool scr_report_unhandled_rejections(void) {
          * reported_unhandled arms the 'rejectionHandled' window: a
          * handler the listener itself attaches fires the sibling event
          * (scr_prom_observe). */
-        scr_prom_reported(p);
+        scr_prom_reported(p, false);
         if (!scr_urj_deliver_fn(p) && !scr_exc_handle_uncaught(false)) crashed = true;
       } else if (scr_uncaught_exception_hook != NULL) {
         scr_promise_rethrow(p);
         if (scr_exc_handle_uncaught(true)) {
-          scr_prom_reported(p);
+          scr_prom_reported(p, false);
         } else {
           crashed = true;
         }

@@ -119,6 +119,15 @@ void scr_ni_promise_handled(ScrPromise *p) {
   scr_dyn_release(boxed);
 }
 
+/* The runtime reported the rejection before process listeners moved to Node.
+ * Its V8 promise is already handled; deliver the native queue entry to the
+ * listeners in the registry that now owns them. */
+void scr_ni_emit_rejection_handled(ScrPromise *p) {
+  ScrDyn *boxed = scr_dyn_new_promise(p);
+  scr_dyn_release(scr_ni_helper("processEmitRejectionHandled", &boxed, 1));
+  scr_dyn_release(boxed);
+}
+
 /* A warning native code emitted, on Node's `process`. `code` and `detail`
  * (NULL, or any value: only strings count) are the warning's own, which
  * its V8 error does not carry. `no_deprecation`, `trace_warnings` and

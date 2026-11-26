@@ -1,5 +1,5 @@
 // A 'rejectionHandled' listener that handles two more rejections the
-// checkpoint already reported must queue their events for a later turn
+// checkpoint already reported queues their events in the same checkpoint
 // without disturbing the events still due in this one: one event per
 // promise, in report order.
 const pending: Promise<unknown>[] = [];

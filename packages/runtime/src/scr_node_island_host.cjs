@@ -697,6 +697,10 @@ const islandHelpers = {
   processHandled(promise) {
     Promise.prototype.then.call(promise, undefined, () => {});
   },
+  // Native code reported this rejection before the listeners moved to Node.
+  processEmitRejectionHandled(promise) {
+    process.emit("rejectionHandled", promise);
+  },
   // A warning native code emitted, as process.emitWarning's own tick emits
   // it: Node's listener prints it, then the program's listeners run. The
   // V8 error a native warning crosses as has its name, message and stack;

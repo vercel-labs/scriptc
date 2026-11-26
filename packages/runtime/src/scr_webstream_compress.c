@@ -473,6 +473,12 @@ static bool ws_comp_step_result(WsCompState *s, const WsCompStep *step) {
      * pull so the reader's next read reaches the engine. */
     if (!scr_webstream_controller_has_request(s->controller))
       scr_webstream_controller_pull_done(s->controller);
+    /* An enqueue can arm the writable side's backpressure, which the
+     * transform call cleared before this chunk existed: a compression
+     * stream that has produced what its writes need must not leave the next
+     * write waiting for a reader that has not started. */
+    if (!s->decompressing && !scr_webstream_controller_has_request(s->controller))
+      scr_webstream_controller_clear_write_backpressure(s->controller);
   }
   ScrZlibError ze;
   if (scr_zlib_engine_error(s->engine, &ze)) {
@@ -503,7 +509,14 @@ static bool ws_comp_step_result(WsCompState *s, const WsCompStep *step) {
     return false;
   }
   ws_comp_release_write(s);
-  return !(took == 0 && made == 0 && !s->drain);
+  if (took == 0 && made == 0 && !s->drain) {
+    /* This step had nothing to do, so another on its own would not either.
+     * Input a write added while it ran, and a flush that arrived in that
+     * window, still owe a step: without one their promise would wait for a
+     * pump nothing triggers. */
+    return s->in_off < s->in_len || (s->finishing && !finish_step);
+  }
+  return true;
 }
 
 static void ws_comp_step_destroy(void *payload) {

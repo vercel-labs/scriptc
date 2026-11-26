@@ -52,8 +52,8 @@
   In TypeScript, `tee`, `pipeTo`, and `pipeThrough`, the `WritableStream` constructor with an underlying sink, and a `TransformStream` with a transformer or queuing strategies compile: a program that uses one of them builds its `ReadableStream`, `WritableStream`, and `TransformStream` values with the same classes as JavaScript, and a `Response` or `Request` body has those members too.
   A TypeScript program that uses only `getReader`, `cancel`, `locked`, and the identity `TransformStream` keeps the smaller native streams.
   A web `TransformStream`, or a `{ readable, writable }` web stream pair, is a `compose` stage in any position: the stage before it writes into its writable side and the stage after reads its readable side.
-  A value it enqueues reaches the next stream as Node passes it when the stage is not the last, and a web stage in the last position hands the composed Duplex byte-mode chunks.
-  A node stream before a web stage hands it one write per chunk where Node's iteration combines the chunks it has buffered.
+  A value it enqueues reaches the next stream as Node passes it when the stage is not the last, and a web stage in the last position hands the composed Duplex byte-mode chunks and takes the chunks written to it as they are.
+  A node stream before a web stage hands it what Node's iteration reads: the chunks it has buffered arrive as one write, and an object-mode stage one value per read.
   `stream.isDestroyed`, `isErrored`, `isDisturbed`, `isReadable`, and `isWritable`, and `Readable.isDisturbed`, answer for the `node:stream` classes and their subclasses, for file and zlib streams, for the web stream classes and their readers and writers (including a `Response` body), for an untyped value that holds one of those, and for primitives.
   For any other value, such as a plain object or an array, they answer by the state members Node's duck typing reads, and for a child-process stream they answer only about the side the stream has.
   The `nodejs.stream.*` symbol properties a userland stream may carry are not read; its state members answer instead.

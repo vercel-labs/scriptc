@@ -5120,11 +5120,25 @@ static ScrStream *scr_stream_pipeline_ex(size_t n, ScrStream **streams, ScrClosu
         scr_stream_pipectx_release_v(ctx);
         return NULL;
       }
-      /* pipe(ret, s, finish, finishOnlyHandleError, { end }) */
+      /* Node's pipeline reads the stage before a web stream as an async
+       * iterator, whose reads combine the chunks the stage has buffered;
+       * pipe() would hand them over one at a time. A Duplex.from readable
+       * side reads like that iterator, so the web stage is fed through one. */
+      ScrStream *feed = ret;
+      if (s->st->web_pair_body) {
+        feed = scr_stream_duplexify(ret, NULL); /* +1 */
+        if (!feed) {
+          scr_stream_pipectx_drop(ctx);
+          scr_stream_pipectx_release_v(ctx);
+          return NULL;
+        }
+      }
+      /* pipe(feed, s, finish, finishOnlyHandleError, { end }) */
       ctx->finish_count += 2;
       scr_pipe_on(s, "close", scr_pipe_closure((void *)&scr_pipe_dst_close_l, ctx, i), scr_ee_inv_fixed0,
                   false);
-      scr_stream_release(scr_stream_pipe(ret, s, false));
+      scr_stream_release(scr_stream_pipe(feed, s, false));
+      if (feed != ret) scr_stream_release(feed);
       if (end) {
         ScrClosure *end_fn = scr_pipe_closure((void *)&scr_pipe_end_fn, ctx, i);
         if (ret->st->r.end_emitted) scr_next_tick(end_fn);
@@ -10056,11 +10070,12 @@ ScrStream *scr_stream_duplex_stage_dyn(ScrDyn *body) {
 }
 
 /* compose's last stage (stream.composeTailDyn): a pair keeps duplexify's
- * byte-for-byte sides (the composed Duplex reads them as Buffers), and a lone
- * web WritableStream keeps the chunks the stage before it hands over, as the
- * pipeline's stages do (bit 16). Any other value is Duplex.from's body. */
+ * byte-for-byte readable side (the composed Duplex reads them as Buffers)
+ * while its writable side keeps the chunks the stage before it hands over
+ * (bit 4, decodeStrings: false), and a lone web WritableStream keeps those
+ * chunks in object mode (bit 16). Any other value is Duplex.from's body. */
 ScrStream *scr_stream_duplex_tail_dyn(ScrDyn *body) {
-  return sf_duplex_from_dyn_flags(body, 16);
+  return sf_duplex_from_dyn_flags(body, 4 | 16);
 }
 
 /* Whether a checked-dynamic object has a function member `key`. */

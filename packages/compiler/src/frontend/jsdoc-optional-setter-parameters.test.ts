@@ -75,6 +75,28 @@ class B {
   expect(optional).toHaveLength(1);
 });
 
+test.for([
+  ["a line comment", "// /*\n", "\n// */"],
+  ["an unclosed line-comment opener", "// /*\n", ""],
+  ["CRLF line comments", "// /*\r\n", "\r\n// */"],
+  ["a Unicode line separator", "// /*\u2028", "\u2028// */"],
+  ["a Unicode paragraph separator", "// /*\u2029", "\u2029// */"],
+  ["a shebang", "#!/usr/bin/env node /*\n", "\n// */"],
+])("a block opener inside %s cannot hide executable optional syntax", (row) => {
+  const result = diagnostics(
+    `${row[1]}class Store { set value(next?) { console.log(next); } }${row[2]}`,
+  );
+  expect(
+    result.some(
+      (d) => d.code === "SC0001" && d.message.includes("cannot have an optional parameter"),
+    ),
+  ).toBe(true);
+});
+
+test("a line-comment opener does not hide a later setter's JSDoc", () => {
+  expect(diagnostics(`// /*\n${CLASS_SETTER}`)).toEqual([]);
+});
+
 test("a TypeScript setter keeps tsc's optional-parameter diagnostic", () => {
   const result = diagnostics(
     "class Store {\n  stored: string | null = null;\n  set value(next?: string | null) { this.stored = next ?? null; }\n}",

@@ -3937,7 +3937,13 @@ static void scr_h2_dispatch_headers(ScrH2Session *s, int32_t stream_id, uint8_t 
       for (size_t i = 0; i <= n; i++) {
         if (i == split) {
           scr_dyn_this_pop();
-          if (!scr_exc_pending() && !st->destroyed && scr_net_ls_has_live(listeners)) {
+          /* A compatibility server processes EVERY stream through the
+           * compat layer, listener or not: Node's compat layer creates the
+           * request/response pair for a CONNECT and answers 405 itself when
+           * nobody listens, and that pair is also what keeps a peer reset
+           * from surfacing as an unhandled stream error. */
+          if (!scr_exc_pending() && !st->destroyed &&
+              (srv->compat_placed || scr_net_ls_has_live(listeners))) {
             scr_h2_compat_dispatch(s, st, h, end_stream, listeners, auto_continue);
           }
           scr_dyn_this_push(server, SCR_DYNH_NET_SERVER);
@@ -4247,11 +4253,13 @@ static void scr_h2_compat_dispatch(ScrH2Session *s, ScrH2Stream *st, const ScrH2
   ScrAlsCtx *prev = scr_als_dispatch_enter(st->als);
   ScrHttpReq *req = scr_http_h2_req_new(s->sock, st);
   bool path_seen = false;
+  bool connect_request = false;
   for (size_t i = 0; i < h->n; i++) {
     ScrStr *name = h->names[i];
     ScrStr *value = h->values[i];
     if (name->len == 7 && memcmp(name->data, ":method", 7) == 0) {
       scr_http_h2_req_line(req, value, NULL);
+      connect_request = value->len == 7 && memcmp(value->data, "CONNECT", 7) == 0;
     } else if (name->len == 5 && memcmp(name->data, ":path", 5) == 0) {
       scr_http_h2_req_line(req, NULL, value);
       path_seen = true;
@@ -4292,6 +4300,16 @@ static void scr_h2_compat_dispatch(ScrH2Session *s, ScrH2Stream *st, const ScrH2
   }
   scr_dyn_this_pop();
   free(snap);
+  /* Node's compat layer answers a CONNECT nobody listens to itself:
+   * statusCode 405 and end(), no 'request' event. The pair above is what
+   * receives it (and keeps a later peer reset from being unhandled). */
+  if (connect_request && n == 0 && !scr_exc_pending() && !st->destroyed &&
+      !st->respond_sent && !scr_h2_stream_local_closed(st)) {
+    ScrArr *none = scr_arr_new(SCR_ELEM_STR, 0);
+    scr_http_res_write_head_pairs(res, 405, none);
+    scr_arr_release(none);
+    scr_http_res_end(res);
+  }
   /* a body-less request ends NOW — the handler's synchronous listeners
    * see 'end' right after it returns, the http/1 parser's order */
   if (!scr_exc_pending() && end_stream) scr_http_h2_req_end(req);

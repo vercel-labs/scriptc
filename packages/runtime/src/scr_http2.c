@@ -729,9 +729,13 @@ struct ScrH2Stream {
   ScrH2Buf wbuf;
   int64_t send_window;
   /* the LOCAL receive window: the credit this side has advertised for the
-   * peer's DATA (state.localWindowSize). The eager replenish below keeps
-   * it at its initial value once each frame is answered. */
+   * peer's DATA (state.localWindowSize). */
   int64_t recv_window;
+  /* receive credit the app has not consumed yet: peer DATA arrives against
+   * the local window and is given back only as the stream (or its compat
+   * request) hands it to the program, so an unread body stalls at the
+   * flow-control window instead of buffering without bound. */
+  uint32_t recv_unacked;
   /* respondWithFile/respondWithFD: the descriptor source, streamed as the
    * peer's windows open (never buffered whole). */
   int file_fd;             /* -1 when there is no source */
@@ -867,6 +871,7 @@ struct ScrH2Session {
   int32_t max_created_stream_id;
   /* flow control + peer settings */
   int64_t send_window;
+  uint32_t recv_unacked; /* connection receive credit not yet given back */
   uint32_t peer_max_frame;
   uint32_t peer_init_window;
   /* the API-visible settings records + the in-flight local ack */
@@ -1166,6 +1171,27 @@ static void scr_h2_send_window_update(ScrH2Session *s, int32_t stream_id, uint32
   scr_h2_send_frame(s, SCR_H2_F_WINDOW_UPDATE, 0, stream_id, p, 4);
 }
 
+/* The program consumed n bytes of a stream's body: give the peer that much
+ * receive credit back on the stream and the connection, as nghttp2 does
+ * when data is read. Data nobody reads keeps its credit, so the peer's
+ * window is what bounds the buffered body. */
+static void scr_h2_stream_consume(ScrH2Stream *st, size_t n) {
+  if (st == NULL || n == 0 || st->sess == NULL) return;
+  ScrH2Session *s = st->sess;
+  uint32_t stream_take = (uint32_t)n;
+  if (stream_take > st->recv_unacked) stream_take = st->recv_unacked;
+  if (stream_take > 0) {
+    st->recv_unacked -= stream_take;
+    if (!s->destroyed) scr_h2_send_window_update(s, st->id, stream_take);
+  }
+  uint32_t conn_take = (uint32_t)n;
+  if (conn_take > s->recv_unacked) conn_take = s->recv_unacked;
+  if (conn_take > 0) {
+    s->recv_unacked -= conn_take;
+    if (!s->destroyed) scr_h2_send_window_update(s, 0, conn_take);
+  }
+}
+
 static void scr_h2_send_goaway(ScrH2Session *s, uint32_t code) {
   if (s->goaway_sent) return;
   s->goaway_sent = true;
@@ -1283,6 +1309,18 @@ static void scr_h2_stream_settle(ScrH2Stream *st) {
    * sweep), which is where Node's pair hears of it */
   scr_h2_emit_push(SCR_H2_EMIT_STREAM_CLOSE, scr_http2_stream_retain(st));
   ScrH2Session *sess = st->sess;
+  /* The connection credit of a closed stream's unread body returns (the
+   * discarded bytes free the window), as nghttp2 does; the stream's own
+   * window goes with the stream. */
+  if (st->recv_unacked > 0) {
+    uint32_t give = st->recv_unacked;
+    st->recv_unacked = 0;
+    if (!sess->destroyed) {
+      uint32_t conn = give > sess->recv_unacked ? sess->recv_unacked : give;
+      sess->recv_unacked -= conn;
+      if (conn > 0) scr_h2_send_window_update(sess, 0, conn);
+    }
+  }
   scr_h2_session_forget_stream(sess, st);
   scr_h2_session_maybe_finish_close(sess);
 }
@@ -1343,6 +1381,7 @@ static void scr_h2_stream_drain(ScrH2Stream *st) {
     st->rq_head = c->next;
     if (!st->rq_head) st->rq_tail = NULL;
     scr_h2_stream_fire_data(st, c->data, c->len);
+    scr_h2_stream_consume(st, c->len);
     free(c);
     if (scr_exc_pending()) return;
   }
@@ -1844,12 +1883,16 @@ static bool scr_h2_on_frame_in(ScrH2Session *s, uint8_t type, uint8_t flags, int
       p += 1;
       n -= 1 + pad;
     }
-    /* eager replenish: the peer's view of both windows stays full */
-    if (n > 0) {
-      scr_h2_send_window_update(s, 0, (uint32_t)n);
-      scr_h2_send_window_update(s, stream_id, (uint32_t)n);
-    }
     ScrH2Stream *st = scr_h2_find_stream(s, stream_id);
+    if (n > 0) {
+      if (!st || st->destroyed) {
+        /* nobody keeps this body: the connection credit returns at once */
+        scr_h2_send_window_update(s, 0, (uint32_t)n);
+      } else {
+        st->recv_unacked += (uint32_t)n;
+        s->recv_unacked += (uint32_t)n;
+      }
+    }
     if (!st || st->destroyed) break; /* late DATA on a gone stream: drop */
     if (n > 0) scr_h2_stream_touch_timeout(st);
     if (st->compat_req != NULL) {
@@ -1873,6 +1916,7 @@ static bool scr_h2_on_frame_in(ScrH2Session *s, uint8_t type, uint8_t flags, int
       st->had_data = true;
       if (st->flowing && st->rq_head == NULL) {
         scr_h2_stream_fire_data(st, (const char *)p, n);
+        scr_h2_stream_consume(st, n);
         if (scr_exc_pending()) return false;
       } else {
         scr_h2_stream_rq_push(st, (const char *)p, n);
@@ -2840,17 +2884,14 @@ static bool scr_h2_file_pump(ScrH2Stream *st) {
   size_t max_frame = s->peer_max_frame ? s->peer_max_frame : SCR_H2_DEFAULT_MAX_FRAME;
   while (st->file_remaining > 0 && !st->destroyed) {
     if (s->sock != NULL && scr_net_sock_writable_length(s->sock) >= SCR_H2_FILE_BACKLOG_BYTES) {
-      /* the transfer is alive (socket backlog), just not sending right now */
-      scr_h2_stream_touch_timeout(st);
+      /* a parked retry is not activity: the stream's idle deadline keeps
+       * counting from the last bytes actually sent (Node times a stalled
+       * transfer out), so the period retries must not refresh it. */
       scr_h2_file_schedule_retry(st);
       return false;
     }
     int64_t window = st->send_window < s->send_window ? st->send_window : s->send_window;
-    if (window <= 0) {
-      /* flow-control-blocked: the queued body is still activity */
-      scr_h2_stream_touch_timeout(st);
-      return false;
-    }
+    if (window <= 0) return false;
     size_t chunk = (size_t)window;
     if (chunk > max_frame) chunk = max_frame;
     if ((scr_h2_file_off)chunk > st->file_remaining) chunk = (size_t)st->file_remaining;
@@ -4069,6 +4110,12 @@ static void scr_h2_compat_destroy(void *p) { scr_http2_stream_destroy((ScrH2Stre
 /* res.writeInformation/writeContinue/writeEarlyHints on an h2 response: a
  * 1xx block before the response starts. The compat caller has already
  * checked the status and the started state. */
+/* The compat request consumed body bytes (delivered to its readers or
+ * discarded): return the stream's receive credit. */
+static void scr_h2_compat_consumed(void *p, size_t n) {
+  scr_h2_stream_consume((ScrH2Stream *)p, n);
+}
+
 static void scr_h2_compat_write_info(void *p, double status, ScrStr *const *names,
                                       ScrStr *const *values, size_t nheaders) {
   ScrH2Stream *st = (ScrH2Stream *)p;
@@ -4099,6 +4146,7 @@ static const ScrHttpH2Ops scr_h2_compat_ops = {
   &scr_h2_compat_end,
   &scr_h2_compat_destroy,
   &scr_h2_compat_write_info,
+  &scr_h2_compat_consumed,
 };
 
 /* server.on("request", ...) routed here by scr_http.c when the server's

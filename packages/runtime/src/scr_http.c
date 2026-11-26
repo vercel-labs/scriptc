@@ -4775,6 +4775,13 @@ static void scr_http_conn_missing_host(ScrHttpConn *conn) {
 
 /* Delivers a body slice to a request's data listeners (the parser's
  * feed, and the h2 compat DATA-frame feed). */
+/* An h2 compat request consumed n body bytes (delivered to its readers or
+ * discarded with no consumer): the stream gives the peer that credit back. */
+static void scr_http_req_h2_consume(ScrHttpReq *r, size_t n) {
+  if (r->h2_stream == NULL || scr_http_h2_ops == NULL || scr_http_h2_ops->consumed == NULL) return;
+  scr_http_h2_ops->consumed(r->h2_stream, n);
+}
+
 static void scr_http_req_deliver(ScrHttpReq *r, const char *data, size_t n) {
   if (!r || n == 0 || r->ended) return;
   r->body_seen = true;
@@ -4794,7 +4801,12 @@ static void scr_http_req_deliver(ScrHttpReq *r, const char *data, size_t n) {
     return;
   }
   bool piped = r->pipe_res != NULL || r->pipe_client != NULL || r->pipe_sock != NULL;
-  if (r->data_ls.n == 0 && !piped) return;
+  if (r->data_ls.n == 0 && !piped) {
+    /* nobody reads this body: the bytes are discarded, so their receive
+     * credit returns now rather than stalling the peer's window */
+    scr_http_req_h2_consume(r, n);
+    return;
+  }
   ScrBytes *chunk = scr_bytes_new(SCR_BYTES_U8, (double)n);
   chunk->is_buffer = true; /* Node delivers a Buffer */
   memcpy(chunk->data, data, n);
@@ -4817,6 +4829,7 @@ static void scr_http_req_deliver(ScrHttpReq *r, const char *data, size_t n) {
     if (r->pipe_sock) scr_net_sock_write_bytes(r->pipe_sock, chunk);
   }
   scr_bytes_release(chunk);
+  scr_http_req_h2_consume(r, n);
 }
 
 static void scr_http_conn_body_data(ScrHttpConn *conn, const char *data, size_t n) {

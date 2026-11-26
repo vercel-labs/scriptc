@@ -33,8 +33,9 @@ server.listen(0, "127.0.0.1", async () => {
       const client = http2.connect(`http://127.0.0.1:${port}`);
       const request = client.request({ ":path": path });
       request.on("error", () => {});
-      // paused first, so the transfer is window-blocked for a while
-      setTimeout(() => request.resume(), 120);
+      // briefly paused: the transfer is window-blocked, then resumes well
+      // inside the idle timeout (a full stall is http2-stream-timeout-stalled)
+      setTimeout(() => request.resume(), 30);
       request.on("end", () => {
         lines.push(`${path} end`);
         client.destroy();

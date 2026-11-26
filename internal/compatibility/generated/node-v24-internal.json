@@ -64048,6 +64048,7 @@
           "tests/corpus/http2-stream-readbacks.ts",
           "tests/corpus/http2-stream-timeout-file.ts",
           "tests/corpus/http2-stream-timeout-idle.ts",
+          "tests/corpus/http2-stream-timeout-stalled.ts",
           "tests/corpus/http2-trailers.ts",
           "tests/diagnostics/compat-absent-http2-members.ts"
         ]
@@ -65526,7 +65527,8 @@
         "tests": [
           "tests/corpus/http2-stream-controls.ts",
           "tests/corpus/http2-stream-timeout-file.ts",
-          "tests/corpus/http2-stream-timeout-idle.ts"
+          "tests/corpus/http2-stream-timeout-idle.ts",
+          "tests/corpus/http2-stream-timeout-stalled.ts"
         ]
       },
       "anchorSource": "exact"
@@ -65554,7 +65556,8 @@
         "tests": [
           "tests/corpus/http2-stream-controls.ts",
           "tests/corpus/http2-stream-timeout-file.ts",
-          "tests/corpus/http2-stream-timeout-idle.ts"
+          "tests/corpus/http2-stream-timeout-idle.ts",
+          "tests/corpus/http2-stream-timeout-stalled.ts"
         ]
       },
       "anchorSource": "exact"
@@ -66051,7 +66054,8 @@
         "tests": [
           "tests/corpus/http2-stream-controls.ts",
           "tests/corpus/http2-stream-timeout-file.ts",
-          "tests/corpus/http2-stream-timeout-idle.ts"
+          "tests/corpus/http2-stream-timeout-idle.ts",
+          "tests/corpus/http2-stream-timeout-stalled.ts"
         ]
       },
       "anchorSource": "exact"

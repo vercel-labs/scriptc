@@ -123,6 +123,10 @@ export function emitTlsLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValu
       return finishRuntimeCall(host, e, "scr_tls_server_add_context", [a[0]!, a[1]!, ptr(), a[2]!]);
     case "tls.serverSetSecureContext":
       return finishRuntimeCall(host, e, "scr_tls_server_set_secure_context", a);
+    case "tls.serverGetTicketKeys":
+      return finishRuntimeCall(host, e, "scr_tls_server_get_ticket_keys", a);
+    case "tls.serverSetTicketKeys":
+      return finishRuntimeCall(host, e, "scr_tls_server_set_ticket_keys", a);
     case "tls.serverOnClientError": {
       // (err, tlsSocket) listeners by arity: the adapter retains what the
       // listener takes.

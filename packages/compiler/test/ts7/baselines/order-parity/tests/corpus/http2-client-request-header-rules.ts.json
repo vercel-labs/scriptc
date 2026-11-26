@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/http2-client-request-header-rules.ts"
+ ],
+ "diags": []
+}

@@ -12,6 +12,7 @@ import { INT32_FALLBACK_SUFFIX } from "../../ir/parameter-versions.js";
 import { planJsGroups } from "../../ir/js-groups.js";
 import { jsImmediates } from "./jsval.js";
 import { BlockBuilder } from "./blocks.js";
+import { emitCoroFrameAlloc, emitCoroFrameFree } from "./alloc.js";
 import { findPrivateSplitLocals } from "./split-loops.js";
 import {
   conditionalLoopWrites,
@@ -413,12 +414,23 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
     emitter.declare(`declare ptr @scr_fiber_self()`);
     const id = B.tmp();
     const size = B.tmp();
-    const mem = B.tmp();
     const handle = B.tmp();
     const self = B.tmp();
     B.line(`${id} = call token @llvm.coro.id(i32 0, ptr null, ptr null, ptr null)`);
     B.line(`${size} = call ${emitter.sizeType} @llvm.coro.size.${emitter.sizeType}()`);
-    B.line(`${mem} = call ptr @${frameAlloc}(${emitter.sizeType} ${size})`);
+    let mem: string;
+    if (emitter.shapeHost.inlineAlloc === true && emitter.shapeHost.threadLocalAlloc !== true) {
+      // The frame takes the allocator's inline small-block fast path here,
+      // in the prologue: the coroutine split makes the size constant, so
+      // the size class and the clear fold per coroutine instead of being
+      // recomputed by scr_rt_calloc on every call.
+      const plan = emitCoroFrameAlloc(emitter.shapeHost, size);
+      B.rendered(plan.lines);
+      mem = plan.frame;
+    } else {
+      mem = B.tmp();
+      B.line(`${mem} = call ptr @${frameAlloc}(${emitter.sizeType} ${size})`);
+    }
     B.line(`${handle} = call ptr @llvm.coro.begin(token ${id}, ptr ${mem})`);
     B.line(`call void @${started}(ptr ${handle})`);
     B.line(`${self} = call ptr @scr_fiber_self()`);
@@ -768,7 +780,9 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
     B.startBlock(coro.cleanupLabel);
     const frame = B.tmp();
     B.line(`${frame} = call ptr @llvm.coro.free(token ${coro.id}, ptr ${coro.handle})`);
-    B.line(`call void @${emitter.wasi ? "free" : "scr_rt_free"}(ptr ${frame})`);
+    if (emitter.shapeHost.inlineAlloc === true && emitter.shapeHost.threadLocalAlloc !== true)
+      B.rendered(emitCoroFrameFree(emitter.shapeHost, frame));
+    else B.line(`call void @${emitter.wasi ? "free" : "scr_rt_free"}(ptr ${frame})`);
     B.br(coro.suspendLabel);
     B.startBlock(coro.suspendLabel);
     B.line(`call void @llvm.coro.end(ptr ${coro.handle}, i1 false, token none)`);

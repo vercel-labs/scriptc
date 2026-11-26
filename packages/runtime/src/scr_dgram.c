@@ -1816,8 +1816,11 @@ void scr_dgram_bind_opts(ScrDgramSocket *s, const ScrDyn *options, ScrClosure *c
     scr_closure_release(cb);
     return;
   }
-  /* bind(undefined) is bind() (Node's absent port: the wildcard). */
-  const bool empty = v->kind == SCR_DYN_UNDEF;
+  /* bind(undefined) is bind() (Node's absent port: the wildcard), and so
+   * is bind(null): Node's normalizeArgs reads a null first argument as the
+   * port value, which validatePort turns into 0. (bindSync(null) is the
+   * object form and throws, as Node does.) */
+  const bool empty = v->kind == SCR_DYN_UNDEF || v->kind == SCR_DYN_NULL;
   if (!empty && (v->kind == SCR_DYN_NUM || v->kind == SCR_DYN_STR)) {
     /* Node's normalizeArgs: a number, or a string that reads as a port, is
      * the port (validatePort's ladder runs in scr_dgram_bind). */

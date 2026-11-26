@@ -112,7 +112,7 @@ const KNOWN_REFERENCES: Readonly<Record<string, readonly string[]>> = {
     "scr_tls_server_wrap_h2",
     "scr_tls_srv_opts_walk",
   ],
-  "scr_js_wrapper.c -> scr_dyn_invoke.c": ["scr_dyn_invoke", "scr_dyn_object_tag_of"],
+  "scr_js_wrapper.c -> scr_dyn_invoke.c": ["scr_dyn_object_tag_of"],
   "scr_json.c -> scr_dyn_invoke.c": ["scr_dyn_inherited_read"],
   // crypto.fipsGet reports DEP0093 through scr_emit_warning; every call
   // that reaches it (the deprecated crypto.fips read) selects the

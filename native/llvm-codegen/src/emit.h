@@ -48,6 +48,10 @@ struct EmitOptions {
   // With several outputs: optimize the module whole and divide only its code
   // generation among the outputs.
   bool SplitCodegen = false;
+  // How the emitter's generated dynamic-dispatch helpers are optimized:
+  // "off" (the program's own level) or "light" (the O1 function
+  // simplification over the large ones, and nothing more).
+  std::string DispatchOpt = "off";
 };
 
 std::optional<EmitOptions> parseEmitOptions(int Argc, char **Argv);

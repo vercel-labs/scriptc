@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/fn-name-probe.ts"
+ ],
+ "diags": []
+}

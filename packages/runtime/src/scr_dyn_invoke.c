@@ -905,6 +905,10 @@ ScrDyn *scr_dyn_invoke_prepared(ScrDyn *recv, ScrDyn *callee, const char *method
   return result;
 }
 
+__attribute__((constructor)) static void scr_dyn_install_invoke_fn(void) {
+  scr_dyn_invoke_fn = scr_dyn_invoke;
+}
+
 ScrDyn *scr_dyn_invoke(ScrDyn *recv, const char *method,
                        ScrDyn *const *args, size_t argc,
                        const char *what) {
@@ -2215,6 +2219,13 @@ static ScrDyn *dyn_function_prototype_call(ScrClosure *closure, ScrDyn *const *a
 static void dyn_function_prototype_cleanup(void) {
   scr_dyn_release(dyn_function_prototype_value);
   dyn_function_prototype_value = NULL;
+}
+
+/* Object.getPrototypeOf's function arm (scr_json.c): this unit's
+ * Function.prototype, installed at load so the edge answers the object the
+ * program's Function.prototype read shares. */
+__attribute__((constructor)) static void scr_dyn_install_function_proto_hook(void) {
+  scr_dyn_function_proto_hook = scr_dyn_function_prototype;
 }
 
 ScrDyn *scr_dyn_function_prototype(void) {

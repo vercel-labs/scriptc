@@ -415,8 +415,16 @@ static int ws_comp_pump_steps(WsCompState *s) {
       ws_comp_job_done(s);
       return 0;
     }
+    /* A reader's request always admits one chunk. A COMPRESSION stream may
+     * also fill the readable queue to WS_COMP_QUEUED without one: a write
+     * must not wait for a reader when its compressed output fits that bound
+     * (Node's writable side resolves the write as soon as the transform
+     * accepted the chunk), and a bomb-shaped stream still stops at the
+     * bound. A DECOMPRESSION stream produces its output only for the reader:
+     * a trailing junk error and the chunk boundaries are the reader's turn,
+     * as in Node. */
     bool room = scr_webstream_controller_has_request(s->controller) ||
-                (s->finishing &&
+                ((s->finishing || !s->decompressing) &&
                  scr_webstream_controller_queue_size(s->controller) < WS_COMP_QUEUED);
     if (!room) {
       ws_comp_release_write(s);
@@ -508,6 +516,11 @@ static ScrDyn *ws_comp_transform(ScrClosure *closure, ScrDyn *const *args, size_
        * waiting must not wait for another pull to start the engine, and a
        * backlog past its cap would otherwise never drain. */
       int pumped = ws_comp_pump(s);
+      /* Output the pump produced with no reader waiting sits in the readable
+       * queue; the next write must not park for a reader that has not
+       * started (the queue bound above keeps the buffering finite). */
+      if (!s->decompressing && !scr_webstream_controller_has_request(controller))
+        scr_webstream_controller_clear_write_backpressure(controller);
       if (s->in_len - s->in_off > WS_COMP_BACKLOG) {
         s->pending_write = scr_promise_new();
         result = scr_dyn_new_promise(s->pending_write);

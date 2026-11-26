@@ -3918,6 +3918,13 @@ struct WsTController {
   bool (*native_resume)(void *);
   void *native_resume_state;
   ScrBox *native_box; /* +1, the state's reference for the collector */
+  /* A native transformer's finish in flight keeps the cancel algorithm (the
+   * controller's own fields are cleared at finish): a readable cancelled
+   * while a flush waits for pulls runs it so the engine and the flush
+   * release, instead of waiting for a pull the cancelled readable never
+   * makes. */
+  ScrDyn *native_finish_cancel; /* +1 */
+  ScrDyn *native_finish_transformer; /* +1 */
 };
 
 static void ws_transform_trace(void *obj, ScrTraceVisit visit, void *ctx) {
@@ -3951,6 +3958,8 @@ static void ws_tcontroller_trace(void *obj, ScrTraceVisit visit, void *ctx) {
   ws_visit(c->cancel_fn, visit, ctx);
   ws_visit(c->finish_promise, visit, ctx);
   ws_visit(c->native_box, visit, ctx);
+  ws_visit(c->native_finish_cancel, visit, ctx);
+  ws_visit(c->native_finish_transformer, visit, ctx);
 }
 
 static void ws_tcontroller_drop(void *obj, bool gc) {
@@ -3961,6 +3970,8 @@ static void ws_tcontroller_drop(void *obj, bool gc) {
   ws_drop_dyn(c->flush_fn, gc);
   ws_drop_dyn(c->cancel_fn, gc);
   ws_drop_promise(c->finish_promise, gc);
+  ws_drop_dyn(c->native_finish_cancel, gc);
+  ws_drop_dyn(c->native_finish_transformer, gc);
   if (c->native_box && !gc) scr_box_release(c->native_box);
   c->native_box = NULL;
 }
@@ -4229,6 +4240,11 @@ static ScrPromise *ws_transform_finish(WsTransform *t, WsFinishKind kind, ScrDyn
     callback = ws_tcontroller_callback(c, c->cancel_fn, arg, "transformer.cancel");
     scr_dyn_release(arg);
   }
+  if (kind != WS_FINISH_CANCEL && c->native_resume != NULL && c->cancel_fn != NULL &&
+      c->native_finish_cancel == NULL) {
+    c->native_finish_cancel = scr_dyn_retain(c->cancel_fn);
+    c->native_finish_transformer = scr_dyn_retain(c->transformer);
+  }
   ws_tcontroller_clear_algorithms(c);
   WsFinish *f = ws_obj_new(sizeof *f, &ws_finish_type);
   f->stream = ws_retain(t);
@@ -4299,6 +4315,22 @@ static ScrDyn *ws_transform_source_pull(void *ctx, WsRController *rc) {
 
 static ScrPromise *ws_transform_source_cancel(void *ctx, WsRController *rc, ScrDyn *reason) {
   (void)rc;
+  WsTransform *t = ctx;
+  WsTController *c = t->controller;
+  /* A readable cancelled while a native flush waits for its pulls never
+   * pulls again: run the transformer's cancel algorithm now so it releases
+   * the engine and settles the pending flush (the close promise rejects
+   * with this reason, as Node's does), and let the cancellation itself
+   * resolve. A user transformer keeps the generic path (the spec reuses the
+   * finish promise). */
+  if (c->finish_promise != NULL && c->native_finish_cancel != NULL) {
+    ScrDyn *arg = ws_or_undef(reason);
+    ScrDyn *ignored = ws_call(c->native_finish_cancel, c->native_finish_transformer, &arg, 1,
+                              "transformer.cancel");
+    scr_dyn_release(arg);
+    if (ignored) scr_dyn_release(ignored);
+    return ws_promise_resolved_undefined();
+  }
   return ws_transform_finish(ctx, WS_FINISH_CANCEL, reason);
 }
 
@@ -6018,6 +6050,14 @@ ScrDyn *scr_webstream_transform_readable(ScrDyn *transform) {
 
 ScrDyn *scr_webstream_transform_writable(ScrDyn *transform) {
   return ws_transform_writable_box(transform->v.handle.ptr);
+}
+
+void scr_webstream_controller_clear_write_backpressure(ScrDyn *controller) {
+  if (controller->kind != SCR_DYN_HANDLE || controller->v.handle.tag != SCR_DYNH_WS_TCONTROLLER)
+    return;
+  WsTController *c = controller->v.handle.ptr;
+  if (c->native_resume == NULL) return; /* user transformers keep the spec's backpressure */
+  ws_transform_set_backpressure(c->stream, false);
 }
 
 bool scr_webstream_controller_enqueue(ScrDyn *controller, ScrDyn *chunk) {

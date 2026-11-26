@@ -327,6 +327,10 @@ void scr_webstream_controller_pull_done(ScrDyn *controller);
 /* The transform's readable queue size in the strategy's units (the queued
  * chunk count for a strategy without a size function). */
 double scr_webstream_controller_queue_size(ScrDyn *controller);
+/* A native transformer enqueued output with no pending read: the writable
+ * side must not park the next write for a reader that may never come (Node's
+ * compression streams keep their two sides independent). */
+void scr_webstream_controller_clear_write_backpressure(ScrDyn *controller);
 /* Errors both sides of the transform with `error`, the way a rejecting
  * transform callback does; for a native transformer's asynchronous
  * failure. */

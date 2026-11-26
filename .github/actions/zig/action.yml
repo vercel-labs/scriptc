@@ -25,19 +25,37 @@ runs:
       id: zig
       with:
         path: ${{ runner.tool_cache }}/zig/0.16.0
-        # The pin file is part of the key, so a cache never outlives the digest its archive was checked against.
-        key: zig-0.16.0-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/toolchain.sha256') }}
+        # The pin file and the layout marker are part of the key, so a cache never outlives the digest its archive
+        # was checked against or a change in where the archive is unpacked.
+        key: zig-0.16.0-${{ runner.os }}-${{ runner.arch }}-target-v1-${{ hashFiles('scripts/toolchain.sha256') }}
+    # A cache hit is only usable when the directory holds Zig 0.16.0 where this action and setup-zig put it.
+    # Anything else (another layout, a corrupt archive) is dropped, and the install steps below fill it again.
+    - name: Check the restored Zig
+      id: restored
+      if: steps.zig.outputs.cache-hit == 'true'
+      shell: bash
+      run: |
+        zig="$RUNNER_TOOL_CACHE/zig/0.16.0/${{ steps.target.outputs.target }}"
+        if [ "${{ runner.os }}" = "Windows" ]; then binary="$zig/zig.exe"; else binary="$zig/zig"; fi
+        version=
+        if [ -f "$binary" ]; then version=$("$binary" version 2>/dev/null) || version=; fi
+        if [ "$version" = "0.16.0" ]; then
+          echo "usable=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "::warning::the restored Zig is not 0.16.0 at $zig; installing it from the pinned archive"
+          rm -rf "$RUNNER_TOOL_CACHE/zig/0.16.0"
+        fi
     # The archive comes from Zig's mirrors and release host, checked against its pinned digest before anything
-    # unpacks it, so the install does not depend on setup-zig's mirrors being reachable. The installers exit
-    # nonzero without installing when no source serves the archive; the step records that instead of failing, so
-    # the setup-zig fallback below runs.
+    # unpacks it. The installers exit nonzero without installing when no source serves the archive; the steps
+    # record that instead of failing, so the setup-zig fallback below runs.
     - name: Install pinned Zig (POSIX)
       id: pinned
-      if: steps.zig.outputs.cache-hit != 'true' && steps.target.outputs.supported == 'true' && runner.os != 'Windows'
+      if: steps.restored.outputs.usable != 'true' && steps.target.outputs.supported == 'true' && runner.os != 'Windows'
       shell: bash
       run: |
         if sh scripts/install-zig.sh 0.16.0 "$RUNNER_TOOL_CACHE/zig/0.16.0"; then
           echo "installed=true" >> "$GITHUB_OUTPUT"
+          echo "dir=$RUNNER_TOOL_CACHE/zig/0.16.0/${{ steps.target.outputs.target }}" >> "$GITHUB_OUTPUT"
         else
           echo "::warning::no source served the pinned Zig archive; installing Zig with setup-zig"
           rm -rf "$RUNNER_TOOL_CACHE/zig/0.16.0/${{ steps.target.outputs.target }}"
@@ -45,7 +63,7 @@ runs:
         fi
     - name: Download pinned Zig (Windows)
       id: windows-download
-      if: steps.zig.outputs.cache-hit != 'true' && steps.target.outputs.supported == 'true' && runner.os == 'Windows'
+      if: steps.restored.outputs.usable != 'true' && steps.target.outputs.supported == 'true' && runner.os == 'Windows'
       shell: bash
       run: |
         archive="zig-x86_64-windows-0.16.0.zip"
@@ -79,6 +97,7 @@ runs:
         fi
     # windows-2022 and windows-latest include 7-Zip, which expands the archive faster than tar.exe does.
     - name: Install pinned Zig (Windows)
+      id: windows-install
       if: steps.windows-download.outputs.installed == 'true'
       shell: pwsh
       run: |
@@ -99,37 +118,61 @@ runs:
         Remove-Item -Recurse -Force $destination -ErrorAction SilentlyContinue
         New-Item -ItemType Directory -Force (Split-Path $destination) | Out-Null
         Move-Item $root $destination
-    # Only when the platform has no pin, or no source served the archive.
+        echo "dir=$destination" >> $env:GITHUB_OUTPUT
+    # Only when the platform has no pin, no source served the archive, or the cache was unusable.
     - id: fallback
       uses: vercel-labs/setup-zig@83c1594f26b86da8a9a8ddd9b5ee5f3af0f96943 # v1.0.2
-      if: steps.zig.outputs.cache-hit != 'true' && steps.pinned.outputs.installed != 'true' && steps.windows-download.outputs.installed != 'true'
+      if: steps.restored.outputs.usable != 'true' && steps.pinned.outputs.installed != 'true' && steps.windows-download.outputs.installed != 'true'
       with:
         version: 0.16.0
-    # Fails when a restored cache or an install put something other than the pin in the tool cache, before any
-    # build uses it. setup-zig installs to the same <tool cache>/zig/<version>/<target> directory, so this also
-    # covers its fallback.
+    # Select Zig finds the directory from the step that provided the install, so it does not depend on any one
+    # installer's layout: the pinned install's `dir` output, setup-zig's `zig-path` output, or the cache path
+    # for a usable hit. `command -v zig` is the last resort, for a setup-zig that only updated PATH.
     - name: Select Zig
-      if: steps.target.outputs.supported == 'true' && runner.os != 'Windows' && (steps.zig.outputs.cache-hit == 'true' || steps.pinned.outputs.installed == 'true' || steps.fallback.outcome == 'success')
+      if: steps.target.outputs.supported == 'true' && runner.os != 'Windows' && (steps.restored.outputs.usable == 'true' || steps.pinned.outputs.installed == 'true' || steps.fallback.outcome == 'success')
       shell: bash
       run: |
-        zig="$RUNNER_TOOL_CACHE/zig/0.16.0/${{ steps.target.outputs.target }}"
+        zig="${{ steps.pinned.outputs.dir }}"
+        if [ -z "$zig" ] && [ -n "${{ steps.fallback.outputs.zig-path }}" ]; then
+          zig=$(dirname "${{ steps.fallback.outputs.zig-path }}")
+        fi
+        if [ -z "$zig" ] && [ "${{ steps.restored.outputs.usable }}" = "true" ]; then
+          zig="$RUNNER_TOOL_CACHE/zig/0.16.0/${{ steps.target.outputs.target }}"
+        fi
+        if [ -z "$zig" ] && command -v zig >/dev/null 2>&1; then
+          zig=$(dirname "$(command -v zig)")
+        fi
+        if [ -z "$zig" ]; then
+          echo "::error::no Zig 0.16.0 installation to select"
+          exit 1
+        fi
         test "$("$zig/zig" version)" = "0.16.0"
         echo "$zig" >> "$GITHUB_PATH"
     - name: Select Zig (Windows)
-      if: steps.target.outputs.supported == 'true' && runner.os == 'Windows' && (steps.zig.outputs.cache-hit == 'true' || steps.windows-download.outputs.installed == 'true' || steps.fallback.outcome == 'success')
+      if: steps.target.outputs.supported == 'true' && runner.os == 'Windows' && (steps.restored.outputs.usable == 'true' || steps.windows-download.outputs.installed == 'true' || steps.fallback.outcome == 'success')
       shell: pwsh
       run: |
-        $zig = "$env:RUNNER_TOOL_CACHE\zig\0.16.0\${{ steps.target.outputs.target }}"
+        $zig = "${{ steps.windows-install.outputs.dir }}"
+        if (-not $zig -and "${{ steps.fallback.outputs.zig-path }}") {
+          $zig = Split-Path "${{ steps.fallback.outputs.zig-path }}"
+        }
+        if (-not $zig -and "${{ steps.restored.outputs.usable }}" -eq "true") {
+          $zig = "$env:RUNNER_TOOL_CACHE\zig\0.16.0\${{ steps.target.outputs.target }}"
+        }
+        if (-not $zig -and (Get-Command zig -ErrorAction SilentlyContinue)) {
+          $zig = Split-Path (Get-Command zig).Source
+        }
+        if (-not $zig) { throw "no Zig 0.16.0 installation to select" }
         $version = (& "$zig\zig.exe" version).Trim()
         if ($LASTEXITCODE -ne 0 -or $version -ne "0.16.0") {
           throw "Zig at $zig reports '$version', not 0.16.0"
         }
         echo $zig >> $env:GITHUB_PATH
-    # The cache holds the tool-cache directory either installer filled (setup-zig installs to the same
+    # On a pinned platform the cache holds the directory either installer filled (setup-zig installs to the same
     # <tool cache>/zig/0.16.0/<target> path), so a fallback seeds it and later runs take the hit and skip every
     # download. Unpinned platforms are not cached: their fallback sets PATH each run, and a hit would skip it.
     - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-      if: steps.target.outputs.supported == 'true' && steps.zig.outputs.cache-hit != 'true' && (steps.pinned.outputs.installed == 'true' || steps.windows-download.outputs.installed == 'true' || steps.fallback.outcome == 'success')
+      if: steps.target.outputs.supported == 'true' && steps.restored.outputs.usable != 'true' && (steps.pinned.outputs.installed == 'true' || steps.windows-download.outputs.installed == 'true' || steps.fallback.outcome == 'success')
       with:
         path: ${{ runner.tool_cache }}/zig/0.16.0
         key: ${{ steps.zig.outputs.cache-primary-key }}

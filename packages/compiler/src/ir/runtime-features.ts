@@ -2336,9 +2336,11 @@ const RUNTIME_FEATURE_RULES = {
   webStreams: rule({ prefixes: ["webstream."] }),
   /** A program that builds a Blob or File can hand one to fetch: selects
    * scr_fetch.c's SCR_WEB_BODIES build, which sends the blob's bytes and
-   * type as Node does. Every other program keeps the default fetch unit,
-   * byte for byte. */
-  webBodies: rule({ prefixes: ["blob."] }),
+   * type as Node does. An fs.openAsBlob result is such a Blob, and handing
+   * it to fetch straight from the promise is the ordinary use, so its call
+   * selects the build too. Every other program keeps the default fetch
+   * unit, byte for byte. */
+  webBodies: rule({ prefixes: ["blob."], fns: ["fs.openAsBlob"] }),
   /** AbortController and AbortSignal (scr_abort.c, or the fetch unit).
    * A WritableStream controller's signal is one (scr_webstreams.c), and
    * util.transferableAbortSignal/Controller are the util face of the same
@@ -2392,6 +2394,9 @@ const RUNTIME_FEATURE_RULES = {
   /** filehandle.readableWebStream (scr_fs_web_stream.c): the handle's
    * content as a byte-oriented web stream, its own gated unit. */
   fsWebStream: rule({ fns: ["fileHandle.readableWebStream"] }),
+  /** fs.openAsBlob: the Blob over a file's bytes (scr_fs_blob.c), which
+   * reads the file on demand through the file handle unit. */
+  fsOpenAsBlob: rule({ fns: ["fs.openAsBlob"] }),
   fsWatch: rule({ prefixes: ["fs.watch", "watcher."], types: ["fsWatcher"] }),
   /** fs.watchFile / fs.unwatchFile (scr_watch_file.c): the stat-polling
    * half of the watching surface, gated on its own unit. */
@@ -3000,6 +3005,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     fetch: false,
     fileHandle: false,
     fsWebStream: false,
+    fsOpenAsBlob: false,
     fnMemberProps: false,
     fsFlags: false,
     fsExistsValue: false,

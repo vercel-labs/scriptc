@@ -113,6 +113,7 @@ export interface EarlyExecutableNativeFeatures {
   dynInvoke: boolean;
   dc: boolean;
   dynAsync: boolean;
+  fsOpenAsBlob?: boolean;
   dynTier?: boolean;
   streamDyn?: boolean;
   handleProps?: boolean;

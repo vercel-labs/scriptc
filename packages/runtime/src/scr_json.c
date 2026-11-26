@@ -15013,8 +15013,11 @@ void scr_error_commit_dyn(ScrError *e, const ScrDyn *view) {
   ScrDyn *cause = scr_dyn_obj_get(view, "cause", 5);
   scr_error_install_cause_drop(&scr_error_cause_drop_impl);
   ScrDyn *replacement = cause ? scr_dyn_retain(cause) : NULL;
-  scr_dyn_release(e->error_cause);
+  /* Publish the new edge before releasing the old one: a release can run
+   * the collector, whose trace reads the slot. */
+  ScrDyn *previous = e->error_cause;
   e->error_cause = replacement;
+  scr_dyn_release(previous);
   e->cause_enumerable = false;
   for (size_t i = 0; cause && i < view->v.obj.len; i++) {
     const ScrDynProp entry_prop = scr_dyn_obj_prop_at(view, i);
@@ -15149,8 +15152,9 @@ static void scr_error_sync_slots(const ScrDyn *view, ScrDyn *obj, const ScrStr *
   if (e->vt == &scr_error_vts[SCR_ERR_DOMEX]) return;
   ScrDyn *replacement = entry ? scr_dyn_retain(entry->value) : NULL;
   scr_error_install_cause_drop(&scr_error_cause_drop_impl);
-  scr_dyn_release(e->error_cause);
+  ScrDyn *previous = e->error_cause;
   e->error_cause = replacement;
+  scr_dyn_release(previous);
   e->cause_enumerable = entry && entry->enumerable;
 }
 
@@ -23984,8 +23988,9 @@ ScrDyn *scr_dyn_obj_entries(const ScrDyn *v) { return scr_dyn_objwalk(v, SCR_OBJ
  * Compiled subclasses release the matching hidden dyn field themselves. */
 static void scr_error_cause_drop_impl(void *obj) {
   ScrError *e = (ScrError *)obj;
-  scr_dyn_release(e->error_cause);
+  ScrDyn *previous = e->error_cause;
   e->error_cause = NULL;
+  scr_dyn_release(previous);
 }
 
 void scr_error_init_options(void *obj, int kind, const ScrDyn *message, const ScrDyn *options) {
@@ -24071,8 +24076,9 @@ void scr_error_set_cause(ScrError *e, ScrDyn *value) {
   scr_error_install_cause_drop(&scr_error_cause_drop_impl);
   ScrDyn *replacement = scr_dyn_retain(value);
   if (!e->error_cause) e->cause_enumerable = true;
-  scr_dyn_release(e->error_cause);
+  ScrDyn *previous = e->error_cause;
   e->error_cause = replacement;
+  scr_dyn_release(previous);
 }
 
 void scr_error_define_cause(ScrError *e, ScrDyn *value) {
@@ -24088,15 +24094,17 @@ void scr_error_delete_cause(ScrError *e) {
     scr_str_release(key);
     return;
   }
-  scr_dyn_release(e->error_cause);
+  ScrDyn *previous = e->error_cause;
   e->error_cause = NULL;
   e->cause_enumerable = false;
+  scr_dyn_release(previous);
 }
 
 static void scr_aggregate_errors_drop_impl(void *obj) {
   ScrAggregateError *a = (ScrAggregateError *)obj;
-  scr_dyn_release(a->errors);
+  ScrDyn *previous = a->errors;
   a->errors = NULL;
+  scr_dyn_release(previous);
 }
 
 ScrError *scr_aggregate_new(const ScrDyn *message, const ScrDyn *options) {
@@ -24113,8 +24121,9 @@ void scr_aggregate_set_errors(ScrError *e, ScrDyn *errors) {
   ScrAggregateError *a = (ScrAggregateError *)e;
   scr_aggregate_install_errors_drop(&scr_aggregate_errors_drop_impl);
   ScrDyn *replacement = scr_dyn_retain(errors);
-  scr_dyn_release(a->errors);
+  ScrDyn *previous = a->errors;
   a->errors = replacement;
+  scr_dyn_release(previous);
 }
 
 /* An AggregateError minted by a runtime throw path carries no list until
@@ -24131,8 +24140,9 @@ ScrDyn *scr_aggregate_errors(ScrError *e) {
 
 static void scr_domex_cause_drop_impl(void *obj) {
   ScrDomException *d = (ScrDomException *)obj;
-  scr_dyn_release(d->cause);
+  ScrDyn *previous = d->cause;
   d->cause = NULL;
+  scr_dyn_release(previous);
 }
 
 ScrError *scr_domex_new(const ScrDyn *message, const ScrDyn *name_or_options) {

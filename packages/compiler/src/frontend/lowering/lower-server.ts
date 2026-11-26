@@ -1317,7 +1317,7 @@ function lowerNetConnectDyn(
     lowerer,
     `${member} with these arguments`,
     expr,
-    "port, host, autoSelectFamily, autoSelectFamilyAttemptTimeout, and lookup are the supported options",
+    "port, host, localAddress, localPort, family, hints, lookup, noDelay, keepAlive, keepAliveInitialDelay, autoSelectFamily, autoSelectFamilyAttemptTimeout, blockList, signal and timeout are the supported options",
   );
   return {
     kind: "libCall",
@@ -1437,6 +1437,27 @@ function lowerNetConnectOptions(
       }
       return lowerNetConnectPath(lowerer, expr, member, path, false, args[1]);
     }
+  }
+  // A literal carrying any option the static walk does not handle routes to
+  // the runtime lane, whose normalization reads the rest of Node's
+  // TcpNetConnectOpts (localAddress/localPort, family, hints, noDelay,
+  // keepAlive/keepAliveInitialDelay, blockList, signal and timeout). Unknown
+  // members then follow Node's drop rule instead of a compile-time fence.
+  {
+    const staticKeys = new Set([
+      "port",
+      "host",
+      "autoSelectFamily",
+      "autoSelectFamilyAttemptTimeout",
+      "lookup",
+    ]);
+    const allStatic = optsNode.properties.nodes.every((p) => {
+      const named = ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p);
+      const key =
+        named && (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name)) ? p.name.text : null;
+      return key !== null && staticKeys.has(key);
+    });
+    if (!allStatic) return lowerNetConnectDyn(lowerer, expr, member, args, loc);
   }
   let port: IrExpr | null = null;
   let host: IrExpr | null = null;
@@ -1576,7 +1597,7 @@ function lowerNetConnectOptions(
       lowerer.noLowering(
         `${member} option '${key}'`,
         prop,
-        "port, host, autoSelectFamily, autoSelectFamilyAttemptTimeout, and lookup are the supported options",
+        "port, host, localAddress, localPort, family, hints, lookup, noDelay, keepAlive, keepAliveInitialDelay, autoSelectFamily, autoSelectFamilyAttemptTimeout, blockList, signal and timeout are the supported options",
       );
     }
   }
@@ -3100,7 +3121,10 @@ function lowerNetServerMethodCall(
       // (req, socket): an HTTP/1.1 request past server.maxRequestsPerSocket.
       // The listeners run and the server answers 503 itself, so the
       // connection stays usable for the next (also dropped) request.
-      const cb = lowerer.lowerExpr(args[1]!);
+      const cb = adaptUntypedListener(lowerer, lowerer.lowerExpr(args[1]!), args[1]!, [
+        HTTPREQ_T,
+        NETSOCKET_T,
+      ]);
       if (cb.type.kind !== "func" || cb.type.ret.kind !== "void" || cb.type.params.length > 2) {
         lowerer.unsupported(
           "SC1090",
@@ -5756,6 +5780,19 @@ export function lowerServerProperty(
     }
     if (name === "url" || name === "method") {
       const receiver = coerceToHandle(lowerer, expr.expression, HTTPREQ_T);
+      const h2Request =
+        ts.symbolNameOf(lowerer.typeOf(expr.expression).getSymbol()) === "Http2ServerRequest";
+      if (name === "url" && h2Request) {
+        // The compatibility request takes url from the frame's :path, so a
+        // CONNECT block (which carries none) reads Node's undefined.
+        return {
+          kind: "libCall",
+          fn: "http2.reqUrl",
+          args: [receiver],
+          type: lowerer.withUndefinedArm(STRING),
+          loc,
+        };
+      }
       const fn: IrLibFn = name === "url" ? "http.reqUrl" : "http.reqMethod";
       return { kind: "libCall", fn, args: [receiver], type: STRING, loc };
     }
@@ -8659,6 +8696,49 @@ function checkSniCallbackValue(lowerer: Lowerer, v: IrExpr, blame: ts.Node, what
   return v;
 }
 
+/** settings.enableConnectProtocol from an h2 settings literal: the one
+ * session knob the lowering applies (RFC 8441's advertisement — it gates
+ * whether a client may send an extended CONNECT). Absent: false. */
+function enableConnectProtocolSetting(lowerer: Lowerer, settings: ts.Expression): boolean {
+  if (!ts.isObjectLiteralExpression(settings)) return false;
+  let enable = false;
+  for (const setting of settings.properties.nodes) {
+    if (
+      ts.isPropertyAssignment(setting) &&
+      ts.isIdentifier(setting.name) &&
+      setting.name.text === "enableConnectProtocol"
+    ) {
+      if (
+        setting.initializer.kind !== ts.SyntaxKind.TrueKeyword &&
+        setting.initializer.kind !== ts.SyntaxKind.FalseKeyword
+      ) {
+        lowerer.noLowering(
+          "settings.enableConnectProtocol with a non-boolean literal",
+          setting,
+          "spell enableConnectProtocol as true or false",
+        );
+      }
+      enable = setting.initializer.kind === ts.SyntaxKind.TrueKeyword;
+    }
+  }
+  return enable;
+}
+
+/** The options record's settings.enableConnectProtocol (false when absent). */
+function enableConnectProtocolOption(lowerer: Lowerer, options: ts.Expression): boolean {
+  if (!ts.isObjectLiteralExpression(options)) return false;
+  for (const prop of options.properties.nodes) {
+    if (
+      ts.isPropertyAssignment(prop) &&
+      ts.isIdentifier(prop.name) &&
+      prop.name.text === "settings"
+    ) {
+      return enableConnectProtocolSetting(lowerer, prop.initializer);
+    }
+  }
+  return false;
+}
+
 /** Module-function calls on http2 import bindings. createServer lowers h2c;
  * createSecureServer lowers h2 over TLS, with allowHTTP1 selecting one
  * dual-ALPN server whose request/connect listeners mirror across parsers. */
@@ -8675,8 +8755,14 @@ function lowerHttp2ModuleCall(
     // stance) — a NON-literal options argument or an eager (req, res)
     // handler is NOT the lowered shape (register via server.on("stream")).
     let handlerNode: ts.Expression | null = null;
+    let enableConnectProtocol = false;
     for (const a of args) {
-      if (ts.isObjectLiteralExpression(a)) continue; // tuning options: ignored
+      if (ts.isObjectLiteralExpression(a)) {
+        // tuning options are ignored, except the one knob the lowering
+        // applies: settings.enableConnectProtocol (RFC 8441)
+        enableConnectProtocol = enableConnectProtocolOption(lowerer, a);
+        continue;
+      }
       if (ts.isFunctionExpression(a) || ts.isArrowFunction(a)) {
         handlerNode = a;
         continue;
@@ -8695,14 +8781,30 @@ function lowerHttp2ModuleCall(
       }
     }
     if (handlerNode === null) {
-      return { kind: "libCall", fn: "http2.createServer", args: [], type: NETSERVER_T, loc };
+      return enableConnectProtocol
+        ? {
+            kind: "libCall",
+            fn: "http2.createServerOpts",
+            args: [boolLit(true, loc)],
+            type: NETSERVER_T,
+            loc,
+          }
+        : { kind: "libCall", fn: "http2.createServer", args: [], type: NETSERVER_T, loc };
     }
     // An eager (req, res) handler is the COMPAT surface: the handler
     // becomes the first 'request' listener (Node's exact route), and the
     // pair it receives ARE the http req/res handles — Http2ServerRequest/
     // Http2ServerResponse over h2 streams (scr_http2.c's compat layer).
     const cb = lowerRequestHandlerArg(lowerer, handlerNode);
-    return { kind: "libCall", fn: "http2.createServerReq", args: [cb], type: NETSERVER_T, loc };
+    return enableConnectProtocol
+      ? {
+          kind: "libCall",
+          fn: "http2.createServerReqOpts",
+          args: [cb, boolLit(true, loc)],
+          type: NETSERVER_T,
+          loc,
+        }
+      : { kind: "libCall", fn: "http2.createServerReq", args: [cb], type: NETSERVER_T, loc };
   }
   if (bi.member === "performServerHandshake") {
     // http2.performServerHandshake(socket[, options]): a server session
@@ -9116,25 +9218,7 @@ function lowerHttp2ModuleCall(
               isScalarLiteral(p.initializer),
           );
         if (k === "settings" && initializer !== null && ts.isObjectLiteralExpression(initializer)) {
-          for (const setting of initializer.properties.nodes) {
-            if (
-              ts.isPropertyAssignment(setting) &&
-              ts.isIdentifier(setting.name) &&
-              setting.name.text === "enableConnectProtocol"
-            ) {
-              if (
-                setting.initializer.kind !== ts.SyntaxKind.TrueKeyword &&
-                setting.initializer.kind !== ts.SyntaxKind.FalseKeyword
-              ) {
-                lowerer.noLowering(
-                  "settings.enableConnectProtocol with a non-boolean literal",
-                  setting,
-                  "spell enableConnectProtocol as true or false",
-                );
-              }
-              enableConnectProtocol = setting.initializer.kind === ts.SyntaxKind.TrueKeyword;
-            }
-          }
+          enableConnectProtocol = enableConnectProtocolSetting(lowerer, initializer);
         }
         if (
           initializer !== null &&

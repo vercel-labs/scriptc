@@ -1523,9 +1523,16 @@ static void scr_h2_stream_fire_error(ScrH2Stream *st) {
   int n = name != NULL
       ? snprintf(msg, sizeof msg, "Stream closed with error code %s", name)
       : snprintf(msg, sizeof msg, "Stream closed with error code %" PRIu32, code);
-  ScrStr *m = scr_str_new(msg, (size_t)n);
-  scr_net_fire_err_this(&st->err_ls, m, st, SCR_DYNH_H2_STREAM);
-  scr_str_release(m);
+  /* A raw stream (no compatibility pair) has no internal error listener in
+   * Node, so an unlistened stream error throws there — an empty list here
+   * takes the fatal path on purpose. A compatibility stream swallows it
+   * (Node's compat layer listens), which is why a compat-only server
+   * survives a peer reset. */
+  if (st->err_ls.n > 0 || (st->compat_req == NULL && st->compat_res == NULL)) {
+    ScrStr *m = scr_str_new(msg, (size_t)n);
+    scr_net_fire_err_this(&st->err_ls, m, st, SCR_DYNH_H2_STREAM);
+    scr_str_release(m);
+  }
 }
 
 /* The stream's own 'close' listeners, after its 'error' and after the
@@ -2131,6 +2138,15 @@ static bool scr_h2_on_frame_in(ScrH2Session *s, uint8_t type, uint8_t flags, int
       st->rst_code = code;
       st->destroyed = true;
       scr_h2_stream_begin_close(st);
+      /* Node completes a compatibility request the peer reset: its 'end'
+       * runs with no trailers (after 'aborted'), so a handler never hangs
+       * and the request settles instead of staying retained. A raw stream
+       * gets no 'end' here, as in Node. */
+      if (st->compat_req != NULL && !st->end_recv) {
+        st->end_recv = true;
+        st->end_emitted = true;
+        scr_http_h2_req_end(st->compat_req);
+      }
       scr_h2_stream_settle(st);
       scr_http2_stream_release(st);
       if (scr_exc_pending()) return false;
@@ -3952,6 +3968,98 @@ static void scr_h2_fire_headers_list(ScrNetLs *ls, ScrH2Stream *st, ScrArr *pair
   free(snap);
 }
 
+/* A received request block's pseudo-headers, validated the way nghttp2 does
+ * for Node's server: :method always; :scheme and :path for every method but
+ * a plain CONNECT (which forbids both and requires :authority); :authority
+ * or a host field for the non-CONNECT case; an extended CONNECT only when
+ * the client enabled the connect protocol, and then with :scheme, :path and
+ * :authority. Unknown and repeated pseudo-headers are malformed too.
+ *
+ * A malformed block is a stream protocol error that never reaches a
+ * listener: without the :path rule a peer could hand a request with no url
+ * (Node's undefined) to a router that assumed a string. */
+/* A regular header field in a received block: field names are lowercase in
+ * HTTP/2, the connection-specific fields are forbidden, and `te` may carry
+ * nothing but "trailers" (nghttp2's HTTP-messaging rules; a mixed proxy
+ * relies on them to keep request smuggling out). */
+static bool scr_h2_regular_field_valid(const ScrStr *name, const ScrStr *value) {
+  for (size_t k = 0; k < name->len; k++) {
+    unsigned char c = (unsigned char)name->data[k];
+    if (c >= 'A' && c <= 'Z') return false;
+  }
+  if (scr_h2_name_is(name, "connection") || scr_h2_name_is(name, "keep-alive") ||
+      scr_h2_name_is(name, "proxy-connection") || scr_h2_name_is(name, "transfer-encoding") ||
+      scr_h2_name_is(name, "upgrade")) {
+    return false;
+  }
+  if (scr_h2_name_is(name, "te")) {
+    static const char want[] = "trailers";
+    if (value->len != sizeof want - 1) return false;
+    for (size_t k = 0; k < value->len; k++) {
+      char c = value->data[k];
+      if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
+      if (c != want[k]) return false;
+    }
+  }
+  return true;
+}
+
+static bool scr_h2_request_block_valid(const ScrH2Session *s, const ScrH2Headers *h) {
+  const ScrStr *method = NULL;
+  const ScrStr *scheme = NULL;
+  const ScrStr *path = NULL;
+  const ScrStr *authority = NULL;
+  const ScrStr *protocol = NULL;
+  bool host = false;
+  for (size_t i = 0; i < h->n; i++) {
+    const ScrStr *name = h->names[i];
+    const ScrStr *value = h->values[i];
+    if (name->len == 0) return false;
+    if (name->data[0] != ':') {
+      if (!scr_h2_regular_field_valid(name, value)) return false;
+      if (scr_h2_name_is(name, "host")) host = true;
+      continue;
+    }
+    const ScrStr **slot;
+    if (scr_h2_name_is(name, ":method")) {
+      slot = &method;
+    } else if (scr_h2_name_is(name, ":scheme")) {
+      slot = &scheme;
+    } else if (scr_h2_name_is(name, ":path")) {
+      slot = &path;
+    } else if (scr_h2_name_is(name, ":authority")) {
+      slot = &authority;
+    } else if (scr_h2_name_is(name, ":protocol")) {
+      slot = &protocol;
+    } else {
+      return false; /* a pseudo-header the request may not carry */
+    }
+    if (*slot != NULL) return false; /* a field the block may carry once */
+    *slot = value;
+  }
+  if (method == NULL || method->len == 0) return false;
+  if (scr_h2_name_is(method, "CONNECT")) {
+    if (protocol != NULL) {
+      /* extended CONNECT: only when the client enabled the setting, and
+       * with a non-empty :protocol, :scheme and :path */
+      /* RFC 8441: the client may use :protocol only when the SERVER
+       * advertised enableConnectProtocol (our local setting) — the
+       * client's own SETTINGS says nothing about what it may send. */
+      if (!s->local_settings.enable_connect_protocol) return false;
+      if (protocol->len == 0) return false;
+      if (scheme == NULL || scheme->len == 0) return false;
+      if (path == NULL || path->len == 0) return false;
+      return authority != NULL;
+    }
+    if (authority == NULL) return false;
+    return scheme == NULL && path == NULL;
+  }
+  if (protocol != NULL) return false; /* :protocol belongs to CONNECT alone */
+  if (scheme == NULL || scheme->len == 0) return false;
+  if (path == NULL || path->len == 0) return false;
+  return authority != NULL || host;
+}
+
 /* Node's test for the Expect header: "100-continue", ASCII-insensitive. */
 static bool scr_h2_expects_continue(const ScrStr *v) {
   static const char want[] = "100-continue";
@@ -3962,6 +4070,65 @@ static bool scr_h2_expects_continue(const ScrStr *v) {
     if (c != want[i]) return false;
   }
   return true;
+}
+
+/* A received block that breaks RFC 9113's request rules: answer the peer
+ * with RST_STREAM(PROTOCOL_ERROR) and settle the stream. Nothing is
+ * dispatched, and no local 'error' fires — Node's server streams surface
+ * the rejection to the peer alone. */
+static void scr_h2_reject_protocol_error(ScrH2Session *s, ScrH2Stream *st, int32_t stream_id) {
+  scr_h2_send_rst(s, stream_id, 1 /* NGHTTP2_PROTOCOL_ERROR */);
+  st->rst_code = 1;
+  st->suppress_rst_error = true;
+  st->destroyed = true;
+  scr_h2_stream_begin_close(st);
+  scr_h2_stream_settle(st);
+}
+
+/* A rejected block on a stream the program already holds (a trailer): Node's
+ * nghttp2 reports the protocol error to the raw stream before it closes, so
+ * a listener sees ERR_HTTP2_STREAM_ERROR. A stream nobody listens on stays
+ * silent (Node's session keeps an internal listener; ours must not treat
+ * the rejection as an unhandled 'error'). */
+static void scr_h2_reject_stream_error(ScrH2Session *s, ScrH2Stream *st, int32_t stream_id) {
+  scr_h2_send_rst(s, stream_id, 1 /* NGHTTP2_PROTOCOL_ERROR */);
+  st->rst_code = 1;
+  st->destroyed = true;
+  /* Node's order on the compat side: the request is marked aborted (its
+   * 'aborted' event fires and its signal aborts) BEFORE the raw stream
+   * reports the protocol error, and both before 'end' — the handler of a
+   * request whose body never arrived never sees a clean success. */
+  scr_h2_stream_begin_close(st);
+  {
+    /* Node's ERR_HTTP2_STREAM_ERROR message for the reset code. */
+    const char *name = scr_h2_code_name(1);
+    char msg[80];
+    int n = snprintf(msg, sizeof msg, "Stream closed with error code %s",
+                     name != NULL ? name : "NGHTTP2_PROTOCOL_ERROR");
+    ScrStr *m = scr_str_new(msg, (size_t)n);
+    /* listeners, or — for a raw stream — Node's unhandled 'error' */
+    if (st->err_ls.n > 0 || (st->compat_req == NULL && st->compat_res == NULL)) {
+      scr_net_fire_err_this(&st->err_ls, m, st, SCR_DYNH_H2_STREAM);
+    }
+    scr_str_release(m);
+  }
+  /* Reported above (or deliberately not: a compatibility stream swallows an
+   * unlistened error, Node's compat layer listens). Either way the settle
+   * below must not raise it again. */
+  st->suppress_rst_error = true;
+  /* Then it completes the request: the compat request's 'end' runs with no
+   * trailers (nghttp2 closes the stream under it), so a handler never hangs
+   * waiting for a body that cannot arrive. */
+  if (!st->end_recv) {
+    st->end_recv = true;
+    st->end_emitted = true;
+    if (st->compat_req != NULL) {
+      scr_http_h2_req_end(st->compat_req);
+    } else {
+      scr_h2_stream_maybe_emit_end(st);
+    }
+  }
+  scr_h2_stream_settle(st);
 }
 
 static void scr_h2_dispatch_headers(ScrH2Session *s, int32_t stream_id, uint8_t flags,
@@ -3984,22 +4151,14 @@ static void scr_h2_dispatch_headers(ScrH2Session *s, int32_t stream_id, uint8_t 
          * peer from appending header fields to one request without bound:
          * every accepted block would land in the request's trailer
          * storage, and nothing else limits how many arrive. */
-        scr_h2_send_rst(s, stream_id, 1 /* NGHTTP2_PROTOCOL_ERROR */);
-        st->rst_code = 1;
-        st->destroyed = true;
-        scr_h2_stream_begin_close(st);
-        scr_h2_stream_settle(st);
+        scr_h2_reject_stream_error(s, st, stream_id);
         return;
       }
       if (st->got_trailers || st->end_recv) {
         /* the trailer block already arrived: further HEADERS on the stream
          * are a protocol error, and accepting them would keep appending to
          * the request's trailer storage while the response is pending. */
-        scr_h2_send_rst(s, stream_id, 1 /* NGHTTP2_PROTOCOL_ERROR */);
-        st->rst_code = 1;
-        st->destroyed = true;
-        scr_h2_stream_begin_close(st);
-        scr_h2_stream_settle(st);
+        scr_h2_reject_stream_error(s, st, stream_id);
         return;
       }
       st->got_trailers = true;
@@ -4036,6 +4195,15 @@ static void scr_h2_dispatch_headers(ScrH2Session *s, int32_t stream_id, uint8_t 
      * (nghttp2's last_proc_stream_id): the peer's own ids — a client's
      * locally initiated requests do not count. */
     if (stream_id > s->last_proc_stream_id) s->last_proc_stream_id = stream_id;
+    if (!scr_h2_request_block_valid(s, h)) {
+      /* RFC 9113's malformed-request rule as nghttp2 applies it: a stream
+       * protocol error, and the block reaches no listener at all. The
+       * dispatcher's own reference (stream_new's +1) goes with it — the
+       * settle dropped the session's. */
+      scr_h2_reject_protocol_error(s, st, stream_id);
+      scr_http2_stream_release(st);
+      return;
+    }
     if (end_stream) {
       st->end_recv = true;
       st->end_after_headers = true;
@@ -4101,7 +4269,13 @@ static void scr_h2_dispatch_headers(ScrH2Session *s, int32_t stream_id, uint8_t 
       for (size_t i = 0; i <= n; i++) {
         if (i == split) {
           scr_dyn_this_pop();
-          if (!scr_exc_pending() && !st->destroyed && scr_net_ls_has_live(listeners)) {
+          /* A compatibility server processes EVERY stream through the
+           * compat layer, listener or not: Node's compat layer creates the
+           * request/response pair for a CONNECT and answers 405 itself when
+           * nobody listens, and that pair is also what keeps a peer reset
+           * from surfacing as an unhandled stream error. */
+          if (!scr_exc_pending() && !st->destroyed &&
+              (srv->compat_placed || scr_net_ls_has_live(listeners))) {
             scr_h2_compat_dispatch(s, st, h, end_stream, listeners, auto_continue);
           }
           scr_dyn_this_push(server, SCR_DYNH_NET_SERVER);
@@ -4417,18 +4591,25 @@ static void scr_h2_compat_dispatch(ScrH2Session *s, ScrH2Stream *st, const ScrH2
   /* The compat pair's own events follow the stream's context. */
   ScrAlsCtx *prev = scr_als_dispatch_enter(st->als);
   ScrHttpReq *req = scr_http_h2_req_new(s->sock, st);
+  bool path_seen = false;
+  bool connect_request = false;
   for (size_t i = 0; i < h->n; i++) {
     ScrStr *name = h->names[i];
     ScrStr *value = h->values[i];
     if (name->len == 7 && memcmp(name->data, ":method", 7) == 0) {
       scr_http_h2_req_line(req, value, NULL);
+      connect_request = value->len == 7 && memcmp(value->data, "CONNECT", 7) == 0;
     } else if (name->len == 5 && memcmp(name->data, ":path", 5) == 0) {
       scr_http_h2_req_line(req, NULL, value);
+      path_seen = true;
     }
     /* EVERY pair — pseudo-headers included — lands in req.headers
      * (Node's compat shape: req.headers[':path'] answers). */
     scr_http_h2_req_header(req, name, value);
   }
+  /* Node's compat request takes url from the frame's :path, so a CONNECT
+   * block (which carries none; an extended CONNECT does) reads undefined. */
+  if (!path_seen) scr_http_req_clear_url(req);
   ScrHttpRes *res = scr_http_h2_res_new(s->sock, st);
   scr_als_dispatch_leave(prev);
   scr_http_res_set_req(res, req); /* res.req — the compat pair's backref */
@@ -4458,6 +4639,16 @@ static void scr_h2_compat_dispatch(ScrH2Session *s, ScrH2Stream *st, const ScrH2
   }
   scr_dyn_this_pop();
   free(snap);
+  /* Node's compat layer answers a CONNECT nobody listens to itself:
+   * statusCode 405 and end(), no 'request' event. The pair above is what
+   * receives it (and keeps a later peer reset from being unhandled). */
+  if (connect_request && n == 0 && !scr_exc_pending() && !st->destroyed &&
+      !st->respond_sent && !scr_h2_stream_local_closed(st)) {
+    ScrArr *none = scr_arr_new(SCR_ELEM_STR, 0);
+    scr_http_res_write_head_pairs(res, 405, none);
+    scr_arr_release(none);
+    scr_http_res_end(res);
+  }
   /* a body-less request ends NOW — the handler's synchronous listeners
    * see 'end' right after it returns, the http/1 parser's order */
   if (!scr_exc_pending() && end_stream) scr_http_h2_req_end(req);
@@ -4551,11 +4742,39 @@ ScrNetServer *scr_http2_create_server(void) {
   return s;
 }
 
+/* http2.createServer(options[, handler]) when the options carry
+ * settings.enableConnectProtocol: the server advertises RFC 8441 support
+ * (the secure server's option takes the same path), so a default client may
+ * send an extended CONNECT. Every other tuning knob stays at its default. */
+ScrNetServer *scr_http2_create_server_opts(bool enable_connect_protocol) {
+  ScrNetServer *s = scr_http2_create_server();
+  ScrH2SrvCtx *ctx = (ScrH2SrvCtx *)scr_net_server_get_http_ctx(s);
+  if (ctx != NULL && ctx->proto == SCR_NET_PROTO_H2) {
+    ctx->enable_connect_protocol = enable_connect_protocol;
+  }
+  return s;
+}
+
 /* http2.createServer(handler): the eager (req, res) handler is the first
  * compat 'request' listener — Node's exact route (server.on("request")
  * appends through the scr_http.c hook). */
 ScrNetServer *scr_http2_create_server_req(ScrClosure *handler /*moves*/, ScrHttpReqFn fn) {
   ScrNetServer *s = scr_http2_create_server();
+  ScrH2SrvCtx *ctx = (ScrH2SrvCtx *)scr_net_server_get_http_ctx(s);
+  if (ctx != NULL && ctx->proto == SCR_NET_PROTO_H2) {
+    scr_h2_place_compat(ctx);
+    scr_net_ls_add(&ctx->request_ls, handler, (void *)fn, false);
+  } else {
+    scr_closure_release(handler);
+  }
+  return s;
+}
+
+/* createServer(options, handler): the eager compat handler over the h2c
+ * server that advertises the connect protocol. */
+ScrNetServer *scr_http2_create_server_req_opts(ScrClosure *handler /*moves*/,
+                                                ScrHttpReqFn fn, bool enable_connect_protocol) {
+  ScrNetServer *s = scr_http2_create_server_opts(enable_connect_protocol);
   ScrH2SrvCtx *ctx = (ScrH2SrvCtx *)scr_net_server_get_http_ctx(s);
   if (ctx != NULL && ctx->proto == SCR_NET_PROTO_H2) {
     scr_h2_place_compat(ctx);
@@ -4888,17 +5107,51 @@ ScrH2Stream *scr_http2_session_request(ScrH2Session *s, ScrArr *pairs /*borrowed
     return NULL;
   }
   if (!scr_h2_regular_names_valid(pairs)) return NULL; /* no stream was created */
-  ScrH2Stream *st = scr_h2_stream_new(s, s->next_stream_id);
-  /* A request on a connected session is initialized inside request(), so
-   * Node's 'ready' fires before any listener can attach; a connecting
-   * session fires it on 'connect' (the emit above). */
-  if (s->connected) scr_h2_stream_fire_ready(st);
-  s->next_stream_id += 2;
-  st->want_trailers = wait_trailers;
   ScrStr *method = scr_h2_pairs_pseudo(pairs, ":method");
   ScrStr *path = scr_h2_pairs_pseudo(pairs, ":path");
   ScrStr *scheme = scr_h2_pairs_pseudo(pairs, ":scheme");
   ScrStr *authority = scr_h2_pairs_pseudo(pairs, ":authority");
+  ScrStr *protocol = scr_h2_pairs_pseudo(pairs, ":protocol");
+  /* Node's prepareRequestHeadersObject: a CONNECT without :protocol (an
+   * extended CONNECT keeps the regular pseudo set) carries :authority and
+   * neither :scheme nor :path, and each violation is a synchronous throw
+   * before any stream exists. */
+  bool plain_connect = method != NULL && scr_h2_name_is(method, "CONNECT") && protocol == NULL;
+  if (plain_connect) {
+    const char *code = NULL;
+    const char *text = NULL;
+    size_t text_len = 0;
+    if (authority == NULL) {
+      code = "ERR_HTTP2_CONNECT_AUTHORITY";
+      text = ":authority header is required for CONNECT requests";
+      text_len = sizeof(":authority header is required for CONNECT requests") - 1;
+    } else if (scheme != NULL) {
+      code = "ERR_HTTP2_CONNECT_SCHEME";
+      text = "The :scheme header is forbidden for CONNECT requests";
+      text_len = sizeof("The :scheme header is forbidden for CONNECT requests") - 1;
+    } else if (path != NULL) {
+      code = "ERR_HTTP2_CONNECT_PATH";
+      text = "The :path header is forbidden for CONNECT requests";
+      text_len = sizeof("The :path header is forbidden for CONNECT requests") - 1;
+    }
+    if (code != NULL) {
+      scr_str_release(method);
+      scr_str_release(path);
+      scr_str_release(scheme);
+      scr_str_release(authority);
+      scr_throw_error_msg_code(SCR_ERR_ERROR, text, text_len, code);
+      return NULL;
+    }
+  }
+  /* The block is valid: the stream exists now. A request on a connected
+   * session is initialized inside request(), so Node's 'ready' fires before
+   * any listener can attach; a connecting session fires it on 'connect' (the
+   * emit above). A rejected block above never reaches this point, so it
+   * creates no stream. */
+  ScrH2Stream *st = scr_h2_stream_new(s, s->next_stream_id);
+  if (s->connected) scr_h2_stream_fire_ready(st);
+  s->next_stream_id += 2;
+  st->want_trailers = wait_trailers;
   ScrH2Buf block = {0};
   scr_h2_hpack_encode(&block, ":method", 7, method ? method->data : "GET", method ? method->len : 3);
   if (authority) {
@@ -4906,12 +5159,14 @@ ScrH2Stream *scr_http2_session_request(ScrH2Session *s, ScrArr *pairs /*borrowed
   } else {
     scr_h2_hpack_encode(&block, ":authority", 10, s->authority ? s->authority : "", s->authority_len);
   }
-  /* the default :scheme follows the transport — https over TLS sessions
-   * (Node derives it from the connect authority the same way) */
-  const char *dscheme = s->sock != NULL && scr_net_sock_encrypted(s->sock) ? "https" : "http";
-  scr_h2_hpack_encode(&block, ":scheme", 7, scheme ? scheme->data : dscheme,
-                      scheme ? scheme->len : strlen(dscheme));
-  scr_h2_hpack_encode(&block, ":path", 5, path ? path->data : "/", path ? path->len : 1);
+  if (!plain_connect) {
+    /* the default :scheme follows the transport — https over TLS sessions
+     * (Node derives it from the connect authority the same way) */
+    const char *dscheme = s->sock != NULL && scr_net_sock_encrypted(s->sock) ? "https" : "http";
+    scr_h2_hpack_encode(&block, ":scheme", 7, scheme ? scheme->data : dscheme,
+                        scheme ? scheme->len : strlen(dscheme));
+    scr_h2_hpack_encode(&block, ":path", 5, path ? path->data : "/", path ? path->len : 1);
+  }
   scr_h2_encode_regulars(&block, pairs);
   bool end;
   if (end_stream < 0) {
@@ -4934,11 +5189,13 @@ ScrH2Stream *scr_http2_session_request(ScrH2Session *s, ScrArr *pairs /*borrowed
                               ? scr_str_retain(authority)
                               : scr_str_new(s->authority != NULL ? s->authority : "",
                                             s->authority_len));
-    scr_arr_push_ref(sent, scr_str_new(":scheme", 7));
-    scr_arr_push_ref(sent, scheme != NULL ? scr_str_retain(scheme)
-                                          : scr_str_new(def_scheme, strlen(def_scheme)));
-    scr_arr_push_ref(sent, scr_str_new(":path", 5));
-    scr_arr_push_ref(sent, path != NULL ? scr_str_retain(path) : scr_str_new("/", 1));
+    if (!plain_connect) {
+      scr_arr_push_ref(sent, scr_str_new(":scheme", 7));
+      scr_arr_push_ref(sent, scheme != NULL ? scr_str_retain(scheme)
+                                            : scr_str_new(def_scheme, strlen(def_scheme)));
+      scr_arr_push_ref(sent, scr_str_new(":path", 5));
+      scr_arr_push_ref(sent, path != NULL ? scr_str_retain(path) : scr_str_new("/", 1));
+    }
     size_t npairs = pairs != NULL ? (size_t)scr_arr_len(pairs) : 0;
     for (size_t i = 0; i < npairs; i++) scr_arr_push_ref(sent, scr_arr_get_ref(pairs, (double)i));
     if (st->sent_headers_dom != NULL) scr_dyn_release(st->sent_headers_dom);
@@ -4949,6 +5206,7 @@ ScrH2Stream *scr_http2_session_request(ScrH2Session *s, ScrArr *pairs /*borrowed
   if (path) scr_str_release(path);
   if (scheme) scr_str_release(scheme);
   if (authority) scr_str_release(authority);
+  if (protocol) scr_str_release(protocol);
   scr_h2_send_headers(s, st->id, &block, end);
   free(block.data);
   if (end) {

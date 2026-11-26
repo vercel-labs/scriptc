@@ -667,8 +667,20 @@
  },
  {
   "file": "scr_events_emitter.c",
+  "function": "scr_emitter_raw_listeners_dyn",
+  "message": "listeners() through an untyped value of an event with a typed listener is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_events_emitter.c",
   "function": "scr_emitter_listeners_dyn",
   "message": "listeners() through an untyped value of an event with a typed listener is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_fetch.c",
+  "function": "sf_any_signal_list",
+  "message": "AbortSignal.any over this iterable has no lowering; pass an array",
   "code": "SC2020"
  },
  {

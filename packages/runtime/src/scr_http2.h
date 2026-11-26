@@ -44,7 +44,11 @@ void scr_http2_stream_release_v(void *p);
 ScrNetServer *scr_http2_create_server(void); /* +1 */
 /* createServer(handler): the eager (req, res) COMPAT handler — the first
  * 'request' listener (Http2ServerRequest/Response over h2 streams). */
-ScrNetServer *scr_http2_create_server_req(ScrClosure *handler /*moves*/, ScrHttpReqFn fn); /* +1 */
+ScrNetServer *scr_http2_create_server_req(ScrClosure *handler /*moves*/, ScrHttpReqFn fn);
+/* createServer(options[, handler]) with settings.enableConnectProtocol. */
+ScrNetServer *scr_http2_create_server_opts(bool enable_connect_protocol);
+ScrNetServer *scr_http2_create_server_req_opts(ScrClosure *handler /*moves*/,
+                                                ScrHttpReqFn fn, bool enable_connect_protocol); /* +1 */
 /* The REAL h2-over-TLS server (http2.createSecureServer({ cert, key })):
  * the same session machinery behind an mbedTLS handshake whose ALPN
  * advertises h2 alone — protocol-identical after establishment. */

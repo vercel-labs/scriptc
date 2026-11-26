@@ -44,7 +44,7 @@ import {
   typeKey,
   unionContainerArmsOk,
 } from "../../../ir/ir.js";
-import { isSafeToDiscard, isSafeToRepeat } from "./evaluation-safety.js";
+import { isReadOnlyEvaluation, isSafeToDiscard, isSafeToRepeat } from "./evaluation-safety.js";
 import {
   bigintCompoundValue,
   compoundUnsupported,
@@ -3008,13 +3008,21 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
     // operand values. This matters for `take()[0] + 1` and for two reads
     // with observable getters/calls.
     const prefix: IrStmt[] = [];
-    const stable = (operand: IrExpr): IrExpr => {
-      if (isSafeToRepeat(operand) || isSafeToDiscard(operand)) return operand;
+    const snapshot = (operand: IrExpr): IrExpr => {
       const tmp = lowerer.declareHiddenLocal("%plus", operand.type);
       prefix.push({ kind: "varDecl", localId: tmp.id, init: operand, loc });
       return varRef(tmp.id, operand.type, loc);
     };
-    const stableLeft = stable(left);
+    const stable = (operand: IrExpr): IrExpr => {
+      if (isSafeToRepeat(operand) || isSafeToDiscard(operand)) return operand;
+      return snapshot(operand);
+    };
+    // A left operand that is itself a read stays in place when the right
+    // operand only reads. When the right operand may write what the left
+    // one reads (`local + (local = "second")`), the left value is
+    // snapshotted first so the concatenation sees Node's order.
+    const stableLeft =
+      isSafeToRepeat(left) && !isReadOnlyEvaluation(right) ? snapshot(left) : stable(left);
     const stableRight = stable(right);
     const leftString = lowerer.ensureString(stableLeft, expr.left);
     const rightString = lowerer.ensureString(stableRight, expr.right);

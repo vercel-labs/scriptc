@@ -1563,7 +1563,8 @@ static bool ni_tree_matches(NiDir *root) {
 
 /* Writes the executable's tree below `root` (an empty directory); false
  * when a directory, file or link could not be written in full. */
-static bool ni_extract(NiDir *root) {
+/* Writes the executable's files below `root`. */
+static bool ni_extract_files(NiDir *root) {
   if (ni_modules == NULL && ni_nfiles > 0) ni_bad_manifest();
   NiWalk walk;
   ni_walk_begin(&walk, root);
@@ -1575,8 +1576,18 @@ static bool ni_extract(NiDir *root) {
          ni_write_file(dir, base, ni_modules + ni_files[i].offset, ni_files[i].size);
   }
   ni_walk_end(&walk);
-  if (!ok) return false;
+  return ok;
+}
+
+/* Writes the manifest's links below `root`. An install makes them after it
+ * renames its staging directory into place: a junction names its target
+ * absolutely, and nothing replaces that target when a link is created
+ * without symlink privileges, so a target inside the staging name would
+ * dangle once it is renamed. */
+static bool ni_extract_links(NiDir *root) {
+  NiWalk walk;
   ni_walk_begin(&walk, root);
+  bool ok = true;
   for (size_t i = 0; i < ni_nlinks && ok; i++) {
     const char *base;
     NiDir *dir = ni_walk_parent(&walk, ni_links[i].path, true, &base);
@@ -1584,6 +1595,12 @@ static bool ni_extract(NiDir *root) {
   }
   ni_walk_end(&walk);
   return ok;
+}
+
+/* Writes the executable's tree below `root` (an empty directory that keeps
+ * its name): its files, then its links. */
+static bool ni_extract(NiDir *root) {
+  return ni_extract_files(root) && ni_extract_links(root);
 }
 
 
@@ -1668,10 +1685,16 @@ static bool ni_cached_root(const char *digest) {
     char staging[128];
     snprintf(staging, sizeof staging, "%s.%ld.tmp", digest, ni_pid());
     NiDir *fresh = ni_dir_open(islands, staging, true, false);
-    if (fresh != NULL && ni_dir_private(fresh) && ni_extract(fresh) && ni_dir_flush(fresh) &&
-        ni_dir_rename(islands, staging, digest)) {
+    bool placed = fresh != NULL && ni_dir_private(fresh) && ni_extract_files(fresh) &&
+                  ni_dir_flush(fresh) && ni_dir_rename(islands, staging, digest);
+    if (placed) {
       ni_dir_close(fresh);
+      /* The links after the rename: see ni_extract_links. */
       tree = ni_dir_open(islands, digest, false, false);
+      if (tree != NULL && !ni_extract_links(tree)) {
+        ni_dir_remove_tree(tree);
+        tree = NULL;
+      }
     } else {
       if (fresh != NULL) ni_dir_remove_tree(fresh);
       ni_dir_rmdir(islands, staging);
@@ -2708,16 +2731,24 @@ __asm__(".text\n"
         "  movq 56(%rdx), %rax\n"
         "  jmp *%rax\n");
 
-/* A nested entry: job(arg) on Node's stack below the mark, from a fiber. */
-static NiCtx ni_nested_ctx, ni_nested_return;
-static void (*ni_nested_job)(void *) = NULL;
-static void *ni_nested_arg = NULL;
+/* A nested entry: job(arg) on Node's stack below the mark, from a fiber.
+ * Each entry keeps its context and its job in its own frame on Node's
+ * stack, so an entry made from inside another — Node code the outer entry
+ * runs resumes a fiber that calls back in — has state of its own; the
+ * entry being served is ni_nested_serving. */
+typedef struct NiNested {
+  NiCtx self; /* this entry's context, saved when it switches back */
+  NiCtx back; /* the context it returns to */
+  void (*job)(void *);
+  void *arg;
+} NiNested;
+
+static SCR_TL NiNested *ni_nested_serving = NULL;
 
 static void ni_nested_trampoline(void) {
-  void (*job)(void *) = ni_nested_job;
-  void *arg = ni_nested_arg;
-  job(arg);
-  ni_ctx_swap(&ni_nested_ctx, &ni_nested_return);
+  NiNested *entry = ni_nested_serving;
+  entry->job(entry->arg);
+  ni_ctx_swap(&entry->self, &entry->back);
   __builtin_unreachable();
 }
 
@@ -2735,20 +2766,24 @@ static void ni_on_node_stack_below_mark(void (*job)(void *), void *arg) {
     job(arg);
     return;
   }
-  memset(&ni_nested_ctx, 0, sizeof ni_nested_ctx);
+  NiNested entry;
+  memset(&entry, 0, sizeof entry);
   uintptr_t sp = (hi - 256) & ~(uintptr_t)15;
   sp -= 8; /* as after a call: the trampoline's return address slot */
   *(void **)sp = NULL;
-  ni_nested_ctx.rsp = (void *)sp;
-  ni_nested_ctx.rip = (void *)ni_nested_trampoline;
-  __asm__ volatile("stmxcsr %0" : "=m"(ni_nested_ctx.mxcsr));
-  __asm__ volatile("fnstcw %0" : "=m"(ni_nested_ctx.fpcw));
-  ni_nested_job = job;
-  ni_nested_arg = arg;
+  entry.self.rsp = (void *)sp;
+  entry.self.rip = (void *)ni_nested_trampoline;
+  __asm__ volatile("stmxcsr %0" : "=m"(entry.self.mxcsr));
+  __asm__ volatile("fnstcw %0" : "=m"(entry.self.fpcw));
+  entry.job = job;
+  entry.arg = arg;
   uintptr_t guard = scr_stack_guard;
   SCR_STACK_GUARD_SET(scr_stack_guard_for(lo, hi - lo));
   void *loop_save = scr_loop_nested_enter();
-  ni_ctx_swap(&ni_nested_return, &ni_nested_ctx);
+  NiNested *outer = ni_nested_serving;
+  ni_nested_serving = &entry;
+  ni_ctx_swap(&entry.back, &entry.self);
+  ni_nested_serving = outer;
   scr_loop_nested_leave(loop_save);
   SCR_STACK_GUARD_SET(guard);
 }
@@ -3393,11 +3428,18 @@ static const ScrNodeBridge *(*ni_bridge_entry(const char *dir, char *error, size
     return NULL;
   }
   /* Kept for the process: a native addon the program loads later resolves
-   * libnode's exports from the same directory. */
+   * libnode's exports from the same directory. The per-call search flags
+   * name the directories LoadLibraryExW searches: the bridge's own
+   * (DLL_LOAD_DIR, where libnode.dll sits beside it) and the ones
+   * AddDllDirectory added (USER_DIRS). LOAD_WITH_ALTERED_SEARCH_PATH cannot
+   * be combined with those flags — the system rejects the call — so it is
+   * only the fallback for a system without per-call search directories. */
   (void)AddDllDirectory(folder);
-  HMODULE library = LoadLibraryExW(wide, NULL,
-                                   LOAD_LIBRARY_SEARCH_DEFAULT_DIRS | LOAD_LIBRARY_SEARCH_USER_DIRS |
-                                       LOAD_WITH_ALTERED_SEARCH_PATH);
+  HMODULE library =
+      LoadLibraryExW(wide, NULL, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS |
+                                     LOAD_LIBRARY_SEARCH_USER_DIRS);
+  if (library == NULL && GetLastError() == ERROR_INVALID_PARAMETER)
+    library = LoadLibraryExW(wide, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
   free(wide);
   free(folder);
   if (library == NULL) {

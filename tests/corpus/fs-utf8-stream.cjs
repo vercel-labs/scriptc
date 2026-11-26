@@ -426,7 +426,56 @@ function descriptorInheritance(dir) {
   const flags = parseInt(info.match(/flags:\s+(\d+)/)[1], 8);
   console.log("descriptor inheritance", (flags & 524288) !== 0 ? "closed" : "inherited");
   s.destroy();
-  finish(dir);
+  writeDestroy(dir);
+}
+
+// A 'write' listener that destroys the stream: the deferred close follows
+// this completion, the descriptor is released, and no drain follows.
+function writeDestroy(dir) {
+  const file = join(dir, "write-destroy.log");
+  const log = [];
+  const s = new fs.Utf8Stream({ dest: file });
+  s.on("write", (n) => {
+    log.push("write:" + n);
+    s.destroy();
+    log.push("destroyed");
+  });
+  s.on("ready", () => s.write("x"));
+  s.on("drain", () => log.push("drain"));
+  s.on("close", () => {
+    let state;
+    try {
+      fs.fstatSync(s.fd);
+      state = "open";
+    } catch (err) {
+      state = err.code;
+    }
+    log.push("close:" + state);
+    console.log(log.join(","));
+    asyncMkdirError(dir);
+  });
+}
+
+// A mkdir: true failure in the default asynchronous mode is an 'error'
+// event, like the open's, not a throw from the constructor.
+function asyncMkdirError(dir) {
+  const blocker = join(dir, "blocker");
+  fs.writeFileSync(blocker, "x");
+  const s = new fs.Utf8Stream({ dest: join(blocker, "sub", "x.log"), mkdir: true });
+  const log = [];
+  s.on("ready", () => log.push("ready"));
+  s.on("error", (error) => {
+    log.push("error:" + error.code);
+    try {
+      s.write("x");
+      log.push("write ok");
+    } catch (err) {
+      log.push("write:" + err.code);
+    }
+    console.log(log.join(","));
+    finish(dir);
+  });
+  console.log("constructed", s.fd);
 }
 
 function finish(dir) {

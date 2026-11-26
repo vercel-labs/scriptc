@@ -166,7 +166,12 @@ static void scr_u8_emit(ScrUtf8Stream *s, int event, ScrDyn *arg) {
   for (ScrU8Listener *l = s->listeners; l != NULL; l = l->next) {
     if (l->event == event) count++;
   }
-  if (count == 0) return;
+  if (count == 0) {
+    /* An 'error' nobody listens for is Node's uncaught exception: the
+     * deferred open/write failure ends the process instead of disappearing. */
+    if (event == SCR_U8_ERROR && arg != NULL) scr_dyn_throw(scr_dyn_retain(arg));
+    return;
+  }
   ScrDyn **fns = malloc(count * sizeof *fns);
   if (fns == NULL) scr_u8_oom();
   size_t at = 0;
@@ -191,13 +196,18 @@ static void scr_u8_emit(ScrUtf8Stream *s, int event, ScrDyn *arg) {
   ScrDyn *argv[1];
   size_t argc = arg != NULL ? 1 : 0;
   if (argc) argv[0] = arg;
-  for (size_t i = 0; i < at; i++) {
-    ScrDyn *r = scr_dyn_call(fns[i], argv, argc, "listener");
+  /* Every snapshot is released exactly once, including the listeners a
+   * throwing listener prevented from running: the snapshot owns a reference
+   * to each until its own call releases it. */
+  size_t called = 0;
+  while (called < at) {
+    ScrDyn *r = scr_dyn_call(fns[called], argv, argc, "listener");
     if (r) scr_dyn_release(r);
-    scr_dyn_release(fns[i]);
+    scr_dyn_release(fns[called]);
+    called++;
     if (scr_exc_pending()) break;
   }
-  for (size_t i = at; i < count; i++) scr_dyn_release(fns[i]);
+  for (size_t i = called; i < count; i++) scr_dyn_release(fns[i]);
   free(fns);
 }
 
@@ -283,6 +293,20 @@ static void scr_u8_tick(ScrUtf8Stream *s, int event) {
   else scr_u8_tick_head = t;
   scr_u8_tick_tail = t;
   scr_next_tick_raw(&scr_u8_tick_dispatch);
+}
+
+/* Reports an asynchronous open failure — the open itself or the mkdir: true
+ * that precedes it — the way Node's threadpool open does: the constructor
+ * returns the stream and the 'error' event follows once listeners can be
+ * attached. An 'error' nobody listens for then throws, as Node's EventEmitter
+ * does. */
+static ScrDyn *scr_u8_defer_open_error(ScrUtf8Stream *s) {
+  s->open_error = scr_caught_to_dyn(scr_exc_take());
+  s->fd = -1;
+  ScrDyn *box = scr_dyn_new_handle(s, SCR_DYNH_UTF8_STREAM);
+  scr_u8_defer(s, scr_u8_step_open_error);
+  scr_u8_release(s);
+  return box;
 }
 
 /* ── errors and helpers ─────────────────────────────────────────────── */
@@ -378,6 +402,7 @@ static bool scr_u8_write_out(ScrUtf8Stream *s, size_t *written) {
 static void scr_u8_actual_write(ScrUtf8Stream *s);
 static void scr_u8_begin_close(ScrUtf8Stream *s);
 static void scr_u8_finish_close(ScrUtf8Stream *s);
+static void scr_u8_close_if_pending(ScrUtf8Stream *s);
 
 /* The flush callbacks a drain completes. Node answers them from the drain
  * listener it registered, i.e. right after the event's listeners. */
@@ -426,14 +451,19 @@ static void scr_u8_release_done(ScrUtf8Stream *s, size_t written) {
    * and the listeners above saw it counted as Node's do. */
   s->len = s->len >= s->release_units ? s->len - s->release_units : 0;
   s->release_units = 0;
-  if (scr_exc_pending()) return;
+  if (scr_exc_pending()) {
+    scr_u8_close_if_pending(s);
+    return;
+  }
   if (s->len > s->min_length) {
     scr_u8_actual_write(s);
+    scr_u8_close_if_pending(s);
     return;
   }
   if (s->ending) {
     if (s->len > 0) scr_u8_actual_write(s);
     else scr_u8_begin_close(s);
+    scr_u8_close_if_pending(s);
     return;
   }
   if (s->sync) {
@@ -441,10 +471,14 @@ static void scr_u8_release_done(ScrUtf8Stream *s, size_t written) {
       s->drain_queued = true;
       scr_u8_tick(s, SCR_U8_DRAIN);
     }
+    scr_u8_close_if_pending(s);
     return;
   }
+  /* A 'write' listener may have destroyed the stream: Node still answers the
+   * drain this completion owes, then the close. */
   scr_u8_emit(s, SCR_U8_DRAIN, NULL);
   if (!scr_exc_pending()) scr_u8_flush_cbs_run(s);
+  scr_u8_close_if_pending(s);
 }
 
 /* One asynchronous flush on the shared worker pool. The bytes are copied out
@@ -654,6 +688,13 @@ static void scr_u8_finish_close(ScrUtf8Stream *s) {
   scr_u8_defer(s, scr_u8_step_close);
 }
 
+/* A listener may have destroyed the stream while this completion ran: its
+ * close was waiting for the flush (close_pending), and it runs after the
+ * events this completion still owes, as Node's does. */
+static void scr_u8_close_if_pending(ScrUtf8Stream *s) {
+  if (s->close_pending) scr_u8_finish_close(s);
+}
+
 /* 'ready' once the stream is open: a tick when the descriptor is already
  * open (passed in, or opened by openSync in sync mode), the deferred
  * completion of the open otherwise. */
@@ -854,8 +895,13 @@ static ScrDyn *scr_u8_reopen(ScrUtf8Stream *s, const ScrDyn *file) {
   int previous = (int)s->fd;
   s->fd = fd;
   if (previous >= 0 && previous != 1 && previous != 2) {
-    if (s->writing) s->retired_fd = previous;
-    else {
+    /* Only the descriptor an in-flight flush captured has to outlive the
+     * reopen. When an earlier reopen already retired that one, this
+     * descriptor belongs to no worker and is closed now: retiring it again
+     * would lose the first one. */
+    if (s->writing && s->retired_fd < 0) {
+      s->retired_fd = previous;
+    } else {
       scr_fs_close((double)previous);
       if (scr_exc_pending()) scr_exc_clear();
     }
@@ -961,13 +1007,17 @@ ScrDyn *scr_fs_utf8_stream_new(ScrDyn *options) {
       return NULL;
     }
     if (s->mkdir) {
-      /* mkdir: true creates the destination's directory. */
+      /* mkdir: true creates the destination's directory. Its asynchronous
+       * failure is an 'error' event like the open's, not a constructor throw. */
       ScrStr *dir = scr_path_dirname(s->file);
       scr_fs_mkdir_recursive(dir);
       scr_str_release(dir);
       if (scr_exc_pending()) {
-        scr_u8_release(s);
-        return NULL;
+        if (s->sync) {
+          scr_u8_release(s);
+          return NULL;
+        }
+        return scr_u8_defer_open_error(s);
       }
     }
     /* O_NONBLOCK keeps the inline open from parking the loop when the
@@ -988,12 +1038,7 @@ ScrDyn *scr_fs_utf8_stream_new(ScrDyn *options) {
       /* Node's default open rides the threadpool and reports a failure as
        * an 'error' event, so the constructor must not throw before the
        * caller can attach its listener. */
-      s->open_error = scr_caught_to_dyn(scr_exc_take());
-      s->fd = -1;
-      ScrDyn *box = scr_dyn_new_handle(s, SCR_DYNH_UTF8_STREAM);
-      scr_u8_defer(s, scr_u8_step_open_error);
-      scr_u8_release(s);
-      return box;
+      return scr_u8_defer_open_error(s);
     }
     scr_u8_close_on_exec((int)fd);
     s->fd = fd;

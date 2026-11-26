@@ -9813,6 +9813,25 @@ static void scr_ipc_queue_closed_send(ScrStr *send_error, ScrClosure *cb,
   scr_next_tick_raw(&scr_ipc_closed_send_tick);
 }
 
+/* A thread that stops before its queued closed-send ticks run (a worker
+ * that exits from a disconnect handler) drops the markers; the queue the
+ * marker would have drained owns a callback, an error and an async context
+ * per entry, so release them here. */
+static void scr_ipc_closed_sends_teardown(void) {
+  for (size_t i = 0; i < scr_ipc_closed_n; i++) {
+    scr_closure_release(scr_ipc_closed_sends[i].cb);
+    scr_error_release(scr_ipc_closed_sends[i].error);
+    scr_als_ctx_release(scr_ipc_closed_sends[i].ctx);
+  }
+  scr_ipc_closed_n = 0;
+  free(scr_ipc_closed_sends);
+  scr_ipc_closed_sends = NULL;
+}
+
+__attribute__((constructor)) static void scr_ipc_install_closed_send_teardown(void) {
+  scr_raw_tick_teardown_hook = scr_ipc_closed_sends_teardown;
+}
+
 static bool scr_ipc_send(ScrIpc *ipc, ScrStr *json, ScrClosure *cb,
                          ScrIpcSendFn fn) {
   if (!ipc || !ipc->connected) {

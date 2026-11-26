@@ -2235,6 +2235,8 @@ static void scr_next_tick_raw_first(void (*fn)(void)) {
   if (scr_nt_tail == NULL) scr_nt_tail = t;
 }
 
+void (*scr_raw_tick_teardown_hook)(void) = NULL;
+
 void scr_nticks_teardown(void) {
   while (scr_nt_head != NULL) {
     ScrNtick *t = scr_nt_head;
@@ -2244,6 +2246,9 @@ void scr_nticks_teardown(void) {
     scr_mem_free(t);
   }
   scr_nt_tail = NULL;
+  /* A raw tick whose state the marker owns (a queue it drains) releases it
+   * now: the markers never run. */
+  if (scr_raw_tick_teardown_hook != NULL) scr_raw_tick_teardown_hook();
 }
 
 static void scr_immediates_teardown(void);

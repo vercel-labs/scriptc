@@ -825,6 +825,12 @@ void scr_process_write_callback(ScrClosure *cb, ScrFsRenameFn fn);
  * nextTicks run in true FIFO order (in Node they are the same queue).
  * Teardown drops markers without running them. */
 void scr_next_tick_raw(void (*fn)(void));
+/* The owner of raw-tick state that the markers themselves hold (a queue the
+ * marker drains) releases it here: teardown drops queued markers without
+ * running them, so their owner's state would leak otherwise. Called on the
+ * thread whose tick queue is torn down, after the queue is cleared. One
+ * owner per process; the child unit's closed-channel sends are the first. */
+extern void (*scr_raw_tick_teardown_hook)(void);
 /* A nextTick/microtask checkpoint from inside a station that batches
  * several event callbacks (child reaping): Node drains the queue after
  * every macrotask, so what one callback queued must run before the

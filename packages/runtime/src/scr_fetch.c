@@ -664,11 +664,12 @@ static void sf_any_source_abort(SfSignalWatch *w, SfSignal *source) {
 }
 
 /* AbortSignal.any's `signals` sequence: an array (or a materialized
- * typed-ref array) is taken as it is; typed arrays and the native
+ * typed-ref array) is taken as it is; a typed array and the native
  * collections (Set, Map) drain in iteration order; a user iterable keeps
  * the SC2020 refusal new Blob's sources do; primitives (strings included),
- * null, undefined and non-iterable objects throw Node's sequence
- * TypeError. +1 array, or NULL with the exception pending. */
+ * null, undefined, a DataView, the ArrayBuffer objects and other
+ * non-iterables throw Node's sequence TypeError. +1 array, or NULL with
+ * the exception pending. */
 static ScrDyn *sf_any_signal_list(const ScrDyn *signals) {
   if (signals != NULL && signals->kind == SCR_DYN_ARR)
     return scr_dyn_retain((ScrDyn *)signals);
@@ -678,9 +679,17 @@ static ScrDyn *sf_any_signal_list(const ScrDyn *signals) {
     scr_dyn_release(view);
     if (scr_exc_pending()) return NULL;
   }
-  if (signals != NULL &&
-      (signals->kind == SCR_DYN_BYTES ||
-       (signals->kind == SCR_DYN_HANDLE && scr_dyn_handle_ops_of(signals)->iter_pack)))
+  if (signals != NULL && signals->kind == SCR_DYN_BYTES) {
+    /* A typed array (Buffer included) is iterable; a DataView and the
+     * ArrayBuffer objects, shared included, are not — Node throws the
+     * sequence TypeError before any element is read. */
+    if (signals->v.bytes->is_data_view || scr_array_buffer_is(signals) ||
+        scr_shared_array_buffer_is(signals))
+      goto not_a_sequence;
+    return scr_dyn_iter_pack(signals, NULL);
+  }
+  if (signals != NULL && signals->kind == SCR_DYN_HANDLE &&
+      scr_dyn_handle_ops_of(signals)->iter_pack)
     return scr_dyn_iter_pack(signals, NULL);
   bool primitive = signals == NULL || signals->kind == SCR_DYN_UNDEF ||
                    signals->kind == SCR_DYN_NULL || signals->kind == SCR_DYN_BOOL ||
@@ -697,6 +706,7 @@ static ScrDyn *sf_any_signal_list(const ScrDyn *signals) {
     }
     if (scr_exc_pending()) return NULL;
   }
+not_a_sequence:
   static const char message[] = "signals cannot be converted to sequence.";
   scr_throw_error_msg_code(SCR_ERR_TYPE, message, sizeof message - 1, "ERR_INVALID_ARG_TYPE");
   return NULL;

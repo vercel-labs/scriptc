@@ -91,6 +91,26 @@ console.log("any empty", AbortSignal.any([]).aborted);
 const setComposite = AbortSignal.any(new Set([new AbortController().signal]));
 console.log("any set", setComposite.aborted);
 
+// A typed array is an iterable sequence of numbers (so an element fails);
+// a DataView and the ArrayBuffer objects are not sequences at all. The
+// calls go through an any-typed parameter, as a JavaScript source passes
+// what its declarations do not name (Node reads the value at run time).
+const outcome = (fn) => {
+  try {
+    return String(fn().aborted);
+  } catch (caught) {
+    return `${caught.constructor.name} ${caught.code} ${caught.message}`;
+  }
+};
+const anyOf = (value) => AbortSignal.any(value);
+console.log("any uint8 empty", outcome(() => anyOf(new Uint8Array(0))));
+console.log("any uint8 element", outcome(() => anyOf(new Uint8Array([1]))));
+console.log("any float64 empty", outcome(() => anyOf(new Float64Array(0))));
+console.log("any buffer empty", outcome(() => anyOf(Buffer.alloc(0))));
+console.log("any dataview", outcome(() => anyOf(new DataView(new ArrayBuffer(0)))));
+console.log("any arraybuffer", outcome(() => anyOf(new ArrayBuffer(0))));
+console.log("any shared", outcome(() => anyOf(new SharedArrayBuffer(0))));
+
 const message = (fn) => {
   try {
     fn();

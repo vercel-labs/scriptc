@@ -2964,10 +2964,18 @@ function lowerFromSource(
   // source keeps its own life-cycle, as in Node.
   const streamInfo = srcT?.kind === "object" ? lowerer.classes.get(srcT.className) : undefined;
   const streamSides = streamSidesOf(lowerer, streamInfo);
+  // A JS class can shadow the method with an accessor (`get
+  // [Symbol.asyncIterator]()`): from.js reads the member off the value, so
+  // the getter runs (an access check or a redaction) before the iterator is
+  // opened. The accessor collects under the `get:` slot, so both spellings
+  // are an override of the built-in iterator.
+  const asyncIteratorMember = (
+    info: NonNullable<ReturnType<Lowerer["classes"]["get"]>>,
+  ): ReturnType<Lowerer["findMethodOn"]> =>
+    lowerer.findMethodOn(info, "sym:asyncIterator") ??
+    lowerer.findMethodOn(info, "get:sym:asyncIterator");
   const iteratorOverride =
-    srcT?.kind === "object"
-      ? lowerer.findMethodOn(lowerer.classes.get(srcT.className)!, "sym:asyncIterator")
-      : null;
+    srcT?.kind === "object" ? asyncIteratorMember(lowerer.classes.get(srcT.className)!) : null;
   // The built-in streams answer their iterator natively (no class-table
   // method); a subclass declaring one overrides it. The static class alone
   // is not enough: a value passed through a base-typed slot keeps its own
@@ -2976,7 +2984,9 @@ function lowerFromSource(
   // redaction this fast path would skip). Such a source is refused below
   // when the program declares such a descendant.
   const overridesBelow =
-    streamInfo !== undefined && lowerer.overrideBelow(streamInfo, "sym:asyncIterator");
+    streamInfo !== undefined &&
+    (lowerer.overrideBelow(streamInfo, "sym:asyncIterator") ||
+      lowerer.overrideBelow(streamInfo, "get:sym:asyncIterator"));
   const exactSource = srcNode !== undefined && constructsStaticClass(lowerer, srcNode, srcT);
   const builtinIterator =
     (iteratorOverride === null || iteratorOverride.declarer.builtinStream != null) &&
@@ -3081,7 +3091,7 @@ function lowerFromSource(
   const asyncOpen =
     srcT?.kind === "object" &&
     lowerer.classes.has(srcT.className) &&
-    lowerer.findMethodOn(lowerer.classes.get(srcT.className)!, "sym:asyncIterator") !== null;
+    asyncIteratorMember(lowerer.classes.get(srcT.className)!) !== null;
   const cit = srcT?.kind === "object" && !asyncOpen ? classIteratorOf(lowerer, srcT) : null;
   const citRecv =
     srcNode && srcT?.kind === "object" && cit && opts && fromGenChunk(lowerer, cit.valueT)
@@ -3650,6 +3660,20 @@ function constructsStaticClass(
     break;
   }
   if (!ts.isNewExpression(e) || staticType === null) return false;
+  // The callee must BE the class, not a value of the class's constructor
+  // type: `new Ctor()` through a parameter or a field can construct a
+  // subclass whose Symbol.asyncIterator guard would not run (a base-typed
+  // `Ctor: typeof Readable` may hold a subclass's constructor).
+  const callee = e.expression;
+  let calleeSymbol = lowerer.checker.getSymbolAtLocation(callee);
+  if (calleeSymbol && (calleeSymbol.flags & ts.SymbolFlags.Alias) !== 0)
+    calleeSymbol = lowerer.checker.getAliasedSymbol(calleeSymbol);
+  const calleeDeclaration = calleeSymbol?.valueDeclaration;
+  if (
+    calleeDeclaration === undefined ||
+    !(ts.isClassDeclaration(calleeDeclaration) || ts.isClassExpression(calleeDeclaration))
+  )
+    return false;
   const constructed = lowerer.mapTypeOf(lowerer.typeOf(e));
   return constructed !== null && typeEquals(constructed, staticType);
 }

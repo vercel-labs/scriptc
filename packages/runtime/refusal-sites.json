@@ -679,6 +679,12 @@
  },
  {
   "file": "scr_fetch.c",
+  "function": "sf_any_signal_list",
+  "message": "AbortSignal.any over this iterable has no lowering; pass an array",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_fetch.c",
   "function": "scr_fetch_stream_new",
   "message": "byte streams are not supported by static ReadableStream",
   "code": "SC2020"

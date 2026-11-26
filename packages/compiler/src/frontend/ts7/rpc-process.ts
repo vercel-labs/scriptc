@@ -130,33 +130,64 @@ class Ts7NamedPipeIo implements Ts7WireIo {
 }
 
 /* POSIX: the server is not this process's child. A shell that spawnSync runs
- * and reaps creates the FIFOs, starts the server in the background with its
- * standard input and output on them, prints its PID and exits; the server's
- * parent is a lifetime subshell that outlives that shell. A child of this
- * process would stay a zombie after it exits: Node reaps children only from
- * its event loop, which a synchronous compile never returns to. The subshell
- * points its standard input and output at /dev/null before it opens the
- * FIFOs, so spawnSync's output pipe closes as soon as the shell exits, while
- * its standard error stays connected so the server's startup and crash
+ * and reaps creates the FIFOs, starts a lifetime supervisor in the background
+ * and exits; the supervisor starts the server with its standard input and
+ * output on the FIFOs, prints its PID, and stays the server's parent. A child
+ * of this process would stay a zombie after it exits: Node reaps children only
+ * from its event loop, which a synchronous compile never returns to. The
+ * supervisor points its standard input and output at /dev/null before it opens
+ * the FIFOs, so spawnSync's output pipe closes as soon as the launcher exits,
+ * while its standard error stays connected so the server's startup and crash
  * diagnostics reach this process. A missing or non-executable server fails
- * here, before any FIFO exists: the background subshell would otherwise block
- * opening its input and the failure would only surface as end of file on the
- * first read. */
-const FIFO_LAUNCH =
-  'i=$1 o=$2 l=$3 p=$4; shift 4; command -v "$1" >/dev/null || exit 127; ' +
-  'mkfifo -m 600 "$i" "$o" "$l" "$p" || exit 1; ' +
-  // The lifetime subshell is the server's parent and its only reaper. It
-  // reports the PID, then blocks opening the lifetime pipe; when that pipe
-  // closes it kills the server and only then reaps it. Signalling its own
-  // unreaped child cannot reach another process, unlike a detached server
-  // that init reaps the moment it exits.
-  "( exec </dev/null >/dev/null; " +
-  '"$@" <"$i" >"$o" & s=$!; ' +
-  'echo "$s" >"$p"; ' +
-  'read -r _ <"$l"; ' +
-  'kill -9 "$s" 2>/dev/null; ' +
-  'wait "$s" 2>/dev/null ) & ' +
-  'read -r s <"$p"; echo "$s"';
+ * here, before any FIFO exists: the supervisor would otherwise block opening
+ * its input and the failure would only surface as end of file on the first
+ * read.
+ *
+ * The supervisor is a Node process rather than a subshell so its ownership of
+ * the server's PID does not depend on the shell's reaping rules: it blocks in
+ * a synchronous read of the lifetime pipe, and while the event loop is blocked
+ * it cannot reap the server. A server that exits stays a zombie the supervisor
+ * owns, so its PID cannot be reused before the supervisor kills it; the kill
+ * can only ever reach that server (or its zombie, where it does nothing). */
+const FIFO_SUPERVISOR_SOURCE = `
+const fs = require("node:fs");
+const { spawn } = require("node:child_process");
+const [input, output, life, pidPath, executable, ...args] = process.argv.slice(2);
+const child = spawn(
+  "/bin/sh",
+  ["-c", 'exec "$@" <"$SCRIPTC_TS7_IN" >"$SCRIPTC_TS7_OUT"', "sh", executable, ...args],
+  {
+    stdio: ["ignore", "inherit", "inherit"],
+    env: { ...process.env, SCRIPTC_TS7_IN: input, SCRIPTC_TS7_OUT: output },
+  },
+);
+fs.writeFileSync(pidPath, String(child.pid));
+const lifeFd = fs.openSync(life, "r");
+const scratch = Buffer.alloc(64);
+for (;;) {
+  let read;
+  try {
+    read = fs.readSync(lifeFd, scratch, 0, scratch.length, null);
+  } catch (error) {
+    if (error.code === "EINTR" || error.code === "EAGAIN") continue;
+    throw error;
+  }
+  if (read === 0) break;
+}
+child.kill("SIGKILL");
+process.exit(0);
+`;
+const FIFO_SUPERVISOR = Buffer.from(FIFO_SUPERVISOR_SOURCE).toString("base64");
+
+const FIFO_LAUNCH = [
+  'i=$1 o=$2 l=$3 p=$4; shift 4; command -v "$1" >/dev/null || exit 127; ',
+  'mkfifo -m 600 "$i" "$o" "$l" "$p" || exit 1; ',
+  // The supervisor blocks until the lifetime pipe's writer closes (this
+  // process's close, any exit path, or its death closing the descriptor),
+  // then kills its own child, which it has never reaped.
+  `"${process.execPath}" -e 'eval(Buffer.from(process.argv[1],"base64").toString("utf8"))' '${FIFO_SUPERVISOR}' "$i" "$o" "$l" "$p" "$@" </dev/null >/dev/null & `,
+  'read -r s <"$p"; echo "$s"',
+].join("");
 
 /** How long a starting server may take to open its input, in milliseconds. */
 const FIFO_OPEN_TIMEOUT = 10_000;
@@ -243,9 +274,9 @@ export class Ts7FifoIo implements Ts7WireIo {
 
   /** Closing both FIFOs ends the session: the server reads end of file on
    * its input and exits, and a write to its closed output ends it with
-   * SIGPIPE. A server that does not exit when its input closes is killed and
-   * reaped by the lifetime subshell, which is its parent and still owns its
-   * PID. */
+   * SIGPIPE. A server that does not exit when its input closes is killed by
+   * the lifetime supervisor, which is its parent; the supervisor never reaps
+   * it while it blocks, so the signal cannot reach another process. */
   close = (): void => {
     if (this.closed) return;
     this.closed = true;

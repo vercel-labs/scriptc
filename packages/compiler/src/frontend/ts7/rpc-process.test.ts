@@ -148,7 +148,7 @@ test.skipIf(process.platform !== "linux")(
       const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
       const ppid = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]);
       // A detached server would be reparented to init, whose reap frees the
-      // PID for reuse while the lifetime subshell still holds it.
+      // PID for reuse while the lifetime supervisor still holds it.
       expect(ppid).not.toBe(1);
       expect(alive(ppid)).toBe(true);
     } finally {
@@ -171,7 +171,7 @@ test.skipIf(process.platform !== "linux")(
       await new Promise<void>((resolve) => setTimeout(resolve, 20));
     }
     expect(existsSync(executed)).toBe(true);
-    // The lifetime subshell is the server's parent and has not reaped it, so
+    // The lifetime supervisor is the server's parent and has not reaped it, so
     // the PID is still owned. A reaped PID is free to reuse, and a signal to
     // the server after that could reach another process.
     await new Promise<void>((resolve) => setTimeout(resolve, 100));

@@ -795,6 +795,7 @@ import {
   builtinConstantBindingOf,
   builtinConstantsDestructureDecl,
   cryptoConstantsValue,
+  perfHooksConstantsValue,
   zlibConstantsValue,
 } from "./builtins/constants.js";
 import { lowerStringStaticCall, lowerStringLastIndexOfCall } from "./builtins/strings.js";
@@ -4739,6 +4740,54 @@ export class Lowerer {
     if (value.kind === "union" && this.armTag(value.unionId, UNDEFINED_T) >= 0) return false;
     const read = panicSafe(() => this.mapTypeOf(this.typeOf(e)), null);
     return !(read?.kind === "union" && this.armTag(read.unionId, UNDEFINED_T) >= 0);
+  }
+
+  /** The index-signature value type a member read of a checked-dynamic
+   * receiver resolves to, or null. The receiver must declare no member of
+   * that name, and the signature's value must be a typed one that does not
+   * admit undefined. The read is a JavaScript property read even when a
+   * TypeScript assertion typed the value (`const params = raw as
+   * Record<string, string>`): a missing key answers undefined, as a
+   * record's index-signature read does, so the read keeps the undefined
+   * arm rather than validating the missing value as the declared type. */
+  dynIndexSignatureValueRead(
+    e: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+  ): IrType | null {
+    const receiverType = this.checker.getNonNullableType(
+      this.checker.getTypeAtLocation(e.expression),
+    );
+    if ((receiverType.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) return null;
+    const declaredName = (): string | null => {
+      if (ts.isPropertyAccessExpression(e)) return e.name.text;
+      const key = e.argumentExpression;
+      if (ts.isStringLiteral(key) || ts.isNoSubstitutionTemplateLiteral(key)) return key.text;
+      if (ts.isNumericLiteral(key)) return String(Number(key.text));
+      return null;
+    };
+    if (!ts.isPropertyAccessExpression(e)) {
+      // A key that may hold a symbol names something no string index
+      // signature answers.
+      const keyType = this.checker.getTypeAtLocation(e.argumentExpression);
+      const arms =
+        (keyType.flags & ts.TypeFlags.Union) !== 0 ? ts.constituentTypes(keyType) : [keyType];
+      if (
+        !arms.every(
+          (arm) => (arm.flags & (ts.TypeFlags.StringLike | ts.TypeFlags.NumberLike)) !== 0,
+        )
+      )
+        return null;
+    }
+    const name = declaredName();
+    if (name !== null && this.checker.getPropertyOfType(receiverType, name) !== undefined)
+      return null;
+    const signature = this.checker
+      .getIndexInfosOfType(receiverType)
+      .find((info) => (info.keyType.flags & ts.TypeFlags.String) !== 0);
+    if (signature === undefined) return null;
+    const value = panicSafe(() => this.mapTypeOf(signature.type), null);
+    if (!value || value.kind === "dyn" || value.kind === "void" || isUnitType(value)) return null;
+    if (value.kind === "union" && this.armTag(value.unionId, UNDEFINED_T) >= 0) return null;
+    return value;
   }
 
   /** The index value of a keyed read of a record's index signature that
@@ -25781,6 +25830,10 @@ export class Lowerer {
     if (bi.member === "constants" && bi.module === "zlib") return zlibConstantsValue(this, loc);
     // `crypto.constants` as a value: the same story over the OpenSSL table.
     if (bi.member === "constants" && bi.module === "crypto") return cryptoConstantsValue(this, loc);
+    // `perf_hooks.constants` as a value: the enumerable GC numbers (the
+    // entry-type and milestone names are non-enumerable in Node).
+    if (bi.member === "constants" && bi.module === "perf_hooks")
+      return perfHooksConstantsValue(this, loc);
     // `stream.Readable` as a JavaScript value: the runtime's untyped
     // constructor, the base a constructor function inherits.
     if (isJsSourceFile(ts.getSourceFileOfNode(expr))) {
@@ -25860,6 +25913,11 @@ export class Lowerer {
       const mode = ZLIB_STREAM_FACTORIES[bi.member];
       if (mode !== undefined) return this.lowerZlibStreamFactoryValue(bi.member, mode, loc);
     }
+    // node:module's Module: the runtime class object whose prototype every
+    // module view inherits (scr_module_class.c), so instanceof and
+    // Object.getPrototypeOf(module) answer as Node's do.
+    if (bi.module === "module" && bi.member === "Module")
+      return { kind: "libCall", fn: "module.ctor", args: [], type: DYN, loc };
     if (bi.module === "module" && bi.member === "isBuiltin")
       return this.lowerModuleIsBuiltinValue(loc);
     if (bi.module === "module" && bi.member === "syncBuiltinESMExports")
@@ -26109,6 +26167,8 @@ export class Lowerer {
     const c = builtinModuleConstOf(this, module, member);
     if (c !== undefined) return builtinConstLit(c, loc);
     if (module === "module" && member === "builtinModules") return this.builtinModulesValue(loc);
+    if (module === "module" && member === "Module")
+      return { kind: "libCall", fn: "module.ctor", args: [], type: DYN, loc };
     if (module === "http" && member === "METHODS")
       return { kind: "libCall", fn: "http.methods", args: [], type: arrayOf(STRING), loc };
     if ((module === "http" || module === "https") && member === "globalAgent")
@@ -26133,6 +26193,8 @@ export class Lowerer {
       return fsConstantsObject(loc);
     if (module === "zlib" && member === "constants") return zlibConstantsValue(this, loc);
     if (module === "crypto" && member === "constants") return cryptoConstantsValue(this, loc);
+    if (module === "perf_hooks" && member === "constants")
+      return perfHooksConstantsValue(this, loc);
     return null;
   }
 

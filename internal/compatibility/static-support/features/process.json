@@ -54,5 +54,6 @@
     { "chapter": "process", "parent": "Process", "signatures": ["`process.initgroups(user, extraGroup)`", "`process.setegid(id)`", "`process.seteuid(id)`", "`process.setgid(id)`", "`process.setgroups(groups)`", "`process.setuid(id)`"], "status": "supported", "evidence": ["tests/corpus/process-credential-arguments.cjs", "tests/corpus/process-credential-typed.ts"] },
     { "chapter": "process", "parent": "Process", "signatures": ["`process.getActiveResourcesInfo()`"], "status": "supported", "evidence": ["tests/corpus/2314-process-introspection.ts", "tests/corpus/compat-core-members.mjs", "tests/corpus/compat-core-members.ts", "tests/corpus/process-ignored-arguments.cjs"] },
     { "chapter": "process", "parent": "Event: `'uncaughtException'`", "signatures": ["Warning: Using `'uncaughtException'` correctly"], "status": "not-applicable" },
-    { "chapter": "process", "parent": "`process.nextTick(callback[, ...args])`", "signatures": ["When to use `queueMicrotask()` vs. `process.nextTick()`"], "status": "not-applicable" }
+    { "chapter": "process", "parent": "`process.nextTick(callback[, ...args])`", "signatures": ["When to use `queueMicrotask()` vs. `process.nextTick()`"], "status": "not-applicable" },
+    { "chapter": "process", "symbols": ["config"], "status": "partial", "evidence": ["tests/corpus/process-config-build-description.cjs"] }
 ]

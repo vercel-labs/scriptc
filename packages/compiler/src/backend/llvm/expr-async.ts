@@ -462,6 +462,28 @@ export function emitSerializationExpr(
         B.line(`${index} = getelementptr inbounds %ScrDynPath, ptr ${slot}, i64 0, i32 2`);
         B.line(`store ${host.sizeType} ${e.pathIndex}, ptr ${index}`);
         path = slot;
+      } else if (
+        e.pathKey !== undefined ||
+        (e.value.kind === "dynKeyGet" && e.value.key.kind === "strLit")
+      ) {
+        // A check of a member read names that member: a value of the wrong
+        // type reports `$.<name>` instead of the bare `$`, which says
+        // nothing about the property the program read.
+        const keyText =
+          e.pathKey ??
+          (e.value.kind === "dynKeyGet" && e.value.key.kind === "strLit" ? e.value.key.value : "");
+        const slot = B.slot();
+        B.entryAllocas.push(`${slot} = alloca %ScrDynPath`);
+        const parent = B.tmp();
+        const key = B.tmp();
+        const index = B.tmp();
+        B.line(`${parent} = getelementptr inbounds %ScrDynPath, ptr ${slot}, i64 0, i32 0`);
+        B.line(`store ptr null, ptr ${parent}`);
+        B.line(`${key} = getelementptr inbounds %ScrDynPath, ptr ${slot}, i64 0, i32 1`);
+        B.line(`store ptr ${host.cstr(keyText)}, ptr ${key}`);
+        B.line(`${index} = getelementptr inbounds %ScrDynPath, ptr ${slot}, i64 0, i32 2`);
+        B.line(`store ${host.sizeType} 0, ptr ${index}`);
+        path = slot;
       }
       const ty = host.llType(e.type);
       let t: string;

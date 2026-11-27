@@ -38,6 +38,16 @@ describe("the Windows module-link verifier", () => {
     expect(read).not.toContain("GetFinalPathNameByHandleW");
   });
 
+  test("reads the substitute name, the target the system follows, not the print name", () => {
+    const read = body("ni_win_link_target");
+    // fields[0]/fields[1] are the substitute name's offset and length;
+    // fields[2]/fields[3] are the print name, which is display only and can
+    // name a different path than the one the link follows.
+    expect(read).toMatch(/offset = fields\[0\], chars = fields\[1\]/);
+    expect(read).not.toContain("fields[2]");
+    expect(read).not.toContain("fields[3]");
+  });
+
   test("the verifier itself opens nothing before it compares", () => {
     const verify = body("ni_dir_link_matches");
     expect(verify).not.toContain("CreateFileW");

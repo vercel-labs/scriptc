@@ -1118,7 +1118,9 @@ static bool ni_win_remote_target(const wchar_t *target) {
  * FILE_FLAG_OPEN_REPARSE_POINT, which opens the link itself: opening it as a
  * path would open whatever it names, and a link naming a network path would
  * offer the account's credentials to that server before anything could
- * refuse the tree. */
+ * refuse the tree. The name read is the substitute name, the target the
+ * system follows; the print name is only what a person is shown, and a
+ * record can show one path while following another. */
 static wchar_t *ni_win_link_target(const wchar_t *path) {
   HANDLE handle = CreateFileW(path, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
                               OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
@@ -1136,12 +1138,12 @@ static wchar_t *ni_win_link_target(const wchar_t *path) {
     if (tag == IO_REPARSE_TAG_MOUNT_POINT) names = 16;
     if (names != 0 && length > names) {
       const USHORT *fields = (const USHORT *)(storage + 8);
-      size_t offset = fields[2], chars = fields[3]; /* the print name */
-      if (chars == 0) {
-        offset = fields[0];
-        chars = fields[1]; /* a record that carries only the substitute name */
-      }
-      if (chars % sizeof(wchar_t) == 0 &&
+      /* The substitute name is the target the system follows; the print name,
+       * the pair of fields after it, is display only and is not read here: a
+       * record that shows the expected path while following another one must
+       * be judged by the one it follows. */
+      size_t offset = fields[0], chars = fields[1];
+      if (chars > 0 && offset % sizeof(wchar_t) == 0 && chars % sizeof(wchar_t) == 0 &&
           offset + chars <= length - names) {
         chars /= sizeof(wchar_t);
         target = malloc((chars + 1) * sizeof *target);

@@ -3727,8 +3727,10 @@ interface DynStagePlan {
   source: DynPipelineSource | null;
   /** argument values evaluated before the branches, in argument order */
   bound: ReadonlyMap<number, IrExpr>;
-  /** a typed iterable first stage's source, lowered before the branches */
+  /** a typed iterable first stage's source, lowered before the branches,
+   * and the value itself (one binding) for a stage that is handed it */
   preSource?: { closure: IrExpr; out: SyncGenType } | undefined;
+  preValue?: IrExpr | undefined;
   /** the checked-dynamic stages this branch takes as functions */
   fns: ReadonlySet<number>;
 }
@@ -3765,13 +3767,18 @@ function lowerDynStagePipeline(
   const source = src !== null && !src.iterable ? { expr: bind(src.expr), iterable: false } : src;
   const bound = new Map<number, IrExpr>();
   let preSource: DynStagePlan["preSource"];
+  let preValue: DynStagePlan["preValue"];
   for (let j = src !== null ? 1 : 0; j < stageArgs.length; j++) {
     const arg = stageArgs[j]!;
     if (pipelineStageFunction(lowerer, arg) !== null) continue;
     if (j === 0 && iterableSourceType(lowerer, arg) !== null) {
-      const lowered = lowerIterableSource(lowerer, arg, null, loc);
+      /* The source expression runs once: the generator the pipeline reads
+       * and the value a plain stage is handed both build from this binding. */
+      const sourceValue = bind(lowerer.lowerExpr(arg));
+      const lowered = lowerIterableSourceValue(lowerer, sourceValue, loc);
       if (lowered === null) lowerer.noLowering("pipeline over this source", arg);
       preSource = { closure: bind(lowered!.closure), out: lowered!.out };
+      preValue = sourceValue;
       continue;
     }
     let value = lowerer.lowerExpr(arg);
@@ -3790,7 +3797,7 @@ function lowerDynStagePipeline(
     .filter((j) => bound.get(j)!.type.kind === "dyn")
     .slice(0, MAX_DYN_FUNCTION_STAGES);
   const branch = (i: number, fns: ReadonlySet<number>): IrExpr => {
-    if (i === dynStages.length) return build({ source, bound, preSource, fns });
+    if (i === dynStages.length) return build({ source, bound, preSource, preValue, fns });
     const j = dynStages[i]!;
     const asStream = branch(i + 1, fns);
     const asFunction = branch(i + 1, new Set([...fns, j]));
@@ -6235,6 +6242,7 @@ function lowerPipelineStages(
         if (givesToNext) handed = value;
       }
       if (source === null) lowerer.noLowering("pipeline over this source", arg);
+      if (plan?.preValue !== undefined && givesToNext) handed = plan.preValue;
       let closure = source!.closure;
       if (handed !== null) {
         takes = true;

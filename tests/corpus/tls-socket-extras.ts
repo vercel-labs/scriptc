@@ -1,5 +1,6 @@
 // tlsSocket.servername on both sides of a handshake, getSession's Buffer,
-// disableRenegotiation's no-op, and a client that offers no SNI.
+// disableRenegotiation on an established socket, and a client that offers no
+// SNI.
 import * as tls from "node:tls";
 import { readFileSync } from "node:fs";
 

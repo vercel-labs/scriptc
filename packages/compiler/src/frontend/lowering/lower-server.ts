@@ -3783,17 +3783,35 @@ function lowerNetSocketMethodCall(
     };
   }
   if (name === "setKeyCert") {
-    // setKeyCert(context): the argument must be object-like; the call
-    // applies to a handshake that has not started yet.
+    // setKeyCert(context): createSecureContext's options (Node builds the
+    // context, so its argument ladder and parse errors run) or a
+    // SecureContext, taken as it is; the pair serves the socket's next
+    // server handshake. A call without one builds the empty context Node's
+    // default does.
     const receiver = coerceToHandle(lowerer, access.expression, NETSOCKET_T);
-    const context =
-      args.length > 0
-        ? lowerer.coerceToExpected(lowerer.lowerExpr(args[0]!), DYN)
-        : dynUndefinedExpr(loc);
+    if (args.length === 0) {
+      return {
+        kind: "libCall",
+        fn: "tls.sockSetKeyCert",
+        args: [receiver, dynUndefinedExpr(loc)],
+        type: VOID,
+        loc,
+      };
+    }
+    const context = lowerer.lowerExpr(args[0]!);
+    if (context.type.kind === "secureCtx") {
+      return {
+        kind: "libCall",
+        fn: "tls.sockSetKeyCertCtx",
+        args: [receiver, context],
+        type: VOID,
+        loc,
+      };
+    }
     return {
       kind: "libCall",
       fn: "tls.sockSetKeyCert",
-      args: [receiver, context],
+      args: [receiver, lowerer.coerceInto(args[0]!, context, DYN)],
       type: VOID,
       loc,
     };

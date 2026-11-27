@@ -94,6 +94,9 @@ void scr_tls_sock_disable_renegotiation(ScrNetSocket *s);
  * ladders, the TLS 1.3 refusal (false + a scheduled error) and the TLS 1.2
  * renegotiation (true; the callback answers null at completion). */
 bool scr_tls_sock_renegotiate(ScrNetSocket *s, const ScrDyn *options, const ScrDyn *callback);
+/* setKeyCert(context) over createSecureContext's options: the pair it
+ * carries serves the socket's next server handshake. MAY THROW (Node's
+ * context errors). The SecureContext form is declared with that type. */
 void scr_tls_sock_set_key_cert(ScrNetSocket *s, const ScrDyn *context);
 /* The checked-dynamic pair: which == 0 answers servername, 1 getSession
  * (each +1, as above). */
@@ -143,6 +146,10 @@ ScrDyn *scr_tls_check_server_identity(ScrStr *hostname /*borrowed*/, const ScrDy
  * whose ClientHello carries no server_name skip the callback and serve
  * the default pair, exactly Node. */
 typedef struct ScrSecureCtx ScrSecureCtx;
+/* setKeyCert(context) over a tls.createSecureContext() result (Node takes
+ * it as it is): the pair serves the socket's next server handshake. MAY
+ * THROW (Node's context errors). */
+void scr_tls_sock_set_key_cert_ctx(ScrNetSocket *s, ScrSecureCtx *ctx /*borrowed*/);
 ScrSecureCtx *scr_tls_create_secure_context(const char *cert, size_t cert_len, const char *key, size_t key_len); /* +1 */
 /* createSecureContext over a RUNTIME options record: Node's typed option
  * validations first, then the pem walk (+1, or NULL with the exception

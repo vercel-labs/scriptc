@@ -2294,6 +2294,24 @@ static void scr_net_sock_tunnel_pump(ScrNetSocket *s) {
   }
 }
 
+/* A renegotiation finished: the transport re-fires 'secure' (its own
+ * completion may already have run; the transport makes that idempotent),
+ * then the caller's callback answers null. Read by both detectors: the
+ * handshake driver, and the read path a peer's hello advances. */
+static void scr_net_sock_renegotiation_done(ScrNetSocket *s) {
+  s->t_renegotiating = false;
+  if (s->tops->on_renegotiated) s->tops->on_renegotiated(s->tctx);
+  ScrDyn *cb = s->t_reneg_cb;
+  s->t_reneg_cb = NULL;
+  if (cb != NULL) {
+    ScrDyn *arg = scr_dyn_new_null();
+    ScrDyn *answer = scr_dyn_call(cb, &arg, 1, "renegotiate callback");
+    scr_dyn_release(arg);
+    scr_dyn_release(cb);
+    scr_dyn_release(answer);
+  }
+}
+
 /* Drive the transport handshake off readiness until it settles. On
  * establishment: the protocol layer attaches (https' parser), a
  * deferred server 'connection' fires ('secureConnection' timing), the
@@ -2322,19 +2340,7 @@ static void scr_net_sock_transport_pump(ScrNetSocket *s) {
     return;
   }
   if (s->t_renegotiating) {
-    /* the renegotiation finished: the transport re-fires 'secure', then the
-     * caller's callback answers null */
-    s->t_renegotiating = false;
-    if (s->tops->on_renegotiated) s->tops->on_renegotiated(s->tctx);
-    ScrDyn *cb = s->t_reneg_cb;
-    s->t_reneg_cb = NULL;
-    if (cb != NULL) {
-      ScrDyn *arg = scr_dyn_new_null();
-      ScrDyn *answer = scr_dyn_call(cb, &arg, 1, "renegotiate callback");
-      scr_dyn_release(arg);
-      scr_dyn_release(cb);
-      scr_dyn_release(answer);
-    }
+    scr_net_sock_renegotiation_done(s);
     return;
   }
   s->t_est = true;
@@ -9415,6 +9421,20 @@ void scr_net_sock_transport_error_code(ScrNetSocket *s, const char *msg, const c
   scr_net_sock_transport_error(s, msg);
 }
 
+/* A non-fatal 'error' event carrying its own code (the TLS session-attack
+ * report): the listeners run now and the socket stays open. */
+void scr_net_sock_emit_error_code(ScrNetSocket *s, const char *text, const char *code) {
+  ScrStr *msg = scr_str_new(text, strlen(text));
+  ScrError *e = scr_error_new(SCR_ERR_ERROR, msg);
+  scr_error_set_code(e, code);
+  ScrError *saved = scr_event_error_payload;
+  scr_event_error_payload = e;
+  scr_net_fire_err_this(&s->err_ls, msg, s, SCR_DYNH_NET_SOCKET);
+  scr_event_error_payload = saved;
+  scr_error_release(e);
+  scr_str_release(msg);
+}
+
 void scr_net_sock_transport_report(ScrNetSocket *s, const char *msg, const char *code) {
   if (s->pending_err) return;
   s->pending_err = scr_str_new(msg, strlen(msg));
@@ -9971,8 +9991,19 @@ static bool scr_net_sock_event(ScrNetSocket *s, unsigned events) {
   }
   if ((events & SCRP_READABLE) && !scr_exc_pending() && s->fd >= 0) {
     if (s->tunnel != NULL) scr_net_sock_tunnel_pump(s);
-    else if (s->tops && (!s->t_est || s->t_renegotiating)) scr_net_sock_transport_pump(s);
-    else scr_net_sock_read(s);
+    /* An established transport reads through its own read path, which is
+     * also what drives a renegotiation the peer's hello starts (a server's
+     * pending renegotiation advances nowhere in the handshake driver: it
+     * has already acknowledged its HelloRequest). */
+    else if (s->tops && !s->t_est) scr_net_sock_transport_pump(s);
+    else {
+      scr_net_sock_read(s);
+      /* the read may have completed the renegotiation the peer's hello
+       * drives (a server's handshake driver cannot see it) */
+      if (!scr_exc_pending() && s->t_renegotiating && s->tops &&
+          s->tops->renegotiation_ready && s->tops->renegotiation_ready(s->tctx))
+        scr_net_sock_renegotiation_done(s);
+    }
   }
   return true;
 }

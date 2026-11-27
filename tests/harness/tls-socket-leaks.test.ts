@@ -32,6 +32,9 @@ const programs = [
   "tests/corpus/7443-tls-final-flight.ts",
   "tests/corpus/tls-session-ticket-copies.ts",
   "tests/corpus/tls-ticket-keys.ts",
+  "tests/corpus/tls-renegotiate-and-key-cert.ts",
+  "tests/corpus/tls-renegotiate-policy.ts",
+  "tests/corpus/tls-set-key-cert.ts",
 ];
 
 describe.skipIf(!sanitize || process.platform !== "linux")(

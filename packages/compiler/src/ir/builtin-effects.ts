@@ -589,6 +589,8 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   // renegotiate/setKeyCert run Node's argument ladders (ERR_INVALID_ARG_TYPE).
   "tls.sockRenegotiate",
   "tls.sockSetKeyCert",
+  // setKeyCert over a SecureContext throws the same context/engine errors.
+  "tls.sockSetKeyCertCtx",
   "net.sockWriteDyn",
   "net.sockEndDyn",
   // socket.write/end(data, encoding): Buffer.from's encoding ladder throws

@@ -15,9 +15,12 @@ const say = (...parts: unknown[]): void => {
 const codeOf = (err: unknown): string => String((err as { code?: string }).code);
 const messageOf = (err: unknown): string => JSON.stringify((err as Error).message);
 
+let serverPeer: tls.TLSSocket | null = null;
+
 const run = (maxVersion: "TLSv1.2" | "TLSv1.3", done: () => void): void => {
   const server = tls.createServer({ key, cert, maxVersion }, (socket) => {
     socket.on("error", () => {});
+    serverPeer = socket;
   });
   server.on("error", () => {});
   server.listen(0, "127.0.0.1", () => {
@@ -61,6 +64,21 @@ const run = (maxVersion: "TLSv1.2" | "TLSv1.3", done: () => void): void => {
         };
         const ret = client.renegotiate({}, (err) => {
           say(maxVersion, "callback", err === null ? "null" : codeOf(err), "secure", secure, "late", lateSecure);
+          if (maxVersion === "TLSv1.2" && serverPeer !== null) {
+            // the peer's own renegotiation: the client walks a new chain.
+            // Its 'secure' lands when the client processes the server's
+            // flight, so the count is read once both sides have settled
+            // rather than inside the callback.
+            const sr = serverPeer.renegotiate({}, (serverErr) => {
+              const outcome = serverErr === null ? "null" : codeOf(serverErr);
+              setTimeout(() => {
+                say(maxVersion, "server-callback", outcome, "client-secure", secure);
+                finish();
+              }, 50);
+            });
+            say(maxVersion, "server-return", sr);
+            return;
+          }
           finish();
         });
         say(maxVersion, "return", ret);
@@ -79,7 +97,52 @@ const run = (maxVersion: "TLSv1.2" | "TLSv1.3", done: () => void): void => {
   });
 };
 
+// Repeated renegotiations: OpenSSL's session-attack guard reports the fourth
+// and later ones on the server socket while the client keeps completing.
+const runRepeat = (done: () => void): void => {
+  const serverErrors: string[] = [];
+  const server = tls.createServer({ key, cert, maxVersion: "TLSv1.2" }, (socket) => {
+    socket.on("error", (err) => {
+      serverErrors.push(codeOf(err));
+    });
+  });
+  server.on("error", () => {});
+  server.listen(0, "127.0.0.1", () => {
+    const client = tls.connect(
+      {
+        port: (server.address() as { port: number }).port,
+        host: "127.0.0.1",
+        rejectUnauthorized: false,
+        maxVersion: "TLSv1.2",
+      },
+      () => {
+        let renegs = 0;
+        const once = (): void => {
+          renegs += 1;
+          const ret = client.renegotiate({}, (err) => {
+            say("repeat", renegs, err === null ? "ok" : codeOf(err), "ret", ret);
+            if (renegs < 4) {
+              once();
+              return;
+            }
+            setTimeout(() => {
+              say("repeat-server-errors", serverErrors.join(","));
+              client.destroy();
+              server.close(() => done());
+            }, 50);
+          });
+        };
+        once();
+      },
+    );
+    client.on("data", () => {});
+    client.on("error", (err) => say("repeat-client-error", codeOf(err)));
+  });
+};
+
 run("TLSv1.3", () => {
-  run("TLSv1.2", () => console.log(out.join("\n")));
+  run("TLSv1.2", () => {
+    runRepeat(() => console.log(out.join("\n")));
+  });
 });
 

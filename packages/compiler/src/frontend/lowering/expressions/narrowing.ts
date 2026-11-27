@@ -985,11 +985,16 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
     )
       return expr;
     // `record[key]!`: the checker asserts the read present and JavaScript's
-    // `!` performs no check, so a checked-dynamic dictionary read keeps the
-    // direct value and the consuming operation converts it (js.toF64 for a
-    // number). A missing key answers NaN there, exactly what ToNumber gives
-    // the arithmetic that consumes it; the validated `T | undefined` read
-    // below is for reads whose absence the program observes.
+    // `!` performs no check, so the read keeps the direct value. The
+    // assertion's own consumer decides what it observes: a numeric use
+    // coerces it with ToNumber (a present number unboxes in place, a MISSING
+    // key answers NaN, exactly what `undefined + n` computes), while a
+    // value or string use sees the undefined itself (`String(x)` is
+    // "undefined", JSON.stringify answers undefined). lower-exprs.ts
+    // (assertedDictionaryRead) applies the use's conversion; a checked
+    // extraction here would throw its value TypeError for the missing key.
+    // The validated `T | undefined` read below is for reads whose absence
+    // the program observes.
     if (
       node.parent !== undefined &&
       ts.isNonNullExpression(node.parent) &&

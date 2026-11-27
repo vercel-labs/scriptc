@@ -656,6 +656,8 @@ const DYN_READ_ONLY = new Set<IrLibFn>([
   // The dynamic-tier operators run their dyn twins (scr_js_value.c); the
   // conversions move a value between dyn and jsval, and js.toF64 is
   // dynCheck's number check.
+  "dyn.toNumberOrNaN",
+  "js.toNumberOrNaN",
   "js.add",
   "js.arithmetic",
   "js.bitwise",

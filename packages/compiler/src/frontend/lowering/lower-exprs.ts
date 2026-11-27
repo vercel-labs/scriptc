@@ -646,6 +646,24 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     const element = assertedElementOperand(lowerer, expr, loc);
     if (element) return element;
     const inner = lowerer.lowerExpr(expr.expression);
+    // `record[key]!` on a checked-dynamic dictionary: `!` performs no check,
+    // so the read keeps its runtime value (undefined for a missing key) and
+    // the consumer decides what it observes. A numeric use coerces with
+    // ToNumber (one inline unbox for a present number; NaN for a missing
+    // key, exactly what `undefined + n` computes), while a value or string
+    // use sees the undefined itself (String(x) is "undefined"). This is the
+    // fast path the scalar-union extraction replaced.
+    if (inner.type.kind === "dyn" && assertedDictionaryRead(lowerer, expr.expression)) {
+      if (assertedDictionaryReadUse(lowerer, expr) === "raw") return inner;
+      const asserted = lowerer.mapTypeOf(lowerer.typeOf(expr));
+      if (asserted?.kind === "f64")
+        // ToNumber with the missing key answered as NaN on the inline fast
+        // path (js.toNumberOrNaN), so the read stays unboxed: a present
+        // number unboxes in place and `undefined` is NaN, exactly what the
+        // arithmetic computes.
+        return { kind: "libCall", fn: "dyn.toNumberOrNaN", args: [inner], type: F64, loc };
+      return inner;
+    }
     if (inner.type.kind === "union") {
       // `!` performs no runtime check: a missing array element stays
       // undefined where its destination can hold it.
@@ -1902,6 +1920,52 @@ function scalarUnion(lowerer: Lowerer, unionId: string): boolean {
  * value to a string (a template span, `+` with a string), "value" where the
  * consumer lowers the union itself (equality, truthiness, a comparison with
  * a string), null for other uses. */
+/** Whether `node` reads a checked-dynamic dictionary through its string
+ * index signature (the read #4192 arms with an undefined arm), so a
+ * surrounding non-null assertion keeps the runtime value for the consumer. */
+function assertedDictionaryRead(lowerer: Lowerer, node: ts.Expression): boolean {
+  let read = node;
+  while (ts.isParenthesizedExpression(read)) read = read.expression;
+  if (!ts.isElementAccessExpression(read) && !ts.isPropertyAccessExpression(read)) return false;
+  return lowerer.dynIndexSignatureValueRead(read) !== null;
+}
+
+/** How the consumer of a non-null asserted checked-dynamic dictionary read
+ * observes it: "raw" keeps the runtime value (a missing key is undefined, so
+ * String(x) is "undefined" and JSON.stringify answers undefined), "number"
+ * coerces it with ToNumber (a missing key is NaN, a present number unboxes
+ * in place). */
+function assertedDictionaryReadUse(lowerer: Lowerer, expr: ts.NonNullExpression): "raw" | "number" {
+  const use = convertingUseOf(lowerer, expr);
+  if (use === "string" || use === "value") return "raw";
+  let outer: ts.Expression = expr;
+  while (ts.isParenthesizedExpression(outer.parent)) outer = outer.parent;
+  const parent = outer.parent;
+  if (ts.isCallExpression(parent) && parent.arguments.nodes.includes(outer)) {
+    const callee = parent.expression;
+    if (
+      ts.isIdentifier(callee) &&
+      callee.text === "String" &&
+      lowerer.isStdlibGlobal(callee, "String")
+    )
+      return "raw";
+    if (
+      ts.isPropertyAccessExpression(callee) &&
+      callee.name.text === "stringify" &&
+      lowerer.isStdlibGlobal(callee.expression, "JSON")
+    )
+      return "raw";
+    // The Number statics never coerce: Number.isNaN(undefined) is false, and
+    // a NaN from ToNumber would answer true.
+    if (
+      ts.isPropertyAccessExpression(callee) &&
+      lowerer.isStdlibGlobal(callee.expression, "Number")
+    )
+      return "raw";
+  }
+  return "number";
+}
+
 function convertingUseOf(
   lowerer: Lowerer,
   expr: ts.NonNullExpression,

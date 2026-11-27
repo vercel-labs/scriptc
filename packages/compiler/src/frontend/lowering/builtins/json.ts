@@ -21,6 +21,7 @@ import {
   isDynTypedRefType,
   isLiveDynRefType,
   type IrExpr,
+  type IrStmt,
   STRING,
   type SrcLoc,
   canBoxFuncIntoDyn,
@@ -187,8 +188,22 @@ export function lowerJsonMethodCall(
     if (optionalString) return optionalString;
     // A null root is the text "null" (Node never writes its unit literal
     // through the typed serializer, which rejects a bare unit).
-    if (value.type.kind === "nullT") return { kind: "strLit", value: "null", type: STRING, loc };
-    const maybeUndefined = lowerMaybeUndefinedStringifyRoot(lowerer, value, indent, loc, argNode);
+    if (value.type.kind === "nullT")
+      return constantStringifyRoot(
+        lowerer,
+        call,
+        value,
+        { kind: "strLit", value: "null", type: STRING, loc },
+        loc,
+      );
+    const maybeUndefined = lowerMaybeUndefinedStringifyRoot(
+      lowerer,
+      value,
+      indent,
+      loc,
+      argNode,
+      call,
+    );
     if (maybeUndefined) return maybeUndefined;
     // A program class instance whose class (or a base) declares toJSON:
     // JSON.stringify serializes whatever toJSON(key) returns, so the
@@ -364,9 +379,14 @@ function lowerMaybeUndefinedStringifyRoot(
   indent: string,
   loc: SrcLoc,
   argNode: ts.Expression,
+  call: ts.CallExpression,
 ): IrExpr | null {
-  if (value.type.kind === "undefinedT")
-    return lowerer.wrappedUndefined(lowerer.withUndefinedArm(STRING), loc);
+  if (value.type.kind === "undefinedT") {
+    const missing = lowerer.wrappedUndefined(lowerer.withUndefinedArm(STRING), loc);
+    if (!missing)
+      throw new InternalCompilerError("JSON.stringify of undefined needs an undefined arm");
+    return constantStringifyRoot(lowerer, call, value, missing, loc);
+  }
   if (!jsonTypeMaybeUndefined(lowerer, value.type)) return null;
   if (!lowerer.dynConvertible(value.type)) {
     lowerer.unsupported(
@@ -385,6 +405,34 @@ function lowerMaybeUndefinedStringifyRoot(
     loc,
   };
   return { kind: "dynCheck", value: raw, type: lowerer.withUndefinedArm(STRING), loc };
+}
+
+/** A root whose answer is fixed by its value still evaluates every argument
+ * expression, in source order: Node runs the root's own expression (a
+ * `(f(), null)` operand keeps its call) and the replacer/space expressions
+ * before the serializer can answer. */
+function constantStringifyRoot(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  rootValue: IrExpr | null,
+  result: IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  const stmts: IrStmt[] = [];
+  call.arguments.nodes.forEach((node, index) => {
+    const value = index === 0 && rootValue !== null ? rootValue : lowerer.lowerExpr(node);
+    for (const stmt of evalOnlyStmts(value)) stmts.push(stmt);
+  });
+  return stmts.length === 0 ? result : { kind: "seqExpr", stmts, result, type: result.type, loc };
+}
+
+/** The statements that evaluate `value` for its effects alone: a unit or a
+ * sequence ending in one contributes only its own effects (a bare unit
+ * literal is not a value the emitter may write). */
+function evalOnlyStmts(value: IrExpr): IrStmt[] {
+  if (value.kind === "unitLit") return [];
+  if (value.kind === "seqExpr") return [...value.stmts, ...evalOnlyStmts(value.result)];
+  return [{ kind: "exprStmt", expr: value, loc: value.loc }];
 }
 
 function lowerOptionalStringifyRoot(

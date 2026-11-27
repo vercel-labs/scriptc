@@ -1439,34 +1439,66 @@ static void sf_mime_set_param(SfMime *m, const char *name, size_t name_len,
 /* The parameter de-duplication set: open addressing keyed by the lowercased
  * name's hash, holding a parameter's index + 1 (0 is empty). The parser then
  * keeps its parameters in time linear in the header's length, rather than
- * scanning every parameter already kept for each new one. The hash is keyed
- * per thread (below), so names chosen by whoever wrote the header cannot be
+ * scanning every parameter already kept for each new one. The hash is a
+ * keyed PRF (below), so names chosen by whoever wrote the header cannot be
  * made to collide and turn a probe into that scan. */
 typedef struct {
   size_t *slots;
   size_t cap;
 } SfMimeSeen;
 
-/* The set's hash is keyed per thread: a name crafted ahead of time cannot be
- * made to land on the names already kept, so the probe walk cannot be turned
- * back into a scan of the parameter list. The key is drawn once per thread
- * and never leaves the process. */
-static uint64_t sf_mime_hash_key(void) {
-  static SCR_TL uint64_t key;
-  if (key == 0) {
-    arc4random_buf(&key, sizeof key);
-    if (key == 0) key = 1469598103934665603ull;
+/* The set's hash is a keyed PRF (SipHash-1-3, below) with two random
+ * per-thread words: a name crafted ahead of time cannot be made to land on
+ * the names already kept, and the table index depends on the whole key
+ * rather than on a few of its bits. The keys are drawn once per thread and
+ * never leave the process. */
+static void sf_mime_hash_keys(uint64_t *k0, uint64_t *k1) {
+  static SCR_TL uint64_t keys[2];
+  static SCR_TL bool drawn;
+  if (!drawn) {
+    arc4random_buf(keys, sizeof keys);
+    drawn = true;
   }
-  return key;
+  *k0 = keys[0];
+  *k1 = keys[1];
 }
 
+static uint64_t sf_mime_rotl(uint64_t x, int b) { return (x << b) | (x >> (64 - b)); }
+
+#define SF_MIME_SIPROUND \
+  do { \
+    v0 += v1; v1 = sf_mime_rotl(v1, 13); v1 ^= v0; v0 = sf_mime_rotl(v0, 32); \
+    v2 += v3; v3 = sf_mime_rotl(v3, 16); v3 ^= v2; \
+    v0 += v3; v3 = sf_mime_rotl(v3, 21); v3 ^= v0; \
+    v2 += v1; v1 = sf_mime_rotl(v1, 17); v1 ^= v2; v2 = sf_mime_rotl(v2, 32); \
+  } while (0)
+
 static uint64_t sf_mime_name_hash(const char *name, size_t n) {
-  uint64_t h = sf_mime_hash_key();
-  for (size_t i = 0; i < n; i++) {
-    h ^= (unsigned char)name[i];
-    h *= 1099511628211ull; /* FNV-1a, from the key rather than the fixed basis */
+  uint64_t k0, k1;
+  sf_mime_hash_keys(&k0, &k1);
+  uint64_t v0 = 0x736f6d6570736575ull ^ k0;
+  uint64_t v1 = 0x646f72616e646f6dull ^ k1;
+  uint64_t v2 = 0x6c7967656e657261ull ^ k0;
+  uint64_t v3 = 0x7465646279746573ull ^ k1;
+  size_t i = 0;
+  for (; i + 8 <= n; i += 8) {
+    uint64_t m = 0;
+    for (int j = 0; j < 8; j++) m |= (uint64_t)(unsigned char)name[i + j] << (8 * j);
+    v3 ^= m;
+    SF_MIME_SIPROUND;
+    v0 ^= m;
   }
-  return h;
+  uint64_t last = ((uint64_t)n & 0xff) << 56;
+  for (size_t j = 0; i + j < n; j++)
+    last |= (uint64_t)(unsigned char)name[i + j] << (8 * j);
+  v3 ^= last;
+  SF_MIME_SIPROUND;
+  v0 ^= last;
+  v2 ^= 0xff;
+  SF_MIME_SIPROUND;
+  SF_MIME_SIPROUND;
+  SF_MIME_SIPROUND;
+  return v0 ^ v1 ^ v2 ^ v3;
 }
 
 static void sf_mime_seen_put(SfMimeSeen *seen, const SfMimeParam *params,

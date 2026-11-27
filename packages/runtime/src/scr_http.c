@@ -1275,6 +1275,8 @@ ScrHttpRes *scr_http_res_retain(ScrHttpRes *r) {
   return r;
 }
 
+static void scr_http_res_flush_unlink(ScrHttpRes *res);
+
 void scr_http_res_release(ScrHttpRes *r) {
   if (!r || r->rc == SIZE_MAX) return;
   if (--r->rc == 0) {
@@ -1290,6 +1292,8 @@ void scr_http_res_release(ScrHttpRes *r) {
     scr_http_trailers_clear(&r->trailers);
     /* a waiter that outlived the response must not read it later */
     scr_http_res_drop_waiters(r);
+    /* the connection's flush-wait list must not keep a freed response */
+    scr_http_res_flush_unlink(r);
     scr_str_release(r->status_msg);
     scr_net_ls_drop(&r->close_ls);
     scr_net_ls_drop(&r->timeout_ls);
@@ -3810,33 +3814,8 @@ static void scr_http_res_drop_waiters(ScrHttpRes *res) {
   scr_http_res_drop_box(&res->drain_box);
 }
 
-/* The connection's flush-wait list: responses whose 'finish' waits for the
- * socket to take their own bytes, in write order. */
-static void scr_http_res_flush_link(ScrHttpRes *res) {
-  struct ScrHttpConn *conn = res->flush_conn;
-  if (conn == NULL || conn->flush_wait == res || conn->flush_wait_tail == res) return;
-  res->flush_next = NULL;
-  if (conn->flush_wait_tail != NULL) conn->flush_wait_tail->flush_next = res;
-  else conn->flush_wait = res;
-  conn->flush_wait_tail = res;
-}
-
-static void scr_http_res_flush_unlink(ScrHttpRes *res) {
-  struct ScrHttpConn *conn = res->flush_conn;
-  ScrHttpRes *next = res->flush_next;
-  res->flush_next = NULL;
-  if (conn == NULL) return;
-  if (conn->flush_wait == res) {
-    conn->flush_wait = next;
-    if (next == NULL) conn->flush_wait_tail = NULL;
-    return;
-  }
-  ScrHttpRes *prev = conn->flush_wait;
-  while (prev != NULL && prev->flush_next != res) prev = prev->flush_next;
-  if (prev == NULL) return;
-  prev->flush_next = next;
-  if (conn->flush_wait_tail == res) conn->flush_wait_tail = prev;
-}
+static void scr_http_res_flush_link(ScrHttpRes *res);
+static void scr_http_res_flush_unlink(ScrHttpRes *res);
 
 static void scr_http_res_finish_flushed_nt(ScrClosure *cb) {
   ScrHttpRes *res = scr_box_get_ref(cb->caps[0]);
@@ -5086,6 +5065,34 @@ static void scr_http_conn_header_overflow(ScrHttpConn *conn) {
 
 /* A message that fails the parser's checks: the client's request errors
  * with the parse error; the server answers it. */
+/* The connection's flush-wait list: responses whose 'finish' waits for the
+ * socket to take their own bytes, in write order. */
+static void scr_http_res_flush_link(ScrHttpRes *res) {
+  struct ScrHttpConn *conn = res->flush_conn;
+  if (conn == NULL || conn->flush_wait == res || conn->flush_wait_tail == res) return;
+  res->flush_next = NULL;
+  if (conn->flush_wait_tail != NULL) conn->flush_wait_tail->flush_next = res;
+  else conn->flush_wait = res;
+  conn->flush_wait_tail = res;
+}
+
+static void scr_http_res_flush_unlink(ScrHttpRes *res) {
+  struct ScrHttpConn *conn = res->flush_conn;
+  ScrHttpRes *next = res->flush_next;
+  res->flush_next = NULL;
+  if (conn == NULL) return;
+  if (conn->flush_wait == res) {
+    conn->flush_wait = next;
+    if (next == NULL) conn->flush_wait_tail = NULL;
+    return;
+  }
+  ScrHttpRes *prev = conn->flush_wait;
+  while (prev != NULL && prev->flush_next != res) prev = prev->flush_next;
+  if (prev == NULL) return;
+  prev->flush_next = next;
+  if (conn->flush_wait_tail == res) conn->flush_wait_tail = prev;
+}
+
 static void scr_http_conn_parse_failed(ScrHttpConn *conn, const ScrHttpParseError *err) {
   if (conn->client_mode) {
     scr_http_client_parse_error(conn, err);

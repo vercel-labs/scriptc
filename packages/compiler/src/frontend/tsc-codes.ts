@@ -2380,6 +2380,10 @@ const TRIAGE_ROWS: readonly (readonly [number, JsTscCodeTriage])[] = [
   [1010, KEEP(KEEP_GRAMMAR)],
   [1014, KEEP(KEEP_GRAMMAR)],
   [1042, KEEP(KEEP_GRAMMAR)],
+  // A JavaScript setter's default parameter is admitted in preflight
+  // (program.ts, jsSetterParameterInitializerSuppressed): the TypeScript
+  // grammar rule forbids it, Node applies the default. The row stays as the
+  // table's decision for the code.
   [1052, KEEP(KEEP_GRAMMAR)],
   [1054, KEEP(KEEP_GRAMMAR)],
   [1089, KEEP(KEEP_GRAMMAR)],

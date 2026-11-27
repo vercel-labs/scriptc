@@ -354,6 +354,12 @@ void scr_net_sock_on_drain(ScrNetSocket *s, ScrClosure *cb /*moves*/, bool once)
 void scr_net_sock_end(ScrNetSocket *s);
 void scr_net_sock_end_str(ScrNetSocket *s, ScrStr *data /*borrowed*/);
 void scr_net_sock_end_bytes(ScrNetSocket *s, ScrBytes *data /*borrowed*/);
+bool scr_net_sock_write_encoded(ScrNetSocket *s, ScrStr *data /*borrowed*/, ScrStr *enc /*borrowed*/);
+void scr_net_sock_end_encoded(ScrNetSocket *s, ScrStr *data /*borrowed*/, ScrStr *enc /*borrowed*/);
+bool scr_net_sock_write_bytes_encoded(ScrNetSocket *s, ScrBytes *data /*borrowed*/,
+                                      ScrStr *enc /*borrowed*/);
+void scr_net_sock_end_bytes_encoded(ScrNetSocket *s, ScrBytes *data /*borrowed*/,
+                                    ScrStr *enc /*borrowed*/);
 /* Checked-dynamic chunk forms (an untyped JS payload into a typed
  * socket): STR/BYTES dispatch; end() takes undefined/null as no chunk;
  * anything else throws Node's ERR_INVALID_ARG_TYPE chunk TypeError. */
@@ -480,6 +486,9 @@ void scr_net_sock_pipe(ScrNetSocket *src, ScrNetSocket *dst);
 void scr_net_sock_on_data(ScrNetSocket *s, ScrClosure *cb /*moves*/, ScrNetDataFn fn, bool once);
 void scr_net_sock_on_end(ScrNetSocket *s, ScrClosure *cb /*moves*/, bool once);
 void scr_net_sock_on_close(ScrNetSocket *s, ScrClosure *cb /*moves*/, bool once);
+/* Unregisters a specific close callback again (the deferred-close watch is
+ * removed when its deferral resolves). A closed socket ignores it. */
+void scr_net_sock_off_close(ScrNetSocket *s, ScrClosure *cb /*borrowed*/);
 void scr_net_sock_on_error(ScrNetSocket *s, ScrClosure *cb /*moves*/, ScrChildErrFn fn, bool once);
 void scr_net_sock_on_connect(ScrNetSocket *s, ScrClosure *cb /*moves*/, bool once);
 /* The paused-mode surface (the demux path: once('readable') + read(1) +

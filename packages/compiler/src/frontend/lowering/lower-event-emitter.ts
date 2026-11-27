@@ -1143,14 +1143,18 @@ function dynListenerArray(
   name: string,
   call: ts.CallExpression,
   loc: SrcLoc,
+  raw: boolean,
 ): IrExpr {
   const array: IrExpr = {
     kind: "libCall",
-    fn: "emitter.listenersDyn",
+    fn: raw ? "emitter.rawListenersDyn" : "emitter.listenersDyn",
     args: [receiver, eventNameExpr(name, loc)],
     type: DYN,
     loc,
   };
+  // Node types rawListeners as Function[]: its elements are the once
+  // wrappers, called through the untyped lane, so no tuple applies.
+  if (raw) return array;
   if (isJsSourceFile(ts.getSourceFileOfNode(call)) || !table.has(name)) return array;
   // A dyn-flavored registration means the bucket holds functions of more
   // than one shape: checking the array to the event's tuple would call a
@@ -2353,21 +2357,35 @@ export function lowerEmitterMethodCall(
   }
 
   if (member === "listeners" || member === "rawListeners") {
-    // A fresh +1 closure array of the event's listeners in list order,
-    // element-typed by the event's unified tuple: every registered
+    // listeners(): a fresh +1 closure array of the event's listeners in list
+    // order, element-typed by the event's unified tuple: every registered
     // listener declared a typeEquals PREFIX of it, and calling one through
     // the full-tuple signature delivers exactly what emit would (extra
     // trailing arguments are ignored — JS's semantics, and the C calling
     // convention's). The event NAME must be a compile-time literal — the
-    // element type depends on it. Both members answer the ORIGINALS: the
-    // once wrapper is runtime-internal, so rawListeners' wrapper identity
-    // is a documented divergence (SEMANTICS.md).
+    // element type depends on it. (rawListeners returns above with Node's
+    // checked-dynamic Function[] list, where a once() registration answers
+    // its wrapper.)
     if (args.length !== 1) {
       lowerer.noLowering(
         `${member} with ${args.length} arguments`,
         call,
         "the supported form is (eventName)",
       );
+    }
+    if (member === "rawListeners") {
+      // Node types rawListeners as Function[] and its elements are the once
+      // wrappers: the checked-dynamic array, where a wrapper answers Node's
+      // name, .listener and direct-call semantics, is the honest form in
+      // every lane.
+      const receiver = lowerReceiver();
+      return {
+        kind: "libCall",
+        fn: "emitter.rawListenersDyn",
+        args: [receiver, eventNameArg(lowerer, member, args[0]!)],
+        type: DYN,
+        loc,
+      };
     }
     if (
       literalEventName(lowerer, args[0]!) === null &&
@@ -2386,7 +2404,7 @@ export function lowerEmitterMethodCall(
     const name = eventNameOf(lowerer, member, args[0]!);
     const sig = table.get(name);
     if (listenerArrayIsDyn(lowerer, name, sig)) {
-      return dynListenerArray(lowerer, table, lowerReceiver(), name, call, loc);
+      return dynListenerArray(lowerer, table, lowerReceiver(), name, call, loc, false);
     }
     if (sig?.dynListener || computedListenerMayHold(lowerer, name)) {
       // A dyn-adapted registration (or one under an unrestricted name) means
@@ -3835,14 +3853,14 @@ export function lowerEventsEmitterHelper(
       // each element where it is used.
       return { kind: "dynCheck", value: listeners, type: arrayOf(DYN), loc };
     }
-    // emitter.listeners(name): the event's listener array, typed by the
-    // event's unified tuple (the instance method's rules).
+    // events.getEventListeners(emitter, name): Node answers the same array
+    // as listeners() (its documented equivalence), originals only.
     const receiver = helper.value;
     const name = eventNameOf(lowerer, "events.getEventListeners", args[1]!);
     const table = emitterEvents(lowerer);
     const sig = table.get(name);
     if (listenerArrayIsDyn(lowerer, name, sig)) {
-      return dynListenerArray(lowerer, table, receiver, name, call, loc);
+      return dynListenerArray(lowerer, table, receiver, name, call, loc, false);
     }
     if (sig?.dynListener || computedListenerMayHold(lowerer, name)) {
       return {

@@ -475,6 +475,8 @@ import {
   boxReleaseSym,
   computeCyclic,
   computeTraced,
+  expandedForcedArrayKinds,
+  prototypeShapeIds,
   emitInlineRcHelpers,
   emitNullableRetainWrappers,
   emitShapeUnionHelpers,
@@ -484,6 +486,7 @@ import {
   llFieldType,
   mapFlagsOffset,
   type MapKeyAccess,
+  recordPrototypeIndex,
   releaseSym,
   retainSym,
   traceArg,
@@ -641,6 +644,10 @@ export interface LlvmTargetOptions {
   timing?: CompilationTiming;
   /** Exact frontend sources for dev-build locations and variable metadata. */
   debugSources?: ReadonlyMap<string, string>;
+  /** The name a source location EMITS as (a library profile's
+   * `file_prefix_map`): debug info, stack frames and conversion traces use
+   * it, while diagnostics keep the path scriptc read. */
+  sourcePathMap?: (file: string) => string;
   /** Exact frontend sources for release-build stack positions (line and
    * column constants): the sources stay in the compiler, only the numbers
    * reach the executable. */
@@ -2090,6 +2097,16 @@ export class LlEmitter {
   readonly recordCloneShapes = new Set<string>();
   readonly tracedShapes: Set<string>;
   readonly tracedUnions: Set<string>;
+  /** The array element kinds the program gives a prototype
+   * (IrModule.prototypeOverrideArrayKinds): emit-module stamps them before
+   * %main, so arrays of them always carry the collector header and their
+   * type is traced (shapes.ts traceAdapter). */
+  readonly forcedCyclicArrayKinds: ReadonlySet<number>;
+  /** The record shapes the program gives a prototype
+   * (prototypeOverrides(mod).shapes): each carries a hidden prototype slot
+   * the collector traces, so these shapes are traced (shapes.ts
+   * recordPrototypeIndex). */
+  readonly prototypeOverrideShapes: ReadonlySet<string>;
   /** The types traced only for the weak analysis whose trace visits
    * something (ShapeHost.weakOnly): the entries of scr_weak_traces. */
   readonly weakTraces: WeakTrace[] = [];
@@ -2506,6 +2523,12 @@ export class LlEmitter {
    * reports the failure when the program is run with
    * SCRIPTC_CONVERSION_TRACE (conversionTraceAt). */
   readonly conversionTrace: boolean;
+  /** The profile's emitted-name mapping for source locations (sourcePathMap). */
+  private readonly sourcePathMap: ((file: string) => string) | undefined;
+  /** The name a source file EMITS as (sourcePathMap), or the path read. */
+  emittedSourceFile(file: string): string {
+    return this.sourcePathMap === undefined ? file : this.sourcePathMap(file);
+  }
   /** The frame name of the function being emitted (frameNameOf). */
   currentFrameName: string | undefined = undefined;
   /** The positions of the frame of the function being emitted, when it has
@@ -2588,6 +2611,7 @@ export class LlEmitter {
     // output is linked some other way must not call what the link lacks. A
     // sanitized build reports too: it is one call on a path that runs only
     // when a conversion fails. Library archives link a fixed runtime set.
+    this.sourcePathMap = options.sourcePathMap;
     this.conversionTrace =
       options.conversionTrace === true &&
       options.debugSources !== undefined &&
@@ -2611,6 +2635,7 @@ export class LlEmitter {
             options.pointerBits,
             mod.unions,
             this.nullableUnions.armTypes(),
+            options.sourcePathMap,
           );
     this.constantNumericTables = findConstantNumericTables(mod);
     this.staticArrayTables = findStaticArrayTables(mod);
@@ -2891,15 +2916,38 @@ export class LlEmitter {
     this.stackCaptures = new StackCaptures(this.fnByName, this.callLifetimes, this.stackCallbacks);
     this.lazyCaptures = new LazyCaptures(this.fnByName, this.nodeIndex);
     this.valueCaptures = new ValueCaptures(this.fnByName, this.debug === null);
-    const traced = computeTraced(mod, dynamicStores, cycleMutability);
+    // The prototype-bearing shapes the analysis seeds before it starts: a
+    // receiver of Object.setPrototypeOf holds the prototype in a hidden slot
+    // the field walk does not see, so the analysis treats the shape as able
+    // to reference anything and every class or union that holds it inherits
+    // that answer. A checked-dynamic receiver can be any record, so every
+    // shape then carries the slot.
+    this.prototypeOverrideShapes = prototypeShapeIds(mod);
+    this.forcedCyclicArrayKinds = expandedForcedArrayKinds(mod.prototypeOverrideArrayKinds);
+    const traced = computeTraced(
+      mod,
+      dynamicStores,
+      cycleMutability,
+      this.prototypeOverrideShapes,
+      this.forcedCyclicArrayKinds,
+    );
     // The shapes the collector must nominate and walk when weak-collection
     // keys give more of them the header (ShapeHost.weakOnly). A library
     // keeps every traced type the collector's: scr_weak_traces is the
     // executable's.
-    const cyclic =
-      mod.lib === undefined ? computeCyclic(mod, dynamicStores, cycleMutability) : null;
     this.tracedShapes = traced.shapes;
     this.tracedUnions = traced.unions;
+    const weakCyclic =
+      mod.lib === undefined
+        ? computeCyclic(
+            mod,
+            dynamicStores,
+            cycleMutability,
+            this.prototypeOverrideShapes,
+            this.forcedCyclicArrayKinds,
+          )
+        : null;
+    const cyclic = weakCyclic;
     // A shape union's value is whichever record it holds, and the collector
     // visits it as that record: when one arm carries a collector header,
     // every arm must (nullable-unions.ts). Unions that share an arm pass a
@@ -2955,6 +3003,8 @@ export class LlEmitter {
       cycleBufOffset: this.cycleBufOffset,
       tracedShapes: this.tracedShapes,
       tracedUnions: this.tracedUnions,
+      forcedCyclicArrayKinds: this.forcedCyclicArrayKinds,
+      prototypeOverrideShapes: this.prototypeOverrideShapes,
       ...(cyclic !== null
         ? {
             weakOnly: {
@@ -4107,12 +4157,16 @@ export class LlEmitter {
     if (!this.conversionTrace || debug === null) return undefined;
     const name = this.currentFrameName;
     const pos = debug.position(loc);
+    const emitPath = this.sourcePathMap;
     const text =
       pos !== null
-        ? positionedFrameText(name, pos)
+        ? positionedFrameText(
+            name,
+            emitPath === undefined ? pos : { ...pos, file: emitPath(pos.file) },
+          )
         : name === undefined
-          ? `    at ${loc.file}`
-          : frameText(name, loc.file);
+          ? `    at ${emitPath === undefined ? loc.file : emitPath(loc.file)}`
+          : frameText(name, emitPath === undefined ? loc.file : emitPath(loc.file));
     return () => {
       this.declare("declare void @scr_conversion_trace(ptr)");
       this.B.line(`call void @scr_conversion_trace(ptr ${this.cstr(text)})`);
@@ -4134,9 +4188,13 @@ export class LlEmitter {
     if (this.frameCaptures.constructors.has(fn.name)) return null;
     const name = this.frameNameOf(fn);
     if (name === undefined && !fn.name.startsWith("%init.")) return null;
+    const emitPath = this.sourcePathMap;
     return new FramePositions(
       name,
-      (loc) => debug.position(loc),
+      (loc) => {
+        const pos = debug.position(loc);
+        return pos === null || emitPath === undefined ? pos : { ...pos, file: emitPath(pos.file) };
+      },
       (text) => {
         // The slot's address is computed at each store: unoptimized code
         // folds it into the store, and would keep a shared one on the stack.
@@ -9137,6 +9195,10 @@ export class LlEmitter {
         return nullable === null || nullable.repr === "single" ? null : pointerTagFn(nullable);
       },
       fieldBase: (shapeId) => this.nullableUnions.fieldBase(shapeId),
+      recordPrototypeIndex: (shapeId) => {
+        const shape = this.recordsById.get(shapeId);
+        return shape === undefined ? -1 : recordPrototypeIndex(this.shapeHost, shape);
+      },
       classInfo: (className) => {
         const meta = this.classMetaOf(className);
         const tail = this.inlineTailOf(className);

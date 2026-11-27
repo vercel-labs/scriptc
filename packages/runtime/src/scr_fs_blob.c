@@ -254,9 +254,12 @@ ScrDyn *scr_fs_open_as_blob(ScrDyn *path, ScrDyn *options) {
     scr_str_release(type);
     return NULL;
   }
-  ScrStr *flags = scr_str_new("r", 1);
-  ScrFileHandle *h = scr_file_handle_open(resolved, flags, 0);
-  scr_str_release(flags);
+  /* The creation stat opens the path without blocking: Node opens it off
+   * the event loop, so a FIFO in the path cannot park the caller, and this
+   * descriptor is only fstat'ed and closed. The bytes are read later
+   * through scr_fs_blob_read's own open, which is the read Node's blob
+   * reader makes. */
+  ScrFileHandle *h = scr_file_handle_open_read_only_nonblocking(resolved);
   if (h != NULL) scr_fs_blob_close_on_exec(h);
   if (h == NULL) {
     scr_str_release(type);

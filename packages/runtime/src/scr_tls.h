@@ -84,6 +84,10 @@ ScrDyn *scr_tls_sock_get_session(ScrNetSocket *s);
 /* tlsSocket.getTLSTicket(): the received session ticket as a +1 Buffer, or
  * undefined (a server socket, or a client without one yet). */
 ScrDyn *scr_tls_sock_get_tls_ticket(ScrNetSocket *s);
+/* the negotiated ephemeral key's facts (null server-side or not established),
+ * and setMaxSendFragment's ladder (Node's ERR_OUT_OF_RANGE and boolean). */
+ScrDyn *scr_tls_sock_ephemeral_key_info(ScrNetSocket *s); /* +1 */
+bool scr_tls_sock_set_max_fragment(ScrNetSocket *s, double size); /* MAY THROW */
 /* tlsSocket.disableRenegotiation(): renegotiation is off by default. */
 void scr_tls_sock_disable_renegotiation(ScrNetSocket *s);
 /* The checked-dynamic pair: which == 0 answers servername, 1 getSession

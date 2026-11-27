@@ -1,6 +1,13 @@
 import { expect, test } from "vitest";
 import type { ScrDiagnostic } from "../../diagnostics/diagnostic.js";
-import { constructorRefusals, fewerRefusals, otherErrors } from "./held-constructors.js";
+import { F64, STRING, primitiveConstructorType } from "../../ir/ir.js";
+import type { IrType } from "../../ir/ir.js";
+import {
+  constructorRefusals,
+  fewerRefusals,
+  holdsConstructorFunction,
+  otherErrors,
+} from "./held-constructors.js";
 import type { Lowerer, LowerResult } from "./lowerer.js";
 
 const loc = { file: "main.ts", start: 0, end: 1 };
@@ -42,4 +49,37 @@ test("a refusal involves a held constructor by its mark, as an error or deferred
   expect(otherErrors(pass([marked]))).toBe(false);
   expect(otherErrors(pass([marked, refusal()]))).toBe(true);
   expect(otherErrors(pass([], [refusal()]))).toBe(false);
+});
+
+/** A ladder of `depth` unions, each with two record arms that both hold the
+ * next union: 2^depth paths to the bottom, `3 * depth` named types. */
+function ladder(depth: number, bottom: IrType) {
+  const shapes = new Map<string, { fields: { name: string; type: IrType }[] }>();
+  const unions = new Map<string, { arms: IrType[] }>();
+  const union = (i: number): IrType => ({ kind: "union", unionId: `u${i}` });
+  const record = (id: string): IrType => ({ kind: "record", shapeId: id });
+  for (let i = 0; i < depth; i++) {
+    const next = i + 1 < depth ? union(i + 1) : bottom;
+    shapes.set(`a${i}`, { fields: [{ name: "a", type: next }] });
+    shapes.set(`b${i}`, { fields: [{ name: "b", type: next }] });
+    unions.set(`u${i}`, { arms: [record(`a${i}`), record(`b${i}`)] });
+  }
+  const lowerer = {
+    shapes,
+    unions,
+    classes: new Map(),
+    constructorHolders: new Map<string, boolean>(),
+  } as unknown as Lowerer;
+  return { lowerer, top: union(0) };
+}
+
+test("a walk meets each shared type once, however many paths reach it", () => {
+  // Walked once per path, the 60-deep ladder is 2^60 visits.
+  const none = ladder(60, F64);
+  expect(holdsConstructorFunction(none.lowerer, none.top)).toBe(false);
+  expect(none.lowerer.constructorHolders.size).toBe(180);
+  expect([...none.lowerer.constructorHolders.values()].every((held) => !held)).toBe(true);
+  const held = ladder(60, primitiveConstructorType(STRING));
+  expect(holdsConstructorFunction(held.lowerer, held.top)).toBe(true);
+  expect(held.lowerer.constructorHolders.get("u:u0")).toBe(true);
 });

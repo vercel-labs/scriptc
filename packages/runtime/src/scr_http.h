@@ -160,6 +160,12 @@ enum {
 void scr_http_server_off(ScrNetServer *s, ScrClosure *cb /*borrowed*/, double kind);
 ScrArr *scr_http_server_listeners(ScrNetServer *s, double kind);
 ScrStr *scr_http_req_url(ScrHttpReq *r);      /* +1 */
+/* Http2ServerRequest.url: the frame's :path (+1), or NULL for Node's
+ * undefined (a CONNECT block carries no :path). */
+ScrStr *scr_http_req_url_opt(ScrHttpReq *r);
+/* Drop the compat request's seeded "/" when the header block carried no
+ * :path (the CONNECT shape), Node's undefined url. */
+void scr_http_req_clear_url(ScrHttpReq *r);
 ScrStr *scr_http_req_method(ScrHttpReq *r);   /* +1 */
 ScrStr *scr_http_req_header(ScrHttpReq *r, ScrStr *name /*borrowed*/); /* +1 or NULL (undefined arm) */
 ScrStr *scr_http_req_trailer(ScrHttpReq *r, ScrStr *name /*borrowed*/); /* +1 or NULL */
@@ -213,6 +219,14 @@ void scr_http_res_end_bytes(ScrHttpRes *r, ScrBytes *data /*borrowed*/);
 void scr_http_res_add_trailers(ScrHttpRes *r, ScrArr *pairs /*borrowed: [name, value, ...] */);
 /* Checked-dynamic chunk forms (the scr_net_sock_write_dynv story). */
 bool scr_http_res_write_dynv(ScrHttpRes *r, const ScrDyn *d /*borrowed*/);
+/* write(chunk[, encoding][, callback]) / end([data[, encoding]][, callback])
+ * when the call carries the extra arguments: the chunk is a string or a
+ * Buffer (an encoding applies to a string only), and the callback runs when
+ * the chunk has been flushed. */
+bool scr_http_res_write_args(ScrHttpRes *r, const ScrDyn *chunk /*borrowed*/,
+                             const ScrDyn *encoding /*borrowed*/, const ScrDyn *callback /*borrowed*/);
+void scr_http_res_end_args(ScrHttpRes *r, const ScrDyn *chunk /*borrowed*/,
+                           const ScrDyn *encoding /*borrowed*/, const ScrDyn *callback /*borrowed*/);
 void scr_http_res_end_dynv(ScrHttpRes *r, const ScrDyn *d /*borrowed*/);
 bool scr_http_res_headers_sent(ScrHttpRes *r);
 bool scr_http_res_writable_ended(ScrHttpRes *r);
@@ -411,6 +425,10 @@ void scr_http_client_on_drain(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, boo
 void scr_http_client_cannot_pipe(ScrHttpClientReq *c);
 /* Checked-dynamic chunk forms (the scr_net_sock_write_dynv story). */
 bool scr_http_client_write_dynv(ScrHttpClientReq *c, const ScrDyn *d /*borrowed*/);
+bool scr_http_client_write_args(ScrHttpClientReq *c, const ScrDyn *chunk /*borrowed*/,
+                                const ScrDyn *encoding /*borrowed*/, const ScrDyn *callback /*borrowed*/);
+void scr_http_client_end_args(ScrHttpClientReq *c, const ScrDyn *chunk /*borrowed*/,
+                              const ScrDyn *encoding /*borrowed*/, const ScrDyn *callback /*borrowed*/);
 void scr_http_client_end_dynv(ScrHttpClientReq *c, const ScrDyn *d /*borrowed*/);
 void scr_http_client_set_timeout(ScrHttpClientReq *c, double ms);
 void scr_http_client_destroy(ScrHttpClientReq *c);

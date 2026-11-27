@@ -139,8 +139,33 @@ typedef struct ScrEeEntry {
   const ScrDynTypedRefRecipe *recv;
   bool once;
   bool fired; /* a once entry that already ran (snapshot skip rule) */
+  /* Node's once wrapper, the function rawListeners answers for this entry:
+   * a closure named "wrapper" whose `.listener` is the original, and calling
+   * it removes the registration and runs the original. +1, NULL until
+   * rawListeners asks; a plain entry never gets one. Boxes of it compare
+   * equal (they share the closure), and the `.listener` property lives on
+   * the closure's own-property table. The wrapper owns the call state its
+   * entry would otherwise provide (see scr_ee_once_wrap_thunk), so it keeps
+   * working after the registration is removed. */
+  ScrClosure *once_wrapper;
   uint32_t refs;
 } ScrEeEntry;
+
+/* The once wrapper's captures. TARGET is traced: the collector sees the
+ * wrapper→emitter edge and collects the emitter/entry/wrapper cycle. */
+enum {
+  SCR_EE_ONCE_CAP_TARGET,
+  SCR_EE_ONCE_CAP_NAME,
+  SCR_EE_ONCE_CAP_LISTENER, /* checked-dynamic function value, traced */
+  SCR_EE_ONCE_CAP_RECV,     /* the static typed-ref recipe, or NULL */
+  SCR_EE_ONCE_CAP_FIRED,    /* the shared fired flag (bool box) */
+  SCR_EE_ONCE_CAPS
+};
+
+/* A box payload that is a static, process-lifetime pointer (the emitted
+ * receiver recipe). The box carries it and owns nothing. */
+static void *scr_ee_static_retain_v(void *p) { return p; }
+static void scr_ee_static_release_v(void *p) { (void)p; }
 
 typedef struct ScrEeBucket {
   ScrStr *name; /* owned; a scr_str_symbol_key for a symbol event name */
@@ -200,12 +225,40 @@ static void scr_ee_entry_unref(ScrEeEntry *e) {
   scr_closure_release(e->cb);
   scr_closure_release(e->orig); /* NULL-tolerant */
   scr_closure_release(e->flex_cb);
+  scr_closure_release(e->once_wrapper); /* NULL-tolerant */
   free(e);
 }
 
 /* The entry's IDENTITY closure — what Node would see as the listener. */
 static ScrClosure *scr_ee_entry_fn(const ScrEeEntry *e) {
   return e->orig ? e->orig : e->cb ? e->cb : e->flex_cb;
+}
+
+/* removeListener/off and listenerCount(name, fn) match a once entry by the
+ * original listener OR by the wrapper rawListeners handed out: Node's
+ * `list === listener || list.listener === listener` covers both spellings. */
+static bool scr_ee_entry_matches(const ScrEeEntry *e, ScrClosure *fn) {
+  if (scr_closure_identity_equal(scr_ee_entry_fn(e), fn)) return true;
+  return e->once_wrapper != NULL && scr_closure_identity_equal(e->once_wrapper, fn);
+}
+
+/* A once entry is consumed: the emit path and a direct wrapper call both
+ * report it to the wrapper's own fired flag, so whichever came second is a
+ * no-op. */
+static void scr_ee_once_mark_fired(ScrEeEntry *e) {
+  e->fired = true;
+  if (e->once_wrapper != NULL) scr_box_set_bool(e->once_wrapper->caps[SCR_EE_ONCE_CAP_FIRED], true);
+}
+
+/* Whether a once entry already ran. An emit holds a snapshot of the entry
+ * after an earlier listener removes the live registration and calls the
+ * saved wrapper: that call marks the wrapper's own flag, not the detached
+ * entry's, and Node's snapshot holds the wrapper, whose state is what makes
+ * the later call a no-op. Both flags answer the same question. */
+static bool scr_ee_entry_consumed(const ScrEeEntry *e) {
+  return e->fired ||
+         (e->once_wrapper != NULL &&
+          scr_box_get_bool(e->once_wrapper->caps[SCR_EE_ONCE_CAP_FIRED]));
 }
 
 static ScrEeReg *scr_ee_reg_ensure(ScrEmitter *em) {
@@ -374,6 +427,7 @@ void scr_emitter_reg_trace(ScrEeReg *reg, ScrTraceVisit visit, void *ctx) {
       if (b->ls[i]->cb) visit(b->ls[i]->cb, ctx);
       if (b->ls[i]->orig) visit(b->ls[i]->orig, ctx);
       if (b->ls[i]->flex_cb) visit(b->ls[i]->flex_cb, ctx);
+      if (b->ls[i]->once_wrapper) visit(b->ls[i]->once_wrapper, ctx);
     }
   }
 }
@@ -711,7 +765,8 @@ static bool scr_ee_ref_invoke(ScrDyn *d, const char *method, ScrDyn *const *args
       return true;
     }
     if (strcmp(method, "listenerCount") != 0) {
-      *out = scr_emitter_listeners_dyn(em, name);
+      *out = strcmp(method, "rawListeners") == 0 ? scr_emitter_raw_listeners_dyn(em, name)
+                                                 : scr_emitter_listeners_dyn(em, name);
     } else {
       double count = argc >= 2 ? scr_emitter_listener_count_dyn(em, name, args[1])
                                : scr_emitter_listener_count(em, name);
@@ -1289,7 +1344,7 @@ ScrEmitter *scr_emitter_off(ScrEmitter *em, ScrStr *name, ScrClosure *cb) {
   ScrEeBucket *b = em->reg ? scr_ee_bucket_of(em->reg, name) : NULL;
   if (b) {
     for (size_t i = b->n; i-- > 0;) {
-      if (scr_closure_identity_equal(scr_ee_entry_fn(b->ls[i]), cb)) {
+      if (scr_ee_entry_matches(b->ls[i], cb)) {
         scr_ee_remove_at(em, b, i);
         break;
       }
@@ -1506,8 +1561,8 @@ static bool scr_ee_emit_carried_core(ScrEmitter *em, ScrStr *name, va_list *ap_t
  * typed tuple reaches only listeners that have no such call. */
 static inline __attribute__((always_inline)) bool scr_ee_emit_pass(
     ScrEmitter *em, ScrStr *name, va_list *ap_template, ScrDyn *const *flex_args, size_t flex_argc,
-    ScrEeMessage *message, const bool checked_first) {
-  if (name->len == 5 && memcmp(name->data, "error", 5) == 0) {
+    ScrEeMessage *message, const bool checked_first, const bool monitor_done) {
+  if (!monitor_done && name->len == 5 && memcmp(name->data, "error", 5) == 0) {
     if (checked_first) scr_ee_emit_carried_core(em, SCR_EE_ERROR_MONITOR, ap_template, flex_args, flex_argc);
     else scr_ee_emit_error_monitor(em, ap_template, flex_args, flex_argc);
     if (scr_exc_pending()) return true;
@@ -1530,11 +1585,11 @@ static inline __attribute__((always_inline)) bool scr_ee_emit_pass(
       continue;
     }
     if (e->once) {
-      if (e->fired) {
+      if (scr_ee_entry_consumed(e)) {
         scr_ee_entry_unref(e);
         continue;
       }
-      e->fired = true;
+      scr_ee_once_mark_fired(e);
       /* Remove from the live list first (the wrapper's own removal). The
        * bucket may have been dropped/recreated by earlier listeners —
        * re-find it and match by entry identity. */
@@ -1598,12 +1653,118 @@ static inline __attribute__((always_inline)) bool scr_ee_emit_pass(
 
 static bool scr_ee_emit_core(ScrEmitter *em, ScrStr *name, va_list *ap_template,
                              ScrDyn *const *flex_args, size_t flex_argc, ScrEeMessage *message) {
-  return scr_ee_emit_pass(em, name, ap_template, flex_args, flex_argc, message, false);
+  return scr_ee_emit_pass(em, name, ap_template, flex_args, flex_argc, message, false, false);
+}
+
+/* The same pass after the errorMonitor listeners already ran: it dispatches
+ * the 'error' listeners the monitor left, and nothing else. */
+static bool scr_ee_emit_core_quiet(ScrEmitter *em, ScrStr *name, va_list *ap_template,
+                                   ScrDyn *const *flex_args, size_t flex_argc,
+                                   ScrEeMessage *message) {
+  return scr_ee_emit_pass(em, name, ap_template, flex_args, flex_argc, message, false, true);
+}
+
+/* Node's once wrapper called directly (rawListeners answered it): remove the
+ * live registration (when it still exists), then run the original with the
+ * emitter as `this` and the arguments as given — Node's onceWrapper. The
+ * call target and the fired flag live on the wrapper, not on the entry, so a
+ * saved wrapper still runs its original once after off() or
+ * removeAllListeners() removed the registration, as in Node. A second call
+ * (or a call after an emit already took the once) does nothing. */
+static ScrDyn *scr_ee_once_wrap_thunk(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
+  ScrEmitter *em = scr_box_get_ref(clo->caps[SCR_EE_ONCE_CAP_TARGET]);
+  ScrStr *name = scr_box_get_ref(clo->caps[SCR_EE_ONCE_CAP_NAME]);
+  ScrDyn *listener = scr_box_get_ref(clo->caps[SCR_EE_ONCE_CAP_LISTENER]);
+  const ScrDynTypedRefRecipe *recv = scr_box_get_ref(clo->caps[SCR_EE_ONCE_CAP_RECV]);
+  ScrBox *fired = clo->caps[SCR_EE_ONCE_CAP_FIRED];
+  ScrDyn *answer = NULL;
+  if (em == NULL || name == NULL || listener == NULL) {
+    scr_dyn_release(listener);
+    scr_str_release(name);
+    scr_emitter_release(em);
+    return scr_dyn_retain(scr_dyn_undefined());
+  }
+  if (scr_box_get_bool(fired)) {
+    scr_dyn_release(listener);
+    scr_str_release(name);
+    scr_emitter_release(em);
+    return scr_dyn_retain(scr_dyn_undefined());
+  }
+  ScrEeBucket *b = em->reg ? scr_ee_bucket_of(em->reg, name) : NULL;
+  size_t at = SIZE_MAX;
+  for (size_t i = 0; b != NULL && i < b->n; i++) {
+    if (b->ls[i]->once && b->ls[i]->once_wrapper == clo) {
+      at = i;
+      break;
+    }
+  }
+  if (at != SIZE_MAX && scr_ee_entry_consumed(b->ls[at])) {
+    /* An emit already took the once; the wrapper reports that. */
+    scr_box_set_bool(fired, true);
+    scr_dyn_release(listener);
+    scr_str_release(name);
+    scr_emitter_release(em);
+    return scr_dyn_retain(scr_dyn_undefined());
+  }
+  scr_box_set_bool(fired, true);
+  if (at != SIZE_MAX) {
+    b->ls[at]->fired = true;
+    /* Removal fires 'removeListener' and may drop the entry's last live
+     * reference — the captured listener outlives it. */
+    scr_ee_remove_at(em, b, at);
+  }
+  if (!scr_exc_pending()) {
+    if (recv != NULL) scr_dyn_this_push_typed(em, recv);
+    answer = scr_dyn_call(listener, args, argc, "listener");
+    if (recv != NULL) scr_dyn_this_pop();
+  }
+  scr_dyn_release(listener);
+  scr_str_release(name);
+  scr_emitter_release(em);
+  return answer != NULL ? answer : scr_dyn_retain(scr_dyn_undefined());
+}
+
+/* The once wrapper value rawListeners answers (+1), built on first ask:
+ * `name` is the entry's bucket name (owned by the bucket). The wrapper owns
+ * everything its call needs, and its emitter capture is traced, so an
+ * abandoned emitter/wrapper cycle is collectable. */
+static ScrDyn *scr_ee_once_wrapper(ScrEmitter *em, ScrStr *name, ScrEeEntry *e) {
+  if (!e->once) return NULL;
+  if (e->once_wrapper == NULL) {
+    ScrDyn *listener = scr_ee_entry_dyn(e);
+    if (listener == NULL) return NULL;
+    ScrClosure *w = scr_closure_new((void *)&scr_ee_once_wrap_thunk, SCR_EE_ONCE_CAPS);
+    w->caps[SCR_EE_ONCE_CAP_TARGET] =
+        scr_box_new_obj(&scr_emitter_retain_v, &scr_emitter_release_v, &scr_emitter_trace);
+    scr_box_set_ref(w->caps[SCR_EE_ONCE_CAP_TARGET], scr_emitter_retain(em));
+    w->caps[SCR_EE_ONCE_CAP_NAME] = scr_box_new_obj(&scr_str_retain_v, &scr_str_release_v, NULL);
+    scr_box_set_ref(w->caps[SCR_EE_ONCE_CAP_NAME], scr_str_retain(name));
+    w->caps[SCR_EE_ONCE_CAP_LISTENER] =
+        scr_box_new_obj(&scr_dyn_retain_v, &scr_dyn_release_v, &scr_dyn_trace_v);
+    scr_box_set_ref(w->caps[SCR_EE_ONCE_CAP_LISTENER], scr_dyn_retain(listener));
+    w->caps[SCR_EE_ONCE_CAP_RECV] =
+        scr_box_new_obj(&scr_ee_static_retain_v, &scr_ee_static_release_v, NULL);
+    scr_box_set_ref(w->caps[SCR_EE_ONCE_CAP_RECV], (void *)e->recv);
+    w->caps[SCR_EE_ONCE_CAP_FIRED] = scr_box_new(SCR_BOX_BOOL);
+    ScrDyn *first =
+        scr_dyn_new_func(scr_closure_retain(w), &scr_ee_once_wrap_thunk, 0, "()", "wrapper");
+    /* The own-property table lives on the closure, so every box answers it. */
+    scr_dyn_fn_set_prop(first, "listener", 8, listener); /* moves the +1 */
+    scr_dyn_release(first);
+    e->once_wrapper = w;
+  }
+  return scr_dyn_new_func(scr_closure_retain(e->once_wrapper), &scr_ee_once_wrap_thunk, 0, "()", "wrapper");
 }
 
 static bool scr_ee_emit_carried_core(ScrEmitter *em, ScrStr *name, va_list *ap_template,
                                      ScrDyn *const *flex_args, size_t flex_argc) {
-  return scr_ee_emit_pass(em, name, ap_template, flex_args, flex_argc, NULL, true);
+  return scr_ee_emit_pass(em, name, ap_template, flex_args, flex_argc, NULL, true, false);
+}
+
+/* The carried pass after the errorMonitor listeners already ran. */
+static bool scr_ee_emit_carried_core_quiet(ScrEmitter *em, ScrStr *name, va_list *ap_template,
+                                           ScrDyn *const *flex_args, size_t flex_argc) {
+  return scr_ee_emit_pass(em, name, ap_template, flex_args, flex_argc, NULL, true, true);
 }
 
 static bool scr_ee_emit_va(ScrEmitter *em, ScrStr *name, ...) {
@@ -1621,6 +1782,24 @@ static bool scr_ee_emit_mixed_va(ScrEmitter *em, ScrStr *name, ScrDyn *const *ar
   va_list ap;
   va_start(ap, typed);
   bool had = scr_ee_emit_core(em, name, typed ? &ap : NULL, args ? args : scr_ee_no_args, argc, NULL);
+  va_end(ap);
+  return had;
+}
+
+static bool scr_ee_emit_va_quiet(ScrEmitter *em, ScrStr *name, ...) {
+  va_list ap;
+  va_start(ap, name);
+  bool had = scr_ee_emit_core_quiet(em, name, &ap, NULL, 0, NULL);
+  va_end(ap);
+  return had;
+}
+
+static bool scr_ee_emit_mixed_va_quiet(ScrEmitter *em, ScrStr *name, ScrDyn *const *args,
+                                       size_t argc, int typed, ...) {
+  va_list ap;
+  va_start(ap, typed);
+  bool had =
+      scr_ee_emit_core_quiet(em, name, typed ? &ap : NULL, args ? args : scr_ee_no_args, argc, NULL);
   va_end(ap);
   return had;
 }
@@ -1748,14 +1927,18 @@ static void scr_ee_unhandled_error(const ScrDyn *er) {
  * arguments as given, and typed listeners the payload as an Error. `render`
  * (util.inspect, when the call site links it) quotes the payload in the
  * ERR_UNHANDLED_ERROR message; without it only primitive payloads render. */
-static bool scr_ee_emit_error_dyn(ScrEmitter *em, ScrStr *name, ScrDyn *const *args, size_t argc,
-                                  ScrStr *(*render)(ScrDyn *, double, double)) {
+/* The untyped 'error' emit's decision, made after the errorMonitor
+ * listeners ran (monitor_done false runs them here and now): the listeners
+ * that remain decide, and a monitor that throws keeps its own exception. */
+static bool scr_ee_emit_error_dyn_impl(ScrEmitter *em, ScrStr *name, ScrDyn *const *args,
+                                       size_t argc, ScrStr *(*render)(ScrDyn *, double, double),
+                                       bool monitor_done) {
   const ScrDyn *er = argc ? args[0] : scr_dyn_undefined();
   ScrError *err = scr_dyn_err_instanceof(er, SCR_ERR_ERROR) ? scr_errdyn_err_of(er) : NULL;
   bool had = false;
-  if (!scr_ee_has(em->reg, "error")) {
-    scr_ee_emit_mixed_va(em, SCR_EE_ERROR_MONITOR, args, argc, err != NULL, err);
-    if (!scr_exc_pending()) {
+  if (!monitor_done) scr_ee_emit_mixed_va(em, SCR_EE_ERROR_MONITOR, args, argc, err != NULL, err);
+  if (!scr_exc_pending()) {
+    if (!scr_ee_has(em->reg, "error")) {
       if (err) {
         scr_dyn_throw(scr_dyn_retain((ScrDyn *)er));
       } else if (render) {
@@ -1774,12 +1957,17 @@ static bool scr_ee_emit_error_dyn(ScrEmitter *em, ScrStr *name, ScrDyn *const *a
       } else {
         scr_ee_unhandled_error(er);
       }
+    } else {
+      had = scr_ee_emit_mixed_va_quiet(em, name, args, argc, err != NULL, err);
     }
-  } else {
-    had = scr_ee_emit_mixed_va(em, name, args, argc, err != NULL, err);
   }
   scr_error_release(err);
   return had;
+}
+
+static bool scr_ee_emit_error_dyn(ScrEmitter *em, ScrStr *name, ScrDyn *const *args, size_t argc,
+                                  ScrStr *(*render)(ScrDyn *, double, double)) {
+  return scr_ee_emit_error_dyn_impl(em, name, args, argc, render, false);
 }
 
 /* emit('error', ...args) from typed code whose payload is not statically
@@ -1832,21 +2020,25 @@ bool scr_emitter_emit_any(ScrEmitter *em, ScrStr *name, ScrDyn *const *args, siz
 /* Handle event registries use checked callbacks for every tuple, including
  * errors. Keep this separate from the statically typed Error ABI above. */
 bool scr_emitter_emit_error_flex(ScrEmitter *em, ScrDyn *error) {
+  scr_ee_emit_error_monitor(em, NULL, &error, 1);
+  if (scr_exc_pending()) return false;
   if (!scr_ee_has(em->reg, "error")) {
-    scr_ee_emit_error_monitor(em, NULL, &error, 1);
-    if (scr_exc_pending()) return false;
     scr_dyn_throw(scr_dyn_retain(error));
     return false;
   }
   ScrStr *name = scr_str_new("error", 5);
-  bool had = scr_ee_emit_core(em, name, NULL, &error, 1, NULL);
+  bool had = scr_ee_emit_core_quiet(em, name, NULL, &error, 1, NULL);
   scr_str_release(name);
   return had;
 }
 
-/* emit('error', err) — Node's special event: with no 'error' listener the
- * payload THROWS (catchable; uncaught exits 1 with the error report).
- * err is borrowed; the throw takes its own +1. */
+/* emit('error', ...) — Node's special event: the errorMonitor listeners run
+ * BEFORE the decision, and the decision reads the 'error' listeners that
+ * remain: a monitor that installs one makes the emit handled, one that
+ * removes the last makes it throw (the payload itself; catchable, uncaught
+ * exits 1 with the error report). A monitor that throws keeps its own
+ * exception. Only with no listener left does the payload THROW. err is
+ * borrowed; the throw takes its own +1. */
 static void scr_ee_emit_error_monitor_va(ScrEmitter *em, ...) {
   va_list ap;
   va_start(ap, em);
@@ -1855,34 +2047,48 @@ static void scr_ee_emit_error_monitor_va(ScrEmitter *em, ...) {
 }
 
 bool scr_emitter_emit_error(ScrEmitter *em, ScrStr *name, ScrError *err) {
+  scr_ee_emit_error_monitor_va(em, err);
+  if (scr_exc_pending()) return false;
   if (!scr_ee_has(em->reg, "error")) {
-    scr_ee_emit_error_monitor_va(em, err);
-    if (scr_exc_pending()) return false;
     scr_throw_obj(scr_error_retain(err), &scr_error_retain_v, &scr_error_release_v,
                   scr_error_trace_arg());
     return false;
   }
-  return scr_ee_emit_va(em, name, err);
+  return scr_ee_emit_va_quiet(em, name, err);
 }
 
 bool scr_emitter_emit_error_mixed(ScrEmitter *em, ScrStr *name, ScrError *err,
                                   ScrDyn *const *args, size_t argc) {
+  scr_ee_emit_mixed_va(em, SCR_EE_ERROR_MONITOR, args, argc, 1, err);
+  if (scr_exc_pending()) return false;
   if (!scr_ee_has(em->reg, "error")) {
-    scr_ee_emit_mixed_va(em, SCR_EE_ERROR_MONITOR, args, argc, 1, err);
-    if (scr_exc_pending()) return false;
     scr_throw_obj(scr_error_retain(err), &scr_error_retain_v, &scr_error_release_v,
                   scr_error_trace_arg());
     return false;
   }
-  return scr_ee_emit_mixed_va(em, name, args, argc, 1, err);
+  return scr_ee_emit_mixed_va_quiet(em, name, args, argc, 1, err);
 }
 
-static bool scr_ee_emit_carried_va(ScrEmitter *em, ScrStr *name, ScrDyn *const *args, size_t argc, ...) {
+static bool scr_ee_emit_carried_va_quiet(ScrEmitter *em, ScrStr *name, ScrDyn *const *args,
+                                         size_t argc, ...) {
   va_list ap;
   va_start(ap, argc);
-  bool had = scr_ee_emit_carried_core(em, name, &ap, args, argc);
+  bool had = scr_ee_emit_carried_core_quiet(em, name, &ap, args, argc);
   va_end(ap);
   return had;
+}
+
+/* The carried 'error' emit's errorMonitor dispatch: its typed tuple is the
+ * Error the payload stands for, and a listener registered through an
+ * untyped value reads the payload itself. */
+static void scr_ee_emit_error_monitor_carried(ScrEmitter *em, ScrDyn *const *args, size_t argc,
+                                              ...) {
+  ScrEeBucket *b = em->reg ? scr_ee_bucket_of(em->reg, SCR_EE_ERROR_MONITOR) : NULL;
+  if (!b || b->n == 0) return;
+  va_list ap;
+  va_start(ap, argc);
+  scr_ee_emit_carried_core(em, SCR_EE_ERROR_MONITOR, &ap, args, argc);
+  va_end(ap);
 }
 
 /* emit('error') of a reason that is not an Error, from a unit that holds
@@ -1898,8 +2104,11 @@ static bool scr_ee_emit_carried_va(ScrEmitter *em, ScrStr *name, ScrDyn *const *
  * args. */
 bool scr_emitter_emit_error_carried(ScrEmitter *em, ScrStr *name, ScrError *err,
                                     ScrDyn *const *args, size_t argc) {
-  if (!scr_ee_has(em->reg, "error")) return scr_ee_emit_error_dyn(em, name, args, argc, NULL);
-  return scr_ee_emit_carried_va(em, name, args, argc, err);
+  scr_ee_emit_error_monitor_carried(em, args, argc, err);
+  if (scr_exc_pending()) return false;
+  if (!scr_ee_has(em->reg, "error"))
+    return scr_ee_emit_error_dyn_impl(em, name, args, argc, NULL, true);
+  return scr_ee_emit_carried_va_quiet(em, name, args, argc, err);
 }
 
 /* ── introspection ────────────────────────────────────────────────────── */
@@ -1920,7 +2129,7 @@ double scr_emitter_listener_count_fn(ScrEmitter *em, ScrStr *name, ScrClosure *f
   if (!b) return 0;
   size_t count = 0;
   for (size_t i = 0; i < b->n; i++) {
-    if (scr_closure_identity_equal(scr_ee_entry_fn(b->ls[i]), fn)) count++;
+    if (scr_ee_entry_matches(b->ls[i], fn)) count++;
   }
   return (double)count;
 }
@@ -2014,6 +2223,26 @@ ScrArr *scr_emitter_listeners(ScrEmitter *em, ScrStr *name) {
     for (size_t i = 0; i < b->n; i++) {
       scr_arr_push_ref(out, scr_closure_retain(scr_ee_entry_fn(b->ls[i])));
     }
+  }
+  return out;
+}
+
+/* rawListeners(name) through an untyped value (+1 array): Node's answers —
+ * the original for a plain listener, and the once wrapper for a once()
+ * registration (see scr_ee_once_wrapper). */
+ScrDyn *scr_emitter_raw_listeners_dyn(ScrEmitter *em, ScrStr *name) {
+  ScrDyn *out = scr_dyn_new_arr();
+  ScrEeBucket *b = em->reg ? scr_ee_bucket_of(em->reg, name) : NULL;
+  for (size_t i = 0; b != NULL && i < b->n; i++) {
+    ScrEeEntry *e = b->ls[i];
+    ScrDyn *fn = e->once ? scr_ee_once_wrapper(em, b->name, e) : scr_ee_entry_dyn(e);
+    if (fn == NULL) {
+      scr_dyn_release(out);
+      const char *message = "listeners() through an untyped value of an event with a typed listener is not supported yet";
+      { ScrStr *refused = scr_str_new(message, strlen(message)); scr_throw_error_msg_code(SCR_ERR_ERROR, refused->data, refused->len, "SC2020"); scr_str_release(refused); }
+      return scr_dyn_new_arr();
+    }
+    scr_dyn_arr_push(out, fn);
   }
   return out;
 }

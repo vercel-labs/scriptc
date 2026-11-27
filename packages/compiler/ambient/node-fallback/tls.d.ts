@@ -62,6 +62,15 @@ declare module "tls" {
     getProtocol(): string | null;
     /* OpenSSL's suite name, the IANA name and the suite's version */
     getCipher(): CipherNameAndProtocol;
+    /* the negotiated ephemeral key's facts; null on a server-side socket,
+     * before the handshake and after destroy. The bundled provider does
+     * not surface the negotiated group, so a client answers an empty
+     * object where Node names the group (TLSGroup/ECDH). */
+    getEphemeralKeyInfo(): EphemeralKeyInfo | null;
+    /* cap the send fragment size: 512..16384 answers true, any other
+     * integer false; a non-integer, NaN or an infinity throws
+     * ERR_OUT_OF_RANGE like Node. */
+    setMaxSendFragment(size: number): boolean;
     /* whether the handshake resumed a cached session */
     isSessionReused(): boolean;
     /* derive keying material with the TLS exporter; the result is a Buffer */
@@ -138,6 +147,13 @@ declare module "tls" {
     name: string;
     standardName: string;
     version: string;
+  }
+  /* Node's EphemeralKeyInfo; the provider-dependent members are optional
+   * because an empty object is a valid answer here. */
+  export interface EphemeralKeyInfo {
+    type?: "DH" | "ECDH" | "TLSGroup";
+    name?: string;
+    size?: number;
   }
   export const DEFAULT_MIN_VERSION: string;
   export const DEFAULT_MAX_VERSION: string;

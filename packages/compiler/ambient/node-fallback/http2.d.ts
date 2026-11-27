@@ -16,7 +16,10 @@ declare module "http2" {
     destroy(): void;
   }
   export interface Http2ServerRequest {
-    readonly url: string;
+    /* Node's compat request keeps the frame's :path: a CONNECT block
+     * carries none, so the read is undefined there (Node's value; the
+     * h2enabled request object answers it through the same union). */
+    readonly url: string | undefined;
     readonly method: string;
     /* The trailer block the request carried (empty before the request
      * ends): a record of joined values, and the raw [name, value, ...]
@@ -89,6 +92,8 @@ declare module "http2" {
     /* A 1xx block before the response starts: 100..199 (never 101). */
     writeInformation(statusCode: number, headers?: OutgoingHttpHeaders): boolean;
     write(data: string | Uint8Array): void;
+    write(data: string | Uint8Array, callback: () => void): void;
+    write(data: string | Uint8Array, encoding: string, callback: () => void): void;
     flushHeaders(): void;
     cork(): void;
     uncork(): void;

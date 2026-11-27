@@ -172,10 +172,17 @@ declare module "http" {
     writeInformation(statusCode: number, headers?: OutgoingHttpHeaders): boolean;
     writeEarlyHints(hints: Record<string, string | string[]>, callback?: () => void): void;
     /* Answers whether the buffer is still below its 64 KiB high-water
-     * mark; a false answer fires 'drain' once the bytes are out. */
+     * mark; a false answer fires 'drain' once the bytes are out. An
+     * encoding applies to a string chunk (a buffer carries its own bytes),
+     * and the callback runs once the chunk has been flushed. */
     write(data: string | Uint8Array): boolean;
-    write(data: string | Uint8Array, callback: () => void): boolean;
-    write(data: string | Uint8Array, encoding: string, callback?: () => void): boolean;
+    write(data: string | Uint8Array, encoding: string | undefined): boolean;
+    write(data: string | Uint8Array, callback?: (() => void) | undefined): boolean;
+    write(
+      data: string | Uint8Array,
+      encoding: string | undefined,
+      callback?: (() => void) | undefined,
+    ): boolean;
     flushHeaders(): void;
     cork(): void;
     uncork(): void;
@@ -183,7 +190,13 @@ declare module "http" {
     setTimeout(msecs: number, callback?: () => void): this;
     /* end's callback forms fire once the body went out (the 'finish'
      * emit, deferred past the handler's synchronous tail). */
-    end(data?: string | Uint8Array, callback?: () => void): void;
+    end(data?: string | Uint8Array | null, callback?: (() => void) | undefined): void;
+    end(data: string | Uint8Array | null | undefined, encoding: string | undefined): void;
+    end(
+      data: string | Uint8Array | null | undefined,
+      encoding: string | undefined,
+      callback?: (() => void) | undefined,
+    ): void;
     end(callback: () => void): void;
     destroy(): void;
     /* 'prefinish' fires inside end(), before 'finish'; 'drain' follows a
@@ -347,9 +360,26 @@ declare module "http" {
     setSocketKeepAlive(enable?: boolean, initialDelay?: number): void;
     setTimeout(timeout: number, callback?: () => void): this;
     /* Answers whether the buffer is still below its 64 KiB high-water
-     * mark; a false answer fires 'drain' once the bytes are out. */
+     * mark; a false answer fires 'drain' once the bytes are out. The
+     * encoding applies to a string chunk and the callback runs once the
+     * chunk has been flushed. */
     write(data: string | Uint8Array): boolean;
-    end(data?: string | Uint8Array): void;
+    write(data: string | Uint8Array, encoding: string | undefined): boolean;
+    write(data: string | Uint8Array, callback?: (() => void) | undefined): boolean;
+    write(
+      data: string | Uint8Array,
+      encoding: string | undefined,
+      callback?: (() => void) | undefined,
+    ): boolean;
+    end(data?: string | Uint8Array | null, callback?: (() => void) | undefined): void;
+    end(data: string | Uint8Array | null | undefined, encoding: string | undefined): void;
+    end(data: string | Uint8Array | null | undefined, callback: () => void): void;
+    end(
+      data: string | Uint8Array | null | undefined,
+      encoding: string | undefined,
+      callback?: (() => void) | undefined,
+    ): void;
+    end(callback: () => void): void;
     /* OutgoingMessage.pipe(): a request is write-only, so Node emits
      * ERR_STREAM_CANNOT_PIPE on the request's 'error' list, whatever the
      * arguments. */

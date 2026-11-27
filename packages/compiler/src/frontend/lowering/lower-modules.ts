@@ -9,7 +9,7 @@ import { staticString } from "./builtins/module-resolution.js";
 import { NODE_API_MODULE } from "../node-api-import.js";
 import { positionTag } from "./structural-positions.js";
 import { EXPERIMENTAL_MODULE } from "../experimental-import.js";
-import { dynUndefinedExpr } from "../../ir/build.js";
+import { dynUndefinedExpr, nodeThrowExpr } from "../../ir/build.js";
 import { everyStmtList, everyTypeChild } from "../../ir/traverse.js";
 import { InternalCompilerError } from "../../errors.js";
 /* Module-graph lowering: splitting each source file into its parts, the
@@ -3730,14 +3730,29 @@ export function collectGlobals(
           // copying its entries must not extract nested callable records.
           // A literal shape inference typed (hasShapeOverlayType) is a
           // record global: the analysis proved its object never reaches
-          // untyped code.
+          // untyped code. When that inferred record cannot map (an
+          // unmappable member type), the literal keeps the checked-dynamic
+          // registration instead of losing its binding.
+          const overlayType = lowerer.mapTypeOf(lowerer.typeOf(nameNode));
+          // A property spelled `undefined` (or `void 0`) has the VOID type,
+          // which is not a dyn conversion domain: the property's VALUE is
+          // the undefined dyn unit, so the literal can still be built as a
+          // checked-dynamic object.
+          const undefinedValue = (type: IrType | null, node: ts.Expression): boolean => {
+            if (type?.kind !== "void") return false;
+            let value = node;
+            while (ts.isParenthesizedExpression(value)) value = value.expression;
+            return (
+              (ts.isIdentifier(value) && value.text === "undefined") || ts.isVoidExpression(value)
+            );
+          };
           if (
             isJsSourceFile(sf) &&
             ts.isIdentifier(decl.name) &&
             nameNode === decl.name &&
             decl.initializer !== undefined &&
             ts.isObjectLiteralExpression(decl.initializer) &&
-            !hasShapeOverlayType(decl) &&
+            (!hasShapeOverlayType(decl) || overlayType === null) &&
             decl.initializer.properties.nodes.every((p) => {
               if (ts.isSpreadAssignment(p)) {
                 return (
@@ -3750,6 +3765,7 @@ export function collectGlobals(
               return (
                 mt === null ||
                 mt.kind === "dyn" ||
+                undefinedValue(mt, p.initializer) ||
                 canConvertToDyn(
                   mt,
                   (id) => lowerer.shapes.get(id),
@@ -4825,12 +4841,25 @@ export function lowerFileInit(
           const loc = locOf(stmt);
           const depAsync = lowerer.asyncInitFiles.has(dep);
           if (depAsync && !isAsync) {
-            lowerer.unsupported(
-              "SC1090",
-              stmt,
-              `loading '${dep.fileName}' from a CommonJS module ` +
-                "(the required ES-module graph uses top-level await; use import() instead)",
-            );
+            // Node throws at the require: a CommonJS module cannot load an
+            // ES-module graph that awaits at its top level.
+            const throwLoc = locOf(stmt);
+            header.push({
+              kind: "exprStmt",
+              expr: nodeThrowExpr(
+                0,
+                "ERR_REQUIRE_ASYNC_MODULE",
+                "require() cannot be used on an ESM graph with top-level await. " +
+                  "Use import() instead. To see where the top-level await comes from, " +
+                  "use --experimental-print-required-tla." +
+                  `\nRequired module: ${dep.fileName}` +
+                  `\nRequire stack:\n- ${sf.fileName}`,
+                VOID,
+                throwLoc,
+              ),
+              loc: throwLoc,
+            });
+            continue;
           }
           const call: IrExpr = {
             kind: "call",
@@ -4991,7 +5020,11 @@ export function lowerFileInit(
       c.runtimeStatics !== undefined ||
       c.staticFields.length > 0 ||
       (c.staticBlocks?.length ?? 0) > 0 ||
-      c.classDecorators !== undefined;
+      c.classDecorators !== undefined ||
+      // A legacy class with only MEMBER or constructor PARAMETER decorators
+      // still runs their applications at its statement.
+      c.legacyMemberDecorations !== undefined ||
+      c.legacyConstructorDecorations !== undefined;
     const statics: {
       pos: number;
       info: ClassInfo | null;

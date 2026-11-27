@@ -35,6 +35,7 @@ import {
   arrayOf,
   CLASS_FIELD_ATTRIBUTES_PREFIX,
   classDynViewSupported,
+  classJsName,
   DYN_CLASS_PROPERTIES,
   isClassOwnEnumerableFieldName,
   isDirentShape,
@@ -4360,8 +4361,11 @@ function directCallableInspect(lowerer: Lowerer, node: ts.Expression, loc: SrcLo
       // Node's Error constructors are native functions, not classes.
       return strLit(`[Function: ${cls.def.name.replace(/^%/, "")}]`, loc);
     }
-    const base = cls.base ? ` extends ${cls.base.def.name.replace(/^%/, "")}` : "";
-    return strLit(`[class ${cls.def.name}${base}]`, loc);
+    // The printed name is the class object's JavaScript name, not the
+    // internal one: a class declared inside a function has a scoped
+    // internal name (`%cx…Point`) that Node never prints.
+    const base = cls.base ? ` extends ${classJsName(cls.base.def)}` : "";
+    return strLit(`[class ${classJsName(cls.def)}${base}]`, loc);
   }
   const decl = sym.declarations[0];
   if (!decl) return null;

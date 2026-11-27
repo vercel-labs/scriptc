@@ -75,6 +75,48 @@ class B {
   expect(optional).toHaveLength(1);
 });
 
+test.for([
+  [
+    "a line comment and a later `*/` line comment",
+    "// /*\nclass Store {\n  set value(next?) { this.stored = next; }\n}\n// */",
+  ],
+  [
+    "an unclosed line-comment opener",
+    "// /*\nclass Store {\n  set value(next?) { this.stored = next; }\n}",
+  ],
+  [
+    "a CRLF line comment",
+    "// /*\r\nclass Store {\r\n  set value(next?) { this.stored = next; }\r\n}\r\n// */",
+  ],
+  [
+    "a Unicode line separator",
+    "// /*\u2028class Store {\n  set value(next?) { this.stored = next; }\n}\n// */",
+  ],
+  [
+    "a Unicode paragraph separator",
+    "// /*\u2029class Store {\n  set value(next?) { this.stored = next; }\n}\n// */",
+  ],
+  [
+    "a shebang containing a block opener",
+    "#!/usr/bin/env node --x=/*\nclass Store {\n  set value(next?) { this.stored = next; }\n}",
+  ],
+])("%s does not hide an executable optional setter parameter", (row) => {
+  // The `/*` is spelled inside a line comment or a shebang, so it opens no
+  // block comment and cannot swallow the executable `?`.
+  const result = diagnostics(row[1]!);
+  expect(result.some((d) => d.message.includes("cannot have an optional parameter"))).toBe(true);
+});
+
+test("a genuine optional setter JSDoc after a line comment is still admitted", () => {
+  expect(
+    diagnostics(`// note: /* is not an opener here
+class Store {
+  /** @param {string | null} [next] */
+  set value(next) { this.stored = next; }
+}`),
+  ).toEqual([]);
+});
+
 test("a TypeScript setter keeps tsc's optional-parameter diagnostic", () => {
   const result = diagnostics(
     "class Store {\n  stored: string | null = null;\n  set value(next?: string | null) { this.stored = next ?? null; }\n}",

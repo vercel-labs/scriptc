@@ -60,13 +60,13 @@
     "sourceChapters": 63,
     "sourceRows": 4996,
     "matrixChapters": 56,
-    "matrixRows": 3667,
+    "matrixRows": 3663,
     "excluded": {
       "documentation": 640,
       "metadata": 210,
       "configuration": 251,
       "non-api": 0,
-      "not-applicable": 221,
+      "not-applicable": 225,
       "chapters": 7
     }
   },
@@ -176,8 +176,8 @@
     {
       "slug": "globals",
       "title": "Globals",
-      "entries": 92,
-      "apiEntries": 92
+      "entries": 88,
+      "apiEntries": 88
     },
     {
       "slug": "http",
@@ -23868,9 +23868,9 @@
       "anchor": "crl_not_yet_valid",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
+        "status": "supported",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {
@@ -23886,9 +23886,9 @@
       "anchor": "crl_has_expired",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
+        "status": "supported",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {
@@ -23904,9 +23904,9 @@
       "anchor": "cert_revoked",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
+        "status": "supported",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {
@@ -24012,9 +24012,9 @@
       "anchor": "unable_to_get_crl",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
+        "status": "supported",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {
@@ -24156,9 +24156,9 @@
       "anchor": "crl_signature_failure",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
+        "status": "supported",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {
@@ -32908,29 +32908,6 @@
       }
     },
     {
-      "id": "globals:3c623a789a40",
-      "chapter": "globals",
-      "kind": "class",
-      "name": "EventSource",
-      "signature": "Class: `EventSource`",
-      "label": "EventSource",
-      "apiSymbol": "EventSource",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "class-eventsource",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental. Enable this API with the [`--experimental-eventsource`][] CLI flag.",
-        "inherited": false
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
-      }
-    },
-    {
       "id": "globals:3e97945356cd",
       "chapter": "globals",
       "kind": "class",
@@ -33434,29 +33411,6 @@
         "status": "partial",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
-      }
-    },
-    {
-      "id": "globals:4d2dccff54ef",
-      "chapter": "globals",
-      "kind": "class",
-      "name": "Storage",
-      "signature": "Class: `Storage`",
-      "label": "Storage",
-      "apiSymbol": "Storage",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "class-storage",
-      "nodeStability": {
-        "index": "1.2",
-        "level": 1,
-        "text": "Release candidate. Enable this API with [`--experimental-webstorage`][].",
-        "inherited": false
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
       }
     },
     {
@@ -34167,9 +34121,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -34216,29 +34170,6 @@
         "status": "partial",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
-      }
-    },
-    {
-      "id": "globals:0a45bbc44df3",
-      "chapter": "globals",
-      "kind": "misc",
-      "name": "`localstorage`",
-      "signature": "`localStorage`",
-      "label": "localStorage",
-      "apiSymbol": "localStorage",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "localstorage",
-      "nodeStability": {
-        "index": "1.2",
-        "level": 1,
-        "text": "Release candidate. Enable this API with [`--experimental-webstorage`][].",
-        "inherited": false
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
       }
     },
     {
@@ -34469,29 +34400,6 @@
         "status": "partial",
         "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
         "verification": "test-backed"
-      }
-    },
-    {
-      "id": "globals:468e2e550926",
-      "chapter": "globals",
-      "kind": "misc",
-      "name": "`sessionstorage`",
-      "signature": "`sessionStorage`",
-      "label": "sessionStorage",
-      "apiSymbol": "sessionStorage",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "sessionstorage",
-      "nodeStability": {
-        "index": "1.2",
-        "level": 1,
-        "text": "Release candidate. Enable this API with [`--experimental-webstorage`][].",
-        "inherited": false
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
       }
     },
     {
@@ -38652,9 +38560,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -38744,9 +38652,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -38790,9 +38698,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -39296,9 +39204,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -39595,7 +39503,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -40055,7 +39963,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -40078,7 +39986,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -43804,9 +43712,9 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -44778,9 +44686,9 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -44801,9 +44709,9 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -44955,9 +44863,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -44978,9 +44886,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -45001,9 +44909,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -45024,9 +44932,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -45047,9 +44955,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -45070,9 +44978,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -45093,9 +45001,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -45116,9 +45024,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -45139,9 +45047,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -45162,9 +45070,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -45185,9 +45093,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -45208,9 +45116,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -45231,9 +45139,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -45254,9 +45162,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -45277,9 +45185,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -47372,8 +47280,8 @@
       "anchor": "netconnectoptions-connectlistener",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -47444,8 +47352,8 @@
       "anchor": "netcreateconnectionoptions-connectlistener",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -55685,7 +55593,7 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Derived from the exact API rows in this chapter.",
         "verification": "derived"
       }
@@ -56168,7 +56076,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -58146,8 +58054,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented static async-iteration subset.",
         "verification": "test-backed"
       }
     },
@@ -58606,8 +58514,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Implemented for the documented static async-iteration subset.",
         "verification": "test-backed"
       }
     },
@@ -58629,8 +58537,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Implemented for the documented static async-iteration subset.",
         "verification": "test-backed"
       }
     },
@@ -58698,8 +58606,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Implemented for the documented static async-iteration subset.",
         "verification": "test-backed"
       }
     },
@@ -59158,8 +59066,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented static async-iteration subset.",
         "verification": "test-backed"
       }
     },
@@ -59181,7 +59089,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented static async-iteration subset.",
         "verification": "test-backed"
       }
@@ -59204,8 +59112,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented static async-iteration subset.",
         "verification": "test-backed"
       }
     },
@@ -59296,7 +59204,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented static async-iteration subset.",
         "verification": "test-backed"
       }
@@ -59319,7 +59227,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented static async-iteration subset.",
         "verification": "test-backed"
       }
@@ -59342,7 +59250,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented static async-iteration subset.",
         "verification": "test-backed"
       }
@@ -59365,8 +59273,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented static async-iteration subset.",
         "verification": "test-backed"
       }
     },
@@ -59388,7 +59296,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented static async-iteration subset.",
         "verification": "test-backed"
       }
@@ -59411,8 +59319,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented static async-iteration subset.",
         "verification": "test-backed"
       }
     },
@@ -59526,7 +59434,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented static async-iteration subset.",
         "verification": "test-backed"
       }
@@ -59549,8 +59457,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented static async-iteration subset.",
         "verification": "test-backed"
       }
     },
@@ -59572,7 +59480,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented static async-iteration subset.",
         "verification": "test-backed"
       }
@@ -63873,9 +63781,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -64103,9 +64011,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -78230,9 +78138,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -78483,9 +78391,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -78575,9 +78483,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -79012,9 +78920,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {

@@ -57,10 +57,10 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/TargetParser/Triple.h"
-#include "llvm/Transforms/Scalar/CorrelatedValuePropagation.h"
 #include "llvm/Transforms/Utils/SplitModule.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <atomic>
 #include <mutex>
@@ -781,6 +781,28 @@ std::optional<EmitFailure> verify(Module &M, StringRef Code) {
   return std::nullopt;
 }
 
+// Whether a partition is verified as it is loaded. The emitter writes this
+// assembly, so a cold build skips the pass over text it just produced; a
+// build that wants it asks with SCRIPTC_VERIFY_IR=1.
+bool verifyOnLoad() {
+  const char *Value = std::getenv("SCRIPTC_VERIFY_IR");
+  return Value != nullptr && *Value != '\0' && StringRef(Value) != "0";
+}
+
+// Whether a build reports its partitioning and timing. A cold build's length
+// is its largest partition's, so a slow build needs the size and phase time
+// of every partition, not only the program's total.
+bool timePassesRequested() {
+  const char *Value = std::getenv("SCRIPTC_LLVM_TIME_PASSES");
+  return Value != nullptr && *Value != '\0' && StringRef(Value) != "0";
+}
+
+int64_t millisecondsSince(std::chrono::steady_clock::time_point Start) {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             std::chrono::steady_clock::now() - Start)
+      .count();
+}
+
 // Runs WebAssembly's pass that gives multiple-entry loops a single entry only
 // on functions that have such a loop. The pass first records, for every
 // block, every block it can reach, so its time and memory grow with the
@@ -985,6 +1007,16 @@ struct PartitionPlan {
   StringSet<> PublicSymbols;
 };
 
+// The bytes of each partition's module, which orders a phase's work largest
+// first.
+std::vector<uint64_t> partitionSizes(const PartitionPlan &Plan) {
+  std::vector<uint64_t> Sizes;
+  Sizes.reserve(Plan.Modules.size());
+  for (const std::string &Module : Plan.Modules)
+    Sizes.push_back(Module.size());
+  return Sizes;
+}
+
 // Fallback when the input is outside the text partitioner's grammar: parse
 // the whole module once and split it with LLVM, which makes every local
 // definition hidden so partitions can reference each other.
@@ -1017,38 +1049,6 @@ std::optional<EmitFailure> splitParsedModule(const EmitOptions &Options,
   return std::nullopt;
 }
 
-// The level of an optimized partition's simplification before the thin
-// link. The backend optimizes every partition again at Level after
-// importing, so without a profile to use the pre-link runs the O1
-// simplification: it inlines and simplifies enough for the summaries the
-// import decisions read, and leaves the full simplification to the backend.
-// The O2 simplification before the link repeated most of the backend's
-// work: on a partition dominated by one large function it took about half
-// as long as the backend's optimization and code generation of that
-// partition. A build that uses a profile keeps the pre-link at Level: with
-// the O1 pre-link, profile-guided programs ran up to 3% slower.
-OptimizationLevel preLinkLevel(OptimizationLevel Level, bool UsingProfile) {
-  if (!UsingProfile &&
-      (Level == OptimizationLevel::O2 || Level == OptimizationLevel::O3))
-    return OptimizationLevel::O1;
-  return Level;
-}
-
-// Adds correlated value propagation, which the O2 simplification runs and
-// the O1 one does not, once per function after the O1 pre-link simplifies
-// it. On the edge where a loop's early exit is taken, it replaces the values
-// the exit condition fixed with constants. Without it, SimplifyCFG folds a
-// jammed loop's early exit and its trip-count exit into one branch, the
-// latch no longer exits, and the backend's unroller keeps a trip-count test
-// in every unrolled iteration.
-void addPreLinkValuePropagation(PassBuilder &PB) {
-  PB.registerCGSCCOptimizerLateEPCallback(
-      [](CGSCCPassManager &CGPM, OptimizationLevel) {
-        CGPM.addPass(
-            createCGSCCToFunctionPassAdaptor(CorrelatedValuePropagationPass()));
-      });
-}
-
 // The threads one build compiles with: its caller's --jobs cap, else one per
 // hardware thread.
 ThreadPoolStrategy laneStrategy(const EmitOptions &Options) {
@@ -1060,14 +1060,29 @@ ThreadPoolStrategy laneStrategy(const EmitOptions &Options) {
   return Strategy;
 }
 
-// Runs Work(I) for every partition on a pool sized to the build. Outputs
-// never depend on the pool size or scheduling order.
+// Runs Work(I) for every partition on a pool sized to the build, largest
+// first when Bytes gives each partition's size: a lane that starts on a small
+// partition finishes early and idles while a large one is still running, and
+// a cold build ends when its largest partition does. Outputs never depend on
+// the pool size or scheduling order.
 void forEachPartition(const EmitOptions &Options, size_t Count,
+                      ArrayRef<uint64_t> Bytes,
                       function_ref<void(size_t)> Work) {
   DefaultThreadPool Pool(laneStrategy(Options));
+  std::vector<size_t> Order(Count);
   for (size_t I = 0; I < Count; ++I)
+    Order[I] = I;
+  if (Bytes.size() == Count)
+    stable_sort(Order,
+                [&](size_t A, size_t B) { return Bytes[A] > Bytes[B]; });
+  for (size_t I : Order)
     Pool.async([&Work, I] { Work(I); });
   Pool.wait();
+}
+
+void forEachPartition(const EmitOptions &Options, size_t Count,
+                      function_ref<void(size_t)> Work) {
+  forEachPartition(Options, Count, {}, Work);
 }
 
 class SharedFailure {
@@ -1103,8 +1118,10 @@ Expected<std::unique_ptr<Module>> loadPartition(const EmitOptions &Options,
     Mod->setSourceFileName(moduleSourceName(Options.SourcePath));
   Mod->setTargetTriple(Triple(Options.Target));
   Mod->setDataLayout(Machine.createDataLayout());
-  if (std::optional<EmitFailure> Failure = verify(*Mod, "verification_failed"))
-    return createStringError(inconvertibleErrorCode(), Failure->Message);
+  if (verifyOnLoad())
+    if (std::optional<EmitFailure> Failure =
+            verify(*Mod, "verification_failed"))
+      return createStringError(inconvertibleErrorCode(), Failure->Message);
   return std::move(Mod);
 }
 
@@ -1171,7 +1188,8 @@ compileUnoptimizedPartitions(const EmitOptions &Options,
                              const ArtifactCache &Cache,
                              std::vector<SmallVector<char, 0>> &Objects) {
   SharedFailure Failures;
-  forEachPartition(Options, Plan.Modules.size(), [&](size_t I) {
+  forEachPartition(Options, Plan.Modules.size(), partitionSizes(Plan),
+                   [&](size_t I) {
     // The object names its own partition, so its identity is part of what
     // the cache entry holds.
     std::string Identity = partitionDebugIdentity(I);
@@ -1226,7 +1244,10 @@ compileOptimizedPartitions(const EmitOptions &Options,
   bool Annotating = !Options.ProfileUse.empty();
   std::vector<std::unique_ptr<MemoryBuffer>> Summaries(Count);
   SharedFailure Failures;
-  forEachPartition(Options, Count, [&](size_t I) {
+  forEachPartition(Options, Count, partitionSizes(Plan),
+                   [&](size_t I) {
+    bool Timed = timePassesRequested();
+    auto Started = std::chrono::steady_clock::now();
     std::string Key = hashParts({Salt, "summary", Plan.Modules[I]});
     // A reused summary has no block counts to record, so a recording build
     // annotates every partition again.
@@ -1236,6 +1257,9 @@ compileOptimizedPartitions(const EmitOptions &Options,
         if (!Counts || !Match.deserialize(Counts->getBuffer()))
           ++Match.Unknown;
       }
+      if (Timed)
+        errs() << "scriptc-llvm-codegen: partition " << I << " "
+               << Plan.Modules[I].size() << " bytes pre-link cached\n";
       return;
     }
     std::string LookupError;
@@ -1283,17 +1307,11 @@ compileOptimizedPartitions(const EmitOptions &Options,
         P.collectAnnotated(Weigher.Annotated);
         P.afterProfileAnnotation(PartitionMatch);
       }
-      // Experiment only: one binary runs either pre-link level, chosen per
-      // build by SCRIPTC_PRELINK_LEVEL=o1, so a timing comparison between the
-      // two levels holds the helper binary fixed.
-      const char *PreLinkMode = std::getenv("SCRIPTC_PRELINK_LEVEL");
-      bool OldPreLink = PreLinkMode && std::string(PreLinkMode) == "o1";
-      OptimizationLevel PreLink =
-          OldPreLink ? preLinkLevel(Level, Annotating) : Level;
-      if (PreLink != Level)
-        addPreLinkValuePropagation(P.PB);
-      ModulePassManager MPM =
-          P.PB.buildThinLTOPreLinkDefaultPipeline(PreLink);
+      // The pre-link runs at the build's own level. An O1 pre-link leaves
+      // the backend's optimization after the import more to do: measured on
+      // three Native SDK apps it built no faster at 8 lanes and its
+      // executables were 0.9% larger.
+      ModulePassManager MPM = P.PB.buildThinLTOPreLinkDefaultPipeline(Level);
       MPM.addPass(UnnameStructTypes());
       // The module hash is set at the thin link instead (see Names).
       MPM.addPass(BitcodeWriterPass(Stream, /*ShouldPreserveUseListOrder=*/false,
@@ -1311,6 +1329,10 @@ compileOptimizedPartitions(const EmitOptions &Options,
     StringRef Contents(Bitcode.data(), Bitcode.size());
     Cache.store(Key, "bc", Contents);
     Summaries[I] = MemoryBuffer::getMemBufferCopy(Contents);
+    if (Timed)
+      errs() << "scriptc-llvm-codegen: partition " << I << " "
+             << Plan.Modules[I].size() << " bytes pre-link "
+             << millisecondsSince(Started) << " ms\n";
   });
   if (std::optional<EmitFailure> Failure = Failures.take())
     return Failure;
@@ -1485,6 +1507,7 @@ compileOptimizedPartitions(const EmitOptions &Options,
     if (Error Err = Link.add(std::move(*Input), Resolutions))
       return EmitFailure{"partition_failed", toString(std::move(Err))};
   }
+  auto LinkStarted = std::chrono::steady_clock::now();
   Error Err = Link.run([&](unsigned Task, const Twine &)
                            -> Expected<std::unique_ptr<CachedFileStream>> {
     size_t I = Task - 1;
@@ -1494,6 +1517,9 @@ compileOptimizedPartitions(const EmitOptions &Options,
     Objects[I].clear();
     return std::make_unique<ObjectStream>(Objects[I]);
   });
+  if (timePassesRequested())
+    errs() << "scriptc-llvm-codegen: thin link and optimization of " << Count
+           << " partitions " << millisecondsSince(LinkStarted) << " ms\n";
   if (Err)
     return EmitFailure{"partition_failed", toString(std::move(Err))};
   if (std::optional<EmitFailure> Failure = Failures.take())
@@ -1613,6 +1639,13 @@ int emitPartitions(const EmitOptions &Options) {
       std::optional<ProgramPartitions> Text = partitionProgramText(
           (*Input)->getBuffer(), static_cast<unsigned>(Options.Outputs.size()),
           /*SkipDominated=*/Optimized, Options.Jobs);
+      if (Text && timePassesRequested()) {
+        errs() << "scriptc-llvm-codegen: " << Options.Outputs.size()
+               << " partitions function bytes:";
+        for (uint64_t Bytes : Text->FunctionBytes)
+          errs() << ' ' << Bytes;
+        errs() << '\n';
+      }
       // An optimized partition is simplified before the thin link and
       // optimized again after it, so one that holds more than two thirds of
       // the program's function text takes longer than optimizing the module

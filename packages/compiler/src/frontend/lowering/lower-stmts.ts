@@ -370,7 +370,7 @@ import {
   createRequireProgramModuleDecl,
   createRequireProgramModuleOf,
 } from "./builtins/module-bindings.js";
-import { lowerNodeModuleCall } from "./builtins/module-resolution.js";
+import { createRequireCreatorThrow, lowerNodeModuleCall } from "./builtins/module-resolution.js";
 import { registerBuiltinCallableAlias } from "./builtins/callable-aliases.js";
 import { builtinClassAliasOwnsNoSlot, registerBuiltinClassAlias } from "./builtins/class-values.js";
 import { lowerEnumDeclaration } from "./lower-enums.js";
@@ -7914,6 +7914,12 @@ export function lowerVarDecl(
   // effects happen and its throws unwind the module, even though the
   // loader value stays the deferred fence.
   if (createRequireBindingDecl(lowerer, decl.name, decl.initializer)) {
+    // A statically invalid base makes no loader at all: Node throws its
+    // argument error here, at the declaration, before any use of the
+    // binding, so the declaration lowerings that keep only the base must
+    // not evaluate it as a plain value.
+    const invalid = createRequireCreatorThrow(lowerer, decl.initializer, locOf(decl.initializer!));
+    if (invalid !== null) return { kind: "exprStmt", expr: invalid, loc: locOf(decl.initializer!) };
     const base = createRequireEvaluatedBaseOf(lowerer, decl.initializer);
     return base === null
       ? null

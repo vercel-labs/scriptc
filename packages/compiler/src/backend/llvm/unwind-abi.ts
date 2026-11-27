@@ -4,7 +4,7 @@ import type { IrExpr, IrModule, IrStmt } from "../../ir/ir.js";
 import { eachStringField } from "../../ir/fields.generated.js";
 import { eachNodeOfKinds, type IrNodeIndex } from "../../ir/node-index.js";
 import { InternalCompilerError } from "../../errors.js";
-import { bytesOfText, type TextPart, textOfPart } from "../../text-parts.js";
+import { flatText, bytesOfText, type TextPart, textOfPart } from "../../text-parts.js";
 
 /** The kinds of every recorded node, for eachNodeOfKinds over whole bodies. */
 const EVERY_KIND: ReadonlySet<string> = new Set();
@@ -425,7 +425,7 @@ export function bridgePlainUnwindCalls(parts: TextPart[]): TextPart[] {
   for (const part of parts)
     for (const chunk of splitOf(part)) {
       const m = DEFINE_NAME.exec(chunk);
-      if (m !== null && UNWINDS.test(chunk)) raisers.add(m[1]!);
+      if (m !== null && UNWINDS.test(chunk)) raisers.add(flatText(m[1]!));
     }
   if (raisers.size === 0) return parts;
   // An invoke's callee must raise or never test the pending flag: one that
@@ -442,8 +442,9 @@ export function bridgePlainUnwindCalls(parts: TextPart[]): TextPart[] {
   for (const part of parts)
     for (const chunk of splitOf(part)) {
       const m = DEFINE_NAME.exec(chunk);
-      if (m !== null && testsPendingFlag(chunk)) testsFlag.add(m[1]!);
-      for (const c of chunk.matchAll(/ invoke [^@\n]*@([\w.$%-]+)\(/g)) invoked.add(c[1]!);
+      if (m !== null && testsPendingFlag(chunk)) testsFlag.add(flatText(m[1]!));
+      for (const c of chunk.matchAll(/ invoke [^@\n]*@([\w.$%-]+)\(/g))
+        invoked.add(flatText(c[1]!));
     }
   const resumers = new Set<string>();
   for (let grew = true; grew;) {
@@ -456,8 +457,8 @@ export function bridgePlainUnwindCalls(parts: TextPart[]): TextPart[] {
         if (![...chunk.matchAll(/ call [^@\n]*@([\w.$%-]+)\(/g)].some((c) => raisers.has(c[1]!)))
           continue;
         if (testsFlag.has(name)) continue;
-        raisers.add(name);
-        resumers.add(name);
+        raisers.add(flatText(name));
+        resumers.add(flatText(name));
         grew = true;
       }
   }
@@ -474,7 +475,7 @@ export function bridgePlainUnwindCalls(parts: TextPart[]): TextPart[] {
           at = next;
           continue;
         }
-        const name = chunk.slice(at + 1, end);
+        const name = flatText(chunk.slice(at + 1, end));
         if (raisers.has(name)) {
           const start = chunk.lastIndexOf("\n", at) + 1;
           const line = chunk.slice(start, at);

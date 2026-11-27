@@ -28,6 +28,15 @@ export function bytesOfText(text: string): Uint8Array {
   return Buffer.from(text, "utf8");
 }
 
+/** A copy of `text` that owns its characters. A V8 string slice of 13
+ * characters or more is a view that keeps its parent alive, and a pass that
+ * collects names out of a decoded function's text keeps those names for as
+ * long as it runs: a collected name asks for this so it does not pin the text
+ * it was cut from. */
+export function flatText(text: string): string {
+  return Buffer.from(text, "utf8").toString("utf8");
+}
+
 /** Writes compiler text artifacts (LLVM, serialized IR) in large batches.
  * Programs past the engine's string limit arrive as many parts, and writing
  * each part separately is several times slower than writing the same bytes in

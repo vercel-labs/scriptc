@@ -503,22 +503,61 @@ describe("SIMD translation", () => {
     expect(text).toContain("add <16 x i8>");
   });
 
-  test("refuses the v128 boundaries it cannot represent yet", () => {
+  const descLine = (out: ReturnType<typeof translateWasmModule>): string =>
+    out.text
+      .join("\n")
+      .split("\n")
+      .find((line) => line.startsWith(`${out.descriptor} =`))!;
+
+  test("represents v128 exports, globals and imports at the boundary", () => {
+    // An exported v128 function: no slot thunk, and the descriptor is ABI 3.
     const exported = simdModule(
       simdTypes(simdType([], [SIMD_V128])),
       simdFuncs(0),
       simdExports([...simdName("f"), 0x00, 0x00]),
       simdCode(simdBody(V128_CONST(new Array(16).fill(0)))),
     );
-    expect(() => translateWasmModule(exported, SHA, { boundsChecks: false })).toThrow(
-      /v128 in an exported function signature/,
-    );
+    const out = translateWasmModule(exported, SHA, { boundsChecks: false });
+    expect(out.text.join("\n")).not.toContain(`${wasmSymbolPrefix(SHA)}_x0`);
+    expect(descLine(out)).toContain("i64 3, i64 0,");
+    // A v128 global with a 16-byte cell accessed at align 8.
     const global = simdModule(
-      section(6, vec([[SIMD_V128, 0x00, ...V128_CONST(new Array(16).fill(0)), 0x0b]])),
+      section(
+        6,
+        vec([[SIMD_V128, 0x00, ...V128_CONST(Array.from({ length: 16 }, (_, i) => i)), 0x0b]]),
+      ),
     );
-    expect(() => translateWasmModule(global, SHA, { boundsChecks: false })).toThrow(
-      /v128 globals are not supported yet/,
+    const globalOut = translateWasmModule(global, SHA, { boundsChecks: false });
+    expect(globalOut.text.join("\n")).toContain("store <4 x i32>");
+    expect(globalOut.text.join("\n")).toContain(", align 8");
+    expect(descLine(globalOut)).toContain("i64 3, i64 0,");
+    // A v128 import calls the imported function's code directly.
+    const imported = simdModule(
+      simdTypes(simdType([SIMD_V128, SIMD_V128], [SIMD_V128]), simdType([], [])),
+      section(2, vec([[...simdName("m"), ...simdName("f"), 0x00, ...leb(0)]])),
+      simdFuncs(1),
+      simdCode(
+        simdBody([
+          ...V128_CONST(new Array(16).fill(1)),
+          ...V128_CONST(new Array(16).fill(2)),
+          0x10,
+          0x00,
+          0x1a,
+        ]),
+      ),
     );
+    const importedOut = translateWasmModule(imported, SHA, { boundsChecks: false });
+    const importedText = [...importedOut.decls, ...importedOut.text].join("\n");
+    expect(importedText).toContain("declare ptr @scr_wasm_import_funcref(ptr, i32)");
+    expect(importedText).toContain("@scr_wasm_import_funcref(ptr %host, i32 0)");
+    expect(importedText).toContain("%code(ptr %cinst, <4 x i32> %p0, <4 x i32> %p1)");
+    // A JavaScript-backed v128 import must throw, never be dereferenced.
+    expect(importedText).toContain("icmp eq ptr %ref, null");
+    expect(importedText).toContain("call void @scr_wasm_trap(i32 101)");
+    // A scalar module keeps descriptor ABI 2.
+    const scalar = translateWasmModule(ADD, SHA, { boundsChecks: false });
+    expect(descLine(scalar)).toContain("i64 2, i64 0,");
+    // Relaxed SIMD is still not translated.
     const unsupported = simdModule(
       simdTypes(simdType([], [])),
       simdFuncs(0),

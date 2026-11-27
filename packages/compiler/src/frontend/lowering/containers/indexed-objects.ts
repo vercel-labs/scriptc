@@ -1554,7 +1554,13 @@ export function lowerObjectAssignIndexShape(
       ovfLift = slotLift(from.indexValue);
       if (ovfLift === null) return null;
     }
-    plans.push({ kind: "record", fromId: srcIr.shapeId, fields, ovfLift, ...(optional ? { optional } : {}) });
+    plans.push({
+      kind: "record",
+      fromId: srcIr.shapeId,
+      fields,
+      ovfLift,
+      ...(optional ? { optional } : {}),
+    });
   }
   const helperFor = (plan: RecordSourcePlan): string => {
     const key = `assign:${targetIr.shapeId}:${plan.fromId}`;

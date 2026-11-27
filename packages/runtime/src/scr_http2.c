@@ -1211,15 +1211,31 @@ static void scr_h2_settings_pending_push(ScrH2Session *s, const ScrH2Settings *a
 
 static void scr_h2_send_settings(ScrH2Session *s) {
   scr_h2_settings_pending_push(s, &s->local_settings, NULL, NULL);
-  /* Defaults on the wire: an empty SETTINGS frame carries ENABLE_PUSH=1, as
-   * Node's client leaves push enabled. (A pushed stream is still declined
-   * here — the receive-side push surface is not modeled.) */
-  if (s->local_settings.enable_connect_protocol) {
-    static const uint8_t enable_connect[6] = { 0x0, 0x8, 0, 0, 0, 1 };
-    scr_h2_send_frame(s, SCR_H2_F_SETTINGS, 0, 0, enable_connect, 6);
-    return;
+  uint8_t payload[12];
+  size_t n = 0;
+  /* An advertised limit from the handshake options: MAX_CONCURRENT_STREAMS
+   * (0x3), as nghttp2 submits it. Defaults stay off the wire: an empty
+   * SETTINGS frame carries ENABLE_PUSH=1, as Node's client leaves push
+   * enabled. (A pushed stream is still declined here — the receive-side push
+   * surface is not modeled.) */
+  if (s->local_settings.max_concurrent_streams != 0xffffffffu) {
+    uint32_t v = s->local_settings.max_concurrent_streams;
+    payload[n++] = 0x0;
+    payload[n++] = 0x3;
+    payload[n++] = (uint8_t)(v >> 24);
+    payload[n++] = (uint8_t)(v >> 16);
+    payload[n++] = (uint8_t)(v >> 8);
+    payload[n++] = (uint8_t)v;
   }
-  scr_h2_send_frame(s, SCR_H2_F_SETTINGS, 0, 0, NULL, 0);
+  if (s->local_settings.enable_connect_protocol) {
+    payload[n++] = 0x0;
+    payload[n++] = 0x8;
+    payload[n++] = 0;
+    payload[n++] = 0;
+    payload[n++] = 0;
+    payload[n++] = 1;
+  }
+  scr_h2_send_frame(s, SCR_H2_F_SETTINGS, 0, 0, n > 0 ? payload : NULL, n);
 }
 
 static void scr_h2_send_settings_ack(ScrH2Session *s) {
@@ -4251,6 +4267,16 @@ static void scr_h2_dispatch_headers(ScrH2Session *s, int32_t stream_id, uint8_t 
       scr_h2_send_rst(s, stream_id, 7 /* NGHTTP2_REFUSED_STREAM */);
       return;
     }
+    /* A peer stream past the advertised MAX_CONCURRENT_STREAMS is refused
+     * (RFC 9113 5.1.2), and the block opens nothing. */
+    {
+      uint32_t live_limit = s->local_settings.max_concurrent_streams;
+      if (s->npending > 0) live_limit = s->pending[s->npending - 1].after.max_concurrent_streams;
+      if (live_limit != 0xffffffffu && s->nstreams >= (size_t)live_limit) {
+        scr_h2_send_rst(s, stream_id, 7 /* NGHTTP2_REFUSED_STREAM */);
+        return;
+      }
+    }
     st = scr_h2_stream_new(s, stream_id);
     s->max_created_stream_id = stream_id;
     /* goaway()'s default lastStreamID is the last PEER stream processed
@@ -5095,7 +5121,8 @@ static void scr_h2_on_established(void *ctx) {
  * connected socket (ALPN h2 on TLS, prior knowledge on cleartext) as a
  * server session. The session has no owning server, so only the session's
  * own 'stream' listeners see its streams. */
-ScrH2Session *scr_http2_perform_server_handshake(ScrNetSocket *sock /*borrowed*/) {
+static ScrH2Session *scr_h2_handshake_with(ScrNetSocket *sock /*borrowed*/,
+                                              uint32_t max_concurrent_streams) {
   /* Node binds a socket to one session: a second handshake over it (or over
    * a socket a server or client session already owns) is SOCKET_BOUND rather
    * than two sessions reading one socket. A bound socket reports the binding
@@ -5130,6 +5157,11 @@ ScrH2Session *scr_http2_perform_server_handshake(ScrNetSocket *sock /*borrowed*/
   sess->srv_timeout_forward = server_idle_ms > 0;
   if (server_idle_ms > 0) scr_net_sock_set_timeout(sock, server_idle_ms);
   scr_net_sock_set_h2_bound(sock);
+  /* The options' settings: the advertised limit goes out with the first
+   * SETTINGS frame, and a peer stream past it is refused below. */
+  if (max_concurrent_streams != 0xffffffffu) {
+    sess->local_settings.max_concurrent_streams = max_concurrent_streams;
+  }
   scr_h2_send_settings(sess);
   /* Node resumes the socket it takes over: a paused one would never read the
    * preface */
@@ -5144,12 +5176,35 @@ ScrH2Session *scr_http2_perform_server_handshake(ScrNetSocket *sock /*borrowed*/
   return scr_http2_session_retain(sess); /* the socket's ctx holds its own */
 }
 
+ScrH2Session *scr_http2_perform_server_handshake(ScrNetSocket *sock /*borrowed*/) {
+  return scr_h2_handshake_with(sock, 0xffffffffu);
+}
+
+/* performServerHandshake(socket, options): the options' settings are the
+ * session's, so settings.maxConcurrentStreams is advertised in the first
+ * SETTINGS frame and enforced when the peer opens streams. maxSessionMemory
+ * has no memory cap here yet, so a non-default value is refused rather than
+ * silently dropped (the default states nothing). */
 ScrH2Session *scr_http2_perform_server_handshake_opts(ScrNetSocket *sock /*borrowed*/,
                                                        const ScrDyn *opts /*borrowed*/) {
-  /* the options are inert in this unit, but the caller's literal has already
-   * evaluated (its calls and spreads run); the value itself is ignored */
-  (void)opts;
-  return scr_http2_perform_server_handshake(sock);
+  uint32_t max_concurrent_streams = 0xffffffffu;
+  if (opts != NULL && opts->kind == SCR_DYN_OBJ) {
+    const ScrDyn *memory = scr_dyn_obj_get(opts, "maxSessionMemory", 16);
+    if (memory != NULL && memory->kind == SCR_DYN_NUM && memory->v.num != 10240.0) {
+      static const char text[] = "http2 maxSessionMemory is not supported yet";
+      scr_throw_error_msg_code(SCR_ERR_ERROR, text, sizeof text - 1, "SC2020");
+      return NULL;
+    }
+    const ScrDyn *settings = scr_dyn_obj_get(opts, "settings", 8);
+    if (settings != NULL && settings->kind == SCR_DYN_OBJ) {
+      const ScrDyn *mcs = scr_dyn_obj_get(settings, "maxConcurrentStreams", 20);
+      if (mcs != NULL && mcs->kind == SCR_DYN_NUM && mcs->v.num >= 0 &&
+          mcs->v.num <= 4294967295.0) {
+        max_concurrent_streams = (uint32_t)mcs->v.num;
+      }
+    }
+  }
+  return scr_h2_handshake_with(sock, max_concurrent_streams);
 }
 
 /* http2.connect(authority[, listener]): an http authority dials h2c

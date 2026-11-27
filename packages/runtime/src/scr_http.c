@@ -919,6 +919,10 @@ static void scr_http_body_bridge_destroy_inv(ScrClosure *cb, ScrStream *s, ScrEr
     }
   }
   scr_http_body_bridge_release(b);
+  /* a native _destroy answers its callback: the error/close ticks settle a
+   * parked iterator and report the destroyed state. destroy_done owns the
+   * error it is handed. */
+  scr_stream_destroy_done(s, err ? scr_error_retain(err) : NULL);
 }
 
 static ScrClosure *scr_http_body_bridge_closure(void *fn) {
@@ -952,7 +956,12 @@ ScrStream *scr_http_req_body_stream(ScrHttpReq *r) {
     scr_stream_release(chained);
     scr_str_release(enc);
   }
-  if (r->ended || r->destroyed || r->close_emitted) {
+  if (r->pend_len > 0 || r->end_pending) {
+    /* The body bytes are held for a consumer, and the response may already
+     * have closed: hand the held body to the iterator, as Node yields the
+     * buffered chunks, instead of ending it empty. */
+    scr_http_req_flow(r);
+  } else if (r->ended || r->destroyed || r->close_emitted) {
     scr_stream_push_null(s);
   } else {
     scr_http_req_consume(r);
@@ -6598,9 +6607,32 @@ bool scr_http_req_complete(ScrHttpReq *r) {
  * aborted so its signal and flag are right from that moment, and this is
  * the event that reports the abort the destroy started. The listener list
  * drops after the first fire, so a repeat call emits nothing. */
+/* A body bridge whose message was reset: the compat request's iterator ends
+ * the way Node's does for a stream reset (the readable completes). */
+void scr_http_h2_req_body_end(ScrHttpReq *r) {
+  if (r->body_bridge == NULL || r->body_bridge->stream == NULL) return;
+  if (r->body_bridge->destroyed) return;
+  scr_stream_push_null(r->body_bridge->stream);
+}
+
+/* A body bridge whose session went away under it: Node's stream iterator
+ * rejects with ERR_STREAM_PREMATURE_CLOSE ("Premature close"), which also
+ * releases the request the bridge holds. */
+void scr_http_h2_req_body_premature_close(ScrHttpReq *r) {
+  ScrHttpBodyBridge *b = r->body_bridge;
+  if (b == NULL || b->stream == NULL || b->destroyed || r->ended) return;
+  ScrStr *text = scr_str_new("Premature close", 15);
+  ScrError *err = scr_error_new(SCR_ERR_ERROR, text);
+  scr_str_release(text);
+  scr_error_set_code(err, "ERR_STREAM_PREMATURE_CLOSE");
+  scr_stream_release(scr_stream_destroy(b->stream, err));
+  scr_error_release(err);
+}
+
 void scr_http_h2_req_aborted(ScrHttpReq *r) {
   if (r->close_emitted) return;
   r->aborted = true;
+  scr_http_h2_req_body_end(r);
   scr_net_fire0_this(&r->aborted_ls, r, SCR_DYNH_HTTP_REQ);
   scr_net_ls_drop(&r->aborted_ls);
   scr_http_req_abort_signal(r);

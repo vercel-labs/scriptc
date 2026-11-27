@@ -87,6 +87,11 @@ void scr_http_h2_req_data(ScrHttpReq *r, const char *data, size_t n);
 void scr_http_h2_req_end(ScrHttpReq *r);
 void scr_http_h2_req_aborted(ScrHttpReq *r);
 void scr_http_h2_req_close(ScrHttpReq *r);
+/* A body iterator over an HTTP/2 compatibility request: a stream reset ends
+ * it (Node completes the readable) and a session teardown rejects it with
+ * ERR_STREAM_PREMATURE_CLOSE, releasing the request. */
+void scr_http_h2_req_body_end(ScrHttpReq *r);
+void scr_http_h2_req_body_premature_close(ScrHttpReq *r);
 /* The trailer block an h2 request received: fills trailers/rawTrailers
  * (lowercased and raw names, joined values — the parser's shape). */
 void scr_http_h2_req_trailers(ScrHttpReq *r, ScrArr *pairs /*borrowed [name, value, ...]*/);

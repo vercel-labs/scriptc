@@ -43,6 +43,9 @@ declare module "http2" {
     resume(): void;
     destroy(): void;
     setEncoding(encoding: string): void;
+    /* The body as an async iterable: for-await yields the request's chunks
+     * (strings after setEncoding, Buffers otherwise), as Node's Readable. */
+    [Symbol.asyncIterator](): AsyncIterableIterator<any>;
     pipe(destination: Socket | import("http").ClientRequest): void;
     on(event: "data", listener: (chunk: Buffer) => void): void;
     on(event: "end" | "close" | "aborted", listener: () => void): void;

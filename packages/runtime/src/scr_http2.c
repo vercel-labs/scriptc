@@ -1774,6 +1774,10 @@ static void scr_h2_session_abort_streams(ScrH2Session *s, uint32_t code) {
   while (s->nstreams > 0) {
     ScrH2Stream *st = scr_http2_stream_retain(s->streams[0]);
     if (!st->api_closed) st->rst_code = code;
+    /* A pending body iterator over the compat request rejects with Node's
+     * ERR_STREAM_PREMATURE_CLOSE when the session goes away under it; a
+     * stream reset on a live session completes it instead (begin_close). */
+    if (st->compat_req != NULL) scr_http_h2_req_body_premature_close(st->compat_req);
     scr_h2_stream_begin_close(st);
     st->destroyed = true;
     scr_h2_stream_settle(st); /* forgets it from the vector */

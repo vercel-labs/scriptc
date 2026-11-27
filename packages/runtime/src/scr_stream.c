@@ -2285,8 +2285,17 @@ static ScrStream *sf_duplex_from_dyn_flags(ScrDyn *body, double pair_flags) {
        * duplexify.js reads it as the body's `writable` (Duplex.from's
        * writable-only Duplex). */
       if (!(paired->st->has_r && paired->st->has_w)) {
+        /* The adapter's writable mode and web chunks reach the duplexify the
+         * pipeline writes through, so a null a stage enqueued is a value
+         * written here too. */
+        bool web_chunks = paired->st->web_chunks;
+        bool writable_object_mode = paired->st->has_w && paired->st->w.object_mode;
         ScrStream *d = paired->st->has_r ? scr_stream_duplexify(paired, NULL)
                                          : scr_stream_duplexify(NULL, paired);
+        if (d != NULL) {
+          if (web_chunks) scr_stream_set_web_chunks(d, true);
+          if (writable_object_mode) scr_stream_set_object_mode(d, false, true);
+        }
         scr_stream_release(paired);
         if (!d) return NULL;
         paired = d;
@@ -7276,7 +7285,11 @@ void scr_console_bind(ScrDyn *console, double which, ScrStream *stream) {
   if (inst->on_written[i]) scr_closure_release(inst->on_written[i]);
   inst->stream[i] = scr_stream_retain(stream);
   ScrClosure *cb = scr_closure_new((void *)&scr_console_on_written, 1);
-  cb->caps[0] = scr_box_new_obj(scr_stream_retain_v, scr_stream_release_v, NULL);
+  /* The handler's stream is a traced edge like the console's own: a
+   * detached output method used as a listener on this stream closes a
+   * cycle through the console, and the collector has to see the handler's
+   * reference to give the whole group up. */
+  cb->caps[0] = scr_box_new_obj(scr_stream_retain_v, scr_stream_release_v, &scr_stream_trace);
   scr_box_set_ref(cb->caps[0], scr_stream_retain(stream));
   inst->on_written[i] = cb;
   inst->stream_write = &scr_console_stream_write;

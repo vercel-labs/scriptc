@@ -916,6 +916,8 @@ static inline void scr_stream_settle_next(ScrStream *s) {
   if (s->st->r.next_waiter && !s->st->r.next_reading) scr_stream_settle_next_waiter(s);
 }
 static int scr_stream_ref_member(void *p, const char *key, size_t key_len, ScrDyn **value);
+static ScrDyn *scr_stream_ref_symbol(void *p, const ScrDyn *key);
+
 static ScrStream *scr_stream_alloc(const ScrVt *vt, const char *cls, bool has_r, bool has_w,
                                     double rhwm, double whwm, bool auto_destroy,
                                     bool emit_close, bool allow_half_open);
@@ -3059,6 +3061,7 @@ static ScrStream *scr_stream_alloc(const ScrVt *vt, const char *cls, bool has_r,
    * address a capsule is known by goes in last. */
   if (!scr_stream_ref_hooks.view) {
     scr_stream_ref_hooks.member = scr_stream_ref_member;
+    scr_stream_ref_hooks.symbol = scr_stream_ref_symbol;
     scr_stream_ref_hooks.get = scr_typed_ref_stream_get;
     scr_stream_ref_hooks.has = scr_typed_ref_stream_has;
     scr_stream_ref_hooks.view = scr_stream_ref_view;
@@ -9805,6 +9808,23 @@ static ScrDyn *scr_stream_dyn_call(ScrStream *stream, ScrDyn *self, const char *
   else if (!strcmp(method, "uncork")) scr_stream_uncork(stream);
   if (!result && !scr_exc_pending()) result = self ? scr_dyn_retain(self) : scr_dyn_this_get();
   return result;
+}
+
+static ScrDyn *scr_stream_view_call(ScrClosure *cb, ScrDyn *const *args, size_t argc);
+
+/* ScrStreamRefHooks.symbol: the symbol-keyed member of a live stream
+ * capsule, +1, or NULL when the symbol is not one the stream answers.
+ * [Symbol.asyncIterator]() is Node's Readable.prototype method: the stream's
+ * async iterator, the same value readable.iterator() answers. */
+static ScrDyn *scr_stream_ref_symbol(void *p, const ScrDyn *key) {
+  ScrStream *stream = p;
+  if (!scr_dyn_is_async_iterator_symbol(key)) return NULL;
+  ScrClosure *cb = scr_closure_new((void *)scr_stream_view_call, 2);
+  cb->caps[0] = scr_box_new_obj(scr_stream_retain_v, scr_stream_release_v, scr_stream_trace);
+  cb->caps[1] = scr_box_new(SCR_BOX_STR);
+  scr_box_set_ref(cb->caps[0], scr_stream_retain(stream));
+  scr_box_set_ref(cb->caps[1], scr_str_new("iterator", 8));
+  return scr_dyn_new_func(cb, scr_stream_view_call, 0, "()", "[Symbol.asyncIterator]");
 }
 
 static ScrDyn *scr_stream_view_call(ScrClosure *cb, ScrDyn *const *args, size_t argc) {

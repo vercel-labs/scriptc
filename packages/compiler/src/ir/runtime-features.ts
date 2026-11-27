@@ -2010,6 +2010,11 @@ const RUNTIME_FEATURE_RULES = {
   dynAsync: rule({
     initial: (mod) =>
       mod.workers === true ||
+      // A program that names Symbol.asyncIterator reads the method off a
+      // value whose class only the runtime knows (a native stream answers
+      // its async iterator there), and the iterator it returns is the
+      // checked-dynamic async unit's promise work.
+      readsWellKnownSymbol(mod, "asyncIterator") ||
       readsWellKnownSymbol(mod, "asyncDispose") ||
       mod.functions.some(
         (fn) => fn.async === true && fn.generator === undefined && fn.returnType.kind === "dyn",

@@ -8901,6 +8901,14 @@ static ScrStr *scr_http_pairs_array_name(const ScrStr *raw) {
   return scr_str_new(raw->data + 1, raw->len - 1);
 }
 
+/* A marked pair whose value is a lone NUL stands for an array-valued header
+ * with no elements: the wire carries no line, but getHeader(s) answer []. A
+ * header value can never hold a NUL (it is ERR_INVALID_CHAR), so the value
+ * cannot collide with a real one. */
+static bool scr_http_pairs_empty_array(const ScrStr *value) {
+  return value->len == 1 && value->data[0] == '\0';
+}
+
 static bool scr_http_request_checks(const ScrStr *host /*borrowed, nullable*/,
                                     const ScrStr *path /*borrowed*/, const ScrStr *method /*borrowed*/,
                                     ScrArr *header_pairs /*borrowed, nullable*/) {
@@ -8929,12 +8937,13 @@ static bool scr_http_request_checks(const ScrStr *host /*borrowed, nullable*/,
     ScrStr *name = (ScrStr *)scr_arr_get_ref(header_pairs, (double)i);
     ScrStr *value = (ScrStr *)scr_arr_get_ref(header_pairs, (double)(i + 1));
     ScrStr *array_name = scr_http_pairs_array_name(name);
+    bool empty_array = array_name != NULL && scr_http_pairs_empty_array(value);
     if (array_name != NULL) {
       scr_str_release(name);
       name = array_name;
     }
     bool valid = scr_http_header_name_valid(name);
-    if (valid && !scr_http_header_text_valid(value)) {
+    if (valid && !empty_array && !scr_http_header_text_valid(value)) {
       scr_http_throw_invalid_header_char(name);
       valid = false;
     }
@@ -9259,35 +9268,83 @@ static bool scr_http_proxy_target_valid(const ScrStr *host, double port, const S
   ScrStr *authority = scr_url_host(request_base); /* +1, host[:port] normalized */
   bool ok = true;
   if (header_pairs != NULL) {
+    /* Host however it was given: the name is read through the array marker
+     * (an array-valued header carries it), and an array value compares as the
+     * whole list, as Node does. A later plain pair replaces an earlier one —
+     * Node's setHeader overwrite — while a marked pair's elements stay one
+     * array. */
     double pairs = scr_arr_len(header_pairs);
+    ScrStr **values = NULL;
+    size_t nvalues = 0;
+    bool array_valued = false;
     for (double i = 0; i + 1 < pairs; i += 2) {
       /* borrowed: the pairs array outlives this read-only scan */
-      ScrStr *name = (ScrStr *)scr_arr_borrow_ref(header_pairs, i);
-      if (name == NULL || name->len != 4) continue;
-      if (tolower((unsigned char)name->data[0]) != 'h' ||
-          tolower((unsigned char)name->data[1]) != 'o' ||
-          tolower((unsigned char)name->data[2]) != 's' ||
-          tolower((unsigned char)name->data[3]) != 't')
-        continue;
+      ScrStr *raw = (ScrStr *)scr_arr_borrow_ref(header_pairs, i);
+      if (raw == NULL) continue;
+      ScrStr *array_name = scr_http_pairs_array_name(raw);
+      ScrStr *name = array_name != NULL ? array_name : raw;
+      bool marked = array_name != NULL;
+      bool is_host = name->len == 4 &&
+                     tolower((unsigned char)name->data[0]) == 'h' &&
+                     tolower((unsigned char)name->data[1]) == 'o' &&
+                     tolower((unsigned char)name->data[2]) == 's' &&
+                     tolower((unsigned char)name->data[3]) == 't';
+      scr_str_release(array_name);
+      if (!is_host) continue;
       ScrStr *value = (ScrStr *)scr_arr_borrow_ref(header_pairs, (double)(i + 1));
       if (value == NULL) continue;
-      if (value->len != authority->len ||
-          memcmp(value->data, authority->data, authority->len) != 0) {
-        ScrJsonBuf message;
-        scr_jb_init(&message);
-        scr_jb_puts(&message, "The property 'Host in options.headers' must match the request "
-                              "authority (");
-        scr_jb_write(&message, authority->data, authority->len);
-        scr_jb_puts(&message, "). Received '");
-        scr_jb_write(&message, value->data, value->len);
-        scr_jb_puts(&message, "'");
-        ScrStr *text = scr_jb_finish(&message);
-        scr_throw_error_msg_code(SCR_ERR_TYPE, text->data, text->len, "ERR_INVALID_ARG_VALUE");
-        scr_str_release(text);
-        ok = false;
+      if (marked && array_valued) {
+        values = realloc(values, (nvalues + 1) * sizeof *values);
+        if (values == NULL) scr_http_oom();
+        values[nvalues++] = value;
+      } else {
+        free(values);
+        values = malloc(sizeof *values);
+        if (values == NULL) scr_http_oom();
+        values[0] = value;
+        nvalues = 1;
+        array_valued = marked;
       }
-      break;
     }
+    bool matches = true;
+    if (nvalues > 0) {
+      if (array_valued) {
+        matches = nvalues == 1;
+        for (size_t k = 0; k < nvalues; k++)
+          matches = matches && values[k]->len == authority->len &&
+                    memcmp(values[k]->data, authority->data, authority->len) == 0;
+      } else {
+        matches = values[0]->len == authority->len &&
+                  memcmp(values[0]->data, authority->data, authority->len) == 0;
+      }
+    }
+    if (!matches) {
+      ScrJsonBuf message;
+      scr_jb_init(&message);
+      scr_jb_puts(&message, "The property 'Host in options.headers' must match the request "
+                            "authority (");
+      scr_jb_write(&message, authority->data, authority->len);
+      scr_jb_puts(&message, "). Received ");
+      if (array_valued) {
+        scr_jb_puts(&message, nvalues == 0 ? "[]" : "[ ");
+        for (size_t k = 0; k < nvalues; k++) {
+          if (k > 0) scr_jb_puts(&message, ", ");
+          scr_jb_puts(&message, "'");
+          scr_jb_write(&message, values[k]->data, values[k]->len);
+          scr_jb_puts(&message, "'");
+        }
+        if (nvalues > 0) scr_jb_puts(&message, " ]");
+      } else {
+        scr_jb_puts(&message, "'");
+        scr_jb_write(&message, values[0]->data, values[0]->len);
+        scr_jb_puts(&message, "'");
+      }
+      ScrStr *text = scr_jb_finish(&message);
+      scr_throw_error_msg_code(SCR_ERR_TYPE, text->data, text->len, "ERR_INVALID_ARG_VALUE");
+      scr_str_release(text);
+      ok = false;
+    }
+    free(values);
   }
   if (ok && (path->len == 0 || path->data[0] != '/')) {
     ScrUrl *absolute = scr_url_can_parse((ScrStr *)path) ? scr_url_new((ScrStr *)path) : NULL;
@@ -9557,6 +9614,27 @@ static ScrHttpClientReq *scr_http_request_impl(ScrStr *host /*borrowed*/, double
       }
     }
   }
+  /* Node's ClientRequest refuses an array under options.headers.host before
+   * it dials, the implicit Host being computed from it; a proxied target
+   * compares the given value against the authority instead. */
+  if (!proxied) {
+    size_t pair_count = (size_t)scr_arr_len(header_pairs);
+    for (size_t i = 0; i + 1 < pair_count; i += 2) {
+      ScrStr *raw = (ScrStr *)scr_arr_borrow_ref(header_pairs, (double)i);
+      if (raw == NULL) continue;
+      ScrStr *name = scr_http_pairs_array_name(raw);
+      if (name == NULL) continue;
+      bool is_host = scr_http_name_is(name, "host");
+      scr_str_release(name);
+      if (!is_host) continue;
+      static const char msg[] = "The \"options.headers.host\" property must be of type string. "
+                                "Received an instance of Array";
+      scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "ERR_INVALID_ARG_TYPE");
+      if (cb) scr_closure_release(cb);
+      scr_http_discard_socket(presock);
+      return NULL;
+    }
+  }
   scr_http_install();
   ScrHttpClientReq *c = calloc(1, sizeof *c);
   if (!c) scr_http_oom();
@@ -9582,11 +9660,19 @@ static ScrHttpClientReq *scr_http_request_impl(ScrStr *host /*borrowed*/, double
       ScrStr *name = (ScrStr *)scr_arr_get_ref(header_pairs, (double)i);
       ScrStr *value = (ScrStr *)scr_arr_get_ref(header_pairs, (double)(i + 1));
       bool array_valued = false;
+      bool empty_array = false;
       ScrStr *array_name = scr_http_pairs_array_name(name);
       if (array_name != NULL) {
+        empty_array = scr_http_pairs_empty_array(value);
         scr_str_release(name);
         name = array_name;
         array_valued = true;
+      }
+      if (empty_array) {
+        /* an empty array keeps its entry (getHeader(s) answer []) without a
+         * wire line; the value itself is the marker, never sent */
+        scr_str_release(value);
+        value = scr_str_new("", 0);
       }
       size_t pos = SIZE_MAX;
       for (size_t k = 0; k < c->nheaders; k++)
@@ -9602,21 +9688,35 @@ static ScrHttpClientReq *scr_http_request_impl(ScrStr *host /*borrowed*/, double
         if (array_valued) {
           /* a marked pair is an array even when it is the only element */
           ScrDyn *arr = scr_dyn_new_arr();
-          scr_dyn_arr_push(arr, scr_dyn_new_str(c->hvalues[pos]));
+          if (!empty_array) scr_dyn_arr_push(arr, scr_dyn_new_str(c->hvalues[pos]));
           c->hraw[pos] = arr;
         }
         continue;
       }
-      /* A repeated name is Node's array-valued header (the lowering expands
-       * a header array into repeated pairs): one entry whose value is the
-       * array, so `cookie` joins with "; " and the others send one line per
-       * element. */
-      if (c->hraw[pos] == NULL) {
-        ScrDyn *arr = scr_dyn_new_arr();
-        scr_dyn_arr_push(arr, scr_dyn_new_str(c->hvalues[pos]));
-        c->hraw[pos] = arr;
+      /* A repeated name is Node's setHeader overwrite: the value set last
+       * wins, an array value replaces whatever came before (its own marked
+       * pairs follow one another and append to it), and the entry keeps the
+       * last spelling of the name. */
+      if (array_valued) {
+        if (c->hraw[pos] == NULL) {
+          ScrDyn *arr = scr_dyn_new_arr();
+          if (!empty_array) scr_dyn_arr_push(arr, scr_dyn_new_str(value));
+          scr_str_release(c->hvalues[pos]);
+          c->hvalues[pos] = scr_str_retain(value);
+          c->hraw[pos] = arr;
+        } else if (!empty_array) {
+          scr_dyn_arr_push(c->hraw[pos], scr_dyn_new_str(value));
+        }
+      } else {
+        if (c->hraw[pos] != NULL) {
+          scr_dyn_release(c->hraw[pos]);
+          c->hraw[pos] = NULL;
+        }
+        scr_str_release(c->hvalues[pos]);
+        c->hvalues[pos] = scr_str_retain(value);
       }
-      scr_dyn_arr_push(c->hraw[pos], scr_dyn_new_str(value));
+      scr_str_release(c->hnames[pos]);
+      c->hnames[pos] = scr_str_retain(name);
       scr_str_release(name);
       scr_str_release(value);
     }

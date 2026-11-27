@@ -23398,8 +23398,8 @@ export class Lowerer {
   /** A function-scope local bound to NO ts.Symbol — the hidden ABI slot of a
    * defaulted parameter (the parameter's symbol binds to the separately-
    * declared body local; nothing in the source can name this one). */
-  declareHiddenLocal(name: string, type: IrType): IrLocal {
-    return declareContextLocal(this.ctx, name, type, false, undefined, undefined);
+  declareHiddenLocal(name: string, type: IrType, mutable = false): IrLocal {
+    return declareContextLocal(this.ctx, name, type, mutable, undefined, undefined);
   }
 
   /** Read a hidden slot from the current function: the slot itself when it
@@ -26627,8 +26627,8 @@ export class Lowerer {
     return lowerExecSyncCall(this, expr, shell, loc);
   }
 
-  envToPairsHelper(shapeId: string, loc: SrcLoc): string | null {
-    return lowerEnvToPairsHelper(this, shapeId, loc);
+  envToPairsHelper(shapeId: string, loc: SrcLoc, markArrays = false): string | null {
+    return lowerEnvToPairsHelper(this, shapeId, loc, markArrays);
   }
 
   lowerJsonMethodCall(call: ts.CallExpression, access: ts.PropertyAccessExpression): IrExpr | null {

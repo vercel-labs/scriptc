@@ -2336,6 +2336,7 @@ export function lowerEnvToPairsHelper(
   lowerer: Lowerer,
   shapeId: string,
   loc: SrcLoc,
+  markArrays = false,
 ): string | null {
   const shape = lowerer.shapes.get(shapeId);
   if (!shape || shape.tuple) return null;
@@ -2389,7 +2390,13 @@ export function lowerEnvToPairsHelper(
     if (!slotOk(f.type)) return null;
   }
   if (shape.indexValue && !slotOk(shape.indexValue)) return null;
-  const key = `env.pairs:${shapeId}`;
+  /* A request-header helper marks its array values (a one-element array
+   * must still answer the array); other callers take the plain names. */
+  if (markArrays && shape.indexValue) {
+    const arms = headerArms(shape.indexValue);
+    if (arms !== null && arms.arr >= 0) return null;
+  }
+  const key = `env.pairs:${markArrays ? "header:" : ""}${shapeId}`;
   const existing = lowerer.valueHelpers.get(key);
   if (existing) return existing;
   const name = keyedHelperName(lowerer, "%env.pairs", key);
@@ -2472,6 +2479,9 @@ export function lowerEnvToPairsHelper(
     let chain: IrStmt[] = [];
     if (ha.arr >= 0) {
       const uid = siteNo++;
+      const arrName: IrExpr = markArrays
+        ? { kind: "strLit", value: "\u0000" + (k as { value: string }).value, type: STRING, loc }
+        : k;
       const aT = arrayOf(STRING);
       locals.push(
         { id: `a.${uid}`, name: `a${uid}`, type: aT, mutable: false },
@@ -2485,6 +2495,31 @@ export function lowerEnvToPairsHelper(
           cond: isTag(ha.arr),
           then: [
             { kind: "varDecl", localId: `a.${uid}`, init: narrowTo(ha.arr, aT), loc },
+            ...(markArrays
+              ? [
+                  {
+                    kind: "if" as const,
+                    cond: {
+                      kind: "bin" as const,
+                      op: "===" as const,
+                      left: {
+                        kind: "arrIntrinsic" as const,
+                        method: "length" as const,
+                        receiver: aRef,
+                        args: [],
+                        type: F64,
+                        loc,
+                      },
+                      right: numLit(0, loc),
+                      type: BOOL,
+                      loc,
+                    },
+                    then: [push(arrName, { kind: "strLit", value: "\u0000", type: STRING, loc })],
+                    else_: null,
+                    loc,
+                  },
+                ]
+              : []),
             {
               kind: "for",
               init: { kind: "varDecl", localId: `j.${uid}`, init: numLit(0, loc), loc },
@@ -2509,7 +2544,9 @@ export function lowerEnvToPairsHelper(
                 value: { kind: "bin", op: "+", left: jRef, right: numLit(1, loc), type: F64, loc },
                 loc,
               },
-              body: [push(k, { kind: "arrayGet", arr: aRef, index: jRef, type: STRING, loc })],
+              body: [
+                push(arrName, { kind: "arrayGet", arr: aRef, index: jRef, type: STRING, loc }),
+              ],
               loc,
             },
           ],

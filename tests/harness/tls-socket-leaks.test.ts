@@ -35,6 +35,7 @@ const programs = [
   "tests/corpus/tls-renegotiate-and-key-cert.ts",
   "tests/corpus/tls-renegotiate-policy.ts",
   "tests/corpus/tls-renegotiate-policy-tls13.ts",
+  "tests/corpus/tls-renegotiation-rejected-certificate.ts",
   "tests/corpus/tls-set-key-cert.ts",
 ];
 

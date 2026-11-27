@@ -2634,10 +2634,10 @@ static void scr_tls_release_hold(ScrClosure *self) {
     t->holding = false;
     if (t->held_len > t->held_off) (void)scr_tls_flush_held(t);
   }
-  /* a renegotiation the policy ended closes once its flight is out */
+  /* a renegotiation the policy ended is destroyed once its flight is out */
   if (t != NULL && t->close_after_hold) {
     t->close_after_hold = false;
-    scr_net_sock_end(s);
+    scr_net_sock_destroy(s);
   }
   scr_net_sock_release(s);
 }
@@ -6492,13 +6492,16 @@ static void scr_tls_renegotiation_completed(ScrTlsSock *t) {
      * report ERR_TLS_SESSION_ATTACK on the server socket (non-fatal) */
     scr_net_sock_emit_error_code(t->sock, "TLS session renegotiation attack detected",
                                  "ERR_TLS_SESSION_ATTACK");
-  scr_net_fire0_this(&t->secure_ls, t->sock, SCR_DYNH_NET_SOCKET);
-  /* the close follows the handshake's own flight: the peer completes its
-   * side first, exactly as it did before Node ended the connection */
+  /* Node's server destroys the socket from its own 'secure' listener, which
+   * runs before the application's: everything the listeners then read from
+   * the socket — its peer certificate above all — is what a destroyed socket
+   * answers, so a certificate the policy rejected is never handed out. The
+   * handshake's own flight is already on the wire. */
   if (end_after_secure) {
-    if (t->holding) t->close_after_hold = true;
-    else scr_net_sock_end(t->sock);
+    if (t->holding) t->close_after_hold = true; /* after the flight goes out */
+    else scr_net_sock_destroy(t->sock);
   }
+  scr_net_fire0_this(&t->secure_ls, t->sock, SCR_DYNH_NET_SOCKET);
 }
 
 /* A renegotiation completed inside mbedTLS's own read: the engine records

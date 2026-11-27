@@ -654,6 +654,10 @@ export function patchSuggestion(
  * (the same text the runtime renders for checked conversions). `windows`:
  * the program targets Windows, whose shells quote differently. */
 export function renderOriginNote(origin: string, arm: string, windows = false): string {
+  // A cast origin (`value as unknown as T`) names the cast and its source
+  // instead of a package declaration: there is no declaration to patch.
+  const [kind, cast = "", castAt = "", source = ""] = origin.split(ORIGIN_SEPARATOR);
+  if (kind === "cast") return `\n    the cast '${cast}' (${castAt}) applies to '${source}'`;
   const [pkg = "", version = "", , selector = "", where = "", declared = ""] =
     origin.split(ORIGIN_SEPARATOR);
   return (

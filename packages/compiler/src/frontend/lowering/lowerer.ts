@@ -123,6 +123,7 @@ import {
 import { guardedDeferredFences, type GuardedDeferredFence } from "../../ir/deferred-fence.js";
 import {
   absentDefaultStopDiag,
+  castThroughUnknownDiag,
   deferredRefusalDiag,
   strandedInstanceArmDiag,
   guardedDeferredFenceDiag,
@@ -2479,6 +2480,9 @@ function lowerToIrWithIslands(
     ...resultLowerer.sharedModuleWarnings,
     ...resultLowerer.islandWorkerWarnings,
     ...resultLowerer.deferredRefusalWarnings,
+    // Assertions through `unknown` to a layout the static type cannot have:
+    // still checked at run time, named here so the trap is visible first.
+    ...resultLowerer.castThroughUnknownWarnings,
     ...Array.from(resultLowerer.absentDefaultStops.values(), (site) =>
       absentDefaultStopDiag(resultLowerer.fmt(site.from), resultLowerer.fmt(site.to), site.loc),
     ),
@@ -5789,6 +5793,10 @@ export class Lowerer {
    * (noteDeferredRefusal), one per statement. Warnings, so they leave with
    * the divergences and never fail the build. */
   readonly deferredRefusalWarnings: ScrDiagnostic[] = [];
+  /** SC6016 warnings: `value as unknown as T` where T is a layout type the
+   * value's static type cannot have (noteCastThroughUnknown), one per cast.
+   * The cast is still checked when it runs; the warning names it first. */
+  readonly castThroughUnknownWarnings: ScrDiagnostic[] = [];
   /** The sites whose receiver proof read `f.call(this, …)` or
    * `f.apply(this, …)` as the builtin (module-member-this.ts), each as
    * `start:end:file`: refused when the lowered program gives a function its
@@ -17532,6 +17540,24 @@ export class Lowerer {
       )
     )
       this.deferredRefusalWarnings.push(diag);
+  }
+
+  /** SC6016 for a double assertion whose target layout the source's static
+   * type cannot have (castThroughUnknownDiag): once per cast. */
+  noteCastThroughUnknown(
+    node: ts.Node,
+    cast: string,
+    source: string,
+    from: string,
+    to: string,
+  ): void {
+    const diag = castThroughUnknownDiag(cast, source, from, to, locOf(node));
+    if (
+      !this.castThroughUnknownWarnings.some(
+        (w) => w.loc.file === diag.loc.file && w.loc.start === diag.loc.start,
+      )
+    )
+      this.castThroughUnknownWarnings.push(diag);
   }
 
   /** SC6015 for the statement at `node`, which takes the record `target` out

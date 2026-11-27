@@ -75,3 +75,52 @@ console.log(full.label, narrow.label);
   expect(result.diagnostics).toEqual([]);
   expect(result.stdout).toBe("root changed\n");
 });
+
+test("a function, the target or an untyped value nested in the source keeps the copy", async () => {
+  const cases = [
+    {
+      name: "nested-function",
+      source: `interface Inner { n: number; label(): string }
+interface Wide { inner: Inner; a: number }
+interface Narrow { a: number }
+const wide: Wide = { inner: { n: 1, label: () => "x" }, a: 3 };
+const narrow: Narrow = wide;
+narrow.a = 4;
+console.log(wide.a, narrow.a);
+`,
+      stdout: "3 4\n",
+    },
+    {
+      name: "nested-target",
+      source: `interface Narrow { a: number }
+interface Holder { target: Narrow }
+interface Wide { holder: Holder; a: number }
+const wide: Wide = { holder: { target: { a: 9 } }, a: 1 };
+const narrow: Narrow = wide;
+narrow.a = 5;
+console.log(wide.a, narrow.a);
+`,
+      stdout: "1 5\n",
+    },
+    {
+      name: "untyped-field",
+      source: `interface Wide { data: unknown; a: number }
+interface Narrow { a: number }
+const wide: Wide = { data: 1, a: 1 };
+const narrow: Narrow = wide;
+narrow.a = 2;
+console.log(wide.a, narrow.a);
+`,
+      stdout: "1 2\n",
+    },
+  ] as const;
+  for (const { name, source, stdout } of cases) {
+    const result = await run(name, source);
+    expect(
+      result.warnings.filter((w) => w.code === "SC6001"),
+      name,
+    ).toHaveLength(1);
+    expect(result.diagnostics, name).toEqual([]);
+    expect(result.stdout, name).toBe(stdout);
+  }
+});

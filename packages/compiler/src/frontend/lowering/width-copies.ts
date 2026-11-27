@@ -37,6 +37,7 @@ import {
   isDirentShape,
   isUnitType,
   KEY_ORDER_FIELD,
+  RECORD_VIEW_LEAF_KINDS,
   shapeHasAccessorSlots,
   shapeKeyOrders,
   typeKey,
@@ -440,12 +441,12 @@ function viewableRecordPair(lowerer: Lowerer, from: IrType, to: IrType): boolean
   if (!target.fields.every((field) => sourceFields.get(field.name) === typeKey(field.type)))
     return false;
   // The view conversion starts by boxing the source as a live capsule. A
-  // source that holds a function or a class instance cannot be boxed that
-  // way (the backend declines the pair, and a synthesized dynFrom is
-  // refused), and a source that holds the target recurses. Such a pair
-  // keeps its copy and its SC6001 warning instead of copying silently.
-  if (source.fields.some((field) => field.type.kind === "func" || field.type.kind === "object"))
-    return false;
+  // source that holds a function, a class instance, an untyped value or a
+  // promise, anywhere in its fields, cannot be boxed that way: the backend's
+  // planner treats the source as holding EVERY record type and declines the
+  // pair (record-views.ts), so the copy keeps its SC6001 warning instead of
+  // being rewritten into a view the backend answers with a copy.
+  if (source.fields.some((field) => mayHoldAny(lowerer, field.type, new Set()))) return false;
   // The capsule is a checked-dynamic box of the source record: a field that
   // cannot be boxed (fs.Stats and the other native-handle kinds) has no
   // dynFrom, which the backend would refuse after the copy was already
@@ -479,8 +480,36 @@ function viewableRecordPair(lowerer: Lowerer, from: IrType, to: IrType): boolean
   );
 }
 
-/** Whether any of `types` is, or holds through an array or union, a record
- * of `shapeId`. */
+/** Whether a value of `type` may reference an arbitrary object: a function,
+ * a class instance, an untyped value, a promise or a handle kind. The
+ * backend's view planner treats a record that holds one as holding EVERY
+ * record type (record-views.ts), so a view pair with such a source is
+ * declined there. */
+function mayHoldAny(lowerer: Lowerer, type: IrType, seen: Set<string>): boolean {
+  const key = `t:${typeKey(type)}`;
+  if (seen.has(key)) return false;
+  seen.add(key);
+  switch (type.kind) {
+    case "record":
+      return (lowerer.shapes.get(type.shapeId)?.fields ?? []).some((field) =>
+        mayHoldAny(lowerer, field.type, seen),
+      );
+    case "array":
+    case "set":
+      return mayHoldAny(lowerer, type.elem, seen);
+    case "map":
+      return mayHoldAny(lowerer, type.key, seen) || mayHoldAny(lowerer, type.value, seen);
+    case "union":
+      return (lowerer.unions.get(type.unionId)?.arms ?? []).some((arm) =>
+        mayHoldAny(lowerer, arm, seen),
+      );
+    default:
+      return !RECORD_VIEW_LEAF_KINDS.has(type.kind);
+  }
+}
+
+/** Whether any of `types` is, or holds through a record's fields, an array,
+ * a map, a set or a union, a record of `shapeId`. */
 function holdsShape(
   lowerer: Lowerer,
   types: readonly IrType[],
@@ -488,10 +517,27 @@ function holdsShape(
   seen: Set<string>,
 ): boolean {
   for (const type of types) {
-    if (type.kind === "record" && type.shapeId === shapeId) return true;
-    if (type.kind === "array" && holdsShape(lowerer, [type.elem], shapeId, seen)) return true;
-    if (type.kind !== "union" || seen.has(type.unionId)) continue;
-    seen.add(type.unionId);
+    if (type.kind === "record") {
+      if (type.shapeId === shapeId) return true;
+      const key = `t:${typeKey(type)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const shape = lowerer.shapes.get(type.shapeId);
+      const inner = (shape?.fields ?? []).map((field) => field.type);
+      if (shape?.indexValue !== undefined) inner.push(shape.indexValue);
+      if (holdsShape(lowerer, inner, shapeId, seen)) return true;
+      continue;
+    }
+    if (type.kind === "array" || type.kind === "set") {
+      if (holdsShape(lowerer, [type.elem], shapeId, seen)) return true;
+      continue;
+    }
+    if (type.kind === "map") {
+      if (holdsShape(lowerer, [type.key, type.value], shapeId, seen)) return true;
+      continue;
+    }
+    if (type.kind !== "union" || seen.has(`u:${type.unionId}`)) continue;
+    seen.add(`u:${type.unionId}`);
     const arms = lowerer.unions.get(type.unionId)?.arms ?? [];
     if (holdsShape(lowerer, arms, shapeId, seen)) return true;
   }

@@ -151,6 +151,7 @@ export interface EarlyExecutableNativeFeatures {
   webStreams?: boolean;
   /** filehandle.readableWebStream: scr_fs_web_stream.c. */
   fsWebStream?: boolean;
+  fsUtf8Stream?: boolean;
   webBodies?: boolean;
   abortSignal?: boolean;
   utilTiming?: boolean;

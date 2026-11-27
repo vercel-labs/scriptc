@@ -1539,6 +1539,7 @@ const MAY_THROW_LIB_FNS_PART_5: readonly IrLibFn[] = [
   "fs.readFileChk",
   "fs.opendirChk",
   "fs.watchFileChk",
+  "fs.utf8StreamNew",
   "fs.lchmodChk",
   "fs.lchmodSyncChk",
   "fsp.lchmodChk",

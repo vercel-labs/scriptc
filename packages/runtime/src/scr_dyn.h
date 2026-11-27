@@ -289,6 +289,7 @@ typedef enum {
   Y(SQLITE_STATEMENT) /* node:sqlite StatementSync (scr_sqlite.c) */ \
   Y(SQLITE_TAG_STORE) /* node:sqlite SQLTagStore (scr_sqlite.c) */ \
   Y(TRACING) /* trace_events.Tracing (scr_async_dyn.c) */ \
+  Y(UTF8_STREAM) /* fs.Utf8Stream (scr_fs_utf8_stream.c) */ \
   Y(WEAK_REF) /* WeakRef (scr_json.c) */ \
   Y(WS_COMPRESSION) /* CompressionStream (scr_webstream_compress.c) */ \
   Y(WS_DECOMPRESSION) /* DecompressionStream (scr_webstream_compress.c) */

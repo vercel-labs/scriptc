@@ -5066,6 +5066,7 @@ static const char *scr_errno_name(int e, char *fallback, size_t cap) {
   case EPIPE: return "EPIPE";
   case ESPIPE: return "ESPIPE";
   case ELOOP: return "ELOOP";
+  case ENXIO: return "ENXIO";
   case ENOSYS: return "ENOSYS";
   case ENOTSUP: return "ENOTSUP";
   case ESRCH: return "ESRCH";
@@ -5098,6 +5099,7 @@ static const char *scr_errno_text(int e) {
   case EPIPE: return "broken pipe";
   case ESPIPE: return "invalid seek";
   case ELOOP: return "too many levels of symbolic links";
+  case ENXIO: return "no such device or address";
   case ENOSYS: return "function not implemented";
   default: return strerror(e);
   }

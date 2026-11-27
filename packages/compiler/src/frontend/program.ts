@@ -7938,15 +7938,9 @@ function preflightStructure7(load: LoadResult): PreflightStructure {
         if (clause.name && !isJson && dep === null && !defaultOk) {
           diags.push(unsupportedDiag("SC1012", locOf7(clause.name)));
         }
-        if (clause.namedBindings && ts.isNamedImports(clause.namedBindings) && isJson) {
-          diags.push(
-            unsupportedDiag(
-              "SC1012",
-              locOf7(clause.namedBindings),
-              "named imports from JSON modules",
-            ),
-          );
-        }
+        // Named JSON imports lower: resolveJsonModule types the document's
+        // keys, and collectJsonImports bakes each named binding from the
+        // parsed document (a default import bakes the whole record).
         if (clause.namedBindings && ts.isNamespaceImport(clause.namedBindings)) {
           // `import * as ns from "./m"` of a RESOLVED user module lowers:
           // ns.member accesses resolve statically through the checker to

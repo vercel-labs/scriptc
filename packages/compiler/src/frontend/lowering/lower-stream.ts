@@ -8798,11 +8798,51 @@ export function lowerStreamSymbolIteratorCall(
     lowerer.noLowering("a stream's [Symbol.asyncIterator] with arguments", call);
   }
   const loc = locOf(call);
-  return {
+  const native = (recv: IrExpr): IrExpr => ({
     kind: "libCall",
     fn: "readable.iterator",
-    args: [streamReceiverExpr(lowerer, access.expression), boolLit(true, loc)],
+    args: [recv, boolLit(true, loc)],
     type: DYN,
+    loc,
+  });
+  const receiver = streamReceiverExpr(lowerer, access.expression);
+  const overriders = streamSymbolMethodOverriders(info!, "sym:asyncIterator");
+  // Node dispatches the member on the prototype chain, so a value typed as a
+  // base class can hold a subclass whose [Symbol.asyncIterator] runs instead
+  // of the stream's own iterator (a filtering or permission-checking one).
+  // The stream's native iterator is the exact-class fast path; a static type
+  // with an override below it tests the value's class here, the receiver
+  // bound once.
+  if (overriders.length === 0) return native(receiver);
+  const type: IrType = DYN;
+  const slot = lowerer.declareHiddenLocal("%iteratorRecv", receiver.type);
+  const recv = (): IrExpr => varRef(slot.id, receiver.type, loc);
+  let answer = native(recv());
+  for (let i = overriders.length - 1; i >= 0; i--) {
+    const child = overriders[i]!;
+    const sig = child.methods.get("sym:asyncIterator")!;
+    const overridden = lowerer.accessorCall(
+      child.def.name,
+      "sym:asyncIterator",
+      { kind: "downcast", value: recv(), type: { kind: "object", className: child.def.name }, loc },
+      lowerer.completeArgs([], sig.params, loc, call),
+      sig.ret,
+      loc,
+    );
+    answer = {
+      kind: "ternary",
+      cond: { kind: "instanceOf", value: recv(), className: child.def.name, type: BOOL, loc },
+      then: lowerer.coerceToExpected(overridden, type),
+      else_: answer,
+      type,
+      loc,
+    };
+  }
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "varDecl", localId: slot.id, init: receiver, loc }],
+    result: answer,
+    type,
     loc,
   };
 }
@@ -8849,11 +8889,17 @@ export function lowerStreamAsyncDisposeCall(
 /** The stream subclasses below `info` that declare their own concrete
  * [Symbol.asyncDispose], most-derived first. */
 function streamAsyncDisposeOverriders(info: ClassInfo): ClassInfo[] {
+  return streamSymbolMethodOverriders(info, "sym:asyncDispose");
+}
+
+/** The stream subclasses below `info` that declare their own concrete
+ * `name` method (`sym:asyncDispose`), most-derived first. */
+function streamSymbolMethodOverriders(info: ClassInfo, name: string): ClassInfo[] {
   const out: ClassInfo[] = [];
   const visit = (parent: ClassInfo): void => {
     for (const child of parent.subclasses) {
       visit(child);
-      const sig = child.methods.get("sym:asyncDispose");
+      const sig = child.methods.get(name);
       if (sig !== undefined && sig.abstract !== true) out.push(child);
     }
   };

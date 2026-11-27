@@ -10356,7 +10356,30 @@ function lowerClientHeadersOption(lowerer: Lowerer, node: ts.Expression): IrExpr
           "each header must be a `name: value` entry whose key is a literal (or a string-literal-typed const: [PORTLESS_HEADER])",
         );
       }
-      let value = lowerer.lowerExpr(prop.initializer);
+      const raw = lowerer.lowerExpr(prop.initializer);
+      if (raw.type.kind === "array") {
+        /* Node's array-valued header: one wire line per element (a cookie
+         * array joins with "; "). Expanded into repeated pairs; the runtime
+         * merges them back into one array-valued entry. */
+        const elem = raw.type.elem;
+        if (raw.kind !== "arrayLit" || (elem.kind !== "string" && elem.kind !== "f64")) {
+          lowerer.noLowering(
+            `request header values of type '${lowerer.fmt(raw.type)}'`,
+            prop.initializer,
+            "write an array value as a literal of strings or numbers",
+          );
+        }
+        for (const item of raw.elems) {
+          elems.push({ kind: "strLit", value: key, type: STRING, loc });
+          elems.push(
+            item.type.kind === "f64"
+              ? { kind: "toString", operand: item, type: STRING, loc }
+              : item,
+          );
+        }
+        continue;
+      }
+      let value = raw;
       if (value.type.kind === "f64") {
         // Node formats number values via String(n) — the same ToString.
         value = { kind: "toString", operand: value, type: STRING, loc };
@@ -10365,7 +10388,7 @@ function lowerClientHeadersOption(lowerer: Lowerer, node: ts.Expression): IrExpr
         lowerer.noLowering(
           `request header values of type '${lowerer.fmt(value.type)}'`,
           prop.initializer,
-          "header values are strings or numbers here",
+          "header values are strings, numbers or literal string/number arrays here",
         );
       }
       elems.push({ kind: "strLit", value: key, type: STRING, loc });

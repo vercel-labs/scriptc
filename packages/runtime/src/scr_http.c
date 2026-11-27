@@ -9564,10 +9564,33 @@ static ScrHttpClientReq *scr_http_request_impl(ScrStr *host /*borrowed*/, double
     c->hraw = malloc((npairs / 2) * sizeof *c->hraw);
     if (!c->hnames || !c->hvalues || !c->hraw) scr_http_oom();
     for (size_t i = 0; i + 1 < npairs; i += 2) {
-      c->hnames[c->nheaders] = (ScrStr *)scr_arr_get_ref(header_pairs, (double)i);
-      c->hvalues[c->nheaders] = (ScrStr *)scr_arr_get_ref(header_pairs, (double)(i + 1));
-      c->hraw[c->nheaders] = NULL;
-      c->nheaders++;
+      ScrStr *name = (ScrStr *)scr_arr_get_ref(header_pairs, (double)i);
+      ScrStr *value = (ScrStr *)scr_arr_get_ref(header_pairs, (double)(i + 1));
+      size_t pos = SIZE_MAX;
+      for (size_t k = 0; k < c->nheaders; k++)
+        if (scr_http_name_eq(c->hnames[k], name)) {
+          pos = k;
+          break;
+        }
+      if (pos == SIZE_MAX) {
+        c->hnames[c->nheaders] = name;
+        c->hvalues[c->nheaders] = value;
+        c->hraw[c->nheaders] = NULL;
+        c->nheaders++;
+        continue;
+      }
+      /* A repeated name is Node's array-valued header (the lowering expands
+       * a header array into repeated pairs): one entry whose value is the
+       * array, so `cookie` joins with "; " and the others send one line per
+       * element. */
+      if (c->hraw[pos] == NULL) {
+        ScrDyn *arr = scr_dyn_new_arr();
+        scr_dyn_arr_push(arr, scr_dyn_new_str(c->hvalues[pos]));
+        c->hraw[pos] = arr;
+      }
+      scr_dyn_arr_push(c->hraw[pos], scr_dyn_new_str(value));
+      scr_str_release(name);
+      scr_str_release(value);
     }
   }
   c->user_cl = scr_http_client_has_header(c, "content-length") ||

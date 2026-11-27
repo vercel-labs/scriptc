@@ -17,6 +17,10 @@ export interface Ts7WireMessage {
 /** Transfers may be short. A zero-byte read denotes EOF, and a zero-byte
  * write is an error: neither is allowed to spin the synchronous client. */
 export interface Ts7WireIo {
+  /** The server process's ID where the transport knows it: the frontend reads
+   * that process's resident memory to decide whether to keep the server for
+   * the next load (services.ts). */
+  readonly pid?: number | undefined;
   read: (buffer: Uint8Array, offset: number, length: number) => number;
   write: (buffer: Uint8Array, offset: number, length: number) => number;
   close: () => void;
@@ -60,6 +64,11 @@ export class Ts7Wire {
   private inputOffset = 0;
   private inputLength = 0;
   private closed = false;
+
+  /** The server process's ID, when the transport knows it. */
+  get pid(): number | undefined {
+    return this.io.pid;
+  }
 
   constructor(
     private readonly io: Ts7WireIo,

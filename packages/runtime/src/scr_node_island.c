@@ -1102,23 +1102,107 @@ static const wchar_t *ni_wplain(const wchar_t *path) {
   return wcsncmp(path, L"\\\\?\\", 4) == 0 ? path + 4 : path;
 }
 
+/* Whether a stored link target names another computer: a UNC path, or the
+ * UNC device form (`\??\UNC\server\share`) a link records one in. Nothing
+ * on this machine opens such a path. */
+static bool ni_win_remote_target(const wchar_t *target) {
+  const wchar_t *plain = target;
+  if (wcsncmp(plain, L"\\??\\", 4) == 0) plain += 4;
+  else if (wcsncmp(plain, L"\\\\?\\", 4) == 0) plain += 4;
+  if (plain[0] == L'\\' && plain[1] == L'\\') return true;
+  return wcsncmp(plain, L"UNC\\", 4) == 0;
+}
+
+/* The path a link stores, read from its reparse point, or NULL when the path
+ * is not a link this runtime writes. The link is opened with
+ * FILE_FLAG_OPEN_REPARSE_POINT, which opens the link itself: opening it as a
+ * path would open whatever it names, and a link naming a network path would
+ * offer the account's credentials to that server before anything could
+ * refuse the tree. */
+static wchar_t *ni_win_link_target(const wchar_t *path) {
+  HANDLE handle = CreateFileW(path, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                              OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+                              NULL);
+  if (handle == INVALID_HANDLE_VALUE) return NULL;
+  unsigned char storage[MAXIMUM_REPARSE_DATA_BUFFER_SIZE];
+  DWORD length = 0;
+  wchar_t *target = NULL;
+  if (DeviceIoControl(handle, FSCTL_GET_REPARSE_POINT, NULL, 0, storage, sizeof storage, &length,
+                      NULL)) {
+    const ULONG tag = *(const ULONG *)storage;
+    /* The names start after the record's fixed part: four offsets and
+     * lengths for a mount point, and the symlink flags too for a symlink. */
+    size_t names = tag == IO_REPARSE_TAG_SYMLINK ? 20 : 0;
+    if (tag == IO_REPARSE_TAG_MOUNT_POINT) names = 16;
+    if (names != 0 && length > names) {
+      const USHORT *fields = (const USHORT *)(storage + 8);
+      size_t offset = fields[2], chars = fields[3]; /* the print name */
+      if (chars == 0) {
+        offset = fields[0];
+        chars = fields[1]; /* a record that carries only the substitute name */
+      }
+      if (chars % sizeof(wchar_t) == 0 &&
+          offset + chars <= length - names) {
+        chars /= sizeof(wchar_t);
+        target = malloc((chars + 1) * sizeof *target);
+        if (target == NULL) ni_oom();
+        memcpy(target, (const wchar_t *)(storage + names + offset), chars * sizeof *target);
+        target[chars] = L'\0';
+      }
+    }
+  }
+  CloseHandle(handle);
+  return target;
+}
+
+/* `stored`, read from a link in `dir`, as an absolute path resolved as text
+ * (GetFullPathNameW reads no directory: the target may not exist, and a
+ * remote one must never be opened). NULL for a target naming another
+ * computer or one that cannot be resolved. */
+static wchar_t *ni_win_link_absolute(const wchar_t *dir, const wchar_t *stored) {
+  if (ni_win_remote_target(stored)) return NULL;
+  const wchar_t *plain = stored;
+  if (wcsncmp(plain, L"\\??\\", 4) == 0 || wcsncmp(plain, L"\\\\?\\", 4) == 0) plain += 4;
+  wchar_t joined[8192];
+  size_t dir_len = wcslen(dir), name_len = wcslen(plain);
+  bool rooted = plain[0] == L'\\' || (plain[0] != L'\0' && plain[1] == L':');
+  if (rooted) {
+    if (name_len + 1 > sizeof joined / sizeof joined[0]) return NULL;
+    wcscpy(joined, plain);
+  } else {
+    if (dir_len + name_len + 2 > sizeof joined / sizeof joined[0]) return NULL;
+    memcpy(joined, dir, dir_len * sizeof *joined);
+    joined[dir_len] = L'\\';
+    memcpy(joined + dir_len + 1, plain, (name_len + 1) * sizeof *joined);
+  }
+  DWORD size = GetFullPathNameW(joined, 0, NULL, NULL);
+  if (size == 0) return NULL;
+  wchar_t *full = malloc(((size_t)size + 1) * sizeof *full);
+  if (full == NULL) ni_oom();
+  if (GetFullPathNameW(joined, size, full, NULL) == 0) {
+    free(full);
+    return NULL;
+  }
+  return full;
+}
+
+/* Whether the link `name` in `dir` names the path `target` (the manifest's
+ * relative target, resolved from the link's directory). The comparison is
+ * textual: the link is read, never opened as a path, so a link someone
+ * replaced with one naming a network share is refused by its text instead of
+ * being connected to. */
 static bool ni_dir_link_matches(NiDir *dir, const char *name, const char *target) {
   wchar_t *path = ni_wjoin(dir->path, name);
   wchar_t *want = ni_wresolve(dir->path, target);
   bool ok = false;
   if (path != NULL && want != NULL) {
-    HANDLE handle = CreateFileW(path, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                                NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
-    if (handle != INVALID_HANDLE_VALUE) {
-      DWORD size = GetFinalPathNameByHandleW(handle, NULL, 0, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
-      wchar_t *real = size > 0 ? malloc(((size_t)size + 1) * sizeof *real) : NULL;
-      if (real == NULL) ni_oom();
-      if (size > 0 && GetFinalPathNameByHandleW(handle, real, size + 1,
-                                                FILE_NAME_NORMALIZED | VOLUME_NAME_DOS) > 0)
-        ok = _wcsicmp(ni_wplain(real), ni_wplain(want)) == 0;
-      free(real);
-      CloseHandle(handle);
+    wchar_t *stored = ni_win_link_target(path);
+    if (stored != NULL) {
+      wchar_t *actual = ni_win_link_absolute(dir->path, stored);
+      if (actual != NULL) ok = _wcsicmp(ni_wplain(actual), ni_wplain(want)) == 0;
+      free(actual);
     }
+    free(stored);
   }
   free(path);
   free(want);

@@ -96,8 +96,6 @@ declare module "worker_threads" {
     off(event: string, listener: (...args: any[]) => void): this;
     addListener(event: string, listener: (...args: any[]) => void): this;
     removeListener(event: string, listener: (...args: any[]) => void): this;
-    prependListener(event: string, listener: (...args: any[]) => void): this;
-    prependOnceListener(event: string, listener: (...args: any[]) => void): this;
     /* The target's raw dispatch: one argument, extra arguments ignored. */
     emit(event: string, ...args: any[]): boolean;
     eventNames(): string[];

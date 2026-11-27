@@ -125967,6 +125967,7 @@
           "tests/corpus/worker-cpu-usage-quiet/main.ts",
           "tests/corpus/worker-cpu-usage.ts",
           "tests/corpus/worker-env-option.ts",
+          "tests/corpus/worker-listeners.ts",
           "tests/corpus/worker-performance.ts",
           "tests/corpus/worker-resource-limits-echo.ts",
           "tests/corpus/worker-share-env.ts"
@@ -126599,7 +126600,8 @@
           "tests/corpus/native-worker-environment.ts",
           "tests/corpus/native-worker-roots/main.ts",
           "tests/corpus/worker-env-option.ts",
-          "tests/corpus/worker-share-env.ts"
+          "tests/corpus/worker-share-env.ts",
+          "tests/corpus/worker-listeners.ts"
         ]
       },
       "anchorSource": "exact"

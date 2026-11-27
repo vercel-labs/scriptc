@@ -784,7 +784,17 @@ static void scr_stream_emit_stream(ScrStream *s, const char *name, ScrStream *pa
   ScrStr *n = scr_stream_event_name(name);
   ScrEmitter *em = (ScrEmitter *)s;
   if (scr_emitter_has_dyn(em, n)) {
-    ScrDyn *arg = scr_stream_dyn_view(payload);
+    /* The listener reads the source as the stream value itself, not a
+     * snapshot of it: a typed capsule over the stream is the value the
+     * program holds for the source (a comparison against it holds, capsule
+     * to capsule by stream identity), and its members read live through the
+     * stream's ref hooks instead of freezing at the emission. */
+    char key[64];
+    int key_len =
+        snprintf(key, sizeof key, "object:%%%s", payload->cls != NULL ? payload->cls : "Readable");
+    ScrDyn *arg = scr_dyn_new_typed_ref_traced(
+        payload, scr_stream_retain_v, scr_stream_release_v, key,
+        key_len > 0 ? (size_t)key_len : 0, scr_stream_ref_view, NULL);
     bool had = scr_emitter_emit_mixed(em, n, &arg, 1, payload);
     scr_dyn_release(arg);
     (void)had;

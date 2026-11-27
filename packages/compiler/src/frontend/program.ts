@@ -7611,16 +7611,19 @@ function preflightStructure7(load: LoadResult): PreflightStructure {
           ) {
             continue;
           }
-          // NAMED re-exports from an INSTALLED npm package (`export
-          // { isUrl } from "url-or-path"` — the pattern's universal facade,
-          // `export { visitorKeys as default } from "@glimmer/syntax"`):
-          // import-plus-export plumbing. The lowering owns the package
-          // value diagnostic when no compiled source can supply the binding.
+          // NAMED and STAR re-exports from an INSTALLED npm package
+          // (`export { isUrl } from "url-or-path"` — the pattern's
+          // universal facade, `export { visitorKeys as default } from
+          // "@glimmer/syntax"`, and `export * from "@vercel/drives"`):
+          // import-plus-export plumbing. Importers chase each name through
+          // the alias chain to the package's own declarations; the lowering
+          // owns the package value diagnostic when no compiled source can
+          // supply the binding. A namespace re-export (`export * as ns`)
+          // still needs a namespace object, so it keeps its fence.
           if (
-            stmt.exportClause !== undefined &&
-            ts.isNamedExports(stmt.exportClause) &&
             !fromSpec.startsWith("#") &&
-            resolveNpmImport7(sf.fileName, fromSpec) !== null
+            resolveNpmImport7(sf.fileName, fromSpec) !== null &&
+            (stmt.exportClause === undefined || ts.isNamedExports(stmt.exportClause))
           ) {
             continue;
           }

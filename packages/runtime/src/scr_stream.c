@@ -52,6 +52,26 @@
  * no blob unit — the sanitized runtime has no section collection to drop
  * an unused strong reference. */
 ScrDyn *scr_sc_blob_value(ScrBytes *all) __attribute__((weak));
+/* [Symbol.asyncDispose]() hands back a promise, which the checked-dynamic
+ * promise unit boxes. That unit installs this hook at startup when it is
+ * linked, so a program that reads the member without calling it links
+ * without the unit. */
+ScrDyn *(*scr_stream_promise_box_hook)(ScrPromise *) = NULL;
+/* Readable.from's `signal` option adds its abort listener through the events
+ * unit. The program links that unit when the option is present (a feature
+ * rule), and the weak reference keeps a stream program that never passes one
+ * from needing it. Mach-O refuses an undefined weak reference in an
+ * executable, so Apple gets a weak definition here; the events unit's strong
+ * definition replaces it whenever that unit is linked. */
+#if defined(__APPLE__)
+__attribute__((weak)) ScrDyn *scr_events_add_abort_listener(ScrDyn *signal, ScrDyn *listener) {
+  (void)signal;
+  (void)listener;
+  return NULL;
+}
+#else
+extern ScrDyn *scr_events_add_abort_listener(ScrDyn *signal, ScrDyn *listener) __attribute__((weak));
+#endif
 
 #include <math.h>
 #include <stdio.h>
@@ -784,7 +804,22 @@ static void scr_stream_emit_stream(ScrStream *s, const char *name, ScrStream *pa
   ScrStr *n = scr_stream_event_name(name);
   ScrEmitter *em = (ScrEmitter *)s;
   if (scr_emitter_has_dyn(em, n)) {
-    ScrDyn *arg = scr_stream_dyn_view(payload);
+    /* The listener reads the source as the stream value itself, not a
+     * snapshot of it: a typed capsule over the stream is the value the
+     * program holds for the source (a comparison against it holds, capsule
+     * to capsule by stream identity), and its members read live through the
+     * stream's ref hooks instead of freezing at the emission. */
+    char key[64];
+    int key_len =
+        snprintf(key, sizeof key, "object:%%%s", payload->cls != NULL ? payload->cls : "Readable");
+    /* The capsule keeps the key pointer it is given, so the stack buffer is
+     * interned: a listener that keeps the stream value reads a key that
+     * outlives this frame (a later pipe of the same stream compares it). */
+    const char *interned =
+        key_len > 0 ? scr_dyn_type_key_intern(key, (size_t)key_len) : key;
+    ScrDyn *arg = scr_dyn_new_typed_ref_traced(
+        payload, scr_stream_retain_v, scr_stream_release_v, interned,
+        key_len > 0 ? (size_t)key_len : 0, scr_stream_ref_view, NULL);
     bool had = scr_emitter_emit_mixed(em, n, &arg, 1, payload);
     scr_dyn_release(arg);
     (void)had;
@@ -1053,13 +1088,18 @@ static void scr_stream_emit_data_entry(ScrStream *s, void *chunk, ScrEntryKind k
    * its 'drain'. Encoded sources write the string (utf8 bytes at the
    * destination — Node writes the decoded string through). */
   for (size_t i = 0; i < st->pipes.n;) {
-    ScrStream *dst = st->pipes.dst[i];
+    /* Hold the destination across the write and its failure handling: a
+     * write's error renders an invalid chunk through the chunk's own hooks,
+     * and a hook that unpipes drops the pipe's reference before this
+     * iteration is done with the destination. */
+    ScrStream *dst = scr_stream_retain(st->pipes.dst[i]);
     if (dst->st->destroyed) {
       /* Node's pipe cleanup: a destroyed destination unhooks (the
        * onerror/onclose → unpipe path) and pauses the source — writing
        * after destroy would drop the error without reporting it and spin
        * an infinite synchronous flow over an endless source. */
       scr_stream_release(scr_stream_unpipe(s, dst));
+      scr_stream_release(dst);
       if (scr_exc_pending()) return;
       continue; /* the pipes array shifted down over i */
     }
@@ -1077,6 +1117,7 @@ static void scr_stream_emit_data_entry(ScrStream *s, void *chunk, ScrEntryKind k
         scr_stream_error_or_destroy(dst, werr);
         scr_error_release(werr);
       }
+      scr_stream_release(dst);
       return;
     }
     i++;
@@ -1098,6 +1139,7 @@ static void scr_stream_emit_data_entry(ScrStream *s, void *chunk, ScrEntryKind k
         st->r.flowing = 0;
       }
     }
+    scr_stream_release(dst);
   }
 }
 
@@ -1272,21 +1314,56 @@ static void *scr_stream_read_n(ScrStream *s, double size) {
 static void *scr_stream_read_n_kind(ScrStream *s, double size, ScrEntryKind *kind) {
   ScrStreamState *st = s->st;
   *kind = scr_stream_rkind(st);
-  bool absent = size < 0;
+  bool absent = isnan(size);
+  /* Node's read() takes the readable-event path only when its parsed size
+   * is 0 (or -0); a negative size reads nothing but does not. */
+  bool zero = false;
   size_t n = 0;
   if (!absent) {
-    n = (size_t)size;
-    if (n > st->r.hwm) {
-      /* Node grows hwm to the next power of two above n */
-      size_t h = st->r.hwm;
-      while (h < n) h *= 2;
-      st->r.hwm = h;
+    if (!isfinite(size)) {
+      /* parseInt(±Infinity) is NaN: Node's absent form, which drains */
+      absent = true;
+    } else {
+      /* a non-integer size goes through parseInt (toward zero) */
+      double whole = trunc(size);
+      zero = whole == 0;
+      n = whole > 0 ? (size_t)whole : 0;
+      if (n > st->r.hwm) {
+        /* computeNewHighWaterMark's MAX_HWM (1GiB): only a size that grows
+         * the watermark is bounded, so a stream configured above it reads a
+         * larger size as it is. */
+        if (whole > 1073741824.0) {
+          char num[32];
+          size_t len = scr_f64_to_str(whole, num);
+          char msg[192];
+          int wrote = snprintf(msg, sizeof msg,
+                               "The value of \"size\" is out of range. It must be <= 1GiB. Received %.*s",
+                               (int)len, num);
+          scr_throw_error_msg_code(SCR_ERR_RANGE, msg, wrote < 0 ? 0 : (size_t)wrote,
+                                   "ERR_OUT_OF_RANGE");
+          return NULL;
+        }
+        /* Node grows hwm to the smallest power of two at least n
+         * (readable.js's computeNewHighWaterMark), computed from the request
+         * rather than from the current watermark — which may be 0 (a
+         * highWaterMark: 0 is legal) or not a power of two. The growth starts
+         * at 1: a highWaterMark of 0 still grows. */
+        size_t h = 1;
+        while (h < n) {
+          if (h > SIZE_MAX / 2) {
+            h = n;
+            break;
+          }
+          h *= 2;
+        }
+        st->r.hwm = h;
+      }
     }
   }
   /* Node's read(): `if (n !== 0) state.emittedReadable = false` — the
    * absent form is NaN there, which also clears; only read(0) keeps it. */
-  if (absent || n != 0) st->r.emitted_readable = false;
-  if (!absent && n == 0 && st->r.need_readable &&
+  if (absent || !zero) st->r.emitted_readable = false;
+  if (!absent && zero && st->r.need_readable &&
       (st->r.length >= st->r.hwm || st->r.ended)) {
     if (st->r.length == 0 && st->r.ended) scr_stream_end_readable(s);
     else scr_stream_emit_readable_nt(s);
@@ -1357,7 +1434,7 @@ static void scr_stream_flow(ScrStream *s) {
   ScrStreamState *st = s->st;
   while (st->r.flowing == 1 && !scr_exc_pending()) {
     ScrEntryKind kind;
-    void *b = scr_stream_read_n_kind(s, -1, &kind);
+    void *b = scr_stream_read_n_kind(s, NAN, &kind);
     if (b == NULL) break;
     scr_stream_entry_release_kind(st, b, kind);
   }
@@ -1619,7 +1696,7 @@ static void scr_stream_iter_step(ScrStream *s) {
      * An empty buffer first runs the stream's _read through a zero-size
      * read, so the chunks it pushes synchronously buffer as entries of
      * their own instead of arriving as one merged read. */
-    double want = -1;
+    double want = NAN;
     if (st->r.next_single && !st->r.object_entries && st->r.n == 0 && !st->r.ended &&
         !st->r.reading && !st->destroyed && !st->errored && !st->constructing &&
         st->r.read_cb != NULL) {
@@ -2087,7 +2164,10 @@ static ScrStream *scr_from_dyn_ex(ScrDyn *src, ScrDyn *opts, bool duplex) {
     kind = scr_dyn_iterable_kind(src);
     if (kind < 0) return NULL;
   } else if (!single) {
-    iter = scr_dyn_from_iterator(src, &kind);
+    /* A compiled generator an object's iterator method returns is stepped
+     * through its checked-dynamic next/return members, as for await steps
+     * one: from.js opens the same iterator either way. */
+    iter = scr_dyn_open_iterator(src, &kind, true);
     if (kind < 0) return NULL;
   }
   if (!single && kind == 0) {
@@ -2117,7 +2197,8 @@ static ScrStream *scr_from_dyn_ex(ScrDyn *src, ScrDyn *opts, bool duplex) {
       ScrStr *name = k->v.str;
       if ((name->len == 10 && memcmp(name->data, "objectMode", 10) == 0) ||
           (name->len == 13 && memcmp(name->data, "highWaterMark", 13) == 0) ||
-          (name->len == 8 && memcmp(name->data, "encoding", 8) == 0)) {
+          (name->len == 8 && memcmp(name->data, "encoding", 8) == 0) ||
+          (name->len == 6 && memcmp(name->data, "signal", 6) == 0)) {
         continue;
       }
       char m[200];
@@ -2198,6 +2279,17 @@ static ScrStream *scr_from_dyn_ex(ScrDyn *src, ScrDyn *opts, bool duplex) {
   }
   scr_str_release(encoding);
   scr_str_release(encoding_name);
+  if (fout && opts && opts->kind == SCR_DYN_OBJ) {
+    /* from.js's `signal`: addAbortSignal over the stream it builds, so an
+     * abort before or after the first read destroys it with AbortError. */
+    ScrDyn *signal = scr_dyn_obj_get(opts, "signal", 6);
+    if (signal && scr_dyn_truthy(signal) && scr_events_add_abort_listener != NULL) {
+      ScrStream *with_signal =
+          scr_stream_add_abort_signal(fout, signal, true, scr_events_add_abort_listener);
+      scr_stream_release(fout);
+      fout = with_signal;
+    }
+  }
   return fout;
 }
 
@@ -2223,9 +2315,9 @@ ScrStream *scr_stream_duplex_from_dyn(ScrDyn *body) {
   return sf_duplex_from_dyn_flags(body, 0);
 }
 
-/* `pair_flags` reaches the web pair adaptation: the pipeline runs a pair
- * stage with its web chunks untouched (object mode), where Duplex.from and
- * compose adapt it byte for byte. */
+/* `pair_flags` reaches the web pair adaptation: the pipeline, and compose's
+ * head and middle stages, run a pair with its web chunks untouched (object
+ * mode), where Duplex.from and compose's tail adapt it byte for byte. */
 static ScrStream *sf_duplex_from_dyn_flags(ScrDyn *body, double pair_flags) {
   ScrStream *native = scr_stream_of_handle(body); /* +1 */
   if (!native) native = scr_stream_boxed(body);   /* +1 */
@@ -2241,6 +2333,25 @@ static ScrStream *sf_duplex_from_dyn_flags(ScrDyn *body, double pair_flags) {
   if (scr_stream_web_pair_hook != NULL) {
     ScrStream *paired = scr_stream_web_pair_hook(body, pair_flags);
     if (paired) {
+      /* A lone web WritableStream answers its writer's adapter alone:
+       * duplexify.js reads it as the body's `writable` (Duplex.from's
+       * writable-only Duplex). */
+      if (!(paired->st->has_r && paired->st->has_w)) {
+        /* The adapter's writable mode and web chunks reach the duplexify the
+         * pipeline writes through, so a null a stage enqueued is a value
+         * written here too. */
+        bool web_chunks = paired->st->web_chunks;
+        bool writable_object_mode = paired->st->has_w && paired->st->w.object_mode;
+        ScrStream *d = paired->st->has_r ? scr_stream_duplexify(paired, NULL)
+                                         : scr_stream_duplexify(NULL, paired);
+        if (d != NULL) {
+          if (web_chunks) scr_stream_set_web_chunks(d, true);
+          if (writable_object_mode) scr_stream_set_object_mode(d, false, true);
+        }
+        scr_stream_release(paired);
+        if (!d) return NULL;
+        paired = d;
+      }
       paired->st->web_pair_body = true;
       return paired;
     }
@@ -4008,6 +4119,12 @@ static ScrClosure *scr_stream_eos_impl(ScrStream *s, ScrClosure *cb, ScrStreamEr
  * and value_p its promise (NULL for an async generator destination). */
 typedef void (*ScrPipeValInv)(ScrClosure *cb, ScrError *err, ScrDyn *value, ScrPromise *value_p);
 
+/* the readable-only Duplexify a web stage is fed through; the pipeline owns
+ * it and drops it when the pipeline settles */
+static ScrStream *scr_stream_duplexify_owned(ScrStream *r);
+/* drops a wrapper the runtime created; the stream it read is left alone */
+static void scr_stream_duplexify_dispose(ScrStream *d);
+
 /* stream.pipeline over streams (lib/internal/streams/pipeline.js). Each
  * stream gets the destroyer (a 'close' listener and an eos watcher over
  * the sides it plays), an 'error' listener, and each adjacent pair the
@@ -4048,6 +4165,10 @@ typedef struct {
   ScrPromise *value_p;
   /* the final callback with the value: callback(error, value) */
   ScrPipeValInv val_inv;
+  /* the wrapper a web stage is fed through (+1 each): the context owns it
+   * and drops it when the pipeline settles */
+  ScrStream **feeds;
+  size_t feeds_n, feeds_cap;
   void *live_prev, *live_next;
 } ScrStreamPipeCtx;
 
@@ -4074,6 +4195,15 @@ static void scr_stream_pipectx_drop(ScrStreamPipeCtx *ctx) {
     for (size_t i = 0; i < ctx->n; i++) scr_stream_release(ctx->streams[i]);
     free(ctx->streams);
     ctx->streams = NULL;
+  }
+  if (ctx->feeds) {
+    for (size_t i = 0; i < ctx->feeds_n; i++) {
+      scr_stream_duplexify_dispose(ctx->feeds[i]);
+      scr_stream_release(ctx->feeds[i]);
+    }
+    free(ctx->feeds);
+    ctx->feeds = NULL;
+    ctx->feeds_n = ctx->feeds_cap = 0;
   }
   if (ctx->cb) {
     scr_closure_release(ctx->cb);
@@ -4106,6 +4236,16 @@ static void scr_stream_pipectx_drop(ScrStreamPipeCtx *ctx) {
     scr_promise_release(ctx->value_p);
     ctx->value_p = NULL;
   }
+}
+
+/* The context owns a web stage's feed wrapper; a +1 moves in. */
+static void scr_pipe_track_feed(ScrStreamPipeCtx *ctx, ScrStream *feed) {
+  if (ctx->feeds_n == ctx->feeds_cap) {
+    ctx->feeds_cap = ctx->feeds_cap ? ctx->feeds_cap * 2 : 2;
+    ctx->feeds = realloc(ctx->feeds, ctx->feeds_cap * sizeof *ctx->feeds);
+    if (!ctx->feeds) scr_stream_oom();
+  }
+  ctx->feeds[ctx->feeds_n++] = feed;
 }
 
 static void scr_stream_pipectx_release_v(void *p) {
@@ -4334,6 +4474,15 @@ static void scr_pipe_error_l(ScrClosure *cb, void *errp) {
     scr_pipe_finish_impl(ctx, err, false);
   }
   scr_stream_pipectx_release_v(ctx);
+}
+
+/* The feed wrapper mirrors the previous stage's error, which the pipeline's
+ * own listener on that stage reports: this copy is consumed here, where the
+ * wrapper's own listener list would otherwise turn it into an unhandled
+ * 'error' event that ends the process. */
+static void scr_pipe_feed_error_l(ScrClosure *cb, void *errp) {
+  (void)cb;
+  (void)errp;
 }
 
 /* pipe(): the destination closed before the source ended */
@@ -4859,6 +5008,8 @@ static void scr_stream_throw_web_stage(void);
 static bool scr_stream_dyn_stage_returned_stream(const ScrDyn *value);
 static void scr_stream_throw_invalid_return(const char *expected, const char *name,
                                            const ScrDyn *got);
+static void scr_stream_throw_invalid_return_class(const char *expected, const char *name,
+                                                  const char *cls);
 
 /* What pipelineImpl does with an untyped destination function's result:
  * a promise settles the pipeline's value (the `then` branch), and an
@@ -5068,15 +5219,49 @@ static ScrStream *scr_stream_pipeline_ex(size_t n, ScrStream **streams, ScrClosu
         scr_stream_pipectx_release_v(ctx);
         return NULL;
       }
-      /* pipe(ret, s, finish, finishOnlyHandleError, { end }) */
+      /* Node's pipeline reads the stage before a web stream as an async
+       * iterator, whose reads combine the chunks the stage has buffered;
+       * pipe() would hand them over one at a time. A Duplex.from readable
+       * side reads like that iterator, so the web stage is fed through one. */
+      ScrStream *feed = ret;
+      /* An encoded source answers strings, which the wrapper's byte-mode
+       * readable side would turn back into Buffers; it keeps the plain pipe. */
+      if (s->st->web_pair_body && !ret->st->r.encoded) {
+        feed = scr_stream_duplexify_owned(ret); /* +1, the context's */
+        if (!feed) {
+          scr_stream_pipectx_drop(ctx);
+          scr_stream_pipectx_release_v(ctx);
+          return NULL;
+        }
+        /* The wrapper reads the stage's values: its object-mode entries and
+         * web chunks come through, so a null the stage enqueued stays a value
+         * instead of a push that ends the wrapper, and the destination keeps
+         * the web chunks it writes. */
+        if (ret->st->r.object_entries) scr_stream_set_object_mode(feed, true, false);
+        if (ret->st->web_chunks) scr_stream_set_web_chunks(feed, true);
+        scr_stream_set_web_chunks(s, true);
+        /* The wrapper's copy of an upstream failure is the pipeline's error
+         * too: it is consumed here so the wrapper never answers it as an
+         * unhandled 'error' event of its own. */
+        ScrClosure *feed_error = scr_pipe_closure((void *)&scr_pipe_feed_error_l, ctx, 0);
+        scr_pipe_on(feed, "error", scr_closure_retain(feed_error), scr_ee_inv_fixed1, false);
+        scr_closure_release(feed_error);
+        scr_pipe_track_feed(ctx, feed); /* the reference moves */
+      }
+      /* pipe(feed, s, finish, finishOnlyHandleError, { end }) */
       ctx->finish_count += 2;
       scr_pipe_on(s, "close", scr_pipe_closure((void *)&scr_pipe_dst_close_l, ctx, i), scr_ee_inv_fixed0,
                   false);
-      scr_stream_release(scr_stream_pipe(ret, s, false));
+      scr_stream_release(scr_stream_pipe(feed, s, false));
+      /* The destination ends when what feeds it ends. With a wrapper that is
+       * the wrapper: it ends once its buffered values reach the destination,
+       * while the stage it wrapped ends as soon as the values are buffered.
+       * Ending on the stage's 'end' would close the destination ahead of the
+       * values still buffered in the wrapper. */
       if (end) {
         ScrClosure *end_fn = scr_pipe_closure((void *)&scr_pipe_end_fn, ctx, i);
-        if (ret->st->r.end_emitted) scr_next_tick(end_fn);
-        else scr_pipe_on(ret, "end", end_fn, scr_ee_inv_fixed0, true);
+        if (feed->st->r.end_emitted) scr_next_tick(end_fn);
+        else scr_pipe_on(feed, "end", end_fn, scr_ee_inv_fixed0, true);
       } else {
         scr_pipe_finish_impl(ctx, NULL, --ctx->finish_count == 0);
       }
@@ -5446,9 +5631,13 @@ static ScrStream *scr_stream_compose_impl(size_t n, ScrStream **streams, const S
   c->writable = c->head && scr_stream_prop(c->head, "writable") != 0;
   c->readable = scr_stream_prop(c->tail, "readable") != 0;
   /* readableObjectMode: !!tail?.readableObjectMode, writableObjectMode:
-   * !!head?.writableObjectMode */
-  bool object_mode = c->tail->st->has_r && c->tail->st->r.object_entries;
-  bool w_object = c->head && c->head->st->has_w && c->head->st->w.object_mode;
+   * !!head?.writableObjectMode. A web stream has neither member, so a pair
+   * adapted in object mode (its chunks are web values) still answers a
+   * byte-mode end for the composed Duplex. */
+  bool object_mode = c->tail->st->has_r && !c->tail->st->web_pair_body &&
+                     c->tail->st->r.object_entries;
+  bool w_object =
+      c->head && !c->head->st->web_pair_body && c->head->st->has_w && c->head->st->w.object_mode;
   ScrStream *d = scr_stream_new_duplex(
       object_mode ? scr_stream_get_default_hwm(true) : -1, w_object ? scr_stream_get_default_hwm(true) : -1,
       true, true, true, c->readable, c->writable,
@@ -5514,6 +5703,9 @@ typedef struct ScrDuplexify {
   /* Duplex.fromWeb's pair: destroying it without an error closes the web
    * sides cleanly, Node's web-pair adapter (no synthesized AbortError). */
   bool web_pair;
+  /* the pipeline's feed wrapper: it is dropped by the pipeline, so its eos
+   * listeners come off with it instead of staying on the streams it read */
+  bool owned;
   /* The error this duplexify was destroyed with while the peers settle
    * (the destroy callback receives it, not a peer's secondary error). +1. */
   ScrError *destroy_err;
@@ -5555,12 +5747,19 @@ static void scr_dupx_on(ScrStream *s, const char *name, ScrClosure **slot, void 
   scr_str_release(n);
 }
 
-/* Drop the Duplex and the listeners on r and w (the eos listeners stay
- * registered; their cleanups, which hold the context, are dropped). */
+/* Drop the Duplex and the listeners on r and w (the eos listeners of a
+ * Duplex the user made stay registered, their cleanups dropped; a wrapper
+ * the pipeline owns takes its eos listeners with it). */
 static void scr_dupx_teardown(ScrDuplexify *x) {
   if (!x->d) return;
-  if (x->r_eos) scr_closure_release(x->r_eos);
-  if (x->w_eos) scr_closure_release(x->w_eos);
+  if (x->r_eos) {
+    if (x->owned) ((void (*)(ScrClosure *))x->r_eos->fn)(x->r_eos);
+    scr_closure_release(x->r_eos);
+  }
+  if (x->w_eos) {
+    if (x->owned) ((void (*)(ScrClosure *))x->w_eos->fn)(x->w_eos);
+    scr_closure_release(x->w_eos);
+  }
   x->r_eos = x->w_eos = NULL;
   if (x->w) {
     scr_compose_off(x->w, "drain", &x->drain_l);
@@ -5578,6 +5777,14 @@ static void scr_dupx_teardown(ScrDuplexify *x) {
   x->d = NULL;
   scr_stream_release(d);
   scr_dupx_release_v(x); /* the live list's reference */
+}
+
+/* The pipeline drops the wrapper it fed a web stage through: the wrapper's
+ * listeners and buffered values go; the stream it read is left alone. */
+static void scr_stream_duplexify_dispose(ScrStream *d) {
+  ScrDuplexify *x = scr_dupx_live;
+  while (x && x->d != d) x = x->live_next;
+  if (x) scr_dupx_teardown(x);
 }
 
 /* At exit, a Duplexify still open also drops its eos listeners on r and
@@ -5717,7 +5924,7 @@ static void scr_dupx_pull(ScrDuplexify *x) {
   ScrStream *d = x->d;
   while (d && x->r) {
     ScrEntryKind kind = SCR_ENTRY_BYTES;
-    void *chunk = scr_stream_read_n_kind(x->r, -1, &kind);
+    void *chunk = scr_stream_read_n_kind(x->r, NAN, &kind);
     if (scr_exc_pending()) return;
     if (!chunk) {
       x->onreadable = true;
@@ -5789,14 +5996,15 @@ static void scr_dupx_destroy_inv(ScrClosure *cb, ScrStream *s, ScrError *err) {
 
 /* _duplexify({ readable: r, writable: w }): r and w borrowed, either NULL.
  * +1. */
-static ScrStream *scr_stream_duplexify_impl(ScrStream *r, ScrStream *w, bool web_pair) {
+static ScrStream *scr_stream_duplexify_impl(ScrStream *r, ScrStream *w, bool web_pair, bool owned) {
   ScrDuplexify *x = calloc(1, sizeof *x);
   if (!x) scr_stream_oom();
   x->rc = 1;
   x->r = r ? scr_stream_retain(r) : NULL;
   x->w = w ? scr_stream_retain(w) : NULL;
-  x->onclose = SCR_DUPX_UNSET;
+  x->onclose = owned ? SCR_DUPX_NULL : SCR_DUPX_UNSET;
   x->web_pair = web_pair;
+  x->owned = owned;
   x->readable = r && scr_stream_prop(r, "readable") != 0;
   x->writable = w && scr_stream_prop(w, "writable") != 0;
   /* new Duplexify({ readableObjectMode, writableObjectMode, readable, writable }) */
@@ -5837,8 +6045,14 @@ static ScrStream *scr_stream_duplexify_impl(ScrStream *r, ScrStream *w, bool web
   return d;
 }
 
+/* The readable-only wrapper a pipeline feeds a web stage through. The
+ * pipeline owns it and drops it without destroying the readable it reads. */
+static ScrStream *scr_stream_duplexify_owned(ScrStream *r) {
+  return scr_stream_duplexify_impl(r, NULL, false, true);
+}
+
 ScrStream *scr_stream_duplexify(ScrStream *r, ScrStream *w) {
-  return scr_stream_duplexify_impl(r, w, false);
+  return scr_stream_duplexify_impl(r, w, false, false);
 }
 
 /* Duplex.from(promise) (duplexify.js): a Duplexify({ objectMode: true,
@@ -5905,7 +6119,7 @@ ScrStream *scr_stream_duplexify_pair(ScrStream *r, ScrStream *w) { return scr_st
  * adapter passes false (adapters.js's newStreamDuplexFromReadableWritablePair
  * defaults it). */
 ScrStream *scr_stream_duplexify_pair_opt(ScrStream *r, ScrStream *w, bool allow_half_open) {
-  ScrStream *d = scr_stream_duplexify_impl(r, w, true);
+  ScrStream *d = scr_stream_duplexify_impl(r, w, true, false);
   if (d->st) d->st->allow_half_open = allow_half_open;
   return d;
 }
@@ -7182,7 +7396,11 @@ void scr_console_bind(ScrDyn *console, double which, ScrStream *stream) {
   if (inst->on_written[i]) scr_closure_release(inst->on_written[i]);
   inst->stream[i] = scr_stream_retain(stream);
   ScrClosure *cb = scr_closure_new((void *)&scr_console_on_written, 1);
-  cb->caps[0] = scr_box_new_obj(scr_stream_retain_v, scr_stream_release_v, NULL);
+  /* The handler's stream is a traced edge like the console's own: a
+   * detached output method used as a listener on this stream closes a
+   * cycle through the console, and the collector has to see the handler's
+   * reference to give the whole group up. */
+  cb->caps[0] = scr_box_new_obj(scr_stream_retain_v, scr_stream_release_v, &scr_stream_trace);
   scr_box_set_ref(cb->caps[0], scr_stream_retain(stream));
   inst->on_written[i] = cb;
   inst->stream_write = &scr_console_stream_write;
@@ -7293,7 +7511,13 @@ void scr_stream_check_encoding_option(ScrDyn *v) {
     if (canonical) scr_str_release(canonical);
     return;
   }
-  ScrStr *shown = scr_dyn_string_coerce_js(v);
+  /* The conversion runs the value's own toString/valueOf, and that code can
+   * remove the last reference to the value (a delete of the property that
+   * held it): hold it across the conversion, which rereads it between the
+   * candidate methods. */
+  ScrDyn *held = scr_dyn_retain(v);
+  ScrStr *shown = scr_dyn_string_coerce_js(held);
+  scr_dyn_release(held);
   if (!shown) return;
   char msg[128];
   int len = snprintf(msg, sizeof msg, "Unknown encoding: %.*s", (int)(shown->len < 64 ? shown->len : 64),
@@ -7636,19 +7860,38 @@ ScrStream *scr_stream_on_dyn(ScrStream *s, ScrStr *name, ScrDyn *cb, bool once, 
     return (ScrStream *)scr_emitter_on_dyn((ScrEmitter *)s, name, cb, adapter,
       error ? scr_ee_inv_fixed1 : scr_ee_inv_fixed0, once, prepend);
   }
-  /* The stream emits 'pipe' and 'unpipe' with its source stream; other
-   * names reach the listener only through emit calls, with every argument
-   * they pass. */
-  bool piping = (name->len == 4 && memcmp(name->data, "pipe", 4) == 0) ||
-    (name->len == 6 && memcmp(name->data, "unpipe", 6) == 0);
-  if (!piping) return (ScrStream *)scr_emitter_on_flex((ScrEmitter *)s, name, cb, once, prepend);
-  static const char message[] = "this stream event has no checked-dynamic listener adapter";
-  scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
-  return NULL;
+  /* 'pipe' and 'unpipe' reach their listeners as the source stream's
+   * checked-dynamic view (scr_stream_emit_stream passes it), the same
+   * flexible adapter every other named event uses; a listener registered
+   * through a typed value gets the stream itself. */
+  return (ScrStream *)scr_emitter_on_flex((ScrEmitter *)s, name, cb, once, prepend);
 }
 
 ScrDyn *scr_stream_read_dyn(ScrStream *s, ScrDyn *size) {
-  double n = size && size->kind != SCR_DYN_UNDEF ? scr_dyn_number_coerce(size) : -1;
+  /* Node's read() takes parseInt of a value that is not an integer, and
+   * a NaN size (no argument, or one parseInt cannot read) is the absent
+   * form that drains. */
+  double n;
+  if (!size || size->kind == SCR_DYN_UNDEF) n = NAN;
+  else if (size->kind == SCR_DYN_STR) {
+    n = scr_parse_int(size->v.str, 10);
+    /* parseInt of a digit run too long for a double is Infinity, which
+     * Node's computeNewHighWaterMark refuses (a numeric Infinity is the
+     * absent form instead: parseInt(String(Infinity)) is NaN), and a
+     * negative Infinity reads nothing. */
+    if (isnan(n)) {
+      /* parseInt could not read a digit: Node's absent form */
+    } else if (!isfinite(n)) {
+      if (n > 0) {
+        static const char msg[] =
+            "The value of \"size\" is out of range. It must be <= 1GiB. Received Infinity";
+        scr_throw_error_msg_code(SCR_ERR_RANGE, msg, sizeof msg - 1, "ERR_OUT_OF_RANGE");
+        return scr_dyn_undefined();
+      }
+      /* -Infinity: a negative size reads nothing */
+      n = -1.0;
+    }
+  } else n = scr_dyn_number_coerce(size);
   if (scr_exc_pending()) return scr_dyn_undefined();
   ScrEntryKind kind = SCR_ENTRY_BYTES;
   void *chunk = s->st->has_r ? scr_stream_read_n_kind(s, n, &kind) : NULL;
@@ -9533,6 +9776,12 @@ static ScrDyn *scr_stream_dyn_call(ScrStream *stream, ScrDyn *self, const char *
     ScrError *error = scr_dyn_truthy(first) ? scr_error_from_dyn(first) : NULL;
     scr_stream_release(scr_stream_destroy(stream, error));
     scr_error_release(error);
+  } else if (!strcmp(method, "asyncDispose")) {
+    ScrPromise *p = scr_stream_async_dispose(stream);
+    if (p) {
+      if (scr_stream_promise_box_hook) result = scr_stream_promise_box_hook(p);
+      scr_promise_release(p);
+    }
   } else if (!strcmp(method, "cork")) scr_stream_cork(stream);
   else if (!strcmp(method, "uncork")) scr_stream_uncork(stream);
   if (!result && !scr_exc_pending()) result = self ? scr_dyn_retain(self) : scr_dyn_this_get();
@@ -9657,6 +9906,19 @@ ScrDyn *scr_stream_dyn_view(ScrStream *stream) {
     scr_dyn_obj_set(prototype, "close", 5,
         scr_dyn_new_func(cb, scr_stream_view_call, 0, "native stream method", "close"));
     stream->st->native_ops->view(stream, view);
+  }
+  {
+    ScrDyn *async_dispose_symbol = scr_dyn_async_dispose_symbol_value();
+    if (async_dispose_symbol) {
+      ScrClosure *cb = scr_closure_new((void *)scr_stream_view_call, 2);
+      cb->caps[0] = scr_box_new_obj(scr_stream_retain_v, scr_stream_release_v, scr_stream_trace);
+      cb->caps[1] = scr_box_new(SCR_BOX_STR);
+      scr_box_set_ref(cb->caps[0], scr_stream_retain(stream));
+      scr_box_set_ref(cb->caps[1], scr_str_new("asyncDispose", 12));
+      ScrDyn *fn = scr_dyn_new_func(cb, scr_stream_view_call, 0, "()", "[Symbol.asyncDispose]");
+      scr_dyn_symbol_key_set(prototype, async_dispose_symbol, fn);
+      scr_dyn_release(fn);
+    }
   }
   ScrDyn *attached = scr_dyn_set_prototype(view, prototype);
   scr_dyn_release(attached);
@@ -9954,6 +10216,31 @@ static bool scr_stream_dyn_transform_like(const ScrDyn *value) {
          !scr_exc_pending() && scr_stream_dyn_member_object(value, "writable");
 }
 
+/* compose's head and middle stages (stream.composeStageDyn): a web stream
+ * pair keeps its chunks, as the pipeline's stages do; the composed Duplex's
+ * own ends still adapt byte for byte. The web unit's pair adaptation answers
+ * NULL for any other value, which takes Duplex.from's body adaptation. */
+ScrStream *scr_stream_duplex_stage_dyn(ScrDyn *body) {
+  if (scr_stream_web_pair_hook != NULL) {
+    ScrStream *paired = scr_stream_web_pair_hook(body, 2 /* object mode */ | 8 /* web chunks */);
+    if (paired) {
+      paired->st->web_pair_body = true;
+      return paired;
+    }
+    if (scr_exc_pending()) return NULL;
+  }
+  return sf_duplex_from_dyn_flags(body, 0);
+}
+
+/* compose's last stage (stream.composeTailDyn): a pair keeps duplexify's
+ * byte-for-byte readable side (the composed Duplex reads them as Buffers)
+ * while its writable side keeps the chunks the stage before it hands over
+ * (bit 4, decodeStrings: false), and a lone web WritableStream keeps those
+ * chunks in object mode (bit 16). Any other value is Duplex.from's body. */
+ScrStream *scr_stream_duplex_tail_dyn(ScrDyn *body) {
+  return sf_duplex_from_dyn_flags(body, 4 | 16);
+}
+
 /* Whether a checked-dynamic object has a function member `key`. */
 static bool scr_stream_dyn_has_method(const ScrDyn *value, const char *key) {
   ScrDyn *m = scr_dyn_obj_read(value, key, strlen(key));
@@ -10090,6 +10377,21 @@ static void scr_stream_throw_invalid_return(const char *expected, const char *na
   scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)n, "ERR_INVALID_RETURN_VALUE");
 }
 
+/* The same error with a ready-made tail: a native stream renders as its
+ * Node class ("an instance of Writable"), which the checked-dynamic value
+ * the stage answered does not carry. */
+static void scr_stream_throw_invalid_return_class(const char *expected, const char *name,
+                                                  const char *cls) {
+  char detail[160];
+  snprintf(detail, sizeof detail, "an instance of %s", cls);
+  char msg[384];
+  int n = snprintf(msg, sizeof msg, "Expected %s to be returned from the \"%s\" function but got %s.",
+                   expected, name, detail);
+  if (n < 0) n = 0;
+  if ((size_t)n >= sizeof msg) n = (int)sizeof msg - 1;
+  scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)n, "ERR_INVALID_RETURN_VALUE");
+}
+
 /* An untyped pipeline function stage's result before the last stage
  * (pipelineImpl's `isIterable(ret, true)` check): an async iterable
  * answers itself (+1); other values throw ERR_INVALID_RETURN_VALUE naming
@@ -10100,6 +10402,44 @@ ScrDyn *scr_stream_dyn_transform_result(const ScrDyn *value, const ScrStr *label
   if (kind < 0) return NULL;
   if (kind != 2) {
     scr_stream_throw_invalid_return("AsyncIterable", label->data, value);
+    return NULL;
+  }
+  return scr_dyn_retain((ScrDyn *)value);
+}
+
+/* duplexify's function-body check: the function a Duplex was built from
+ * must answer an iterable (synchronous or asynchronous), or a native
+ * readable stream (which answers its iterator in Node); it reads that
+ * value as the duplex's readable side. Any other value throws the "body"
+ * form of ERR_INVALID_RETURN_VALUE. +1, or NULL with an exception
+ * pending. */
+ScrDyn *scr_stream_duplex_body_value(const ScrDyn *value) {
+  /* from.js's string and Buffer bodies push the value whole, not each of
+   * its characters or bytes: one entry reads back as that chunk. */
+  if (value->kind == SCR_DYN_STR || value->kind == SCR_DYN_BYTES) {
+    ScrDyn *one = scr_dyn_new_arr();
+    scr_dyn_arr_push(one, scr_dyn_retain((ScrDyn *)value));
+    return one;
+  }
+  ScrStream *native = scr_stream_of_handle(value);
+  if (!native) native = scr_stream_boxed(value);
+  if (native) {
+    char cls[64];
+    snprintf(cls, sizeof cls, "%s", native->cls ? native->cls : "Stream");
+    bool readable = native->st->has_r;
+    scr_stream_release(native);
+    if (!readable) {
+      if (!scr_exc_pending())
+        scr_stream_throw_invalid_return_class("Iterable, AsyncIterable or AsyncFunction", "body",
+                                              cls);
+      return NULL;
+    }
+    return scr_dyn_retain((ScrDyn *)value);
+  }
+  int kind = scr_dyn_iterable_kind(value);
+  if (kind < 0) return NULL;
+  if (kind == 0) {
+    scr_stream_throw_invalid_return("Iterable, AsyncIterable or AsyncFunction", "body", value);
     return NULL;
   }
   return scr_dyn_retain((ScrDyn *)value);
@@ -10119,7 +10459,24 @@ ScrDyn *scr_stream_dyn_source_value(const ScrDyn *value, bool returned) {
     if (scr_exc_pending()) return NULL;
     return scr_dyn_retain((ScrDyn *)value);
   }
-  if (scr_stream_dyn_stage_returned_stream(value)) return NULL;
+  /* A source function's result is pipelineImpl's isIterable(ret, true): a
+   * readable stream answers an iterator, so it is pumped like one, where a
+   * transform stage's result must be an iterable. A stream of the other side
+   * is Node's invalid-return error naming the class. */
+  ScrStream *native = scr_stream_of_handle(value);
+  if (!native) native = scr_stream_boxed(value);
+  if (native) {
+    bool readable = native->st->has_r;
+    char cls[64];
+    snprintf(cls, sizeof cls, "%s", native->cls ? native->cls : "Stream");
+    scr_stream_release(native);
+    if (!readable) {
+      if (!scr_exc_pending())
+        scr_stream_throw_invalid_return_class("Iterable, AsyncIterable or Stream", "source", cls);
+      return NULL;
+    }
+    return scr_dyn_retain((ScrDyn *)value);
+  }
   int kind = scr_dyn_iterable_kind(value);
   if (kind < 0) return NULL;
   if (kind == 0) {

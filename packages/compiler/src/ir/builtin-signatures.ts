@@ -76,6 +76,7 @@ import { rlSignatures } from "./builtin-signatures/rl.js";
 import { scSignatures } from "./builtin-signatures/sc.js";
 import { seaSignatures } from "./builtin-signatures/sea.js";
 import { sharedArrayBufferSignatures } from "./builtin-signatures/sharedArrayBuffer.js";
+import { sourceMapSignatures } from "./builtin-signatures/sourceMap.js";
 import { spSignatures } from "./builtin-signatures/sp.js";
 import { spawnResSignatures } from "./builtin-signatures/spawnRes.js";
 import { sqliteSignatures } from "./builtin-signatures/sqlite.js";
@@ -104,6 +105,7 @@ import { weakMapSignatures } from "./builtin-signatures/weakMap.js";
 import { weakRefSignatures } from "./builtin-signatures/weakRef.js";
 import { weakSetSignatures } from "./builtin-signatures/weakSet.js";
 import { webcryptoSignatures } from "./builtin-signatures/webcrypto.js";
+import { websocketSignatures } from "./builtin-signatures/websocket.js";
 import { webstreamSignatures } from "./builtin-signatures/webstream.js";
 import { workerSignatures } from "./builtin-signatures/worker.js";
 import { wrapperSignatures } from "./builtin-signatures/wrapper.js";
@@ -197,6 +199,7 @@ function buildLibFnSignatures() {
     ...scSignatures,
     ...seaSignatures,
     ...sharedArrayBufferSignatures,
+    ...sourceMapSignatures,
     ...spSignatures,
     ...spawnResSignatures,
     ...sqliteSignatures,
@@ -225,6 +228,7 @@ function buildLibFnSignatures() {
     ...weakRefSignatures,
     ...weakSetSignatures,
     ...webcryptoSignatures,
+    ...websocketSignatures,
     ...webstreamSignatures,
     ...workerSignatures,
     ...wrapperSignatures,

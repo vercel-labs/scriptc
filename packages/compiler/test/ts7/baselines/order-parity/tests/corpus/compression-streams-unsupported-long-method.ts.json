@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/compression-streams-unsupported-long-method.ts"
+ ],
+ "diags": []
+}

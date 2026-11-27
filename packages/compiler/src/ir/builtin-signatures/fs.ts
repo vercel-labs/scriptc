@@ -17,6 +17,7 @@ import { defineLibFnSignatures } from "./shared.js";
 
 /** The fs builtin call slots. */
 export const fsSignatures = defineLibFnSignatures({
+  "fs.openAsBlob": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
   "fs.readFileSync": { argTypes: [STRING, STRING], result: STRING },
   "fs.readFileEncoded": { argTypes: [STRING, STRING], result: STRING },
   "fs.readFdEncoded": { argTypes: [F64, STRING], result: STRING },
@@ -190,6 +191,7 @@ export const fsSignatures = defineLibFnSignatures({
    * provided); an open watcher keeps the loop alive until watcher.close()
    * (idempotent, receiver borrowed, statement position only). */
   "fs.watch": { argTypes: [STRING, BOOL, BOOL], result: FSWATCHER_T },
+  "fs.utf8StreamNew": { argTypes: [DYN], result: DYN },
   "fs.watchCb": { argTypes: [STRING, null, BOOL, BOOL], result: FSWATCHER_T },
   /** fs.watchFile(path, interval, persistent, listener) → void
    * (scr_watch_file.c — its own gated unit; moduleUsesFsWatchFile is the

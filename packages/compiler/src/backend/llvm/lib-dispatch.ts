@@ -1883,6 +1883,10 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
       // a program with the classes runs its event loop.
       if (e.fn === "webstream.class" || e.fn === "webstream.install") host.usesTimers = true;
       return host.emitGenericLibCall(e);
+    case "sourceMap":
+      // node:module's SourceMap construction and instanceof (scr_source_map.c):
+      // fixed-arity checked-dynamic entry points with no special emission.
+      return host.emitGenericLibCall(e);
     case "test":
       return emitTestLibCall(host, e);
     case "watchEvents":
@@ -1891,6 +1895,8 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
       return host.emitFilesystemLibCall(e);
     case "tls":
       return emitTlsLibCall(host, e);
+    case "websocket":
+      return host.emitGenericLibCall(e);
     case "http2":
       return emitHttp2LibCall(host, e);
     default: {

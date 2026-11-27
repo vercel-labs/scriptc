@@ -64,6 +64,8 @@ static void scr_regex_free_bytecodes(void) {
     scr_compiled[i]->bc = NULL;
     scr_regex_native_free(scr_compiled[i]->native);
     scr_compiled[i]->native = NULL;
+    free(scr_compiled[i]->simple);
+    scr_compiled[i]->simple = NULL;
   }
   free(scr_compiled);
   scr_compiled = NULL;
@@ -275,6 +277,7 @@ void scr_regex_release(ScrRegex *re) {
       lre_realloc(lre_opaque(), re->bc, 0);
       scr_regex_native_free(re->native);
     }
+    free(re->simple);
     free(re);
   }
 }
@@ -657,19 +660,40 @@ __attribute__((noinline)) static int scr_exec_alternation(ScrRegexInput *input,
   return 0;
 }
 
+/* A pattern's simple-alternation scan program, built on its first exec and
+ * kept with the pattern: a global scan runs the executor once per match, and
+ * building the program per exec re-read the whole pattern for every match. */
+typedef struct {
+  int count; /* > 0: alternatives; 0: the pattern needs the engine */
+  uint8_t prog[1024];
+  uint16_t start[8], steps[8];
+  uint8_t firsts[32], firstMask[256], secondMask[256], thirdMask[256];
+  uint8_t singleBit, shortBit;
+} ScrSimpleScan;
+
+static const ScrSimpleScan *scr_simple_scan(const ScrRegex *re) {
+  ScrSimpleScan **cell = (ScrSimpleScan **)&((ScrRegex *)re)->simple;
+  if (*cell == NULL) {
+    ScrSimpleScan *scan = calloc(1, sizeof *scan);
+    if (!scan) scr_regex_oom();
+    scan->count = scr_simple_program(re->source, scan->prog, sizeof scan->prog, scan->start,
+                                     scan->steps, scan->firsts, scan->firstMask,
+                                     scan->secondMask, scan->thirdMask, &scan->singleBit,
+                                     &scan->shortBit);
+    *cell = scan;
+  }
+  return *cell;
+}
+
 /* Runs the simple scan for a pattern it describes; -1 when the pattern is
- * anything else and the engine must answer. Kept out of line so the program
- * buffers live in one small frame, not in every scr_exec caller. */
+ * anything else and the engine must answer. */
 __attribute__((noinline)) static int scr_try_simple_scan(ScrRegexInput *input, const ScrRegex *re,
                                                          int index) {
-  uint8_t prog[1024], firsts[32] = {0}, firstMask[256] = {0}, secondMask[256] = {0};
-  uint8_t thirdMask[256] = {0}, singleBit = 0, shortBit = 0;
-  uint16_t start[8], steps[8];
-  int count = scr_simple_program(re->source, prog, sizeof prog, start, steps, firsts, firstMask,
-                                 secondMask, thirdMask, &singleBit, &shortBit);
-  if (count == 0) return -1;
-  return scr_exec_alternation(input, prog, start, steps, firsts, firstMask, secondMask, thirdMask,
-                              singleBit, shortBit, count, index);
+  const ScrSimpleScan *scan = scr_simple_scan(re);
+  if (scan->count == 0) return -1;
+  return scr_exec_alternation(input, scan->prog, scan->start, scan->steps, scan->firsts,
+                              scan->firstMask, scan->secondMask, scan->thirdMask, scan->singleBit,
+                              scan->shortBit, scan->count, index);
 }
 
 /* Build-time matchers trap on allocation failure themselves. */

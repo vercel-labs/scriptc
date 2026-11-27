@@ -232,12 +232,15 @@ ScrStr *scr_str_symbol_key(ScrSym *sym); /* +1; borrows sym */
  * in eventNames(). The pointer lives here, in the always-linked string
  * unit, so neither the emitter nor a symbol-using program references the
  * other unit's data: a program without symbols links scr_symbol.o and a
- * program without emitters links no emitter object. */
+ * program without emitters links no emitter object. `registry` is
+ * Symbol.for, for a unit that interns a registered key without referencing
+ * the symbol unit itself (node:sqlite's DatabaseSync brand). */
 typedef struct ScrSymEventOps {
   ScrSym *(*retain)(ScrSym *sym);
   void (*release)(ScrSym *sym);
   ScrDyn *(*box)(ScrSym *sym);       /* +1 checked-dynamic symbol value */
   ScrStr *(*to_string)(ScrSym *sym); /* +1 "Symbol(desc)" */
+  ScrSym *(*registry)(ScrStr *key);  /* Symbol.for: the interned symbol, +1 */
 } ScrSymEventOps;
 extern const ScrSymEventOps *scr_sym_event_ops;
 static inline bool scr_str_is_symbol_key(const ScrStr *s) { return s->len == SIZE_MAX; }

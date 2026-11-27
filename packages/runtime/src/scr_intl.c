@@ -39,6 +39,7 @@
 #include <unicode/uenum.h>
 #include <unicode/uloc.h>
 #include <unicode/unum.h>
+#include <unicode/ures.h>
 #include <unicode/unumberformatter.h>
 #include <unicode/unumsys.h>
 #include <unicode/ustring.h>
@@ -790,6 +791,13 @@ static bool scr_intl_is_unicode_type(const ScrStr *text) {
 
 /** A feature of the service this runtime does not implement: the coded
  * refusal, never a formatter that answers something else. */
+/* Node's RangeError for a locales argument that is not a structurally
+ * valid language tag ("Incorrect locale information provided"). */
+static void scr_intl_bad_locale(void) {
+  static const char message[] = "Incorrect locale information provided";
+  scr_throw_error_msg(SCR_ERR_RANGE, message, sizeof message - 1);
+}
+
 static void scr_intl_refuse(const char *what) {
   ScrJsonBuf message;
   scr_jb_init(&message);
@@ -804,29 +812,620 @@ static void scr_intl_refuse(const char *what) {
  * tag (an absent or undefined locales argument), else the tag's. The
  * compiler passes only tags it accepts. False with the missing-data Error
  * pending. */
+/* The tag the frontend passes for the default locale: an absent or
+ * undefined locales argument. Any tag the program supplies is validated,
+ * so an empty string is the RangeError like any other invalid tag. */
+#define SCR_INTL_DEFAULT_TAG "\x01scriptc-default-locale"
+static bool scr_intl_is_default_tag(const ScrStr *tag) {
+  size_t len = strlen(SCR_INTL_DEFAULT_TAG);
+  return tag->len == len && memcmp(tag->data, SCR_INTL_DEFAULT_TAG, len) == 0;
+}
+
+static bool scr_intl_tag_alpha(unsigned char c) {
+  return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+}
+
+static bool scr_intl_tag_digit(unsigned char c) { return c >= '0' && c <= '9'; }
+
+static bool scr_intl_tag_alnum(unsigned char c) {
+  return scr_intl_tag_alpha(c) || scr_intl_tag_digit(c);
+}
+
+static bool scr_intl_tag_run(const char *s, size_t n, bool (*pred)(unsigned char)) {
+  for (size_t i = 0; i < n; i++)
+    if (!pred((unsigned char)s[i])) return false;
+  return true;
+}
+
+/** Two same-length subtags equal under ECMA-402's canonical casing (variants
+ * compare case-insensitively). */
+static bool scr_intl_tag_same(const char *a, const char *b, size_t n) {
+  for (size_t i = 0; i < n; i++) {
+    unsigned char x = (unsigned char)a[i];
+    unsigned char y = (unsigned char)b[i];
+    if (x >= 'A' && x <= 'Z') x = (unsigned char)(x - 'A' + 'a');
+    if (y >= 'A' && y <= 'Z') y = (unsigned char)(y - 'A' + 'a');
+    if (x != y) return false;
+  }
+  return true;
+}
+
+static void scr_intl_tag_lower(const char *s, char *out, size_t size) {
+  size_t i = 0;
+  for (; s[i] != '\0' && i + 1 < size; i++)
+    out[i] = s[i] >= 'A' && s[i] <= 'Z' ? (char)(s[i] - 'A' + 'a') : s[i];
+  out[i] = '\0';
+}
+
+/** ECMA-402's IsStructurallyValidLanguageTag: the Unicode locale identifier
+ * grammar (language (script)? (region)? (variant)* (extension)* (privateuse)?),
+ * with grandfathered and private-use-only tags invalid, a language of four
+ * letters invalid, and no singleton or variant repeated. A tag the runtime
+ * rejects is Node's RangeError, never a formatter that quietly picks another
+ * locale. */
+static bool scr_intl_language_tag_valid(const char *s, size_t n) {
+  if (n == 0 || n > 255) return false;
+  size_t i = 0;
+  size_t len = 0;
+  while (i < n && s[i] != '-') {
+    len++;
+    i++;
+  }
+  if (!((len >= 2 && len <= 3) || (len >= 5 && len <= 8))) return false;
+  if (!scr_intl_tag_run(s, len, scr_intl_tag_alpha)) return false;
+  bool script = false;
+  bool region = false;
+  bool variant = false;
+  bool extension = false;
+  bool extension_needs_subtag = false;
+  bool private_use = false;
+  bool private_use_needs_subtag = false;
+  char singletons[36];
+  size_t nsing = 0;
+  /* Variant subtags already seen, by offset into `s`: ECMA-402 rejects a
+   * tag that repeats one ("de-1901-1901"), which ICU would otherwise parse
+   * only part of and format as if it were valid. */
+  size_t variant_at[64];
+  size_t variant_len[64];
+  size_t nvariants = 0;
+  while (i < n) {
+    if (s[i] != '-') return false;
+    i++;
+    const size_t start = i;
+    while (i < n && s[i] != '-') i++;
+    len = i - start;
+    if (len == 0) return false;
+    const char *t = s + start;
+    if (private_use) {
+      if (len > 8 || !scr_intl_tag_run(t, len, scr_intl_tag_alnum)) return false;
+      private_use_needs_subtag = false;
+      continue;
+    }
+    if (len == 1) {
+      const unsigned char c = (unsigned char)t[0];
+      if (!scr_intl_tag_alnum(c)) return false;
+      if (extension_needs_subtag) return false; /* "en-a-b": a needs a subtag */
+      if (c == 'x' || c == 'X') {
+        private_use = true;
+        private_use_needs_subtag = true;
+        continue;
+      }
+      const unsigned char lower =
+          c >= 'A' && c <= 'Z' ? (unsigned char)(c - 'A' + 'a') : c;
+      for (size_t k = 0; k < nsing; k++)
+        if ((unsigned char)singletons[k] == lower) return false;
+      if (nsing < sizeof singletons) singletons[nsing++] = (char)lower;
+      extension = true;
+      extension_needs_subtag = true;
+      continue;
+    }
+    if (extension) {
+      if (len < 2 || len > 8 || !scr_intl_tag_run(t, len, scr_intl_tag_alnum)) return false;
+      extension_needs_subtag = false;
+      continue;
+    }
+    if (!script && !region && !variant && len == 4 &&
+        scr_intl_tag_run(t, len, scr_intl_tag_alpha)) {
+      script = true;
+      continue;
+    }
+    if (!region && !variant &&
+        ((len == 2 && scr_intl_tag_run(t, 2, scr_intl_tag_alpha)) ||
+         (len == 3 && scr_intl_tag_run(t, 3, scr_intl_tag_digit)))) {
+      region = true;
+      continue;
+    }
+    if (((len >= 5 && len <= 8) || (len == 4 && scr_intl_tag_digit((unsigned char)t[0]))) &&
+        scr_intl_tag_run(t, len, scr_intl_tag_alnum)) {
+      for (size_t k = 0; k < nvariants; k++)
+        if (variant_len[k] == len && scr_intl_tag_same(s + variant_at[k], t, len)) return false;
+      if (nvariants < sizeof variant_at / sizeof *variant_at) {
+        variant_at[nvariants] = start;
+        variant_len[nvariants] = len;
+        nvariants++;
+      }
+      variant = true;
+      continue;
+    }
+    return false;
+  }
+  return !extension_needs_subtag && !private_use_needs_subtag;
+}
+
+/** Node's RangeError for a tag that is not structurally valid. */
+static void scr_intl_throw_bad_locale(void) {
+  static const char message[] = "Incorrect locale information provided";
+  scr_throw_error_msg(SCR_ERR_RANGE, message, sizeof message - 1);
+}
+
+/* ── CLDR language aliases ────────────────────────────────────────────
+ * Node canonicalizes a requested tag before it negotiates it: V8's
+ * CanonicalizeLanguageTag runs ICU's Locale::canonicalize, which applies
+ * CLDR's alias data. The matcher below does not, so a deprecated or
+ * overlong language code would reach it unchanged: "cnr" falls back to the
+ * default locale where Node formats at sr-ME, and "sh-RS" matches Serbian
+ * Cyrillic where Node keeps the canonical sr-Latn-RS. Apply ICU's own
+ * language alias table (the metadata bundle's alias/language entries)
+ * first, with ICU's AliasReplacer field rules: an explicit script or region
+ * wins, the replacement fills in a field the tag leaves empty, and a region
+ * or variant the matched key names and the replacement drops is removed.
+ * Script, territory and variant aliases are not applied here. */
+
+#define SCR_INTL_ALIAS_ROUNDS 5
+
+/** The replacement of the language alias `key` in ICU's locale-id form, or
+ * false when the alias table has no such key. */
+static bool scr_intl_alias_lookup(const UResourceBundle *languages, const char *key, char *out,
+                                  size_t size) {
+  UErrorCode status = U_ZERO_ERROR;
+  UResourceBundle *entry = ures_getByKey(languages, key, NULL, &status);
+  if (U_FAILURE(status) || entry == NULL) {
+    if (entry != NULL) ures_close(entry);
+    return false;
+  }
+  UResourceBundle *replacement = ures_getByKey(entry, "replacement", NULL, &status);
+  ures_close(entry);
+  if (U_FAILURE(status) || replacement == NULL) {
+    if (replacement != NULL) ures_close(replacement);
+    return false;
+  }
+  int32_t length = (int32_t)size;
+  status = U_ZERO_ERROR;
+  ures_getUTF8String(replacement, out, &length, true, &status);
+  ures_close(replacement);
+  return U_SUCCESS(status) && (size_t)length < size;
+}
+
+/** `variants` without the subtag `drop` (case-insensitive), so a matched
+ * variant key removes the variant its replacement does not carry. */
+static void scr_intl_variants_without(const char *variants, const char *drop, char *out,
+                                      size_t size) {
+  size_t written = 0;
+  const char *at = variants;
+  while (*at != '\0') {
+    const char *end = strchr(at, '_');
+    const size_t len = end == NULL ? strlen(at) : (size_t)(end - at);
+    if (!(len == strlen(drop) && scr_intl_tag_same(at, drop, len))) {
+      if (written != 0 && written + 1 < size) out[written++] = '_';
+      if (written + len >= size) break;
+      memcpy(out + written, at, len);
+      written += len;
+    }
+    at = end == NULL ? at + len : end + 1;
+  }
+  out[written] = '\0';
+}
+
+/** Rewrites the tag's ICU locale id with the CLDR language aliases its
+ * language, region and variants name, or copies it unchanged. */
+static void scr_intl_canonicalize_language(const char *icu, char *out, size_t size) {
+  char language[ULOC_LANG_CAPACITY] = "";
+  char script[ULOC_SCRIPT_CAPACITY] = "";
+  char region[ULOC_COUNTRY_CAPACITY] = "";
+  char variant[ULOC_FULLNAME_CAPACITY] = "";
+  UErrorCode status = U_ZERO_ERROR;
+  uloc_getLanguage(icu, language, sizeof language, &status);
+  UErrorCode scriptStatus = U_ZERO_ERROR;
+  uloc_getScript(icu, script, sizeof script, &scriptStatus);
+  UErrorCode regionStatus = U_ZERO_ERROR;
+  uloc_getCountry(icu, region, sizeof region, &regionStatus);
+  UErrorCode variantStatus = U_ZERO_ERROR;
+  uloc_getVariant(icu, variant, sizeof variant, &variantStatus);
+  const char *keywords = strchr(icu, '@');
+  snprintf(out, size, "%s", icu);
+  if (U_FAILURE(status) || U_FAILURE(scriptStatus) || U_FAILURE(regionStatus) ||
+      U_FAILURE(variantStatus) || language[0] == '\0')
+    return;
+
+  status = U_ZERO_ERROR;
+  UResourceBundle *metadata = ures_openDirect(NULL, "metadata", &status);
+  UResourceBundle *alias = NULL;
+  UResourceBundle *languages = NULL;
+  if (U_SUCCESS(status) && metadata != NULL)
+    alias = ures_getByKey(metadata, "alias", NULL, &status);
+  if (U_SUCCESS(status) && alias != NULL)
+    languages = ures_getByKey(alias, "language", NULL, &status);
+  if (U_FAILURE(status) || languages == NULL) {
+    if (languages != NULL) ures_close(languages);
+    if (alias != NULL) ures_close(alias);
+    if (metadata != NULL) ures_close(metadata);
+    return;
+  }
+
+  char lower_variant[ULOC_FULLNAME_CAPACITY];
+  scr_intl_tag_lower(variant, lower_variant, sizeof lower_variant);
+
+  for (int round = 0; round < SCR_INTL_ALIAS_ROUNDS; round++) {
+    char replacement[ULOC_FULLNAME_CAPACITY];
+    char key[ULOC_FULLNAME_CAPACITY];
+    char matched[ULOC_FULLNAME_CAPACITY] = "";
+    bool named_region = false;
+    bool named_variant = false;
+    bool found = false;
+    /* AliasReplacer's key order: language_region_variant, language_region,
+     * language_variant, language. */
+    const char *at = lower_variant;
+    while (!found && region[0] != '\0' && *at != '\0') {
+      const char *end = strchr(at, '_');
+      const size_t len = end == NULL ? strlen(at) : (size_t)(end - at);
+      if (len >= 4) {
+        snprintf(key, sizeof key, "%s_%s_%.*s", language, region, (int)len, at);
+        if (scr_intl_alias_lookup(languages, key, replacement, sizeof replacement)) {
+          found = true;
+          named_region = true;
+          named_variant = true;
+          memcpy(matched, at, len);
+          matched[len] = '\0';
+        }
+      }
+      at = end == NULL ? at + len : end + 1;
+    }
+    if (!found && region[0] != '\0') {
+      snprintf(key, sizeof key, "%s_%s", language, region);
+      if (scr_intl_alias_lookup(languages, key, replacement, sizeof replacement)) {
+        found = true;
+        named_region = true;
+      }
+    }
+    at = lower_variant;
+    while (!found && *at != '\0') {
+      const char *end = strchr(at, '_');
+      const size_t len = end == NULL ? strlen(at) : (size_t)(end - at);
+      if (len >= 4) {
+        snprintf(key, sizeof key, "%s_%.*s", language, (int)len, at);
+        if (scr_intl_alias_lookup(languages, key, replacement, sizeof replacement)) {
+          found = true;
+          named_variant = true;
+          memcpy(matched, at, len);
+          matched[len] = '\0';
+        }
+      }
+      at = end == NULL ? at + len : end + 1;
+    }
+    if (!found) {
+      snprintf(key, sizeof key, "%s", language);
+      found = scr_intl_alias_lookup(languages, key, replacement, sizeof replacement);
+    }
+    if (!found) break;
+
+    char replaced_language[ULOC_LANG_CAPACITY] = "";
+    char replaced_script[ULOC_SCRIPT_CAPACITY] = "";
+    char replaced_region[ULOC_COUNTRY_CAPACITY] = "";
+    status = U_ZERO_ERROR;
+    uloc_getLanguage(replacement, replaced_language, sizeof replaced_language, &status);
+    status = U_ZERO_ERROR;
+    uloc_getScript(replacement, replaced_script, sizeof replaced_script, &status);
+    status = U_ZERO_ERROR;
+    uloc_getCountry(replacement, replaced_region, sizeof replaced_region, &status);
+    if (U_FAILURE(status)) break;
+
+    char next_language[ULOC_LANG_CAPACITY];
+    char next_script[ULOC_SCRIPT_CAPACITY];
+    char next_region[ULOC_COUNTRY_CAPACITY];
+    char next_variant[ULOC_FULLNAME_CAPACITY];
+    snprintf(next_language, sizeof next_language, "%s", language);
+    snprintf(next_script, sizeof next_script, "%s", script);
+    snprintf(next_region, sizeof next_region, "%s", region);
+    if (replaced_language[0] != '\0' && strcmp(replaced_language, "und") != 0)
+      snprintf(next_language, sizeof next_language, "%s", replaced_language);
+    if (next_script[0] == '\0' && replaced_script[0] != '\0')
+      snprintf(next_script, sizeof next_script, "%s", replaced_script);
+    if (named_region) {
+      /* The key names the tag's region; a replacement without one drops it. */
+      if (replaced_region[0] == '\0') next_region[0] = '\0';
+    } else if (next_region[0] == '\0' && replaced_region[0] != '\0') {
+      snprintf(next_region, sizeof next_region, "%s", replaced_region);
+    }
+    if (named_variant)
+      scr_intl_variants_without(variant, matched, next_variant, sizeof next_variant);
+    else
+      snprintf(next_variant, sizeof next_variant, "%s", variant);
+    /* A replacement that changes nothing ends the search, as AliasReplacer's
+     * does. */
+    if (strcmp(next_language, language) == 0 && strcmp(next_script, script) == 0 &&
+        strcmp(next_region, region) == 0 && strcmp(next_variant, variant) == 0)
+      break;
+    snprintf(language, sizeof language, "%s", next_language);
+    snprintf(script, sizeof script, "%s", next_script);
+    snprintf(region, sizeof region, "%s", next_region);
+    snprintf(variant, sizeof variant, "%s", next_variant);
+    scr_intl_tag_lower(variant, lower_variant, sizeof lower_variant);
+  }
+
+  /* CLDR's other alias tables canonicalize the subtags before matching, as
+   * Node's CanonicalizeUnicodeLocaleId does: a territory alias (UK -> GB),
+   * a script alias (Qaai -> Zinh) and a variant alias (heploc -> alalc97).
+   * Without the territory table en-UK is not an available locale and the
+   * lookup matcher drops it to en instead of selecting Node's en-GB. */
+  for (int round = 0; round < SCR_INTL_ALIAS_ROUNDS; round++) {
+    bool changed = false;
+    char replacement[ULOC_FULLNAME_CAPACITY];
+    if (script[0] != '\0') {
+      UErrorCode scriptsStatus = U_ZERO_ERROR;
+      UResourceBundle *scripts = ures_getByKey(alias, "script", NULL, &scriptsStatus);
+      if (U_SUCCESS(scriptsStatus) && scripts != NULL) {
+        if (scr_intl_alias_lookup(scripts, script, replacement, sizeof replacement) &&
+            strcmp(replacement, script) != 0) {
+          snprintf(script, sizeof script, "%s", replacement);
+          changed = true;
+        }
+        ures_close(scripts);
+      }
+    }
+    if (region[0] != '\0') {
+      UErrorCode regionStatus = U_ZERO_ERROR;
+      UResourceBundle *territories = ures_getByKey(alias, "territory", NULL, &regionStatus);
+      if (U_SUCCESS(regionStatus) && territories != NULL) {
+        if (scr_intl_alias_lookup(territories, region, replacement, sizeof replacement) &&
+            strcmp(replacement, region) != 0) {
+          snprintf(region, sizeof region, "%s", replacement);
+          changed = true;
+        }
+        ures_close(territories);
+      }
+    }
+    if (variant[0] != '\0') {
+      UErrorCode variantStatus = U_ZERO_ERROR;
+      UResourceBundle *variants = ures_getByKey(alias, "variant", NULL, &variantStatus);
+      if (U_SUCCESS(variantStatus) && variants != NULL) {
+        char rebuilt[ULOC_FULLNAME_CAPACITY];
+        size_t used = 0;
+        bool replaced_any = false;
+        const char *at = variant;
+        while (*at != '\0') {
+          const char *end = strchr(at, '_');
+          const size_t len = end == NULL ? strlen(at) : (size_t)(end - at);
+          char piece[ULOC_FULLNAME_CAPACITY];
+          char lower_piece[ULOC_FULLNAME_CAPACITY];
+          if (len >= sizeof piece) break;
+          memcpy(piece, at, len);
+          piece[len] = '\0';
+          scr_intl_tag_lower(piece, lower_piece, sizeof lower_piece);
+          char aliased[ULOC_FULLNAME_CAPACITY];
+          if (scr_intl_alias_lookup(variants, lower_piece, aliased, sizeof aliased) &&
+              strcmp(aliased, piece) != 0) {
+            snprintf(piece, sizeof piece, "%s", aliased);
+            replaced_any = true;
+          }
+          const int written =
+              snprintf(rebuilt + used, sizeof rebuilt - used, "%s%s", used > 0 ? "_" : "", piece);
+          if (written <= 0 || (size_t)written >= sizeof rebuilt - used) break;
+          used += (size_t)written;
+          at = end == NULL ? at + len : end + 1;
+        }
+        if (replaced_any) {
+          snprintf(variant, sizeof variant, "%s", rebuilt);
+          changed = true;
+        }
+        ures_close(variants);
+      }
+    }
+    if (!changed) break;
+  }
+
+  ures_close(languages);
+  ures_close(alias);
+  ures_close(metadata);
+
+  char rebuilt[ULOC_FULLNAME_CAPACITY * 2];
+  const int written = snprintf(rebuilt, sizeof rebuilt, "%s%s%s%s%s%s%s%s", language,
+                               script[0] != '\0' ? "_" : "", script,
+                               region[0] != '\0' ? "_" : "", region,
+                               variant[0] != '\0' ? "_" : "", variant,
+                               keywords != NULL ? keywords : "");
+  if (written > 0 && (size_t)written < sizeof rebuilt && (size_t)written < size)
+    snprintf(out, size, "%s", rebuilt);
+}
+
+/** Whether the available enumeration holds `id`, an ICU locale id, compared
+ * case-insensitively in Node's spelling. */
+static bool scr_intl_locale_listed(UEnumeration *available, const char *id) {
+  const size_t want = strlen(id);
+  UErrorCode status = U_ZERO_ERROR;
+  uenum_reset(available, &status);
+  if (U_FAILURE(status)) return false;
+  int32_t len = 0;
+  const char *entry;
+  while ((entry = uenum_next(available, &len, &status)) != NULL && U_SUCCESS(status)) {
+    if ((size_t)len != want) continue;
+    size_t i = 0;
+    for (; i < want; i++) {
+      char a = entry[i], b = id[i];
+      if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
+      if (b >= 'A' && b <= 'Z') b = (char)(b - 'A' + 'a');
+      if (a != b) break;
+    }
+    if (i == want) return true;
+  }
+  return false;
+}
+
+/** Replaces `tag` with the available locale its likely subtags name when one
+ * exists: sr_ME maximizes to sr_Latn_ME, so a region without its own data
+ * keeps the language's likely script instead of dropping to plain sr (which
+ * would format in Cyrillic). The variant is cut after language, script and
+ * region, since a variant-only suffix never names available data. */
+static bool scr_intl_locale_likely(UEnumeration *available, char *tag, size_t size) {
+  char maximized[ULOC_FULLNAME_CAPACITY];
+  UErrorCode status = U_ZERO_ERROR;
+  const int32_t n = uloc_addLikelySubtags(tag, maximized, (int32_t)sizeof maximized, &status);
+  if (U_FAILURE(status) || n <= 0 || (size_t)n >= sizeof maximized) return false;
+  size_t underscores = 0;
+  for (size_t i = 0; maximized[i] != '\0'; i++) {
+    if (maximized[i] == '_' && ++underscores == 3) {
+      maximized[i] = '\0';
+      break;
+    }
+  }
+  if (!scr_intl_locale_listed(available, maximized)) return false;
+  snprintf(tag, size, "%s", maximized);
+  return true;
+}
+
+/** The locale a valid tag resolves to: Node's matcher over ICU's available
+ * locales is ECMA-402's LookupMatcher, not a best-fit distance search. It
+ * tries the tag itself, then drops its last subtag in turn (variant, then
+ * region, then script) until an available locale matches, and falls back to
+ * the default locale when even the language has none. ICU's
+ * uloc_acceptLanguage instead picks the closest locale by distance, which
+ * resolves en-RU to en-GB and hak to zh-Hant where Node answers en and its
+ * default locale. The requested locale's own extension keywords ride onto
+ * the matched locale so an explicit calendar or numbering system still
+ * reaches ICU. `icu` is the tag's ICU locale id. */
+static void scr_intl_resolve_locale(const char *icu, char *out, size_t size) {
+  UErrorCode status = U_ZERO_ERROR;
+  UEnumeration *available = uloc_openAvailableByType(ULOC_AVAILABLE_DEFAULT, &status);
+  if (U_SUCCESS(status) && available != NULL) {
+    const char *keywords = strchr(icu, '@');
+    const size_t base_len = keywords != NULL ? (size_t)(keywords - icu) : strlen(icu);
+    char candidate[ULOC_FULLNAME_CAPACITY];
+    if (base_len < sizeof candidate) {
+      memcpy(candidate, icu, base_len);
+      candidate[base_len] = '\0';
+      bool matched = false;
+      while (candidate[0] != '\0') {
+        if (scr_intl_locale_listed(available, candidate) ||
+            scr_intl_locale_likely(available, candidate, sizeof candidate)) {
+          matched = true;
+          break;
+        }
+        /* en_US_POSIX -> en_US -> en; sr_Latn_RS -> sr_Latn -> sr. */
+        char *cut = strrchr(candidate, '_');
+        if (cut == NULL) break;
+        *cut = '\0';
+      }
+      uenum_close(available);
+      if (matched) {
+        if (keywords != NULL) snprintf(out, size, "%s%s", candidate, keywords);
+        else snprintf(out, size, "%s", candidate);
+        return;
+      }
+      snprintf(out, size, "%s", scr_intl_locale);
+      return;
+    }
+    uenum_close(available);
+  } else if (available != NULL) {
+    uenum_close(available);
+  }
+  snprintf(out, size, "%s", scr_intl_locale);
+}
+
+/** The ICU locale a formatter runs at: the default locale for the empty
+ * tag (an absent or undefined locales argument), else the tag's, validated
+ * and negotiated. False with the missing-data or RangeError pending. */
+
 static bool scr_intl_locale_of(const ScrStr *tag, char *out, size_t size) {
   if (!scr_intl_data()) {
     scr_intl_no_data();
     return false;
   }
-  if (tag == NULL || tag->len == 0) {
+  if (tag == NULL || scr_intl_is_default_tag(tag)) {
     snprintf(out, size, "%s", scr_intl_locale);
     return true;
   }
   char text[ULOC_FULLNAME_CAPACITY];
   if (tag->len >= sizeof text) {
-    scr_intl_refuse("this Intl locale");
+    scr_intl_bad_locale();
     return false;
   }
   memcpy(text, tag->data, tag->len);
   text[tag->len] = '\0';
-  UErrorCode status = U_ZERO_ERROR;
-  uloc_forLanguageTag(text, out, (int32_t)size, NULL, &status);
-  if (U_FAILURE(status) || status == U_STRING_NOT_TERMINATED_WARNING) {
-    scr_intl_refuse("this Intl locale");
+  /* ECMA-402's IsStructurallyValidLanguageTag: alphanumeric subtags
+   * separated by single hyphens, each non-empty. Node refuses anything
+   * else with the RangeError below, before any negotiation. */
+  size_t subtag = 0;
+  for (size_t i = 0; i < tag->len; i++) {
+    char c = text[i];
+    if (c == '-') {
+      if (subtag == 0) {
+        scr_intl_bad_locale();
+        return false;
+      }
+      subtag = 0;
+      continue;
+    }
+    bool alnum = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9');
+    if (!alnum) {
+      scr_intl_bad_locale();
+      return false;
+    }
+    subtag++;
+  }
+  if (subtag == 0) {
+    scr_intl_bad_locale();
     return false;
   }
+  char icu[ULOC_FULLNAME_CAPACITY];
+  UErrorCode status = U_ZERO_ERROR;
+  int32_t parsed = 0;
+  uloc_forLanguageTag(text, icu, (int32_t)sizeof icu, &parsed, &status);
+  if (U_FAILURE(status) || status == U_STRING_NOT_TERMINATED_WARNING || parsed != (int32_t)tag->len) {
+    scr_intl_bad_locale();
+    return false;
+  }
+  /* Canonicalize CLDR aliases (a territory like UK becomes GB, a language
+   * like sh becomes sr) and resolve the tag against ICU's available locales
+   * the way Node's matcher does, so a program's tag names the same locale
+   * the pinned Node would format at. */
+  char canonical[ULOC_FULLNAME_CAPACITY];
+  scr_intl_canonicalize_language(icu, canonical, sizeof canonical);
+  scr_intl_resolve_locale(canonical, out, size);
   return true;
+}
+
+/* The tag a locales argument the program computed stands for: ECMA-402's
+ * CanonicalizeLocaleList, as far as this runtime models it. Undefined and
+ * a value whose locale-list length is absent or zero (a number, a boolean,
+ * a plain object, an empty array) name the empty list, which selects the
+ * default locale, as Node does; a string is its own tag, validated by the
+ * formatter's own locale step; null is not an object, which Node refuses
+ * with the TypeError below; a non-empty list is locale negotiation, which
+ * is not modelled and is refused by name rather than answered with another
+ * locale. +1 string; NULL with the exception pending. */
+ScrStr *scr_intl_locale_value(ScrDyn *value) {
+  if (value != NULL && value->kind == SCR_DYN_NULL) {
+    static const char message[] = "Cannot convert undefined or null to object";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return NULL;
+  }
+  if (value != NULL && value->kind == SCR_DYN_STR) return scr_str_retain(value->v.str);
+  double length = 0;
+  if (value != NULL && value->kind == SCR_DYN_ARR) {
+    length = scr_dyn_arr_len(value);
+  } else if (value != NULL && (value->kind == SCR_DYN_OBJ || value->kind == SCR_DYN_PROXY)) {
+    /* ToObject(locales).length is an ordinary property read: a getter or a
+     * proxy trap runs (its side effects happen there), and its exception
+     * propagates. The raw slot read would bypass both. */
+    ScrDyn *entry = scr_dyn_obj_read(value, "length", sizeof "length" - 1);
+    if (entry == NULL) return NULL;
+    if (entry->kind == SCR_DYN_NUM) length = entry->v.num;
+    scr_dyn_release(entry);
+  }
+  if (length > 0) {
+    scr_intl_refuse("a locales list computed at run time");
+    return NULL;
+  }
+  return scr_str_new(SCR_INTL_DEFAULT_TAG, strlen(SCR_INTL_DEFAULT_TAG));
 }
 
 /* ── Intl.NumberFormat ────────────────────────────────────────────────
@@ -2038,5 +2637,18 @@ ScrStr *scr_intl_date_to_locale(double ms, double kind, ScrStr *locale, ScrDyn *
   if (format == NULL) return NULL;
   ScrStr *text = scr_intl_date_time_format_run(format, ms);
   scr_intl_date_time_format_release(format);
+  return text;
+}
+
+/* Date.prototype.toLocale* with a computed locales argument: ECMA-402 checks
+ * the time value before canonicalizing the locales argument, so an invalid
+ * Date answers "Invalid Date" without reading the value (or the options),
+ * as Node does. */
+ScrStr *scr_intl_date_to_locale_dyn(double ms, double kind, ScrDyn *locale, ScrDyn *options) {
+  if (!isfinite(ms)) return scr_str_new("Invalid Date", 12);
+  ScrStr *tag = scr_intl_locale_value(locale);
+  if (tag == NULL) return NULL;
+  ScrStr *text = scr_intl_date_to_locale(ms, kind, tag, options);
+  scr_str_release(tag);
   return text;
 }

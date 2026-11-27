@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/readable-from-async-iterator-guard.ts"
+ ],
+ "diags": []
+}

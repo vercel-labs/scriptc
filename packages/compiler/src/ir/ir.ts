@@ -777,7 +777,15 @@ export function isIdentityCollectionKey(t: IrType): boolean {
     // (scr_bytes_retain/release_v, no trace).
     t.kind === "map" ||
     t.kind === "set" ||
-    t.kind === "bytes"
+    t.kind === "bytes" ||
+    // A spawned child handle is one object for its whole life (a Set of
+    // live children, a Map keyed by child): pointer identity is JS
+    // identity, and the runtime's scr_child_retain/release_v adapters
+    // serve the ref slot. The child drops its listener closures at its
+    // terminal event, so a held child cannot cycle through the
+    // collection for longer than the child lives (the same stance as a
+    // Map value).
+    t.kind === "child"
   );
 }
 
@@ -1349,6 +1357,11 @@ export interface IrModule {
    * modules keep their custom sections (otherwise they carry none, and
    * debug sections cost nothing). */
   wasmCustomSections?: boolean;
+  /** Element kinds (SCR_ELEM_* numbers) whose arrays the program can give a
+   * prototype: those arrays are allocated with the collector header, so a
+   * prototype whose closure captures the array forms a cycle the collector
+   * can reclaim. Only programs that prototype an array of the kind pay. */
+  prototypeOverrideArrayKinds?: number[];
 }
 
 /** A WebAssembly module whose bytes the build saw, validated within the
@@ -4658,6 +4671,11 @@ export type IrExpr =
       preserveRefs?: true;
       adopt?: true;
       shared?: true;
+      /** A collection key's conversion: the adoption must make the source
+       * one object with the built key, and a value it cannot adopt is
+       * refused (SC2020) instead of leaving a copy the collection and the
+       * program's other name do not share. */
+      keyIdentity?: true;
       exact?: true;
       partialView?: true;
       /** Shape inference's overlay: this conversion checks an
@@ -4981,6 +4999,7 @@ function isJsonSafeAt(
 export const DYN_HANDLE_KINDS: ReadonlyMap<string, { tag: string; cls: string }> = new Map([
   ["child", { tag: "SCR_DYNH_CHILD", cls: "ChildProcess" }],
   ["fileHandle", { tag: "SCR_DYNH_FILE_HANDLE", cls: "FileHandle" }],
+  ["utf8Stream", { tag: "SCR_DYNH_UTF8_STREAM", cls: "Utf8Stream" }],
   ["httpReq", { tag: "SCR_DYNH_HTTP_REQ", cls: "IncomingMessage" }],
   ["httpRes", { tag: "SCR_DYNH_HTTP_RES", cls: "ServerResponse" }],
   ["netSocket", { tag: "SCR_DYNH_NET_SOCKET", cls: "Socket" }],
@@ -5238,6 +5257,12 @@ function canBoxDynCompositeAt(
     case "url":
     case "searchParams":
     case "date":
+      return true;
+    case "generator":
+      // A generator boxes by identity wherever the walker meets it, exactly
+      // as at the top level: a method whose result is a union with a
+      // generator arm (a promise settled with one, a record field holding
+      // one) still has a checked-dynamic form.
       return true;
     case "func":
       return canBoxFuncIntoDyn(t, getRecord, getUnion, visiting);

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/legacy-constructor-decorator-overloads/main.ts"
+ ],
+ "diags": []
+}

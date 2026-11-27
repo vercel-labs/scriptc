@@ -24,17 +24,16 @@ const fetchInit: RequestInit = {
 fetch("https://example.invalid/", fetchInit);
 async function inspectResponse(url: string): Promise<void> {
   const response = await fetch(url);
-  console.log(response.type);
   response.formData();
 }
 void inspectResponse;
 /* Members of SUPPORTED builtin modules beyond the lowered tables: they
  * typecheck under @types/node and fence by their name — calls, module
  * member reads and the supported classes' statics alike. */
-import { openAsBlob } from "fs";
+import { watch } from "fs/promises";
 import { EventEmitter } from "node:events";
 import { win32 } from "path";
-openAsBlob("x");
+watch("x");
 console.log(EventEmitter.captureRejections);
 console.log(win32.sep);
 /* URL getters, serialization, the object-URL registry and searchParams'
@@ -104,8 +103,6 @@ async function encapsulatedWithWebCrypto(key: import("node:crypto").webcrypto.Cr
   await crypto.subtle.encapsulateBits("ML-KEM-768", key);
 }
 void encapsulatedWithWebCrypto;
-/* Node's navigator global: navigator.locks (the Web Locks API) fences
- * by name. */
-const locks = navigator.locks;
-void locks;
+/* Node's navigator global: navigator.locks (the Web Locks API) lowers now,
+ * together with the LockManager type its answer declares. */
 // End of the declared-but-not-lowered surface.

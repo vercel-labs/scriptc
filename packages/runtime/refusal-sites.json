@@ -272,12 +272,6 @@
  {
   "file": "scr_console_native.c",
   "function": "scr_console_inst_get",
-  "message": "Stored Console instance methods have no lowering; call them on the instance",
-  "code": "SC2020"
- },
- {
-  "file": "scr_console_native.c",
-  "function": "scr_console_inst_get",
   "message": "This Console instance member has no lowering",
   "code": "SC2020"
  },
@@ -357,6 +351,12 @@
   "file": "scr_crypto_args.h",
   "function": "ca_throw_formatted",
   "message": " that is a function or an instance of a class defining toString has no lowering; pass the name as a string",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_decl_adopt.c",
+  "function": "scr_dyn_adopt_key",
+  "message": "a dynamic collection key whose value cannot be adopted as the key type is not supported yet",
   "code": "SC2020"
  },
  {
@@ -661,8 +661,20 @@
  },
  {
   "file": "scr_events_emitter.c",
+  "function": "scr_emitter_raw_listeners_dyn",
+  "message": "listeners() through an untyped value of an event with a typed listener is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_events_emitter.c",
   "function": "scr_emitter_listeners_dyn",
   "message": "listeners() through an untyped value of an event with a typed listener is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_fetch.c",
+  "function": "sf_any_signal_list",
+  "message": "AbortSignal.any over this iterable has no lowering; pass an array",
   "code": "SC2020"
  },
  {
@@ -729,6 +741,12 @@
   "file": "scr_fs_stream.c",
   "function": "scr_fss_new",
   "message": "the WriteStream option 'encoding' is not supported yet (utf8, the default, is the write-side string encoding)",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_fs_utf8_stream.c",
+  "function": "scr_u8_invoke",
+  "message": "fs.Utf8Stream member is not supported yet [SC2020]",
   "code": "SC2020"
  },
  {
@@ -819,6 +837,12 @@
   "file": "scr_http.c",
   "function": "scr_http_agent_create_connection_check",
   "message": "https.Agent createConnection (a TLS dial from an options record) is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_http.c",
+  "function": "scr_http_agent_create_connection_check",
+  "message": "createConnection on an Agent this compiled program did not create is not supported yet",
   "code": "SC2020"
  },
  {
@@ -1057,12 +1081,6 @@
  },
  {
   "file": "scr_json.c",
-  "function": "scr_dyn_get_prototype",
-  "message": "Object.getPrototypeOf on this value is not supported yet",
-  "code": "SC2020"
- },
- {
-  "file": "scr_json.c",
   "function": "scr_dyn_class_integrity_fence",
   "message": " of an object held in an untyped value is not supported yet",
   "code": "SC2020"
@@ -1089,6 +1107,12 @@
   "file": "scr_json.c",
   "function": "scr_bytes_protocol_fence",
   "message": " on a typed array, Buffer or DataView is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_key_check",
+  "message": "a dynamic collection key whose value cannot be adopted as the key type is not supported yet",
   "code": "SC2020"
  },
  {
@@ -1321,6 +1345,12 @@
  },
  {
   "file": "scr_json.c",
+  "function": "scr_dyn_for_in_keys",
+  "message": "for-in over this checked-dynamic kind is not supported yet",
+  "code": "SC1090"
+ },
+ {
+  "file": "scr_json.c",
   "function": "scr_dyn_reflect_construct_with",
   "message": "Reflect.construct with a distinct newTarget for this target is not supported yet",
   "code": "SC2020"
@@ -1431,6 +1461,12 @@
   "file": "scr_json.c",
   "function": "scr_error_capture_stack_trace",
   "message": "Error.captureStackTrace on this object is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_lib.c",
+  "function": "scr_module_extensions_refuse",
+  "message": "require.extensions handlers are part of the standard library types but have no scriptc lowering yet",
   "code": "SC2020"
  },
  {
@@ -2100,6 +2136,18 @@
   "code": "SC2020"
  },
  {
+  "file": "scr_websocket.c",
+  "function": "scr_ws_invoke",
+  "message": "Sending a Blob has no lowering yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_websocket.c",
+  "function": "scr_ws_invoke",
+  "message": "This WebSocket method is not implemented",
+  "code": "SC2020"
+ },
+ {
   "file": "scr_webstreams.c",
   "function": "ws_readable_from",
   "message": "ReadableStream.from of a function that is not iterable is not supported yet",
@@ -2107,7 +2155,7 @@
  },
  {
   "file": "scr_worker_events.c",
-  "function": "scr_worker_transfer_list",
+  "function": "scr_worker_transfer_list_form",
   "message": "This postMessage transfer argument is not supported yet",
   "code": "SC2020"
  },
@@ -2188,6 +2236,12 @@
   "function": "scr_crypto_digest_call",
   "message": "Unsupported WebCrypto digest algorithm or BufferSource",
   "code": "SC2020"
+ },
+ {
+  "file": "scr_async_dyn.c",
+  "function": "scr_crypto_subtle_method_fence",
+  "message": "method",
+  "code": "SC1090"
  },
  {
   "file": "scr_bytes_dyn.c",

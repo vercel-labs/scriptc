@@ -32,6 +32,56 @@ Minted ONCE with the openssl recipe below (see san.cnf) and committed with a 100
     openssl req -new -key embedded-key.pem -out embedded.csr -subj "/CN=embedded pem" -config embedded.cnf
     openssl x509 -req -in embedded.csr -CA ca.pem -CAkey ca-key.pem -set_serial 4242 -out embedded.pem -days 36500 -extfile embedded.cnf -extensions ext
 
+`crl-leaf.pem`/`crl-leaf-key.pem` is a localhost leaf signed by `ca.pem` through the `openssl ca` database, and the `crl-*.pem` files are CRLs for that CA (one per verification outcome) plus `crl-untrusted.pem`, a CRL signed by `ca2.pem`. They are minted in a throwaway CA directory that copies `ca.pem`/`ca-key.pem`, so the committed `ca.srl` is untouched:
+
+    mkdir -p ca-db/newcerts && cp ca.pem ca-key.pem ca-db/
+    : > ca-db/index.txt && echo 1000 > ca-db/serial && echo 1000 > ca-db/crlnumber
+    # ca-db/ca.cnf: database/new_certs_dir/certificate/private_key/serial/crlnumber point at ca-db,
+    # x509_extensions=leaf_ext (localhost SAN, serverAuth), crl_extensions=crl_ext
+    openssl ecparam -genkey -name prime256v1 -noout -out crl-leaf-key.pem
+    openssl req -new -key crl-leaf-key.pem -subj "/CN=localhost" -out crl-leaf.csr
+    openssl ca -batch -config ca-db/ca.cnf -in crl-leaf.csr -out crl-leaf.pem -notext
+    openssl ca -config ca-db/ca.cnf -revoke crl-leaf.pem
+    openssl ca -config ca-db/ca.cnf -gencrl -crl_lastupdate 20200101000000Z -crl_nextupdate 20300101000000Z -out crl-revoked.pem
+    openssl ca -config ca-db/ca.cnf -gencrl -crl_lastupdate 20200101000000Z -crl_nextupdate 20210101000000Z -out crl-expired.pem
+    openssl ca -config ca-db/ca.cnf -gencrl -crl_lastupdate 20270101000000Z -crl_nextupdate 20370101000000Z -out crl-future.pem
+    openssl ca -config ca-db/ca.cnf -gencrl -out crl-badsig.pem   # then flip one signature byte, as with badsig.pem
+    # crl-untrusted.pem repeats -gencrl in a second ca-db directory that copies ca2.pem/ca2-key.pem
+
+`crl-clean.pem` is the same valid-window CRL from a copy of the CA database with the revocation entry removed: an empty list, so the leaf verifies.
+
+`int-ca.pem`/`int-ca-key.pem`, `int-leaf.pem`/`int-leaf-key.pem` and the `int-*crl*.pem` files are the intermediate-chain CRL fixtures: a CA certificate signed by `ca.pem`, a localhost leaf signed by that intermediate, a root-issued CRL that revokes the intermediate (`int-crl-revoked.pem`) and its clean counterpart, plus a clean CRL issued by the intermediate for its leaf (`int-leaf-crl-clean.pem`). They are minted with `openssl ca` in throwaway CA directories that copy the fixture keys:
+
+    # root CA directory (copies ca.pem/ca-key.pem); issue int-ca with CA:TRUE, then:
+    openssl ca -config root-db/ca.cnf -gencrl -out int-crl-clean.pem
+    openssl ca -config root-db/ca.cnf -revoke int-ca.pem
+    openssl ca -config root-db/ca.cnf -gencrl -out int-crl-revoked.pem
+    # intermediate CA directory (copies int-ca.pem/int-ca-key.pem); no revocations:
+    openssl ca -config int-db/ca.cnf -gencrl -out int-leaf-crl-clean.pem
+
+`int-leaf.pem` is signed by `int-ca.pem` for CN=localhost with the usual SANs.
+
+`ku-ca.pem` is a CA whose critical keyUsage extension carries keyCertSign only (no cRLSign); `ku-leaf.pem`/`ku-leaf-key.pem` is a localhost leaf it signed and `crl-ku-clean.pem` is a CRL its key signed. A client that supplies that CRL must reject it with OpenSSL's key-usage failure even though the signature verifies. The CA is `openssl req -x509` with `keyUsage = critical,keyCertSign`, minted like `ca.pem`.
+
+`rollover-ca.pem`/`rollover-ca-key.pem` is a key-rollover CA: it carries the root's subject (`CN=tsnative test CA`) but a new key, and the root signed it, so its issuer and subject names are equal while its key differs from the root's. `rollover-leaf.pem`/`rollover-leaf-key.pem` is a localhost leaf signed by that key. `crl-rollover-clean.pem` is the rollover CA's own empty CRL and `crl-rollover-revoked.pem` is the root's CRL revoking the rollover CA, so the two CRLs share an issuer name but not a key. They are minted in throwaway CA directories copying `ca.pem`/`ca-key.pem` and the rollover key:
+
+    openssl ecparam -genkey -name prime256v1 -noout -out rollover-ca-key.pem
+    openssl req -new -key rollover-ca-key.pem -subj "/CN=tsnative test CA" -out roll.csr
+    openssl ca -config root-db/ca.cnf -in roll.csr -out rollover-ca.pem -extensions ca_ext -notext
+    # issue rollover-leaf.pem from rollover-ca.pem with the usual localhost SANs
+    openssl ca -config roll-db/ca.cnf -gencrl -out crl-rollover-clean.pem
+    openssl ca -config root-db/ca.cnf -revoke rollover-ca.pem -gencrl -out crl-rollover-revoked.pem
+ `ca.srl` is untouched (the databases live in copies).
+
+`crl-root-revoked.pem` is the root CA's CRL with `ca.pem` itself revoked, for the case OpenSSL also checks: the whole chain includes the trusted root, so a CRL the root issued can revoke the root. It comes from the root CA directory above, whose database holds one entry for `ca.pem`:
+
+    openssl ca -batch -config root-db/ca.cnf -revoke ca.pem
+    openssl ca -batch -config root-db/ca.cnf -gencrl -crl_lastupdate 20200101000000Z -crl_nextupdate 20300101000000Z -out crl-root-revoked.pem
+
+`decoy-int.pem` is a self-issued certificate with the intermediate's subject and public key but its own serial, to append to a peer's presented chain: verification never uses it, so a CRL check that walked the presented list instead of the verified chain would let it stand in for the intermediate and hide the root-issued revocation. It is minted from the committed (throwaway) intermediate key, which is what a peer with the intermediate's public key can construct:
+
+    openssl req -new -x509 -key int-ca-key.pem -subj "/CN=scriptc test intermediate CA" -days 3650 -out decoy-int.pem
+
 `expired.pem`/`expired-key.pem` is a self-signed localhost certificate whose validity window ended on 2021-01-01, for the CERT_HAS_EXPIRED shape: a client that trusts it through `ca` still fails verification because it has expired.
 
     openssl ecparam -genkey -name prime256v1 -noout -out expired-key.pem

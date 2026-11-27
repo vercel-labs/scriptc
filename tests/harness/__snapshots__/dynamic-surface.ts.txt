@@ -1,8 +1,8 @@
-dynamic-surface.ts:13:38 - error SC2020: 'Number.prototype.toLocaleString at locale "de-DE"' is part of the standard library types but has no scriptc lowering yet
+dynamic-surface.ts:13:38 - error SC2020: 'Number.prototype.toLocaleString with a locale list' is part of the standard library types but has no scriptc lowering yet
 
   12 | const tau = Math.PI * 2;
-  13 | const price = (19.99).toLocaleString("de-DE");
-     |                                      ^~~~~~~
+  13 | const price = (19.99).toLocaleString(["de-DE"]);
+     |                                      ^~~~~~~~~
   14 | const n = Number.parseFloat("3.14");
 
-  hint: which locale Node picks for a requested tag is locale negotiation, which is not modelled; the default locale (no argument), "en-US", "en" and "en-GB" compile
+  hint: choosing a locale from a list is locale negotiation, which is not modelled; pass one locale string

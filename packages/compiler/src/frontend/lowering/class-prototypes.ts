@@ -236,6 +236,13 @@ export function classPrototypeData(
             value: lowerer.coerceToExpected({ kind: "boolLit", value: true, type: BOOL, loc }, DYN),
           },
           {
+            key: { kind: "strLit", value: "enumerable", type: STRING, loc },
+            value: lowerer.coerceToExpected(
+              { kind: "boolLit", value: false, type: BOOL, loc },
+              DYN,
+            ),
+          },
+          {
             key: { kind: "strLit", value: "configurable", type: STRING, loc },
             value: lowerer.coerceToExpected({ kind: "boolLit", value: true, type: BOOL, loc }, DYN),
           },

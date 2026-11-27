@@ -24,6 +24,7 @@
 #ifndef SCR_RUNTIME_H
 #define SCR_RUNTIME_H
 
+#include "scr_fs_utf8_stream.h"
 #include "scr_core.h"
 #include "scr_rc.h"
 #include "scr_string.h"
@@ -54,10 +55,12 @@
 #include "scr_cluster.h"
 #include "scr_fs_exists_dyn.h"
 #include "scr_module_cache.h"
+#include "scr_source_map.h"
 #include "scr_module_class.h"
 #include "scr_json.h"
 #include "scr_record_source_get.h"
 #include "scr_event_target.h"
+#include "scr_websocket.h"
 #include "scr_blob.h"
 #include "scr_object.h"
 #include "scr_region.h"

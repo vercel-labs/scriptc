@@ -128,7 +128,11 @@ import {
   readProfileFunctionNames,
   writeLlvmSource,
 } from "./backend/native-codegen.js";
-import { nativeBuildPartitions, nativePartitionPaths } from "./backend/native-codegen-core.js";
+import {
+  generatedDispatchOptFor,
+  nativeBuildPartitions,
+  nativePartitionPaths,
+} from "./backend/native-codegen-core.js";
 import { privateSiblingPath } from "./backend/build-cache.js";
 import {
   nativeCodegenTarget,
@@ -177,7 +181,11 @@ import {
   type ScrDiagnostic,
 } from "./diagnostics/diagnostic.js";
 import { libnodeCacheKey, libnodeTarget } from "./node-islands/libnode.js";
-import { loadLibraryProfile, type LibraryProfile } from "./library/library-profile.js";
+import {
+  emittedSourcePath,
+  loadLibraryProfile,
+  type LibraryProfile,
+} from "./library/library-profile.js";
 import { clearFenceEvalCaches, decorateLibraryRefusals } from "./library/fence-eval.js";
 import {
   canonicalModuleGraph,
@@ -363,6 +371,7 @@ export {
   type ResolvedLibraryFence,
 } from "./library/fence-eval.js";
 export {
+  emittedSourcePath,
   loadLibraryProfile,
   profileTeaching,
   profileRemediation,
@@ -859,6 +868,7 @@ async function compileExecutableNative(
     ...(features.fsFlags ? { fsFlags: true } : {}),
     ...(features.fsExistsValue ? { fsExistsValue: true } : {}),
     ...(features.moduleCompileCache ? { moduleCompileCache: true } : {}),
+    ...(features.sourceMap ? { sourceMap: true } : {}),
     ...(features.fnMemberProps ? { fnMemberProps: true } : {}),
     ...(features.fsBytesWrites ? { fsBytesWrites: true } : {}),
     ...(features.strdecDyn ? { strdecDyn: true } : {}),
@@ -885,6 +895,7 @@ async function compileExecutableNative(
     dynInvoke: features.dynInvoke,
     dc: features.dc,
     dynAsync: features.dynAsync,
+    ...(features.fsOpenAsBlob ? { fsOpenAsBlob: true } : {}),
     ...(features.dynTier ? { dynTier: true } : {}),
     ...(features.promiseGeneric ? { promiseGeneric: true } : {}),
     ...(features.streamDyn ? { streamDyn: true } : {}),
@@ -917,6 +928,7 @@ async function compileExecutableNative(
     ...(features.largePages ? { largePages: true } : {}),
     ...(features.webStreams ? { webStreams: true } : {}),
     ...(features.fsWebStream ? { fsWebStream: true } : {}),
+    ...(features.fsUtf8Stream ? { fsUtf8Stream: true } : {}),
     // The C-source link (a sanitized build) compiles the runtime itself, so it
     // needs the same Blob/File body define the runtime pack selects.
     ...(features.webBodies ? { webBodies: true } : {}),
@@ -974,6 +986,7 @@ async function compileExecutableNative(
     x509: features.x509,
     webcrypto: features.webcrypto,
     perfLoop: features.perfLoop,
+    ...(features.webSocket ? { webSocket: true } : {}),
     ...(onArtifactReady === undefined ? {} : { onArtifactReady }),
     ...(ffi === null
       ? {}
@@ -1025,6 +1038,7 @@ async function emitNativeProgramObject(
       outputKind: "obj",
       sourcePath: entryPath,
       optimization: opts.optimization === "dev" ? "0" : "2",
+      dispatchOpt: generatedDispatchOptFor(opts.optimization),
       ...(opts.sanitize === undefined ? {} : { sanitize: opts.sanitize }),
       partitions,
       ...(profile === undefined ? {} : { profile }),
@@ -1388,6 +1402,7 @@ async function prepareExecutableInput(
           outputKind,
           sourcePath: entryPath,
           optimization: opts.optimization === "dev" ? "0" : "2",
+          dispatchOpt: generatedDispatchOptFor(opts.optimization),
           ...(opts.sanitize === undefined ? {} : { sanitize: opts.sanitize }),
         });
       } catch (err) {
@@ -3095,6 +3110,9 @@ async function compileLibraryTracked(
       // A dev library carries the sources a dev executable does, so native
       // debuggers and stack frames name the TypeScript lines.
       ...(carriesDebugSources(profile.optimization, false) ? { debugSources: sourceTexts } : {}),
+      ...(profile.filePrefixMap.length === 0
+        ? {}
+        : { sourcePathMap: (file: string) => emittedSourcePath(profile, file) }),
     });
     timing("llvm-emit", {
       output_bytes:

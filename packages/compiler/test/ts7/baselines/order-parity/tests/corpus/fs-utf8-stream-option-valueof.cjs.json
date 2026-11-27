@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/fs-utf8-stream-option-valueof.cjs"
+ ],
+ "diags": []
+}

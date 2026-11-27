@@ -463,7 +463,8 @@ static void scr_cl_schedule_setup(ScrDyn *settings) {
  * program left it (Node's `...cluster.settings`), then `options`. Node
  * assigns a fresh object and schedules a 'setup' emission per call, each
  * carrying that call's object. `options` is borrowed; NULL is the bare
- * call. */
+ * call. A settings getter can call setupPrimary or setupMaster again while
+ * the merge runs, so every value is read before the object is swapped in. */
 static void scr_cl_setup_impl(const ScrDyn *options) {
   ScrDyn *previous = scr_cl_settings;
   ScrDyn *settings = scr_cl_default_settings();
@@ -475,8 +476,13 @@ static void scr_cl_setup_impl(const ScrDyn *options) {
     scr_dyn_release(settings);
     return;
   }
-  scr_dyn_release(previous);
+  /* A reentrant call has already swapped its settings in and released the
+   * object installed at that point. Release whatever the global holds now,
+   * so each settings object is released once; the object the merge read
+   * from is only borrowed. */
+  ScrDyn *replaced = scr_cl_settings;
   scr_cl_settings = settings;
+  if (replaced != NULL) scr_dyn_release(replaced);
   scr_cl_schedule_setup(settings);
 }
 

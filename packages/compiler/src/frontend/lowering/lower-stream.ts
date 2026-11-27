@@ -2991,34 +2991,61 @@ function lowerFromSource(
   const builtinIterator =
     (iteratorOverride === null || iteratorOverride.declarer.builtinStream != null) &&
     !(overridesBelow && !exactSource);
-  if (srcNode && (streamSides === "r" || streamSides === "rw") && builtinIterator && opts) {
-    const sourceValue = lowerer.lowerExpr(srcNode);
-    return withEncoding(
-      orderedFrom(sourceValue, (ref, hwm) => {
-        // from.js opens the source's iterator with the default
-        // destroyOnReturn: true, so destroying the wrapper (or its
-        // iterator's return()) destroys the source stream. A file stream
-        // the wrapper never read to EOF is closed with its descriptor
-        // instead of staying open.
-        const iter: IrExpr = {
-          kind: "libCall",
-          fn: "readable.iterator",
-          args: [ref, boolLit(true, loc)],
-          type: DYN,
-          loc,
-        };
-        // SCR_FROM_HAS_HWM (8) and the parsed option flags, so that
-        // objectMode: false builds a byte-mode wrapper. Node's
-        // highWaterMark for a stream body is 1 unless the options name one.
-        return {
-          kind: "libCall",
-          fn: "readable.fromAsyncIter",
-          args: [iter, numLit(opts.flags | 8, loc), hwm ?? numLit(1, loc)],
-          type,
-          loc,
-        };
-      }),
-    );
+  // The source as an instance of `t`, the class the checker gives it. The
+  // value can be held another way: a JavaScript source infers the class of
+  // `this.inner.make()` while the call goes through an untyped member and
+  // answers a checked-dynamic value. That value crosses the checked boundary
+  // into its class here, as at any typed slot (a value of another class
+  // throws a TypeError). Null when it has no checked conversion to the class:
+  // the source then takes the checked-dynamic form below.
+  const sourceInstance = (node: ts.Expression, t: IrType & { kind: "object" }): IrExpr | null => {
+    const held = lowerer.lowerExpr(node);
+    if (held.type.kind !== "dyn") return held;
+    const checked = lowerer.coerceToExpected(held, t);
+    return checked.type.kind === "object" ? checked : null;
+  };
+
+  // The source must reach `readable.iterator` as a stream-hierarchy value.
+  // A JavaScript source can infer the class while the call answers a
+  // checked-dynamic value (a factory's fenced construction), which crosses
+  // into its class here, as at any typed slot; a value with no such
+  // conversion takes the forms below instead of an iterator call the IR
+  // cannot type.
+  if (
+    srcNode &&
+    srcT?.kind === "object" &&
+    (streamSides === "r" || streamSides === "rw") &&
+    builtinIterator &&
+    opts
+  ) {
+    const streamSource = sourceInstance(srcNode, srcT);
+    if (streamSource)
+      return withEncoding(
+        orderedFrom(streamSource, (ref, hwm) => {
+          // from.js opens the source's iterator with the default
+          // destroyOnReturn: true, so destroying the wrapper (or its
+          // iterator's return()) destroys the source stream. A file stream
+          // the wrapper never read to EOF is closed with its descriptor
+          // instead of staying open.
+          const iter: IrExpr = {
+            kind: "libCall",
+            fn: "readable.iterator",
+            args: [ref, boolLit(true, loc)],
+            type: DYN,
+            loc,
+          };
+          // SCR_FROM_HAS_HWM (8) and the parsed option flags, so that
+          // objectMode: false builds a byte-mode wrapper. Node's
+          // highWaterMark for a stream body is 1 unless the options name one.
+          return {
+            kind: "libCall",
+            fn: "readable.fromAsyncIter",
+            args: [iter, numLit(opts.flags | 8, loc), hwm ?? numLit(1, loc)],
+            type,
+            loc,
+          };
+        }),
+      );
   }
   // The static class is the stream base, but a descendant in this program
   // overrides Symbol.asyncIterator and the source is not a fresh instance of
@@ -3040,19 +3067,6 @@ function lowerFromSource(
       "the iterator is chosen by the value's class at run time; give the source a type that declares its own Symbol.asyncIterator, or iterate the stream directly",
     );
   }
-  // The source as an instance of `t`, the class the checker gives it. The
-  // value can be held another way: a JavaScript source infers the class of
-  // `this.inner.make()` while the call goes through an untyped member and
-  // answers a checked-dynamic value. That value crosses the checked boundary
-  // into its class here, as at any typed slot (a value of another class
-  // throws a TypeError). Null when it has no checked conversion to the class:
-  // the source then takes the checked-dynamic form below.
-  const sourceInstance = (node: ts.Expression, t: IrType & { kind: "object" }): IrExpr | null => {
-    const held = lowerer.lowerExpr(node);
-    if (held.type.kind !== "dyn") return held;
-    const checked = lowerer.coerceToExpected(held, t);
-    return checked.type.kind === "object" ? checked : null;
-  };
   // A class whose [Symbol.iterator]() or [Symbol.asyncIterator]() is a
   // generator method: from.js calls the method when the stream is built,
   // then reads the generator like any other.

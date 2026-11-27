@@ -543,7 +543,45 @@ void scr_worker_mark_untransferable(ScrDyn *value) {
 
 /* postMessage's transfer argument: an array, or { transfer } (+1, or NULL
  * when empty) */
-static ScrDyn *scr_worker_transfer_list(ScrDyn *arg) {
+/* Node reports the self-post warning on the next tick, so its process
+ * 'warning' listeners run after postMessage returned: each message waits in
+ * this queue for one next-tick callback. */
+typedef struct ScrPostWarning {
+  ScrStr *message; /* owned */
+  struct ScrPostWarning *next;
+} ScrPostWarning;
+
+static SCR_TL ScrPostWarning *scr_post_warnings;
+static SCR_TL ScrPostWarning *scr_post_warnings_tail;
+
+static void scr_post_warning_tick(void) {
+  while (scr_post_warnings != NULL) {
+    ScrPostWarning *warning = scr_post_warnings;
+    scr_post_warnings = warning->next;
+    if (scr_post_warnings == NULL) scr_post_warnings_tail = NULL;
+    scr_emit_warning("Warning", NULL, warning->message);
+    scr_str_release(warning->message);
+    free(warning);
+  }
+}
+
+static void scr_post_warning(ScrStr *message /* moves in */) {
+  ScrPostWarning *warning = calloc(1, sizeof *warning);
+  if (warning == NULL) scr_trap("out of memory");
+  warning->message = message;
+  if (scr_post_warnings_tail != NULL) scr_post_warnings_tail->next = warning;
+  else scr_post_warnings = warning;
+  scr_post_warnings_tail = warning;
+  scr_next_tick_raw(scr_post_warning_tick);
+}
+
+/* The three shapes Node reads a transfer list in: postMessage's second
+ * argument, the `transfer` member of an options object, and a Worker's
+ * transferList option (whose refusals are a DataCloneError rather than the
+ * message forms' TypeError). */
+enum { SCR_TRANSFER_POST, SCR_TRANSFER_OPTIONS, SCR_TRANSFER_WORKER };
+
+static ScrDyn *scr_worker_transfer_list_form(ScrDyn *arg, int form) {
   ScrDyn *value = arg;
   ScrDyn *own = NULL;
   if (value->kind == SCR_DYN_TYPED_REF) {
@@ -554,13 +592,24 @@ static ScrDyn *scr_worker_transfer_list(ScrDyn *arg) {
     }
     value = own;
   }
-  if (value->kind == SCR_DYN_OBJ) {
+  /* No second argument, null or undefined: there is no transfer list, as in
+   * Node. */
+  if (value->kind == SCR_DYN_NULL || value->kind == SCR_DYN_UNDEF) {
+    scr_dyn_release(own);
+    return NULL;
+  }
+  if (value->kind == SCR_DYN_OBJ && form != SCR_TRANSFER_WORKER) {
     ScrDyn *list = scr_dyn_obj_get(value, "transfer", 8);
-    ScrDyn *result = list ? scr_worker_transfer_list(list) : NULL;
+    ScrDyn *result =
+        list ? scr_worker_transfer_list_form(list, SCR_TRANSFER_OPTIONS) : NULL;
     scr_dyn_release(own);
     return result;
   }
-  if (value->kind == SCR_DYN_ARR && value->v.arr.len > 0) {
+  if (value->kind == SCR_DYN_ARR) {
+    if (value->v.arr.len == 0) {
+      scr_dyn_release(own);
+      return NULL;
+    }
     for (size_t i = 0; i < value->v.arr.len; i++) {
       ScrDyn *item = value->v.arr.items[i];
       if (item && scr_worker_is_marked_untransferable(item)) {
@@ -599,10 +648,28 @@ static ScrDyn *scr_worker_transfer_list(ScrDyn *arg) {
     scr_dyn_release(own);
     return result;
   }
-  bool empty = scr_worker_empty_transfer(value);
+  ScrDynKind kind = value->kind;
+  ScrDynHandleTag tag = kind == SCR_DYN_HANDLE ? value->v.handle.tag : (ScrDynHandleTag)0;
   scr_dyn_release(own);
-  if (!empty) scr_worker_refusal("This postMessage transfer argument is not supported yet");
+  if (form == SCR_TRANSFER_WORKER) {
+    scr_throw_domex("DataCloneError", "Found invalid value in transferList.");
+    return NULL;
+  }
+  /* A Set is an iterable Node would walk and this build refuses by name;
+   * everything else is Node's "must be an iterable" TypeError. */
+  if (kind == SCR_DYN_HANDLE && tag == SCR_DYNH_SET) {
+    scr_worker_refusal("This postMessage transfer argument is not supported yet");
+    return NULL;
+  }
+  const char *message = form == SCR_TRANSFER_OPTIONS
+                            ? "Optional options.transfer argument must be an iterable"
+                            : "Optional transferList argument must be an iterable";
+  scr_throw_error_msg_code(SCR_ERR_TYPE, message, strlen(message), "ERR_INVALID_ARG_TYPE");
   return NULL;
+}
+
+static ScrDyn *scr_worker_transfer_list(ScrDyn *arg) {
+  return scr_worker_transfer_list_form(arg, SCR_TRANSFER_POST);
 }
 
 static bool scr_worker_transfer_has(const ScrDyn *transfer, const ScrWorkerView *view) {
@@ -992,8 +1059,10 @@ static ScrDyn *scr_worker_view_invoke(void *ptr, ScrDyn *self, const char *metho
       return NULL;
     }
     /* Node's self-post case: the transfer list names this port's entangled
-     * other end, so the channel is lost. It reports a process warning and
-     * posts anyway. */
+     * other end, so a transfer loses the channel. The warning follows a
+     * transfer that actually happened (a clone that fails leaves the
+     * channel intact), and it is reported on the next tick. */
+    bool self_post = false;
     if (view->port && view->channel && transfer) {
       for (size_t i = 0; i < transfer->v.arr.len; i++) {
         ScrDyn *item = transfer->v.arr.items[i];
@@ -1001,17 +1070,18 @@ static ScrDyn *scr_worker_view_invoke(void *ptr, ScrDyn *self, const char *metho
           continue;
         ScrWorkerView *peer = item->v.handle.ptr;
         if (peer->channel != view->channel || peer->side == view->side) continue;
-        static const char text[] =
-            "The target port was posted to itself, and the communication channel was lost";
-        ScrStr *message = scr_str_new(text, sizeof text - 1);
-        scr_emit_warning("Warning", NULL, message);
-        scr_str_release(message);
+        self_post = true;
         break;
       }
     }
     ScrMessage *message = scr_message_encode_transfer(args[0], transfer);
     scr_dyn_release(transfer);
     if (!message) return NULL;
+    if (self_post) {
+      static const char text[] =
+          "The target port was posted to itself, and the communication channel was lost";
+      scr_post_warning(scr_str_new(text, sizeof text - 1));
+    }
     if (view->closed) {
       scr_message_free(message);
       return scr_dyn_retain(scr_dyn_undefined());
@@ -2575,7 +2645,7 @@ static ScrDyn *scr_worker_new_options(double root, ScrStr *filename, ScrDyn *opt
   } else {
     thread_name = scr_str_new("WorkerThread", 12);
   }
-  ScrDyn *transfer = scr_worker_transfer_list(transfer_list);
+  ScrDyn *transfer = scr_worker_transfer_list_form(transfer_list, SCR_TRANSFER_WORKER);
   if (scr_exc_pending()) {
     scr_arr_release(arguments);
     scr_str_release(thread_name);

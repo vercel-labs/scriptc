@@ -7694,6 +7694,56 @@ static bool sp_dh_params_equal(const SpKey *a, const SpKey *b) {
  * modulus size, the secret Node derives. A peer value outside [2, p - 2],
  * or a secret of 0, 1 or p - 1, fails as OpenSSL's derivation does. NULL
  * with the error pending. */
+/* The groups OpenSSL recognizes by their parameters whose subgroup the
+ * derivation checks: the RFC 5114 parameter sets, whose prime is not safe,
+ * so elements outside the order-q subgroup exist and a peer value in one
+ * of those small subgroups would confine the secret. The safe-prime groups
+ * need no such entry: their only elements outside the order-q subgroup are
+ * 0, 1 and p - 1, which the range and secret checks reject. */
+static const struct {
+  const unsigned char *p;
+  size_t p_len;
+  const unsigned char *g;
+  size_t g_len;
+  const unsigned char *q;
+  size_t q_len;
+} sp_dh_q_groups[] = {
+  {scr_dh_dh_1024_160_p, sizeof scr_dh_dh_1024_160_p, scr_dh_dh_1024_160_g,
+   sizeof scr_dh_dh_1024_160_g, scr_dh_dh_1024_160_q, sizeof scr_dh_dh_1024_160_q},
+  {scr_dh_dh_2048_224_p, sizeof scr_dh_dh_2048_224_p, scr_dh_dh_2048_224_g,
+   sizeof scr_dh_dh_2048_224_g, scr_dh_dh_2048_224_q, sizeof scr_dh_dh_2048_224_q},
+  {scr_dh_dh_2048_256_p, sizeof scr_dh_dh_2048_256_p, scr_dh_dh_2048_256_g,
+   sizeof scr_dh_dh_2048_256_g, scr_dh_dh_2048_256_q, sizeof scr_dh_dh_2048_256_q},
+};
+
+/* DH_check_pub_key's subgroup test for those groups: y^q = 1 (mod p). A
+ * group outside the table (an explicit prime with no q) passes; its range
+ * and secret checks stand. */
+static bool sp_dh_peer_in_subgroup(const SpKey *k, const mbedtls_mpi *Y, const mbedtls_mpi *P) {
+  const unsigned char *q = NULL;
+  size_t q_len = 0;
+  for (size_t i = 0; i < sizeof sp_dh_q_groups / sizeof sp_dh_q_groups[0]; i++) {
+    if (sp_dh_q_groups[i].p_len != k->dh_p_len ||
+        memcmp(sp_dh_q_groups[i].p, k->dh_p, k->dh_p_len) != 0 ||
+        sp_dh_q_groups[i].g_len != k->dh_g_len ||
+        memcmp(sp_dh_q_groups[i].g, k->dh_g, k->dh_g_len) != 0)
+      continue;
+    q = sp_dh_q_groups[i].q;
+    q_len = sp_dh_q_groups[i].q_len;
+    break;
+  }
+  if (q_len == 0) return true;
+  mbedtls_mpi Q, R;
+  mbedtls_mpi_init(&Q);
+  mbedtls_mpi_init(&R);
+  bool ok = mbedtls_mpi_read_binary(&Q, q, q_len) == 0 &&
+            mbedtls_mpi_exp_mod(&R, (mbedtls_mpi *)Y, &Q, (mbedtls_mpi *)P, NULL) == 0 &&
+            mbedtls_mpi_cmp_int(&R, 1) == 0;
+  mbedtls_mpi_free(&Q);
+  mbedtls_mpi_free(&R);
+  return ok;
+}
+
 static ScrDyn *sp_dh_agree(SpKey *priv, SpKey *pub, bool props) {
   if (!sp_dh_params_equal(priv, pub)) {
     sp_throw_openssl("1C8000CB", "Provider routines", "mismatching domain parameters",
@@ -7720,11 +7770,31 @@ static ScrDyn *sp_dh_agree(SpKey *priv, SpKey *pub, bool props) {
             mbedtls_mpi_read_binary(&X, priv->dh_x, priv->dh_x_len) == 0 &&
             mbedtls_mpi_read_binary(&Y, peer, peer_len) == 0 &&
             mbedtls_mpi_sub_int(&bound, &P, 1) == 0;
-  /* DH_check_pub_key's range, then the shared secret of the OpenSSL
-   * derivation (a small-order peer makes it 0, 1 or p - 1). */
-  ok = ok && mbedtls_mpi_cmp_int(&Y, 1) > 0 && mbedtls_mpi_cmp_mpi(&Y, &bound) < 0 &&
-       mbedtls_mpi_exp_mod(&S, &Y, &X, &P, NULL) == 0 &&
-       mbedtls_mpi_cmp_int(&S, 1) > 0 && mbedtls_mpi_cmp_mpi(&S, &bound) < 0;
+  /* DH_check_pub_key in OpenSSL's order: the peer value below 2 is too
+   * small, one at or above p - 1 too large, and a value inside that range
+   * that lies outside the subgroup of a group OpenSSL knows by its
+   * parameters (RFC 5114's primes are not safe) invalid; then the shared
+   * secret itself must not be 0, 1 or p - 1. */
+  const char *check_code = NULL, *check_reason = NULL, *check_node = NULL;
+  if (ok && mbedtls_mpi_cmp_int(&Y, 1) <= 0) {
+    check_code = "0280007C";
+    check_reason = "check pubkey too small";
+    check_node = "ERR_OSSL_DH_CHECK_PUBKEY_TOO_SMALL";
+    ok = false;
+  } else if (ok && mbedtls_mpi_cmp_mpi(&Y, &bound) >= 0) {
+    check_code = "0280007B";
+    check_reason = "check pubkey too large";
+    check_node = "ERR_OSSL_DH_CHECK_PUBKEY_TOO_LARGE";
+    ok = false;
+  } else if (ok && !sp_dh_peer_in_subgroup(priv, &Y, &P)) {
+    check_code = "0280007A";
+    check_reason = "check pubkey invalid";
+    check_node = "ERR_OSSL_DH_CHECK_PUBKEY_INVALID";
+    ok = false;
+  }
+  if (ok && !(mbedtls_mpi_exp_mod(&S, &Y, &X, &P, NULL) == 0 &&
+              mbedtls_mpi_cmp_int(&S, 1) > 0 && mbedtls_mpi_cmp_mpi(&S, &bound) < 0))
+    ok = false;
   ScrDyn *secret = NULL;
   if (ok) {
     size_t n = mbedtls_mpi_size(&P);
@@ -7745,7 +7815,12 @@ static ScrDyn *sp_dh_agree(SpKey *priv, SpKey *pub, bool props) {
     mbedtls_platform_zeroize(peer, peer_len);
     free(peer);
   }
-  if (!secret) sp_dh_failed(props);
+  if (!secret) {
+    if (check_node)
+      sp_throw_openssl(check_code, "Diffie-Hellman routines", check_reason, check_node, props);
+    else
+      sp_dh_failed(props);
+  }
   return secret;
 }
 

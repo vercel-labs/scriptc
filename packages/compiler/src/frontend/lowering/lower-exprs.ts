@@ -199,7 +199,12 @@ export {
   lowerPrefixUnary,
 } from "./expressions/updates.js";
 import { lowerDeleteExpression } from "./primitive-throws.js";
-import { awaitDynThenable, awaitTypedThenable, programMayDefineThenables } from "./thenables.js";
+import {
+  awaitDynThenable,
+  awaitTypedThenable,
+  programMayDefineThenables,
+  thenableParts,
+} from "./thenables.js";
 import { awaitsChildThenable } from "./handle-properties.js";
 export { lowerInstanceOf } from "./expressions/relational.js";
 
@@ -1002,6 +1007,16 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
         const adopted = awaitTypedThenable(lowerer, expr, value, loc);
         if (adopted !== null) return adopted;
       }
+      // A thenable this lowering cannot carry into checked-dynamic form (a
+      // union with a thenable arm, a value whose type has no dynamic
+      // representation) would otherwise take the non-thenable hop below
+      // and never call its `then`: refuse by name instead.
+      if (thenableParts(lowerer, lowerer.typeOf(expr.expression), expr.expression).length > 0)
+        lowerer.unsupported(
+          "SC1090",
+          expr,
+          "awaiting a thenable whose value has no checked-dynamic form (the await would not call its 'then')",
+        );
       // A TYPED non-promise operand (`await 42`, an awaited record):
       // JS awaits non-thenables through exactly one microtask turn and
       // yields the value itself — evaluate the operand, hop, answer it.

@@ -180,6 +180,21 @@ describe("dual-run reporter", () => {
     expect(run.exitCode).toBe(1);
   }, 180_000);
 
+  test("a difference past the diff's context still names the failing test", async () => {
+    // The lanes differ at the last line of a multiline assertion message, so
+    // the diff's context starts below the test's own line. The heading above
+    // the diff keeps the test name attached to it.
+    const entry = join(fixturesDir, "deep-difference.test.mts");
+    const run = await runNodeTest([entry], { withReporter: true });
+    const lines = run.stdout.split("\n");
+    const diffAt = lines.findIndex((line) => line.startsWith("@@"));
+    const nameAt = lines.findIndex((line) => line.includes('"deep difference"'));
+    expect(diffAt).toBeGreaterThan(0);
+    expect(nameAt).toBeGreaterThan(0);
+    expect(nameAt).toBeLessThan(diffAt);
+    expect(run.exitCode).toBe(1);
+  }, 180_000);
+
   test("a failure declared in an imported module stays on the entry's line", async () => {
     const entry = join(fixturesDir, "imports-helper.test.mts");
     const run = await runNodeTest([entry], { withReporter: true });

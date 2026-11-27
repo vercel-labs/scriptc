@@ -4,9 +4,10 @@ import type { TestEvent } from "node:test/reporters";
  * scriptc, runs the binary and compares its spec report, program output and
  * exit code with a plain `node <file>` run, using the documented node:test
  * normalization. Each file's line states the comparison (`node ✓  compiled ✓
- * same output`), and a difference adds a short diff, is reported against the
- * test it breaks and sets the exit code to 1; a file whose Node output
- * differs between two runs is reported as flaky instead. Use it with
+ * same output`), and a difference names the failing test above a short diff,
+ * is reported against the test it breaks and sets the exit code to 1; a file
+ * whose Node output differs between two runs is reported as flaky instead.
+ * Use it with
  * `--test-reporter=@scriptc/experimental/dual-run/reporter`. */
 export default function reporter(
   source: AsyncGenerator<TestEvent, void>,

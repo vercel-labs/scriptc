@@ -144,11 +144,9 @@ async function compareOne(file, shown, fileState, cwd, state) {
   const difference = differences[0];
   if (difference.stream === "exit code")
     return `✖ ${shown}  node ✓  compiled ✖  exit code: node ${difference.node}, compiled ${difference.native}`;
-  // describeDifferences' first line repeats the program name and the line
-  // number the verdict line already carries; the diff below it is the short
-  // context diff the program API shows too.
-  const diff = describeDifferences(shown, differences).split("\n").slice(1).join("\n");
-  return `✖ ${shown}  node ✓  compiled ✖  output differs\n${diff}`;
+  // The heading names the failing test and the line where the lanes differ,
+  // so the diff stays attributable when it starts below its own context.
+  return `✖ ${shown}  node ✓  compiled ✖  output differs\n${describeDifferences(shown, differences)}`;
 }
 
 /** What Node's own run of the file reported: a line per file and a line per

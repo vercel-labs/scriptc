@@ -445,6 +445,32 @@ function hostGlobalInstanceOfAnswer(
   };
 }
 
+/** `x instanceof crypto.X509Certificate`: a statically typed certificate
+ * is one, a dynamic value answers from its handle's tag, and any other
+ * value is not one. */
+function lowerX509InstanceOf(
+  lowerer: Lowerer,
+  expr: ts.BinaryExpression,
+  loc: SrcLoc,
+): IrExpr | null {
+  const right = expr.right;
+  const isX509 =
+    (ts.isPropertyAccessExpression(right) &&
+      right.name.text === "X509Certificate" &&
+      lowerer.builtinNamespaceModuleOf(right.expression) === "crypto") ||
+    (ts.isIdentifier(right) &&
+      (() => {
+        const bi = lowerer.builtinImportOf(right);
+        return bi?.module === "crypto" && bi.member === "X509Certificate";
+      })());
+  if (!isX509) return null;
+  const value = lowerer.lowerExpr(expr.left);
+  if (isX509Type(lowerer, value.type)) return staticAnswerAfter(value, true, loc);
+  if (value.type.kind === "dyn")
+    return { kind: "libCall", fn: "crypto.x509IsDyn", args: [value], type: BOOL, loc };
+  return staticAnswerAfter(value, false, loc);
+}
+
 /** `x instanceof C` for a program-declared class C. When x's static
  * class and C are both in extends-hierarchies the test is dynamic — the
  * O(1) preorder-interval check against the vtable (`instanceOf` node).
@@ -493,6 +519,8 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
   }
   const arrayClassTest = lowerArrayClassInstanceOf(lowerer, expr, loc);
   if (arrayClassTest !== null) return arrayClassTest;
+  const x509Test = lowerX509InstanceOf(lowerer, expr, loc);
+  if (x509Test !== null) return x509Test;
   const webAssembly = lowerWebAssemblyInstanceof(lowerer, expr);
   if (webAssembly !== null) return webAssembly;
   refuseWebAssemblyUse(lowerer, expr.right);

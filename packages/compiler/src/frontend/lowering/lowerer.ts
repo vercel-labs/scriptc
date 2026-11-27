@@ -172,7 +172,7 @@ import { encodeBase64 } from "../../wasm/base64.js";
 import { resolveRequireRuntime } from "../runtime-resolve.js";
 import { isInstalledPackagePath, projectDtsRuntimeSibling } from "../resolve.js";
 import { lowerKeyObjectCall, lowerKeyObjectFromCall } from "./builtins/key-object.js";
-import { lowerX509Call, refuseX509DynValues } from "./builtins/x509.js";
+import { lowerX509Call, lowerX509DynValues } from "./builtins/x509.js";
 import { lowerCertificateCall } from "./builtins/certificate.js";
 import type { BuiltinMemberWrite } from "./builtin-member-writes.js";
 import { refuseUnseenBuiltinMemberWrites } from "./builtin-member-readers.js";
@@ -15802,7 +15802,7 @@ export class Lowerer {
     // every producer and consumer agrees. Programs with no unregistered
     // reference are untouched — byte-stability holds.
     checkRequireBindingAccesses(this, functions);
-    refuseX509DynValues(this, functions);
+    lowerX509DynValues(this, functions);
     refuseUnseenBuiltinMemberWrites(this);
     markInferredFactChecks(functions, this.program);
     const sloppyDynWrites = sloppyDynamicWrites(this, functions, census);

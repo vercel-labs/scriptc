@@ -11,17 +11,3 @@ x509-fences.ts:10:19 - error SC1090: for-in over X509Certificate values (Node ke
   10 | for (const key in cert) console.log(key);
      |                   ^~~~
   11 | 
-
-x509-fences.ts:14:23 - error SC1090: X509Certificate values in 'unknown' or 'any' slots (Node keeps a certificate's fields as prototype getters, and its toString() and toJSON() give the PEM; keep the X509Certificate type) are not supported yet
-
-  13 | // its fields, which Node's certificate is not.
-  14 | const held: unknown = cert;
-     |                       ^~~~
-  15 | console.log(held);
-
-x509-fences.ts:19:23 - error SC1090: X509Certificate values in 'unknown' or 'any' slots (Node keeps a certificate's fields as prototype getters, and its toString() and toJSON() give the PEM; keep the X509Certificate type) are not supported yet
-
-  18 | }
-  19 | console.log(describe([cert]));
-     |                       ^~~~
-  20 | 

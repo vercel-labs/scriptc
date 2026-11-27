@@ -1698,6 +1698,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "crypto.x509RawDer": "scr_crypto_x509_raw_der",
   "crypto.x509RawStr": "scr_crypto_x509_raw_str",
   "crypto.x509RawDyn": "scr_crypto_x509_raw_dyn",
+  "crypto.x509Dyn": "scr_crypto_x509_dyn",
+  "crypto.x509IsDyn": "scr_crypto_x509_is_dyn",
   "crypto.x509Subject": "scr_crypto_x509_subject",
   "crypto.x509Issuer": "scr_crypto_x509_issuer",
   "crypto.x509SubjectAltName": "scr_crypto_x509_subject_alt_name",

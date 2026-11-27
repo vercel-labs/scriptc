@@ -9,11 +9,3 @@ const cert = new X509Certificate(readFileSync("cert.pem"));
 console.log({ ...cert });
 for (const key in cert) console.log(key);
 
-// A certificate in an unknown or any slot would cross as a plain object of
-// its fields, which Node's certificate is not.
-const held: unknown = cert;
-console.log(held);
-function describe(value: unknown): string {
-  return typeof value;
-}
-console.log(describe([cert]));

@@ -50,3 +50,10 @@ const live: Sink = process.stdout;
 live.write("through the replacement\n");
 process.stdout.write = original;
 console.log("replacement saw", JSON.stringify(seen));
+
+interface OptionalSink {
+  write?: (text: string) => boolean;
+}
+
+const optional: OptionalSink = process.stdout;
+console.log("optional write", optional.write?.("optional through the record\n"));

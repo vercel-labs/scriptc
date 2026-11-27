@@ -9,7 +9,10 @@
  * checked-dynamic view that invokes the member by name, boxing the
  * arguments and checking the result against the field's declared return
  * type. A member the program replaced (`process.stdout.write = fn`) is the
- * one the call reaches.
+ * one the call reaches. An OPTIONAL method (a function arm beside undefined,
+ * `write?: (text: string) => boolean`) is the same invoker wrapped into its
+ * union arm: reading it as data would call the raw function without the
+ * stream as receiver, which Node never does.
  *
  * A DATA member is read once, at the projection, through the same view and
  * checked against its declared type: the copy stance every width conversion
@@ -20,7 +23,7 @@
  * to the object, and it exposes only the declared members. Records that
  * declare index signatures or reserved slots are outside the projection and
  * keep SC2002. */
-import { DYN, HANDLE_KINDS, VOID, typeEquals, canDynCheckTo } from "../../../ir/ir.js";
+import { BOOL, DYN, HANDLE_KINDS, VOID, typeEquals, canDynCheckTo } from "../../../ir/ir.js";
 import type { IrExpr, IrLocal, IrStmt, IrType, SrcLoc } from "../../../ir/ir.js";
 import { strLit, varRef } from "../../../ir/build.js";
 import { typeKey } from "../../type-mapper.js";
@@ -31,10 +34,19 @@ import type { Lowerer } from "../lowerer.js";
 type FuncType = IrType & { kind: "func" };
 
 /** One record field the projection produces: a METHOD as an invoker
- * closure, a DATA member as the value read off the object. */
+ * closure, a DATA member as the value read off the object, and an OPTIONAL
+ * method (a function arm beside undefined) as the same invoker, wrapped
+ * into its union arm when the handle answers the member. */
 type FieldPlan =
   | { name: string; kind: "method"; type: FuncType }
-  | { name: string; kind: "value"; type: IrType };
+  | { name: string; kind: "value"; type: IrType }
+  | {
+      name: string;
+      kind: "optionalMethod";
+      type: FuncType;
+      union: IrType & { kind: "union" };
+      tag: number;
+    };
 
 const local = (id: string, name: string, type: IrType, boxed = false): IrLocal => ({
   id,
@@ -53,12 +65,50 @@ function isBuiltinHandle(lowerer: Lowerer, type: IrType): boolean {
   return HANDLE_KINDS.has(type.kind) && lowerer.dynConvertible(type);
 }
 
+/** The one function arm of a union whose other arms are all undefined —
+ * `write?: (text: string) => boolean`. A method typed that way must stay a
+ * method: reading the member as data yields the raw function, and calling it
+ * that way loses the stream receiver Node calls it with. */
+function optionalFunctionArm(lowerer: Lowerer, type: IrType): { fn: FuncType; tag: number } | null {
+  if (type.kind !== "union") return null;
+  const def = lowerer.unions.get(type.unionId);
+  if (!def) return null;
+  let fn: FuncType | null = null;
+  let tag = -1;
+  for (let i = 0; i < def.arms.length; i++) {
+    const arm = def.arms[i]!;
+    if (arm.kind === "func") {
+      if (fn !== null) return null;
+      fn = arm;
+      tag = i;
+      continue;
+    }
+    if (arm.kind !== "undefinedT") return null;
+  }
+  return fn !== null ? { fn, tag } : null;
+}
+
+/** A method the invoker can call through the dynamic tier: no rest form
+ * (the tier has none, and the closure would carry a rest ABI the invoker
+ * does not implement), arguments that box, and a result that checks back
+ * out. */
+function methodProjectable(lowerer: Lowerer, fn: FuncType): boolean {
+  if (fn.rest === true) return false;
+  if (!fn.params.every((p) => lowerer.dynConvertible(p))) return false;
+  return (
+    fn.ret.kind === "void" ||
+    canDynCheckTo(
+      fn.ret,
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
+    )
+  );
+}
+
 /** The record's members when every one is projectable: a method whose
  * arguments box into the dynamic tier and whose result checks back out of
- * it, or a data member whose type checks back out of it. Else null. A
- * variadic method is outside the projection: the invoker calls the member
- * through the dynamic tier, which has no spread form, and the closure's
- * declared type would carry a rest ABI the invoker does not implement. */
+ * it, an optional method (a function arm beside undefined) under the same
+ * rules, or a data member whose type checks back out of it. Else null. */
 function memberPlan(lowerer: Lowerer, shapeId: string): FieldPlan[] | null {
   const shape = lowerer.shapes.get(shapeId);
   if (!shape || shape.indexValue || shape.tuple || shape.fields.length === 0) return null;
@@ -66,19 +116,20 @@ function memberPlan(lowerer: Lowerer, shapeId: string): FieldPlan[] | null {
   for (const field of shape.fields) {
     if (field.name.startsWith("%")) return null;
     if (field.type.kind === "func") {
-      const fn = field.type;
-      if (fn.rest === true) return null;
-      if (!fn.params.every((p) => lowerer.dynConvertible(p))) return null;
-      if (
-        fn.ret.kind !== "void" &&
-        !canDynCheckTo(
-          fn.ret,
-          (id) => lowerer.shapes.get(id),
-          (id) => lowerer.unions.get(id),
-        )
-      )
-        return null;
-      fields.push({ name: field.name, kind: "method", type: fn });
+      if (!methodProjectable(lowerer, field.type)) return null;
+      fields.push({ name: field.name, kind: "method", type: field.type });
+      continue;
+    }
+    const optional = optionalFunctionArm(lowerer, field.type);
+    if (optional !== null) {
+      if (!methodProjectable(lowerer, optional.fn)) return null;
+      fields.push({
+        name: field.name,
+        kind: "optionalMethod",
+        type: optional.fn,
+        union: field.type as IrType & { kind: "union" },
+        tag: optional.tag,
+      });
       continue;
     }
     if (
@@ -150,7 +201,7 @@ function buildProjection(
   const result: IrType = { kind: "record", shapeId };
   const view: IrExpr = varRef("view.0", DYN, loc);
   const fields = plan.map((entry, i) => {
-    if (entry.kind === "method") {
+    if (entry.kind === "method" || entry.kind === "optionalMethod") {
       const fnName = `${name}.${i}`;
       lowerer.liftedFns.push(memberInvoker(lowerer, fnName, entry.name, entry.type, loc));
       lowerer.noteEdge(fnName);
@@ -161,7 +212,42 @@ function buildProjection(
         type: entry.type,
         loc,
       };
-      return { name: entry.name, value: closure };
+      if (entry.kind === "method") return { name: entry.name, value: closure };
+      // The optional method enters its union's function arm where the
+      // handle answers the member; a handle without it reads undefined,
+      // which is the arm Node's optional call skips.
+      const absent = lowerer.wrappedUndefined(entry.union, loc);
+      if (absent === null)
+        throw new InternalCompilerError("lowerer bug: optional method union has no undefined arm");
+      const present: IrExpr = {
+        kind: "unionWrap",
+        unionId: entry.union.unionId,
+        tag: entry.tag,
+        value: closure,
+        type: entry.union,
+        loc,
+      };
+      const value: IrExpr = {
+        kind: "ternary",
+        cond: {
+          kind: "dynTest",
+          test: "undefined",
+          value: {
+            kind: "dynKeyGet",
+            value: view,
+            key: strLit(entry.name, loc),
+            type: DYN,
+            loc,
+          },
+          type: BOOL,
+          loc,
+        },
+        then: absent,
+        else_: present,
+        type: entry.union,
+        loc,
+      };
+      return { name: entry.name, value };
     }
     const read: IrExpr = {
       kind: "dynKeyGet",

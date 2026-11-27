@@ -668,7 +668,12 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
         // the record's own missing-key read does. The armed value only
         // serves non-hot uses.
         const declared = assertedDictionaryReadType(lowerer, expr.expression);
-        const armed = declared === null ? null : lowerer.withUndefinedArmOf(declared);
+        // The dictionary crossed the checker through a cast, so a present
+        // cell may hold null whatever the index value type says: the raw
+        // value keeps the null arm beside the undefined one, and String(),
+        // templates, equality and JSON observe it as Node does.
+        const withNull = declared === null ? null : (lowerer.withNullArmOf(declared) ?? declared);
+        const armed = withNull === null ? null : (lowerer.withUndefinedArmOf(withNull) ?? withNull);
         return armed !== null ? lowerer.coerceToExpected(inner, armed) : inner;
       }
       if (asserted !== null && numericAssertionType(lowerer, asserted))

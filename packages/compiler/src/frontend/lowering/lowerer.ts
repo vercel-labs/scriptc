@@ -512,6 +512,7 @@ import {
   type SymbolProvenance,
   type TypeMapperCtx,
   UnionRegistry,
+  withNullArm as withNullArmCanonical,
   withUndefinedArm as withUndefinedArmCanonical,
 } from "../type-mapper.js";
 import {
@@ -5036,6 +5037,17 @@ export class Lowerer {
     if (actual.kind !== "union" || this.armTag(actual.unionId, UNDEFINED_T) < 0) return null;
     const present = this.stripUndefinedArm(actual);
     if (typeEquals(present, expected)) return actual;
+    // A checked-dynamic dictionary read can hold a null cell whatever its
+    // index value type or the assertion says. A slot typed as the read
+    // without its unit arms widens to the value it actually receives, so
+    // the storage keeps the null arm beside the undefined one.
+    const arms = this.unions.get(actual.unionId)?.arms;
+    const data = arms?.filter((arm) => arm.kind !== "nullT" && arm.kind !== "undefinedT");
+    if (arms !== undefined && data !== undefined && data.length > 0 && data.length < arms.length) {
+      const dataOnly: IrType =
+        data.length === 1 ? data[0]! : { kind: "union", unionId: this.unions.intern(data) };
+      if (typeEquals(dataOnly, expected)) return actual;
+    }
     // Only a bare expected arm gains runtime-optional storage. A slot that
     // already admits undefined keeps its own checked representation.
     if (expected.kind === "union" && this.armTag(expected.unionId, UNDEFINED_T) >= 0) return null;
@@ -10810,6 +10822,67 @@ export class Lowerer {
    * TypeScript's default indexed-access type is a useful source annotation,
    * but it is not a runtime proof; promoting only the affected slots keeps
    * the rest of the dense ABI unchanged. */
+  /** Whether `JSON.stringify` can answer undefined for its root: an untyped
+   * root (a JavaScript parameter has no mapping yet), an instance of a class
+   * with a toJSON method, or a checked-dictionary read the checker calls
+   * present (a missing key answers undefined; `read!` performs no check). */
+  jsonStringifyMayAnswerUndefined(e: ts.CallExpression): boolean {
+    const argNode = e.arguments.nodes[0];
+    if (!argNode || ts.isSpreadElement(argNode)) return false;
+    const root = this.typeOf(argNode);
+    const mapped = this.mapTypeOf(root);
+    if (
+      mapped?.kind === "dyn" ||
+      (mapped === null && (root.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) ||
+      (mapped?.kind === "union" && this.armTag(mapped.unionId, UNDEFINED_T) >= 0) ||
+      (mapped?.kind === "object" &&
+        this.findMethodOn(this.classes.get(mapped.className) ?? null, "toJSON") !== null)
+    )
+      return true;
+    const readRoot = withoutParenthesesAssertionsNonNull(argNode);
+    return (
+      (ts.isElementAccessExpression(readRoot) || ts.isPropertyAccessExpression(readRoot)) &&
+      (this.dynIndexSignatureValueRead(readRoot) !== null ||
+        (ts.isElementAccessExpression(readRoot) &&
+          this.optionalIndexSignatureRead(readRoot) !== null))
+    );
+  }
+
+  /** An unannotated binding initialized by a `JSON.stringify` that may answer
+   * undefined keeps `string | undefined`: the checker types the call
+   * `string`, but the absent root's result is stored as it runs, and a
+   * `string` slot would trap at the declaration. A module-level binding
+   * widens its global storage the same way. */
+  analyzeJsonStringifyBindings(parts: FileParts[]): void {
+    for (const { sf } of parts) {
+      if (!ts.sourceTextIncludes(sf, "stringify")) continue;
+      ts.walkPreorder(sf, (node) => {
+        if (!ts.isVariableDeclaration(node) || node.type || !node.initializer) return undefined;
+        if (!ts.isIdentifier(node.name)) return undefined;
+        let init: ts.Expression = node.initializer;
+        while (ts.isParenthesizedExpression(init)) init = init.expression;
+        // The syntactic guard keeps every other call's arguments out of the
+        // type queries below: an object literal passed elsewhere must keep
+        // the layout ordinary lowering gives it.
+        if (
+          !ts.isCallExpression(init) ||
+          !ts.isPropertyAccessExpression(init.expression) ||
+          init.expression.name.text !== "stringify" ||
+          !this.isStdlibGlobal(init.expression.expression, "JSON")
+        )
+          return undefined;
+        if (!this.jsonStringifyMayAnswerUndefined(init)) return undefined;
+        const symbol = this.checker.getSymbolAtLocation(node.name);
+        if (!symbol) return undefined;
+        const widened = this.withUndefinedArm(STRING);
+        this.runtimeOptionalBindingTypes.set(symbol, widened);
+        const global = this.globalOf(node.name);
+        if (global && !typeEquals(global.type, widened)) global.type = widened;
+        return undefined;
+      });
+    }
+  }
+
   /** A Date's `toJSON()` answers null for an invalid date while the lib
    * types say `string`: unannotated bindings initialized by such a call,
    * and object-literal fields holding one, keep `string | null`. */
@@ -12380,21 +12453,10 @@ export class Lowerer {
         e.expression.name.text === "stringify" &&
         this.isStdlibGlobal(e.expression.expression, "JSON") &&
         !ts.isSpreadElement(e.arguments.nodes[0]!) &&
-        !jsonResultTextOnly(this, e)
-      ) {
-        // A JavaScript parameter has no mapping yet: its checker type says.
-        // An instance of a class with a toJSON method serializes what the
-        // method returns, which can be undefined too.
-        const root = this.typeOf(e.arguments.nodes[0]!);
-        const mapped = this.mapTypeOf(root);
-        if (
-          mapped?.kind === "dyn" ||
-          (mapped === null && (root.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) ||
-          (mapped?.kind === "object" &&
-            this.findMethodOn(this.classes.get(mapped.className) ?? null, "toJSON") !== null)
-        )
-          return true;
-      }
+        !jsonResultTextOnly(this, e) &&
+        this.jsonStringifyMayAnswerUndefined(e)
+      )
+        return true;
       if (
         ts.isCallExpression(e) &&
         ts.isPropertyAccessExpression(e.expression) &&
@@ -15381,6 +15443,7 @@ export class Lowerer {
       for (const symbol of this.jsWidenedBindings)
         this.runtimeOptionalBindingTypes.set(symbol, DYN);
       this.analyzeDateJsonResults(parts);
+      this.analyzeJsonStringifyBindings(parts);
       this.analyzeGuardedRecordReadGlobals(parts);
       this.analyzeJsWidenedBindings(parts);
       this.widenRetypedOperatorBindings(parts);
@@ -16219,6 +16282,7 @@ export class Lowerer {
         for (const symbol of this.jsWidenedBindings)
           this.runtimeOptionalBindingTypes.set(symbol, DYN);
         this.analyzeDateJsonResults(parts);
+        this.analyzeJsonStringifyBindings(parts);
         this.analyzeGuardedRecordReadGlobals(parts);
         this.analyzeJsWidenedBindings(parts);
         this.widenRetypedOperatorBindings(parts);
@@ -21690,6 +21754,14 @@ export class Lowerer {
     const type = withUndefinedArmCanonical(t, this.unions);
     this.addedUndefinedArms.set(t.unionId, { type, unions: this.unions.revision });
     return type;
+  }
+
+  /** IR-level `t | null` through the shared canonicalizer. Null when the
+   * type cannot take the arm. A checked-dynamic dictionary read answers a
+   * null cell whatever the index value type says, so the read's value type
+   * keeps it beside the undefined arm. */
+  withNullArmOf(t: IrType): IrType | null {
+    return withNullArmCanonical(t, this.unions);
   }
 
   /** The join of two IR arm types under the union-mapping rules

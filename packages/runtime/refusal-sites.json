@@ -2155,7 +2155,7 @@
  },
  {
   "file": "scr_worker_events.c",
-  "function": "scr_worker_transfer_list",
+  "function": "scr_worker_transfer_list_form",
   "message": "This postMessage transfer argument is not supported yet",
   "code": "SC2020"
  },

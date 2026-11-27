@@ -25,6 +25,7 @@ import {
   checkPreflight,
   isCjsJsFile,
   isNodeTypesPath,
+  isRequireCallee,
   locOf,
   npmStaticDepSf7,
   npmStaticLoadableFiles,
@@ -55,7 +56,6 @@ import { lowerToIr, type LowerOptions, type LowerResult } from "./lowering/lower
 import type { FrontendServices } from "./services.js";
 import type { Ladder, LadderRung } from "./npm-static-ladder.js";
 import {
-  isIdentifier,
   isImportDeclaration,
   isExportDeclaration,
   isStringLiteral,
@@ -219,7 +219,7 @@ function addDynamicImportGraph(load: LoadResult, scanned: Set<SourceFile>): void
       if (arg === undefined || !isStringLiteralLike(arg)) continue;
       if (call.expression.kind === SyntaxKind.ImportKeyword)
         specs.push({ spec: arg.text, kind: "import" });
-      else if (packageJs && isIdentifier(call.expression) && call.expression.text === "require")
+      else if (packageJs && isRequireCallee(call.expression, load.program.getTypeChecker()))
         specs.push({ spec: arg.text, kind: "require" });
     }
     // The startup graph's static edges are already in the module order.
@@ -295,7 +295,7 @@ function addLazyRequireGraph(load: LoadResult, scanned: Set<SourceFile>): void {
       if (arg === undefined || !isStringLiteralLike(arg)) continue;
       if (call.expression.kind === SyntaxKind.ImportKeyword)
         specs.push({ spec: arg.text, kind: "import" });
-      else if (isIdentifier(call.expression) && call.expression.text === "require")
+      else if (isRequireCallee(call.expression, load.program.getTypeChecker()))
         specs.push({ spec: arg.text, kind: "require" });
     }
     for (const { spec, kind } of specs) {
@@ -446,8 +446,7 @@ function detectAutoPackages(
         if (
           arg === undefined ||
           !isStringLiteralLike(arg) ||
-          !isIdentifier(call.expression) ||
-          call.expression.text !== "require"
+          !isRequireCallee(call.expression, load.program.getTypeChecker())
         )
           continue;
         const loc = locOf(call);
@@ -464,7 +463,7 @@ function detectAutoPackages(
           arg !== undefined &&
           isStringLiteralLike(arg) &&
           (call.expression.kind === SyntaxKind.ImportKeyword ||
-            (isIdentifier(call.expression) && call.expression.text === "require"))
+            isRequireCallee(call.expression, load.program.getTypeChecker()))
         )
           edges.push({ spec: arg.text, loc: locOf(call) });
       }

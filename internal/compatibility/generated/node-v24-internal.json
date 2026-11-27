@@ -72699,7 +72699,9 @@
           "tests/corpus/module-class-instance/main.cjs",
           "tests/corpus/module-class-statics/main.cjs",
           "tests/corpus/module-require-esm/main.cjs",
-          "tests/corpus/module-require-extensions/main.cjs"
+          "tests/corpus/module-require-extensions/main.cjs",
+          "tests/corpus/module-require-literal/main.cjs",
+          "tests/corpus/module-require-shadowed/main.cjs"
         ]
       },
       "anchorSource": "chapter"
@@ -72733,7 +72735,9 @@
           "tests/corpus/2923-cjs-factory-export/main.cjs",
           "tests/corpus/cjs-module-object-metadata/main.cjs",
           "tests/corpus/cjs-module-alias-values/main.cjs",
-          "tests/corpus/module-require-esm/main.cjs"
+          "tests/corpus/module-require-esm/main.cjs",
+          "tests/corpus/module-require-literal/main.cjs",
+          "tests/corpus/module-require-shadowed/main.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -72790,7 +72794,9 @@
           "tests/corpus/2923-cjs-factory-export/main.cjs",
           "tests/corpus/cjs-module-object-metadata/main.cjs",
           "tests/corpus/cjs-module-alias-values/main.cjs",
-          "tests/corpus/module-require-esm/main.cjs"
+          "tests/corpus/module-require-esm/main.cjs",
+          "tests/corpus/module-require-literal/main.cjs",
+          "tests/corpus/module-require-shadowed/main.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -72824,7 +72830,9 @@
           "tests/corpus/2923-cjs-factory-export/main.cjs",
           "tests/corpus/cjs-module-object-metadata/main.cjs",
           "tests/corpus/cjs-module-alias-values/main.cjs",
-          "tests/corpus/module-require-esm/main.cjs"
+          "tests/corpus/module-require-esm/main.cjs",
+          "tests/corpus/module-require-literal/main.cjs",
+          "tests/corpus/module-require-shadowed/main.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -72858,7 +72866,9 @@
           "tests/corpus/2923-cjs-factory-export/main.cjs",
           "tests/corpus/cjs-module-object-metadata/main.cjs",
           "tests/corpus/cjs-module-alias-values/main.cjs",
-          "tests/corpus/module-require-esm/main.cjs"
+          "tests/corpus/module-require-esm/main.cjs",
+          "tests/corpus/module-require-literal/main.cjs",
+          "tests/corpus/module-require-shadowed/main.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -72919,7 +72929,9 @@
           "tests/corpus/2923-cjs-factory-export/main.cjs",
           "tests/corpus/cjs-module-object-metadata/main.cjs",
           "tests/corpus/cjs-module-alias-values/main.cjs",
-          "tests/corpus/module-require-esm/main.cjs"
+          "tests/corpus/module-require-esm/main.cjs",
+          "tests/corpus/module-require-literal/main.cjs",
+          "tests/corpus/module-require-shadowed/main.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -73067,7 +73079,9 @@
           "tests/corpus/2923-cjs-factory-export/main.cjs",
           "tests/corpus/cjs-module-object-metadata/main.cjs",
           "tests/corpus/cjs-module-alias-values/main.cjs",
-          "tests/corpus/module-require-esm/main.cjs"
+          "tests/corpus/module-require-esm/main.cjs",
+          "tests/corpus/module-require-literal/main.cjs",
+          "tests/corpus/module-require-shadowed/main.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -73128,7 +73142,9 @@
           "tests/corpus/2923-cjs-factory-export/main.cjs",
           "tests/corpus/cjs-module-object-metadata/main.cjs",
           "tests/corpus/cjs-module-alias-values/main.cjs",
-          "tests/corpus/module-require-esm/main.cjs"
+          "tests/corpus/module-require-esm/main.cjs",
+          "tests/corpus/module-require-literal/main.cjs",
+          "tests/corpus/module-require-shadowed/main.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -73194,7 +73210,9 @@
           "tests/corpus/2923-cjs-factory-export/main.cjs",
           "tests/corpus/cjs-module-object-metadata/main.cjs",
           "tests/corpus/cjs-module-alias-values/main.cjs",
-          "tests/corpus/module-require-esm/main.cjs"
+          "tests/corpus/module-require-esm/main.cjs",
+          "tests/corpus/module-require-literal/main.cjs",
+          "tests/corpus/module-require-shadowed/main.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -73228,7 +73246,9 @@
           "tests/corpus/2923-cjs-factory-export/main.cjs",
           "tests/corpus/cjs-module-object-metadata/main.cjs",
           "tests/corpus/cjs-module-alias-values/main.cjs",
-          "tests/corpus/module-require-esm/main.cjs"
+          "tests/corpus/module-require-esm/main.cjs",
+          "tests/corpus/module-require-literal/main.cjs",
+          "tests/corpus/module-require-shadowed/main.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -73262,7 +73282,9 @@
           "tests/corpus/2923-cjs-factory-export/main.cjs",
           "tests/corpus/cjs-module-object-metadata/main.cjs",
           "tests/corpus/cjs-module-alias-values/main.cjs",
-          "tests/corpus/module-require-esm/main.cjs"
+          "tests/corpus/module-require-esm/main.cjs",
+          "tests/corpus/module-require-literal/main.cjs",
+          "tests/corpus/module-require-shadowed/main.cjs"
         ]
       },
       "anchorSource": "ancestor"

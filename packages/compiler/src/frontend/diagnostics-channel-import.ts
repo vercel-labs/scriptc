@@ -6,6 +6,7 @@
  * so the channel machinery and the runtime families it formats through are
  * not linked into it. */
 import * as ts from "./ts7/adapter.js";
+import { isRequireCallee } from "./require-callee.js";
 
 const MODULES: ReadonlySet<string> = new Set(["diagnostics_channel", "node:diagnostics_channel"]);
 
@@ -30,7 +31,7 @@ function importsChannel(file: ts.SourceFile): boolean {
     if (ts.isCallExpression(node)) {
       const callee = node.expression;
       const dynamic = callee.kind === ts.SyntaxKind.ImportKeyword;
-      const required = ts.isIdentifier(callee) && callee.text === "require";
+      const required = isRequireCallee(callee);
       if (dynamic || required) {
         const text = moduleText(node.arguments.nodes[0]);
         if (text !== null && MODULES.has(text)) return true;

@@ -1,4 +1,5 @@
 import { memberCallReceivers, type MemberCallReceivers } from "./member-call-receivers.js";
+import { isRequireCallee } from "../require-callee.js";
 import { writeFileSync } from "node:fs";
 import { unshareAcrossFunctions } from "../../ir/unshare.js";
 import { programCreatesWrappers, routeWrapperConsumers } from "./primitive-wrappers.js";
@@ -560,6 +561,7 @@ import {
   isCjsRequireGlobal,
   isNodeModuleHandle,
   prepareCjsModuleGraph,
+  readsWrittenModuleRequireValue,
   untypedModuleValueFence,
   usesCjsTopLevelThis,
 } from "./lower-node-module.js";
@@ -3505,6 +3507,70 @@ export interface CjsConditionalExportMirror {
 
 /** The program module a createRequire binding requires. */
 type CreateRequireTarget = NonNullable<ReturnType<typeof createRequireProgramModuleOf>>;
+
+/** Files that assign the `module` object's own `require` member (by name, a
+ * literal computed key, or `delete`): Node's require function delegates to
+ * `module.require`, so such a file calls the replacement, not the loader. */
+const moduleRequireWrites = new WeakMap<ts.SourceFile, boolean>();
+
+/** `require` or `module.require` as a call's callee shape. */
+function requireShapedCallee(callee: ts.Expression): boolean {
+  let e: ts.Expression = callee;
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  if (ts.isIdentifier(e)) return e.text === "require";
+  return (
+    ts.isPropertyAccessExpression(e) &&
+    !e.questionDotToken &&
+    e.name.text === "require" &&
+    ts.isIdentifier(e.expression) &&
+    e.expression.text === "module"
+  );
+}
+
+/** `module.require` as an assignment target or a `delete` operand. */
+function isModuleRequireTarget(node: ts.Expression): boolean {
+  let e: ts.Expression = node;
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  if (ts.isPropertyAccessExpression(e) && !e.questionDotToken && e.name.text === "require")
+    return ts.isIdentifier(e.expression) && e.expression.text === "module";
+  if (
+    ts.isElementAccessExpression(e) &&
+    !e.questionDotToken &&
+    ts.isIdentifier(e.expression) &&
+    e.expression.text === "module"
+  ) {
+    let key: ts.Expression = e.argumentExpression;
+    while (ts.isParenthesizedExpression(key)) key = key.expression;
+    return ts.isStringLiteralLike(key) && key.text === "require";
+  }
+  return false;
+}
+
+/** Whether `sf` assigns the module object's own `require`. */
+function writesModuleRequireFile(sf: ts.SourceFile): boolean {
+  const cached = moduleRequireWrites.get(sf);
+  if (cached !== undefined) return cached;
+  let found = false;
+  ts.walkPreorder(sf, (n) => {
+    if (found) return "stop";
+    if (
+      ts.isBinaryExpression(n) &&
+      n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+      n.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
+      isModuleRequireTarget(n.left)
+    ) {
+      found = true;
+      return "stop";
+    }
+    if (ts.isDeleteExpression(n) && isModuleRequireTarget(n.expression)) {
+      found = true;
+      return "stop";
+    }
+    return undefined;
+  });
+  moduleRequireWrites.set(sf, found);
+  return found;
+}
 
 export class Lowerer {
   readonly frontendServices: FrontendServices | undefined;
@@ -9406,11 +9472,7 @@ export class Lowerer {
           ? spec.text
           : null;
       }
-      if (
-        ts.isIdentifier(value.expression) &&
-        value.expression.text === "require" &&
-        value.arguments.nodes.length === 1
-      ) {
+      if (isRequireCallee(value.expression) && value.arguments.nodes.length === 1) {
         const spec = value.arguments.nodes[0]!;
         if (ts.isStringLiteralLike(spec) && this.externalTypes.has(spec.text)) return spec.text;
       }
@@ -9943,7 +10005,7 @@ export class Lowerer {
       const interop = tscInteropModuleOf(this, expr);
       if (interop !== null) return cjsNamespaceModule(this, interop.dep) ? interop.dep : null;
     }
-    const directSpec = requireSpecOf(decl.initializer);
+    const directSpec = requireSpecOf(decl.initializer, this.checker);
     if (directSpec !== null) {
       if (isJsonRequireDecl(this, decl)) return null;
       return (
@@ -9967,7 +10029,7 @@ export class Lowerer {
     if (stmt === undefined || !ts.isVariableStatement(stmt) || !ts.isSourceFile(stmt.parent))
       return null;
     if (!isJsSourceFile(stmt.parent) || decl.initializer === undefined) return null;
-    const spec = requireSpecOf(decl.initializer);
+    const spec = requireSpecOf(decl.initializer, this.checker);
     if (spec === null) return null;
     const sf = stmt.parent;
     const dep =
@@ -18460,6 +18522,11 @@ export class Lowerer {
     // A binding initialized from such a read (and every use of it) holds
     // the read's value, not the type the checker inferred through the
     // original module.
+    // A value read out of the module.require a file writes — the call, a
+    // member read through its result, or a binding initialized with one —
+    // holds whatever the replacement returned.
+    if (isJsSourceFile(ts.getSourceFileOfNode(node)) && readsWrittenModuleRequireValue(this, node))
+      return this.checker.getAnyType();
     if (
       this.rebindableRequireDecls.size > 0 &&
       ts.isIdentifier(node) &&
@@ -25389,6 +25456,17 @@ export class Lowerer {
    * member access that IS a module in its own right (`fs.promises` — the
    * same object as node:fs/promises, Node's rule). Null otherwise. */
   builtinNamespaceModuleOf(expr: ts.Expression): string | null {
+    // A require call in a file that writes the module object's own `require`
+    // calls the replacement: it is not a namespace require.
+    if (
+      ts.isCallExpression(expr) &&
+      requireShapedCallee(expr.expression) &&
+      writesModuleRequireFile(ts.getSourceFileOfNode(expr))
+    )
+      return null;
+    // A binding that holds a written module.require(...) result is not a
+    // builtin namespace.
+    if (readsWrittenModuleRequireValue(this, expr)) return null;
     // A require binding the file reassigns owns checked-dynamic storage
     // (rebindable-requires.ts): its member reads and calls read that storage,
     // never the builtin's static surface.
@@ -25488,7 +25566,7 @@ export class Lowerer {
       // createRequire binding, the fallback-typed cast idiom stripped)
       // binds it too.
       if (ts.isVariableDeclaration(decl) && ts.isIdentifier(decl.name) && decl.initializer) {
-        const spec = requireSpecOf(decl.initializer);
+        const spec = requireSpecOf(decl.initializer, this.checker);
         if (spec !== null) return canonicalBuiltinModule(spec);
         const init = withoutParenthesesTypeWrappers(decl.initializer);
         if (ts.isCallExpression(init)) {
@@ -25514,7 +25592,7 @@ export class Lowerer {
         const name = decl.name;
         if (name === undefined || !ts.isIdentifier(name)) return null;
         const init = decl.parent.parent.initializer;
-        const spec = requireSpecOf(init);
+        const spec = requireSpecOf(init, this.checker);
         const outer =
           spec !== null
             ? canonicalBuiltinModule(spec)
@@ -25530,7 +25608,7 @@ export class Lowerer {
     // off the module object; a supported module's members key the same
     // tables as any namespace binding).
     {
-      const spec = requireSpecOf(expr);
+      const spec = requireSpecOf(expr, this.checker);
       if (spec !== null) return canonicalBuiltinModule(spec);
     }
     // The createRequire spelling of the same inline form:
@@ -25567,7 +25645,7 @@ export class Lowerer {
     if (
       ts.isPropertyAccessExpression(expr) &&
       !expr.questionDotToken &&
-      (ts.isIdentifier(expr.expression) || requireSpecOf(expr.expression) !== null)
+      (ts.isIdentifier(expr.expression) || requireSpecOf(expr.expression, this.checker) !== null)
     ) {
       const outer = this.builtinNamespaceModuleOf(expr.expression);
       if (outer === null) return null;
@@ -25614,7 +25692,7 @@ export class Lowerer {
       if (e.expression.kind === ts.SyntaxKind.ImportKeyword) return "esm";
       // require() and process.getBuiltinModule() answer the CommonJS
       // exports object.
-      if (requireSpecOf(e) !== null) return "cjs";
+      if (requireSpecOf(e, this.checker) !== null) return "cjs";
       const cr = createRequireSpecOf(this, e);
       if (cr !== null && cr.spec !== null) return "cjs";
       if (
@@ -25672,6 +25750,9 @@ export class Lowerer {
     // A member read through a require binding the file reassigns reads that
     // binding's storage, not the builtin's static surface.
     if (reboundRequireBindingOf(this, access.expression) !== null) return null;
+    // A binding that holds a written module.require(...) result answers the
+    // program's replacement, not the module the checker inferred.
+    if (readsWrittenModuleRequireValue(this, access.expression)) return null;
     // A guarded step keeps its chain lowering, except one the chain lowering
     // has already found to be a plain access (a namespace is never nullish).
     if (access.questionDotToken && !this.chainHandled.has(access)) return null;

@@ -18,6 +18,7 @@
  * Node's cache identity holds), live reads, and a read-only surface where
  * Node's exports object accepts writes. */
 import { resolve } from "node:path";
+import { isCjsRequireCallee } from "./require-callee-lowering.js";
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
 import { tsgoPath } from "../dts-paths.js";
@@ -411,13 +412,14 @@ export function inlineProgramRequireOf(
 ): InlineRequire | null {
   let e = expr;
   while (ts.isParenthesizedExpression(e)) e = e.expression;
-  if (!ts.isCallExpression(e) || !ts.isIdentifier(e.expression)) return null;
-  const spec = requireSpecOf(e);
+  if (!ts.isCallExpression(e) || !isCjsRequireCallee(lowerer, e.expression)) return null;
+  const spec = requireSpecOf(e, lowerer.checker);
   if (spec === null || canonicalBuiltinModule(spec) !== null) return null;
   const sf = ts.getSourceFileOfNode(e);
   if (!isCjsJsFile(sf, lowerer.program)) return null;
-  if (!isCjsRequireGlobal(lowerer, e.expression)) return null;
-  if (createRequireCalleeFileOf(lowerer, e.expression) !== null) return null;
+  if (ts.isIdentifier(e.expression) && !isCjsRequireGlobal(lowerer, e.expression)) return null;
+  if (ts.isIdentifier(e.expression) && createRequireCalleeFileOf(lowerer, e.expression) !== null)
+    return null;
   const dep =
     lowerer.facts.importedModule(sf, spec, "require") ??
     lowerer.facts.npmStaticModule(sf, spec, "require");
@@ -465,7 +467,7 @@ export function cjsExportEvaluations(lowerer: Lowerer, dep: ts.SourceFile): CjsE
         if (names(sf, argument.text, "import")) found.imported = true;
         return undefined;
       }
-      const spec = requireSpecOf(node);
+      const spec = requireSpecOf(node, lowerer.checker);
       if (spec === null || !names(sf, spec, "require")) return undefined;
       for (let p: ts.Node | undefined = node.parent; p !== undefined; p = p.parent)
         if (
@@ -1497,12 +1499,17 @@ export function lowerUncompiledRequireCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
 ): IrExpr | null {
-  if (!ts.isIdentifier(call.expression) || call.expression.text !== "require") return null;
+  if (!isCjsRequireCallee(lowerer, call.expression)) return null;
   const sf = ts.getSourceFileOfNode(call);
-  if (!isCjsJsFile(sf, lowerer.program) || !isCjsRequireGlobal(lowerer, call.expression))
+  if (!isCjsJsFile(sf, lowerer.program)) return null;
+  if (ts.isIdentifier(call.expression) && !isCjsRequireGlobal(lowerer, call.expression))
     return null;
-  if (createRequireCalleeFileOf(lowerer, call.expression) !== null) return null;
-  const spec = requireSpecOf(call);
+  if (
+    ts.isIdentifier(call.expression) &&
+    createRequireCalleeFileOf(lowerer, call.expression) !== null
+  )
+    return null;
+  const spec = requireSpecOf(call, lowerer.checker);
   if (spec === null) {
     lowerer.unsupported(
       "SC1090",
@@ -1540,9 +1547,12 @@ export function lowerUncompiledRequireCall(
  * declaration over a program module whose nested pattern destructures the
  * named export's value (preflight admits exactly these). Plain elements
  * stay alias plumbing. */
-export function requireNestedPatternsOf(decl: ts.VariableDeclaration): ts.BindingElement[] {
+export function requireNestedPatternsOf(
+  decl: ts.VariableDeclaration,
+  checker: ts.TypeChecker,
+): ts.BindingElement[] {
   if (!ts.isObjectBindingPattern(decl.name) || decl.initializer === undefined) return [];
-  const spec = requireSpecOf(decl.initializer);
+  const spec = requireSpecOf(decl.initializer, checker);
   if (spec === null || canonicalBuiltinModule(spec) !== null) return [];
   if (!isJsSourceFile(ts.getSourceFileOfNode(decl))) return [];
   return decl.name.elements.nodes.filter(
@@ -1561,9 +1571,12 @@ export function requireNestedPatternsOf(decl: ts.VariableDeclaration): ts.Bindin
  * Node copies the module's remaining own enumerable exports into a fresh
  * object at the require, which lower-stmts.ts materializes from the table's
  * statically known members. */
-export function requireRestElementsOf(decl: ts.VariableDeclaration): ts.BindingElement[] {
+export function requireRestElementsOf(
+  decl: ts.VariableDeclaration,
+  checker: ts.TypeChecker,
+): ts.BindingElement[] {
   if (!ts.isObjectBindingPattern(decl.name) || decl.initializer === undefined) return [];
-  const spec = requireSpecOf(decl.initializer);
+  const spec = requireSpecOf(decl.initializer, checker);
   if (spec === null || canonicalBuiltinModule(spec) !== null) return [];
   if (!isJsSourceFile(ts.getSourceFileOfNode(decl))) return [];
   return decl.name.elements.nodes.filter(

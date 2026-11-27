@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/module-require-shadowed-builtin/main.cjs"
+ ],
+ "diags": []
+}

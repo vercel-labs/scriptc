@@ -3,6 +3,7 @@ import {
   cjsExportStatementObjectWrites,
   lowerCjsExportsObjectWrite,
 } from "./cjs-exports-object-value.js";
+import { isCjsRequireCallee } from "./require-callee-lowering.js";
 import { lowerStaticPrivateAssignment } from "./private-statics.js";
 import { requireLiveBytes } from "./buffers.js";
 import type { DiagnosticCode } from "../../diagnostics/codes.js";
@@ -3042,6 +3043,21 @@ export function lowerVarStatement(lowerer: Lowerer, stmt: ts.VariableStatement):
  * snapshots (a nested declaration included — Node reads each pattern
  * element from the exports object once, so a binding never tracks a later
  * export write or re-runs a getter). */
+/** The callee of a require call, unwrapping the parentheses and type
+ * wrappers requireSpecOf accepts (`(require("./m"))` is the same require). */
+function requireCalleeOf(init: ts.Expression): ts.Expression | null {
+  let value = init;
+  while (
+    ts.isParenthesizedExpression(value) ||
+    ts.isAsExpression(value) ||
+    ts.isTypeAssertion(value) ||
+    ts.isSatisfiesExpression(value) ||
+    ts.isNonNullExpression(value)
+  )
+    value = value.expression;
+  return ts.isCallExpression(value) ? value.expression : null;
+}
+
 function lowerRequireDeclaration(
   lowerer: Lowerer,
   decl: ts.VariableDeclaration,
@@ -3099,7 +3115,7 @@ function lowerRequireDeclaration(
   // Snapshot bindings and nested patterns evaluate in pattern order,
   // immediately after the required module has initialized.
   const snapshots = cjsRequireSnapshotBindingsOf(lowerer, decl);
-  const nested = new Set(requireNestedPatternsOf(decl));
+  const nested = new Set(requireNestedPatternsOf(decl, lowerer.checker));
   if (ts.isObjectBindingPattern(decl.name)) {
     for (const element of decl.name.elements.nodes) {
       const binding = snapshots?.bindings.get(element);
@@ -3171,7 +3187,7 @@ function lowerRequireDeclaration(
   // statically known members are exactly those properties, each read
   // from its export global into a dynamic object (the binding's own
   // checker type is `any`, so this is its represented form).
-  for (const element of requireRestElementsOf(decl)) {
+  for (const element of requireRestElementsOf(decl, lowerer.checker)) {
     const dep = lowerer.cjsRequireRestTableOf(decl);
     const names = dep === null ? null : cjsTableExportNamesInOrder(lowerer, dep);
     if (dep === null || names === null) {
@@ -3293,6 +3309,23 @@ function lowerVarDeclarator(
       return lowered ? [lowered] : [];
     }
   }
+  // A JSON document required through the module object: Node types
+  // Module#require as `any`, so the binding has no structural type of its
+  // own (the bare require spelling gets one from TypeScript's require-call
+  // analysis). The binding stores the document in its checked-dynamic form,
+  // as any other JS binding of an untyped value does.
+  if (
+    decl.initializer !== undefined &&
+    ts.isIdentifier(decl.name) &&
+    isJsonRequireDecl(lowerer, decl)
+  ) {
+    const symbol = lowerer.checker.getSymbolAtLocation(decl.name);
+    const mapped = lowerer.mapTypeOf(lowerer.typeOf(decl.name));
+    if (symbol !== undefined && (mapped === null || mapped.kind === "dyn")) {
+      lowerer.runtimeOptionalBindingTypes.set(symbol, DYN);
+      lowerer.jsWidenedBindings.add(symbol);
+    }
+  }
   // CommonJS require declarations (JS files): at the module's top
   // level the BINDINGS are alias plumbing (no storage;
   // resolveValueSymbol routes the reads), but the require itself is
@@ -3302,14 +3335,17 @@ function lowerVarDeclarator(
   // load nothing). Binding requires anywhere else would need lazily-
   // initialized alias storage this model doesn't represent; named
   // fence.
+  const requireCallee = decl.initializer === undefined ? null : requireCalleeOf(decl.initializer);
   if (
     decl.initializer !== undefined &&
-    requireSpecOf(decl.initializer) !== null &&
+    requireCallee !== null &&
+    requireSpecOf(decl.initializer, lowerer.checker) !== null &&
+    isCjsRequireCallee(lowerer, requireCallee) &&
     !isNativeFfiRequire(lowerer, decl.initializer) &&
     !isJsonRequireDecl(lowerer, decl) &&
     isJsSourceFile(ts.getSourceFileOfNode(decl))
   ) {
-    const spec = requireSpecOf(decl.initializer)!;
+    const spec = requireSpecOf(decl.initializer, lowerer.checker)!;
     if (lowerer.externalTypes.has(spec)) lowerer.externalHostFence(spec, decl, false);
     // A relative path that names no file: Node throws at the declaration,
     // before the binding exists, wherever the declaration sits.
@@ -7786,7 +7822,11 @@ export function inferredEvolvingLetType(
  * JavaScript functions, and implicit generic methods, infer theirs, and a
  * `require(...)` result is a module rather than a value of its type. */
 function stdlibDeclaredCall(lowerer: Lowerer, call: ts.CallExpression): boolean {
-  if (implicitMethodCallInfersReturn(lowerer, call) || requireSpecOf(call) !== null) return false;
+  if (
+    implicitMethodCallInfersReturn(lowerer, call) ||
+    requireSpecOf(call, lowerer.checker) !== null
+  )
+    return false;
   const declaration = lowerer.checker.getResolvedSignature(call)?.declaration;
   return declaration !== undefined && lowerer.isStdlibFile(ts.getSourceFileOfNode(declaration));
 }
@@ -7932,7 +7972,7 @@ export function lowerVarDecl(
   // clothing: builtinImportOf resolves uses through the module tables;
   // the declaration is alias plumbing and emits nothing (collectGlobals
   // skipped its global by the same test).
-  if (builtinMemberRequireDecl(decl.name, decl.initializer)) return null;
+  if (builtinMemberRequireDecl(decl.name, decl.initializer, lowerer.checker)) return null;
 
   // `const require = createRequire(import.meta.url)` — compile-time
   // plumbing: each call through the binding resolves per site
@@ -11233,7 +11273,7 @@ function lowerCjsExportStatement(
     if (ts.isSpreadAssignment(prop)) {
       let inner: ts.Expression = prop.expression;
       while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
-      if (requireSpecOf(inner) !== null) {
+      if (requireSpecOf(inner, lowerer.checker) !== null) {
         // The spread still EVALUATES the module, at its place among the
         // table's entries (a program module joins the graph through this
         // inline require; cjs-inline-require.ts).
@@ -11783,7 +11823,7 @@ export function lowerExprStatement(
     }
   }
   if (
-    requireSpecOf(expr) !== null &&
+    requireSpecOf(expr, lowerer.checker) !== null &&
     ts.isCallExpression(expr) &&
     ts.isIdentifier(expr.expression) &&
     // A binding NAMED require made by createRequire is not the CJS
@@ -11791,7 +11831,7 @@ export function lowerExprStatement(
     createRequireCalleeFileOf(lowerer, expr.expression) === null
   ) {
     const sf = ts.getSourceFileOfNode(expr);
-    const spec = requireSpecOf(expr)!;
+    const spec = requireSpecOf(expr, lowerer.checker)!;
     if (lowerer.externalTypes.has(spec)) lowerer.externalHostFence(spec, expr, false);
     // A bare require of a package NOTHING INSTALLED resolves, in ANY
     // CommonJS JS file (the export-assignment spellings tsgo marks

@@ -115,7 +115,11 @@ export function markRequireEarlyBindings(lowerer: Lowerer): void {
       if (!ts.isVariableStatement(stmt)) continue;
       if ((stmt.declarationList.flags & (ts.NodeFlags.Const | ts.NodeFlags.Let)) === 0) continue;
       for (const decl of stmt.declarationList.declarations.nodes) {
-        if (decl.initializer === undefined || requireSpecOf(decl.initializer) === null) continue;
+        if (
+          decl.initializer === undefined ||
+          requireSpecOf(decl.initializer, lowerer.checker) === null
+        )
+          continue;
         if (!always && requireEarlyReference(lowerer.program, decl) === null) continue;
         declared.push({ decl, stmt });
       }

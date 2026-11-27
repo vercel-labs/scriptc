@@ -1,4 +1,5 @@
 import { lowerHistogramStatsMethodCall } from "./builtins/histogram-stats.js";
+import { isCjsRequireCallee } from "./require-callee-lowering.js";
 import { isCheckerPanic } from "../../diagnostics/diagnostic.js";
 import { reboundRequireBindingOf } from "./rebindable-requires.js";
 import { voidTruthinessNeedsRuntimeValue } from "../tsc-codes.js";
@@ -380,8 +381,8 @@ import {
 import { fenceExpandoRead } from "./lower-expando.js";
 import {
   fenceNodeModuleMutationCall,
-  isCjsRequireGlobal,
   lowerModuleClassStaticCall,
+  lowerModuleRequireCall,
   lowerRequireCacheKeys,
 } from "./lower-node-module.js";
 import { builtinConstantsObject, pathModuleValue } from "./lower-builtin-values.js";
@@ -923,9 +924,7 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   // module has no `require`, so there the call reads the binding and throws
   // Node's ReferenceError (lowerIdentifierExpr).
   if (
-    ts.isIdentifier(expr.expression) &&
-    expr.expression.text === "require" &&
-    isCjsRequireGlobal(lowerer, expr.expression) &&
+    isCjsRequireCallee(lowerer, expr.expression) &&
     !isNodeEsmFile(ts.getSourceFileOfNode(expr), lowerer.program)
   ) {
     const module = lowerer.builtinNamespaceModuleOf(expr);
@@ -1187,7 +1186,7 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     const receiver =
       access &&
       !lowerer.isStdlibGlobal(access.expression, "console") &&
-      requireSpecOf(access.expression) === null &&
+      requireSpecOf(access.expression, lowerer.checker) === null &&
       created?.spec !== "node:console" &&
       created?.spec !== "console"
         ? lowerer.lowerExpr(access.expression)
@@ -2513,6 +2512,11 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     // (m.keys(), p.then(f), Object.keys(o)) or an unlowered call FORM of
     // a lowered one (Math.min with three arguments, s.padStart(8),
     // x.toFixed()).
+    // A file that writes the module object's own `require` calls the
+    // replacement (Node's require function delegates to it), so the callee is
+    // an ordinary member read rather than the loader.
+    const writtenRequire = lowerModuleRequireCall(lowerer, expr);
+    if (writtenRequire !== null) return writtenRequire;
     lowerer.stdlibMemberFence(expr.expression);
     // The npm METHOD-CALL chokepoint: a call on a package-typed receiver
     // in a static build — attributed to the package.

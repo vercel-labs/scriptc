@@ -1,4 +1,5 @@
 import * as ts from "./ts7/syntax.js";
+import { isRequireCallee } from "./require-callee.js";
 import { tokenStartOfNode } from "./ts7/node-functions.js";
 
 export interface CjsLexedExports {
@@ -56,7 +57,7 @@ function identPrefixOf(node: ts.Node, sf: ts.SourceFile): string {
 /** The bare `require('spec')` call merve recognizes. */
 export function bareRequireSpecOf(e: ts.Node): string | null {
   if (!ts.isCallExpression(e) || e.questionDotToken !== undefined) return null;
-  if (!ts.isIdentifier(e.expression) || e.expression.text !== "require") return null;
+  if (!isRequireCallee(e.expression)) return null;
   if (e.arguments.nodes.length !== 1) return null;
   const arg = e.arguments.nodes[0]!;
   return ts.isStringLiteral(arg) ? arg.text : null;

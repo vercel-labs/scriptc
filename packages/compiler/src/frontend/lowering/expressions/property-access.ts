@@ -192,6 +192,8 @@ import {
 import {
   isCjsModuleGlobal,
   lowerModuleClassStatic,
+  lowerModuleRequireMember,
+  lowerModuleRequireResultMember,
   lowerModuleViewMember,
   lowerNodeModuleProperty,
   lowerRequireCacheValue,
@@ -566,6 +568,10 @@ export function lowerPropertyAccessExpr(
   expr: ts.PropertyAccessExpression,
   loc: SrcLoc,
 ): IrExpr {
+  // A member on a stored written-module.require result reads dynamically:
+  // the checker typed the binding from the module the specifier names.
+  const requireResultMember = lowerModuleRequireResultMember(lowerer, expr);
+  if (requireResultMember) return requireResultMember;
   // `require.cache[file].member` (and the same read through a binding): the
   // Module view's live member, from the registry — Node's view is the
   // module's own object, so `exports` is the module's exports object.
@@ -1010,6 +1016,9 @@ export function lowerPropertyAccessExpr(
   }
   const requireMain = lowerRequireMainProperty(lowerer, expr);
   if (requireMain) return requireMain;
+  // `module.require` in a file that writes that member reads the replacement.
+  const moduleRequire = lowerModuleRequireMember(lowerer, expr);
+  if (moduleRequire) return moduleRequire;
   // `require.cache` as a value: the live cache object (Module._cache is the
   // same object in Node).
   const requireCacheValue = lowerRequireCacheValue(lowerer, expr);

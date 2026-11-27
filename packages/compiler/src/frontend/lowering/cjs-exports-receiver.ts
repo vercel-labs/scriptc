@@ -34,6 +34,7 @@
  * A call of the same function with another receiver (detached, or through
  * `.call`) is compiled as before: the function body does not change. */
 import * as ts from "../ts7/adapter.js";
+import { isRequireCallee } from "../require-callee.js";
 import type { Lowerer } from "./lowerer.js";
 import { isCjsJsFile, locOf } from "../program.js";
 import { withoutParentheses } from "../outer-expressions.js";
@@ -209,8 +210,7 @@ function isLiteralRequire(node: ts.Expression): boolean {
   while (ts.isPropertyAccessExpression(value)) value = withoutParentheses(value.expression);
   return (
     ts.isCallExpression(value) &&
-    ts.isIdentifier(value.expression) &&
-    value.expression.text === "require" &&
+    isRequireCallee(value.expression) &&
     value.arguments.nodes.length === 1 &&
     ts.isStringLiteral(value.arguments.nodes[0]!)
   );

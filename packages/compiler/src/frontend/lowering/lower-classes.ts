@@ -1528,7 +1528,7 @@ export function builtinRequireBaseOf(lowerer: Lowerer, node: ts.Expression): Cla
   let expr = node;
   while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
   if (!ts.isCallExpression(expr) || !isJsSourceFile(expr.getSourceFile())) return null;
-  const spec = requireSpecOf(expr);
+  const spec = requireSpecOf(expr, lowerer.checker);
   if (spec === null || canonicalBuiltinModule(spec) !== "events") return null;
   if (!isCjsRequireGlobal(lowerer, expr.expression)) return null;
   return lowerer.classes.get(RUNTIME_EMITTER_CLASS) ?? null;
@@ -1604,7 +1604,7 @@ export function builtinStreamInfoOf(
       decl &&
       ts.isVariableDeclaration(decl) &&
       ((ts.getCombinedNodeFlags(decl) & ts.NodeFlags.Const) !== 0 ||
-        builtinMemberRequireDecl(decl.name, decl.initializer)) &&
+        builtinMemberRequireDecl(decl.name, decl.initializer, lowerer.checker)) &&
       decl.initializer !== undefined &&
       ts.isPropertyAccessExpression(decl.initializer) &&
       !decl.initializer.questionDotToken &&
@@ -1978,7 +1978,7 @@ export function builtinEmitterInfoOf(
       decl !== undefined &&
       ts.isVariableDeclaration(decl) &&
       ((ts.getCombinedNodeFlags(decl) & ts.NodeFlags.Const) !== 0 ||
-        builtinMemberRequireDecl(decl.name, decl.initializer)) &&
+        builtinMemberRequireDecl(decl.name, decl.initializer, lowerer.checker)) &&
       decl.initializer !== undefined &&
       ts.isPropertyAccessExpression(decl.initializer) &&
       !decl.initializer.questionDotToken &&

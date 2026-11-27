@@ -27,6 +27,7 @@
  * specifier inside a comment or string can only add a candidate (an extra
  * shared module), never lose one. */
 import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { isRequireCallee } from "../require-callee.js";
 import { resolveFrom } from "../../node-islands/host.js";
 import { join } from "node:path";
 import * as ts from "../ts7/adapter.js";
@@ -336,8 +337,7 @@ function inertInitializer(node: ts.Expression): boolean {
     );
   if (ts.isCallExpression(e))
     return (
-      ts.isIdentifier(e.expression) &&
-      e.expression.text === "require" &&
+      isRequireCallee(e.expression) &&
       e.arguments.nodes.length === 1 &&
       ts.isStringLiteralLike(e.arguments.nodes[0]!)
     );

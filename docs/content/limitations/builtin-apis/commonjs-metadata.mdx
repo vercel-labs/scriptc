@@ -2,4 +2,5 @@
   Cache deletion or reloading, metadata writes and `module.paths` mutation are unsupported.
   `require.extensions` reads Node's loader table (`require.extensions`'s keys, handler shapes, JSON form, prototype and frozenness), but a compiled program loads no module at run time: a handler refuses when called and a registered entry has no effect, and `Module._extensions` is not represented.
   Read-only access to `module.id`, `filename`, `path`, `paths`, `loaded`, `isPreloading`, `parent`, `children`, `require.main`, and `require.cache` lookup/enumeration compiles.
+  `module.require("<literal>")` resolves from the same module exactly as `require("<literal>")` does; a computed specifier is refused.
   The module object is an instance of `node:module`'s `Module`: `instanceof`, `Module.prototype` and `Object.getPrototypeOf(module)` answer as Node's do, while `new Module()` and the prototype's loading members (`require`, `load`, `_compile`) are refused because a compiled program loads no module at run time.

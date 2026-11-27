@@ -105,7 +105,7 @@ export function tscInteropBindingOfDecl(
   if (!ts.isIdentifier(callee)) return null;
   if (callee.text !== "__importDefault" && callee.text !== "__importStar") return null;
   if (!sf.statements.nodes.some((s) => tscHelperDeclName(s) === callee.text)) return null;
-  const spec = requireSpecOf(init.arguments.nodes[0]!);
+  const spec = requireSpecOf(init.arguments.nodes[0]!, lowerer.checker);
   if (spec === null) return null;
   const dep =
     lowerer.facts.importedModule(sf, spec, "require") ??

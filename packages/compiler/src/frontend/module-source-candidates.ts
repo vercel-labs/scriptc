@@ -1,4 +1,5 @@
 import * as ts from "./ts7/adapter.js";
+import { isRequireCallee } from "./require-callee.js";
 
 export interface ModuleSourceCandidates {
   calls: ts.CallExpression[];
@@ -39,7 +40,7 @@ export function moduleSourceCandidates(
         const arg = node.arguments.nodes[0];
         if (
           (node.expression.kind === ts.SyntaxKind.ImportKeyword ||
-            (ts.isIdentifier(node.expression) && node.expression.text === "require")) &&
+            isRequireCallee(node.expression)) &&
           arg !== undefined &&
           ts.isStringLiteralLike(arg)
         ) {

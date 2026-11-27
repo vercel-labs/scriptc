@@ -3008,7 +3008,7 @@ export function collectGlobals(
           !ts.isClassExpression(rhs) &&
           !ts.isObjectLiteralExpression(rhs) &&
           !(
-            requireSpecOf(rhs) !== null &&
+            requireSpecOf(rhs, lowerer.checker) !== null &&
             inlineProgramRequireOf(lowerer, rhs) !== null &&
             !hasMemberExports
           ) &&
@@ -3185,7 +3185,7 @@ export function collectGlobals(
     // (stdlibGlobalAliasDecl's require form) so reads through the
     // binding lower via the process surface.
     if (
-      isRequireStatement(stmt) &&
+      isRequireStatement(stmt, lowerer.checker) &&
       !(
         ts.isVariableStatement(stmt) &&
         stmt.declarationList.declarations.nodes.some(
@@ -3444,7 +3444,7 @@ export function collectGlobals(
       // named import in const clothing (builtinImportOf resolves uses)
       // — no global storage; the statement lowering skips it by the
       // same test.
-      if (builtinMemberRequireDecl(decl.name, decl.initializer)) continue;
+      if (builtinMemberRequireDecl(decl.name, decl.initializer, lowerer.checker)) continue;
       // `const require = createRequire(import.meta.url)` at file scope:
       // compile-time plumbing — no global storage; the statement
       // lowering skips it by the same test.
@@ -4412,7 +4412,7 @@ function requireAliasDecl(lowerer: Lowerer, decl: ts.VariableDeclaration): boole
   }
   return (
     decl.initializer !== undefined &&
-    requireSpecOf(decl.initializer) !== null &&
+    requireSpecOf(decl.initializer, lowerer.checker) !== null &&
     !isNativeFfiRequire(lowerer, decl.initializer) &&
     !isJsonRequireDecl(lowerer, decl) &&
     isJsSourceFile(decl.getSourceFile())
@@ -4438,7 +4438,7 @@ function registerRequireDeclBindings(
     stdlibGlobalAliasDecl(lowerer, decl.name, decl.initializer);
   const isLetList =
     (list.flags & ts.NodeFlags.Let) !== 0 || (list.flags & ts.NodeFlags.BlockScoped) === 0;
-  const names = requireNestedPatternsOf(decl).flatMap((element) =>
+  const names = requireNestedPatternsOf(decl, lowerer.checker).flatMap((element) =>
     boundIdentifiersOf(element.name!),
   );
   const snapshots = cjsRequireSnapshotBindingsOf(lowerer, decl);
@@ -4553,7 +4553,7 @@ function collectNestedVarGlobals(
       // statement sits (lowerVarDeclarator), so they own no storage.
       if (
         requireAliasDecl(lowerer, decl) &&
-        canonicalBuiltinModule(requireSpecOf(decl.initializer!)!) !== null
+        canonicalBuiltinModule(requireSpecOf(decl.initializer!, lowerer.checker)!) !== null
       )
         continue;
       for (const nameNode of boundIdentifiersOf(decl.name)) {

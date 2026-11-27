@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/module-require-parenthesized/child.cjs",
+  "<repo>/tests/corpus/module-require-parenthesized/main.cjs"
+ ],
+ "diags": []
+}

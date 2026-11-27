@@ -3429,12 +3429,19 @@ static void scr_detach_teardown(void) {
 }
 #endif
 
-#if defined(__linux__)
+#if defined(__linux__) || defined(__APPLE__)
 /* LLVM's profile writer. Instrumented builds (--profile-generate) link the
  * profile runtime, which writes the profile from an atexit handler that the
  * _Exit below skips, so the exit writes it first. Every other build leaves the
- * weak reference null. */
+ * weak reference null. Mach-O refuses an undefined weak reference in an
+ * executable, so macOS carries a hidden weak definition instead: the profile
+ * runtime's strong definition overrides it, and a build without the runtime
+ * calls the definition and writes nothing. */
+#if defined(__APPLE__)
+__attribute__((weak, visibility("hidden"))) int __llvm_profile_write_file(void) { return 0; }
+#else
 extern int __llvm_profile_write_file(void) __attribute__((weak));
+#endif
 #endif
 
 /* The shared exit sequence, after the code's exitCode-setter validation:
@@ -3467,8 +3474,10 @@ static void scr_process_exit_finish(int code) {
   scr_stdout_settle();
   fflush(stdout);
   scr_process_stdin_restore_mode();
-#if defined(__linux__)
+#if defined(__linux__) || defined(__APPLE__)
   if (__llvm_profile_write_file != NULL) (void)__llvm_profile_write_file();
+#endif
+#if defined(__linux__)
 #ifndef SCR_LIB
   if (scr_census_write != NULL) scr_census_write();
 #endif

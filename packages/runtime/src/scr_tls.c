@@ -1232,6 +1232,9 @@ typedef struct ScrTlsSock {
   size_t head_len;
   /* the 'secure' event's listeners */
   ScrNetLs secure_ls;
+  /* 'secure' listeners registered after the handshake's own emission has
+   * begun: they miss that one and join the live list for later emissions */
+  ScrNetLs secure_next_ls;
   bool settled; /* the socket closed: listeners added later never fire */
   /* a TLS 1.3 client sent no certificate to a server that requires one;
    * the alert goes out once the handshake is over */
@@ -2734,6 +2737,7 @@ static void scr_tls_free(void *tctx) {
   scr_bytes_release(t->ticket_cached);
   scr_net_ls_drop(&t->keylog_ls);
   scr_net_ls_drop(&t->secure_ls);
+  scr_net_ls_drop(&t->secure_next_ls);
   free(t->hello);
   scr_secure_ctx_release(t->sni_ctx);
   scr_str_release(t->sni_name);
@@ -2767,6 +2771,19 @@ static void scr_tls_after_established(void *tctx) {
    * settle path drops them with the socket's other lists) */
   t->secure_emitted = true;
   scr_net_fire0_this(&t->secure_ls, t->sock, SCR_DYNH_NET_SOCKET);
+  if (scr_exc_pending()) return;
+  /* the registrations that arrived during the connect listeners join the
+   * live list for the next emission */
+  if (t->secure_next_ls.n > 0) {
+    ScrNetL *snap;
+    size_t n = scr_net_ls_snapshot(&t->secure_next_ls, &snap);
+    for (size_t i = 0; i < n; i++)
+      /* the snapshot owns a reference per entry: moving it into the live
+       * list balances the temp list's drop */
+      scr_net_ls_add(&t->secure_ls, snap[i].cb, snap[i].fn, snap[i].once);
+    free(snap);
+    scr_net_ls_drop(&t->secure_next_ls);
+  }
 }
 
 /* The closed socket settles: its 'secure' and 'session' listeners can no
@@ -2777,6 +2794,7 @@ static void scr_tls_settle(void *tctx) {
   ScrTlsSock *t = (ScrTlsSock *)tctx;
   t->settled = true;
   scr_net_ls_drop(&t->secure_ls);
+  scr_net_ls_drop(&t->secure_next_ls);
   scr_net_ls_drop(&t->session_ls);
   scr_net_ls_drop(&t->keylog_ls);
   if (t->hang_up_pending) {
@@ -6513,11 +6531,16 @@ void scr_tls_sock_on_secure_connect(ScrNetSocket *s, ScrClosure *cb /*moves*/, b
  * handshake comes too late, as in Node. */
 void scr_tls_sock_on_secure(ScrNetSocket *s, ScrClosure *cb /*moves*/, bool once) {
   ScrTlsSock *t = scr_tls_sock_of(s);
-  if (t == NULL || t->secure_emitted || t->settled) {
-    scr_closure_release(cb);
+  if (t == NULL || t->settled) {
+    scr_closure_release(cb); /* a plain socket never emits it, like Node */
     return;
   }
-  scr_net_ls_add(&t->secure_ls, cb, NULL, once);
+  /* Node emits 'secure' to the set registered when the handshake completed:
+   * a registration made while the connect listeners run misses that one but
+   * still sees later emissions (a renegotiation's). */
+  if (t->established && !t->secure_emitted)
+    scr_net_ls_add(&t->secure_next_ls, cb, NULL, once);
+  else scr_net_ls_add(&t->secure_ls, cb, NULL, once);
 }
 
 void scr_tls_sock_on_keylog(ScrNetSocket *s, ScrClosure *cb /*moves*/, void *fn, bool once) {

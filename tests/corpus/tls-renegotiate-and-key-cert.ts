@@ -46,6 +46,12 @@ const run = (maxVersion: "TLSv1.2" | "TLSv1.3", done: () => void): void => {
         probe("setKeyCert-string", () => client.setKeyCert("x" as unknown as {}));
         probe("setKeyCert-object", () => client.setKeyCert({}));
 
+        // registered after the handshake's emission: misses the initial
+        // 'secure' but sees a later one (Node's rule)
+        let lateSecure = 0;
+        client.on("secure", () => {
+          lateSecure += 1;
+        });
         let answered = false;
         const finish = (): void => {
           if (answered) return;
@@ -54,12 +60,12 @@ const run = (maxVersion: "TLSv1.2" | "TLSv1.3", done: () => void): void => {
           server.close(() => done());
         };
         const ret = client.renegotiate({}, (err) => {
-          say(maxVersion, "callback", err === null ? "null" : codeOf(err), "secure", secure);
+          say(maxVersion, "callback", err === null ? "null" : codeOf(err), "secure", secure, "late", lateSecure);
           finish();
         });
         say(maxVersion, "return", ret);
         setTimeout(() => {
-          say(maxVersion, "timeout", "secure", secure);
+          say(maxVersion, "timeout", "secure", secure, "late", lateSecure);
           finish();
         }, 500);
       },

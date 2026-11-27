@@ -210,6 +210,26 @@ test("one program diagnostic does not refuse every package in the set", () => {
   frontend.dispose();
 });
 
+test("a blocker inside an island module does not skip the reload the lowering needs", () => {
+  // The analysis reports the preflight without the island modules' own
+  // blockers, so this program is lowered. The probe's package set therefore
+  // has to be restored before runFrontend returns, or the lowering reads the
+  // baseline's empty set.
+  const islandFile = "/island.ts";
+  const islandError: ScrDiagnostic = { ...typeError, loc: { file: islandFile, start: 0, end: 1 } };
+  preflight
+    .mockReturnValueOnce([islandError]) // the opted-in load
+    .mockReturnValueOnce([]) // the no-opt-in baseline: the program itself is clean
+    .mockReturnValue([islandError]); // dropping the whole set reproduces the error
+  const frontend = runFrontend("/main.ts", loader, ["alpha", "beta"], undefined, [], {
+    islandModules: new Set([islandFile]),
+  });
+  const retained = retainedLoad();
+  expect(retained).toBe(opened.at(-1));
+  expect(loadPackages.get(retained)).toEqual(["alpha", "beta"]);
+  frontend.dispose();
+});
+
 test("no probe budget can leave the second of two packages unprobed", () => {
   // Two opt-ins, only the second a culprit. The group probe over the whole
   // set and the first leaf used to exhaust the budget, so `beta` was never

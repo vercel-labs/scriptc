@@ -1217,8 +1217,12 @@ function loadFrontend(
     // the import fences stops both before they read it: the analysis stops
     // before lowering and a build fails on the diagnostic. Then the program
     // that reported the blockers stands and the reload is skipped, because it
-    // would rebuild the whole graph for a state nothing reads.
-    if (probeStateStale && !preflight.some((d) => !isImportFence(d.code))) {
+    // would rebuild the whole graph for a state nothing reads. The analysis
+    // reads the preflight without the island modules' own blockers (it stops
+    // on `withoutIslandModules`), so only those count here: a blocker inside
+    // an island module leaves the lowering running, and the state it reads
+    // has to be the one the program was compiled with.
+    if (probeStateStale && !withoutIslandModules(preflight).some((d) => !isImportFence(d.code))) {
       load.dispose();
       load = loadProgram(entryPath, { npmStatic: [...effective], externalTypes });
       preflight = checkPreflight(load);

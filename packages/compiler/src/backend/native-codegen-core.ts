@@ -1,6 +1,8 @@
 /** Native codegen helper protocol shared by compiler hosts. */
-import { availableParallelism } from "node:os";
+import { readFileSync } from "node:fs";
+import { availableParallelism, freemem, totalmem } from "node:os";
 
+import type { NativeOptimization } from "./optimization.js";
 import type { NativeHelperSpec, NativeTargetSpec } from "./targets.js";
 
 export const NATIVE_CODEGEN_PROTOCOL_VERSION = "1";
@@ -84,6 +86,102 @@ export interface NativeCodegenJobsOptions {
   unoptimized?: boolean;
 }
 
+/** Reads a file for the memory measurement below; undefined when it cannot
+ * be read. */
+export type MemoryFileReader = (path: string) => string | undefined;
+
+function readMemoryFile(path: string): string | undefined {
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    return undefined;
+  }
+}
+
+/** One field of a cgroup memory.stat, in bytes, or 0. */
+function memoryStat(stat: string, field: string): number {
+  const match = new RegExp(`^${field} (\\d+)$`, "m").exec(stat);
+  return match === null ? 0 : Number(match[1]);
+}
+
+/** The reclaimable cache a cgroup v2 memory.stat reports, or undefined
+ * when the cgroup's file cannot be read. */
+function cgroupV2Reclaimable(read: MemoryFileReader, path: string): number | undefined {
+  const stat = read(`/sys/fs/cgroup/${path}/memory.stat`) ?? read("/sys/fs/cgroup/memory.stat");
+  if (stat === undefined) return undefined;
+  return Math.max(
+    0,
+    memoryStat(stat, "inactive_file") -
+      memoryStat(stat, "file_dirty") -
+      memoryStat(stat, "file_writeback"),
+  );
+}
+
+/** The reclaimable cache a cgroup v1 memory controller reports, or undefined
+ * when its file cannot be read. */
+function cgroupV1Reclaimable(read: MemoryFileReader, path: string): number | undefined {
+  const stat =
+    read(`/sys/fs/cgroup/memory/${path}/memory.stat`) ?? read("/sys/fs/cgroup/memory/memory.stat");
+  if (stat === undefined) return undefined;
+  return Math.max(
+    0,
+    memoryStat(stat, "total_inactive_file") -
+      memoryStat(stat, "total_dirty") -
+      memoryStat(stat, "total_writeback"),
+  );
+}
+
+/** The page cache the process's cgroup can drop on demand: its inactive file
+ * pages, less those still dirty or under writeback. A v1 memory controller
+ * named in /proc/self/cgroup is the one that accounts the process's memory,
+ * even on a hybrid host that also lists the v2 hierarchy (`0::`); otherwise
+ * the v2 hierarchy does. 0 when the process is in no memory cgroup the files
+ * describe. */
+export function cgroupReclaimableBytes(read: MemoryFileReader = readMemoryFile): number {
+  const cgroups = read("/proc/self/cgroup");
+  if (cgroups === undefined) return 0;
+  const v1 = /^\d+:[^:\n]*\bmemory\b[^:\n]*:\/(.*)$/m.exec(cgroups);
+  const v2 = /^0::\/(.*)$/m.exec(cgroups);
+  if (v1 !== null) {
+    const reclaimable = cgroupV1Reclaimable(read, v1[1]!);
+    if (reclaimable !== undefined) return reclaimable;
+  }
+  if (v2 !== null) return cgroupV2Reclaimable(read, v2[1]!) ?? 0;
+  return 0;
+}
+
+/** What nativeCodegenAvailableBytes reads on Linux, given in tests. */
+export interface LinuxMemoryMeasurement {
+  /** cgroupReclaimableBytes. */
+  reclaimableBytes?: number;
+  /** What the host reports available (MemAvailable). */
+  hostAvailableBytes?: number;
+}
+
+/** The memory a build measures its lanes against. macOS counts only free and
+ * inactive pages as available, which on a Mac that has been up for a while is
+ * a small share of its RAM even when the rest is page cache the kernel
+ * reclaims on demand, so physical memory is the floor there. Inside a
+ * memory-limited cgroup on Linux, process.availableMemory() is the limit less
+ * the cgroup's usage, and that usage counts the page cache the build fills
+ * itself (the sources it read, the LLVM text it wrote) though the kernel
+ * drops it on demand: a build on a warm cache measured 0.26 GB where
+ * /proc/meminfo reported 7.8 GB available. The cgroup's reclaimable cache
+ * counts as available there, up to what the host reports available. */
+export function nativeCodegenAvailableBytes(
+  measuredBytes: number,
+  totalBytes: number = totalmem(),
+  platform: NodeJS.Platform = process.platform,
+  linux: LinuxMemoryMeasurement = {},
+): number {
+  if (platform === "darwin") return Math.max(measuredBytes, totalBytes);
+  if (platform !== "linux") return measuredBytes;
+  const reclaimable = linux.reclaimableBytes ?? cgroupReclaimableBytes();
+  if (reclaimable === 0) return measuredBytes;
+  const host = linux.hostAvailableBytes ?? freemem();
+  return Math.max(measuredBytes, Math.min(measuredBytes + reclaimable, host));
+}
+
 /** The partitions one build compiles at once: its partitions, the host's
  * hardware threads, or as many lanes as the memory available for code
  * generation can give that much peak each, whichever is fewest. A module
@@ -103,8 +201,13 @@ export function nativeCodegenJobs(
       // A host without the API measures nothing; assume a small one.
     }
     if (availableBytes === undefined) availableBytes = 8 * 1024 * 1024 * 1024;
+    else availableBytes = nativeCodegenAvailableBytes(availableBytes);
   }
-  const partitionBytes = Math.max(1, llvmBytes / Math.min(partitions, parallelism));
+  // Each lane parses and optimizes one partition, so its peak is a multiple
+  // of that partition's bytes, not of a thread's share of the module: a host
+  // that divides a large module into more partitions than it has threads
+  // still gives every lane one partition at a time.
+  const partitionBytes = Math.max(1, llvmBytes / partitions);
   const laneBytes = Math.max(
     partitionBytes *
       (options.unoptimized === true
@@ -297,6 +400,33 @@ export interface NativeCodegenVersion {
   supported_targets: string[];
   default_target: string;
   data_layout: string;
+  /** Optional protocol features this helper build understands. */
+  features?: string[];
+}
+
+/** How an optimized program object compiles the emitter's generated
+ * dynamic-dispatch helpers (`%dyn.class.*`): the helper's own
+ * `--dispatch-opt` values. */
+export type NativeDispatchOpt = "off" | "light";
+
+/** The dispatch-helper optimization a release program object asks for —
+ * `speed` builds keep the program's own level for them. The large helpers are
+ * bodies the program calls directly and never inlines, so their own O2 passes
+ * cost build time the program cannot observe; the helper runs them through the
+ * O1 function simplification instead and leaves the O2 pipeline to the
+ * program's own code. Development builds leave them at the program's level
+ * (opt-level 0). */
+export const GENERATED_DISPATCH_OPT: NativeDispatchOpt = "light";
+
+/** The dispatch-helper level a program object asks for, from the build's
+ * posture: release only. Speed is an optimized posture that deliberately
+ * trades build time for run time, so its program code keeps the fully
+ * optimized pipeline, large helpers included; development builds compile
+ * everything at opt-level 0. */
+export function generatedDispatchOptFor(
+  optimization: NativeOptimization | undefined,
+): NativeDispatchOpt | undefined {
+  return (optimization ?? "release") === "release" ? GENERATED_DISPATCH_OPT : undefined;
 }
 
 export function validateNativeCodegenVersion(
@@ -338,5 +468,12 @@ export function validateNativeCodegenVersion(
     mismatch("supported_targets", `an array containing ${target.llvmTriple}`);
   }
   if (typeof value["host_triple"] !== "string") mismatch("host_triple", "a string");
+  if (
+    value["features"] !== undefined &&
+    (!Array.isArray(value["features"]) ||
+      !value["features"].every((feature) => typeof feature === "string"))
+  ) {
+    mismatch("features", "an array of strings");
+  }
   return value as unknown as NativeCodegenVersion;
 }

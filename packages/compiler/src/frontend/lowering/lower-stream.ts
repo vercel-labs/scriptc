@@ -3841,13 +3841,16 @@ function planStreamArg(
  * the validation ladder: finished() rejects EVERY non-stream through
  * isNodeStream, while pipeline() accepts iterables (strings, arrays) and
  * { readable, writable } pairs — those shapes fence instead of throwing
- * a ladder Node never throws. */
+ * a ladder Node never throws. `composeAt` marks a compose stage before the
+ * last (its web pair keeps its chunks web values, as the pipeline's stages
+ * do) or the last (a pair keeps duplexify's byte-for-byte sides). */
 function lowerStreamArg(
   lowerer: Lowerer,
   node: ts.Expression,
   what: "finished" | "pipeline" | "addAbortSignal" | "compose" | "toWeb",
+  composeAt: "stage" | "tail" | null = null,
 ): IrExpr {
-  return streamArgOf(lowerer, node, lowerer.lowerExpr(node), what);
+  return streamArgOf(lowerer, node, lowerer.lowerExpr(node), what, composeAt);
 }
 
 /** lowerStreamArg over the argument's lowered value. */
@@ -3856,10 +3859,12 @@ function streamArgOf(
   node: ts.Expression,
   lowered: IrExpr,
   what: "finished" | "pipeline" | "addAbortSignal" | "compose" | "toWeb",
+  composeAt: "stage" | "tail" | null = null,
 ): IrExpr {
   // A plain { readable, writable } record of web streams is a stage Node
-  // accepts: compose adapts it like Duplex.from, and pipeline pumps its web
-  // sides with the chunks untouched. Its static type is a record rather
+  // accepts: pipeline pumps its web sides with the chunks untouched, and
+  // compose pairs it (its tail byte for byte, a stage before the last with
+  // its chunks untouched). Its static type is a record rather
   // than a stream, so it takes the same checked-dynamic adapter as a dyn
   // stage.
   const pairishStage =
@@ -3875,13 +3880,20 @@ function streamArgOf(
   ) {
     // A checked-dynamic compose stage: the runtime adapts a web stream pair
     // (or a TransformStream, whose members are one) and answers Node's error
-    // for anything else.
+    // for anything else. A stage before the last pairs with its web chunks
+    // untouched, as the pipeline's stages do; compose's tail keeps
+    // duplexify's byte-for-byte sides (its readable side is not object mode).
     const loc = locOf(node);
     const stage: IrExpr =
       lowered.type.kind === "dyn" ? lowered : { kind: "dynFrom", value: lowered, type: DYN, loc };
     return {
       kind: "libCall",
-      fn: "stream.duplexFromDyn",
+      fn:
+        composeAt === "stage"
+          ? "stream.composeStageDyn"
+          : composeAt === "tail"
+            ? "stream.composeTailDyn"
+            : "stream.duplexFromDyn",
       args: [stage],
       type: { kind: "object", className: "%Duplex" },
       loc,
@@ -6859,7 +6871,10 @@ function stageChunkCheckerType(lowerer: Lowerer, chunk: IrType, at: ts.Node): ts
  * to the first stream and reading from the last (scr_stream_compose). The
  * classes fix which positions can be readable and writable; a stream in
  * the wrong position, a single Readable or Writable (Duplex.from wraps
- * those), and functions, iterables or web streams have no lowering. */
+ * those), and functions or iterables have no lowering here (they take the
+ * pipeline's stages). A web stream in a position before the last pairs
+ * with its web chunks untouched, as the pipeline's stages do, and one in
+ * the last position pairs byte for byte into the composed Duplex. */
 function lowerStreamCompose(lowerer: Lowerer, args: readonly ts.Expression[], loc: SrcLoc): IrExpr {
   const duplex: IrType = { kind: "object", className: "%Duplex" };
   if (args.length === 0) {
@@ -6911,7 +6926,9 @@ function lowerStreamCompose(lowerer: Lowerer, args: readonly ts.Expression[], lo
   }
   let streams: IrExpr[];
   try {
-    streams = args.map((a, i) => pre.get(i) ?? lowerStreamArg(lowerer, a, "compose"));
+    streams = args.map(
+      (a, i) => pre.get(i) ?? lowerStreamArg(lowerer, a, "compose", i < last ? "stage" : "tail"),
+    );
   } catch (e) {
     if (e instanceof StreamArgTypeThrow) return e.expr;
     throw e;
@@ -8269,7 +8286,8 @@ export function lowerStreamMethodCall(
         loc,
       };
     }
-    const size = args[0] ? lowerer.lowerExprExpecting(args[0], F64) : numLit(-1, loc);
+    // Node's read() with no argument is read(NaN): the absent form.
+    const size = args[0] ? lowerer.lowerExprExpecting(args[0], F64) : numLit(NaN, loc);
     const type: IrType = unionOf(lowerer, [BYTES, { kind: "nullT" }]);
     const read: IrExpr = {
       kind: "libCall",

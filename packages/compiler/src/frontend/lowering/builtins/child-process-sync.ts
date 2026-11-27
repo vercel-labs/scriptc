@@ -419,10 +419,13 @@ export function lowerExecSyncCall(
             const t = lowerer.typeOf(m.value);
             const literal =
               t.flags & ts.TypeFlags.BooleanLiteral ? lowerer.checker.typeToString(t) : null;
-            if (literal === "false") {
-              // execFileSync's default — a no-op.
-            } else if (literal === "true") {
-              shellEnabled = true;
+            if (literal === "false" || literal === "true") {
+              // The value is evaluated where it sits, as Node does: an
+              // expression whose type narrows to the literal (a validation
+              // helper returning `true`) still runs, and its effects are
+              // ordered with the other launch arguments.
+              evaluated(lowerer.lowerExpr(m.value));
+              if (literal === "true") shellEnabled = true; // false is the default
             } else {
               lowerer.noLowering(
                 "execFileSync with a runtime shell option",

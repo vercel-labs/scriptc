@@ -1,0 +1,206 @@
+name: Post-merge lanes
+
+# The lanes the merge queue does not run, on the newest green main commit: the complete macOS suite (ci.yml's macos
+# lane) and the release rehearsal (release-dry-run.yml). The queue's required check runs every other lane before a
+# batch lands, so main's own push run mostly confirms it; a macOS-only or release-only break used to wait for the
+# nightly sweep, and once went unseen for four days.
+#
+# A run starts whenever a CI push run on main succeeds, and every three hours in case none does. It tests the
+# newest commit whose CI push run is green, and does nothing when the previous run already tested that commit.
+#
+# When a lane job turns red (it was green at its last result), the run bisects the batches that landed on main
+# since that job's last green commit (each push to main: one merge queue merge) and then the commits of the first
+# bad batch, on one runner per red job, and names the first bad commit in the job summary and in the
+# postmerge-blame artifact (scripts/postmerge.mjs). It opens no issue and no pull request.
+#
+# Runner cost: one run at a time, and while it runs only the newest waiting run is kept (GitHub cancels the older
+# pending one when another queues). A bisection probes at most six commits (the red one first), one red job per
+# recipe and three per run; a job that was already red at its previous result is not bisected again.
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  schedule:
+    - cron: "23 */3 * * *"
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: Test this commit instead of the newest green main commit (it is tested even when tested before)
+        type: string
+        default: ""
+
+concurrency:
+  # Not cancel-in-progress: a running run, and its bisection, finishes. Of the runs that queue meanwhile, GitHub
+  # keeps only the newest.
+  group: postmerge
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  pick:
+    name: Pick the newest green main commit
+    # A workflow_run starts on every CI run that completes on main; only a green push run is news.
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      sha: ${{ steps.pick.outputs.sha }}
+      skip: ${{ steps.pick.outputs.skip }}
+    steps:
+      # The whole history: a commit counts only when it is on main.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - id: pick
+        env:
+          GH_TOKEN: ${{ github.token }}
+          POSTMERGE_SHA: ${{ inputs.sha }}
+        run: node scripts/postmerge.mjs pick
+
+  macos:
+    name: macos
+    needs: pick
+    if: ${{ needs.pick.outputs.skip == 'false' }}
+    uses: ./.github/workflows/ci.yml
+    # This job's permissions are the ceiling for the whole called graph, and GitHub validates every job in it
+    # whether or not the job runs: the lane selector reads pull requests, and CI asks for nothing more.
+    permissions:
+      contents: read
+      pull-requests: read
+    with:
+      ref: ${{ needs.pick.outputs.sha }}
+      only_lane: macos
+      macos_suite: full
+
+  rehearsal:
+    name: rehearsal
+    needs: pick
+    if: ${{ needs.pick.outputs.skip == 'false' }}
+    uses: ./.github/workflows/release-dry-run.yml
+    permissions:
+      contents: read
+    with:
+      ref: ${{ needs.pick.outputs.sha }}
+
+  # Records this run's lane results (the postmerge-state artifact that later runs read) and plans a bisection for
+  # each job that turned red.
+  plan:
+    name: Plan bisections
+    needs: [pick, macos, rehearsal]
+    if: ${{ !cancelled() && needs.pick.outputs.skip == 'false' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      tasks: ${{ steps.plan.outputs.tasks }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ needs.pick.outputs.sha }}
+        run: node scripts/postmerge.mjs plan --sha "$SHA" --state "$RUNNER_TEMP/postmerge-state"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: postmerge-state
+          path: ${{ runner.temp }}/postmerge-state
+          retention-days: 90
+          if-no-files-found: error
+
+  bisect:
+    name: Bisect (${{ matrix.job }})
+    needs: [pick, plan]
+    if: ${{ !cancelled() && needs.plan.outputs.tasks != '' && needs.plan.outputs.tasks != '[]' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.tasks) }}
+    runs-on: ${{ matrix.runner }}
+    # Six probes of the slowest recipe do not fit; the script stops probing after POSTMERGE_MINUTES and reports the
+    # range it narrowed the change to.
+    timeout-minutes: 340
+    permissions:
+      contents: read
+    steps:
+      # This commit's script and toolchain set-up; the script checks out each probed commit.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        with:
+          version: 11.1.3
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      - name: Install macOS LLVM
+        if: matrix.setup == 'macos'
+        run: brew install llvm@22
+      - uses: ./.github/actions/release-toolchain
+        if: matrix.setup == 'release-toolchain'
+        with:
+          platform: ${{ matrix.platform }}
+          llvm-asset: ${{ matrix.llvm_asset }}
+          use-zig: ${{ matrix.use_zig }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: postmerge-state
+          path: ${{ runner.temp }}/postmerge-state
+      # The script parses each probed commit's workflow with this checkout's js-yaml.
+      - run: pnpm install --frozen-lockfile
+      - name: Bisect
+        env:
+          KEY: ${{ matrix.key }}
+          POSTMERGE_MINUTES: "300"
+        run: >-
+          node scripts/postmerge.mjs bisect --task "$KEY"
+          --tasks "$RUNNER_TEMP/postmerge-state/tasks.json" --out "$RUNNER_TEMP/bisect/$KEY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: postmerge-bisect-${{ matrix.key }}
+          path: ${{ runner.temp }}/bisect/${{ matrix.key }}
+          retention-days: 30
+          if-no-files-found: warn
+
+  # The job summary and the postmerge-blame artifact: the red jobs, and for each the first bad commit (or the range
+  # it was narrowed to, or why it was not bisected).
+  report:
+    name: Report
+    needs: [pick, plan, bisect]
+    if: ${{ !cancelled() && needs.plan.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: postmerge-state
+          path: ${{ runner.temp }}/postmerge-state
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: postmerge-bisect-*
+          path: ${{ runner.temp }}/postmerge/bisect
+      - run: node scripts/postmerge.mjs report --dir "$RUNNER_TEMP/postmerge/bisect" --state "$RUNNER_TEMP/postmerge-state"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: postmerge-blame
+          path: ${{ runner.temp }}/postmerge/postmerge-blame
+          retention-days: 90
+          if-no-files-found: error

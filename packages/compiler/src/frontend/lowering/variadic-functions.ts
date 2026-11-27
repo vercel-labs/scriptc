@@ -30,22 +30,33 @@
  * The array method's loop calls a function value with the parameters its
  * type names (one), JavaScript calls it with three, and the function behind
  * the adapter sees the difference. Nothing at that call can tell an adapter
- * from an ordinary function of the type without a test every typed program
- * would pay for, so the store is what is refused, by name, when the program
- * hands a function of the slot's type to such a caller:
+ * from an ordinary function of the type without a test, so the callers the
+ * compiler builds are given one, for the views the program holds
+ * (function-views.ts): the array method's helper tests its callback for the
+ * store's view and, when it is one, calls the same helper for the full
+ * parameter list with the variadic function the view stands for; a widening
+ * signature adapter does the same, so `const wider: (x: number) => void =
+ * none` passes the function every argument the wide call passes. A variadic
+ * function receives that caller's whole list through its hidden array
+ * (dynRestPackingAdapter).
  *
- * - a function type with more parameters, or with a rest parameter (the
- *   conversion drops what the narrower type does not name);
+ * The store is refused, by name, only for a caller neither test serves when
+ * the program hands a function of the slot's type to it:
+ *
+ * - a function type with a rest parameter (the conversion cannot pass the
+ *   list through);
  * - a library function whose callback takes more arguments than the type
- *   names, by its declaration (`map`, `then`) or by what its lowering knows
- *   it passes (an event's arguments, a replacer's).
+ *   names and whose lowering does not read the store's view: a replacer, an
+ *   event listener that declares a prefix of the event's arguments, a
+ *   promise's settling callbacks.
  *
- * Untyped code is not such a caller. The adapter is a checked adapter over
- * the boxed function, so the value made untyped again is the original
- * function (scr_dyn_new_func), and untyped code calls that with every
- * argument it passes: directly, as what a promise settles with, or through
- * a member of an object it was handed. A runtime builtin that is given the
- * box and calls the typed entry behind it is a native caller.
+ * Untyped code is not such a caller. The adapter's first capture is the
+ * original function, so a box of the value in a program that boxes that
+ * function type is the original (IrFunction.boxesSource), and untyped code
+ * calls that with every argument it passes: directly, as what a promise
+ * settles with, or through a member of an object it was handed. A runtime
+ * builtin that is given the box and calls the typed entry behind it is a
+ * native caller.
  *
  * The test is by type, not by value: it asks whether any function value of
  * the slot's type takes one of those paths, not whether the stored one
@@ -109,13 +120,24 @@ type FuncType = IrType & { kind: "func" };
 
 /** Records that a function value of `type` is handed, at `loc`, to `what`,
  * which calls it with more arguments than the type names. */
-type CallsLonger = (type: FuncType, loc: SrcLoc, what: string, kind: LongerKind) => void;
+type CallsLonger = (
+  type: FuncType,
+  loc: SrcLoc,
+  what: string,
+  kind: LongerKind,
+  /** The signature adapter whose call hands the value on, if any. */
+  factory?: string,
+) => void;
 
 /** A place that hands a function value to a caller with a longer list. */
 interface LongerCall {
   readonly loc: SrcLoc;
   /** What the value is handed to, as the diagnostic names it. */
   readonly what: string;
+  /** The signature adapter whose call hands the value on, if any. */
+  readonly factory?: string;
+  /** The function type the call hands the value to. */
+  readonly typeKey: string;
 }
 
 /** How a store was made, which decides the calls that refuse it. */
@@ -304,18 +326,36 @@ function walkVariadicFunctions(lowerer: Lowerer, functions: readonly IrFunction[
   /** Conversions that keep the parameter count: the result calls the value
    * with everything it is called with, so it is another view of the store. */
   const views = new Map<string, Set<string>>();
-  /** The first longer call of each function type, by the store kind it
+  /** Every longer call of each function type, by the store kind it
    * refuses: any refuses an adapter's store, a certain one a noted store. */
-  const longer: Record<StoreKind, Map<string, LongerCall>> = {
+  const longer: Record<StoreKind, Map<string, LongerCall[]>> = {
     adapter: new Map(),
     noted: new Map(),
   };
-  const keyCallsLonger = (key: string, loc: SrcLoc, what: string, kind: LongerKind): void => {
-    if (!longer.adapter.has(key)) longer.adapter.set(key, { loc, what });
-    if (kind === "certain" && !longer.noted.has(key)) longer.noted.set(key, { loc, what });
+  const keyCallsLonger = (
+    key: string,
+    loc: SrcLoc,
+    what: string,
+    kind: LongerKind,
+    factory?: string,
+  ): void => {
+    const call: LongerCall = {
+      loc,
+      what,
+      typeKey: key,
+      ...(factory === undefined ? {} : { factory }),
+    };
+    const all = longer.adapter.get(key);
+    if (all === undefined) longer.adapter.set(key, [call]);
+    else all.push(call);
+    if (kind === "certain") {
+      const certain = longer.noted.get(key);
+      if (certain === undefined) longer.noted.set(key, [call]);
+      else certain.push(call);
+    }
   };
-  const callsLonger: CallsLonger = (type, loc, what, kind) =>
-    keyCallsLonger(typeKey(type), loc, what, kind);
+  const callsLonger: CallsLonger = (type, loc, what, kind, factory) =>
+    keyCallsLonger(typeKey(type), loc, what, kind, factory);
   /** The first call of each function type by a caller that Node gives a
    * receiver. */
   const receiverCalls = new Map<string, LongerCall>();
@@ -323,7 +363,7 @@ function walkVariadicFunctions(lowerer: Lowerer, functions: readonly IrFunction[
     const [key, what, file, start, end, kind] = entry.split("\u001f");
     const loc = { file: file!, start: Number(start), end: Number(end) };
     if (kind === "receiver") {
-      if (!receiverCalls.has(key!)) receiverCalls.set(key!, { loc, what: what! });
+      if (!receiverCalls.has(key!)) receiverCalls.set(key!, { loc, what: what!, typeKey: key! });
     } else keyCallsLonger(key!, loc, what!, "certain");
   }
   /** Where a function value was made untyped for untyped code to call: a
@@ -419,7 +459,13 @@ function walkVariadicFunctions(lowerer: Lowerer, functions: readonly IrFunction[
           if (!fixedFunc(from)) return true;
           if (to.rest === true) {
             if (!plainFunction(value))
-              callsLonger(from, node.loc, "a function type with a rest parameter", "possible");
+              callsLonger(
+                from,
+                node.loc,
+                "a function type with a rest parameter",
+                "possible",
+                node.callee,
+              );
           } else if (to.params.length > from.params.length) {
             if (!plainFunction(value))
               callsLonger(
@@ -427,6 +473,7 @@ function walkVariadicFunctions(lowerer: Lowerer, functions: readonly IrFunction[
                 node.loc,
                 `a function type with ${to.params.length} parameter${to.params.length === 1 ? "" : "s"}`,
                 "certain",
+                node.callee,
               );
           } else view(from, to);
           return true;
@@ -467,6 +514,34 @@ function walkVariadicFunctions(lowerer: Lowerer, functions: readonly IrFunction[
     }
     return undefined;
   };
+  /** Every call in `calls` of the type `key` or of a view of it. */
+  const allCalls = (key: string, calls: Map<string, LongerCall[]>): LongerCall[] => {
+    const reached = new Set<string>([key]);
+    const work = [key];
+    const found: LongerCall[] = [];
+    while (work.length > 0) {
+      const next = work.pop()!;
+      found.push(...(calls.get(next) ?? []));
+      for (const viewed of views.get(next) ?? []) {
+        if (reached.has(viewed)) continue;
+        reached.add(viewed);
+        work.push(viewed);
+      }
+    }
+    return found;
+  };
+  /** Whether `call` reaches the stored function with every argument: the
+   * consumer it names is one function-views.ts served, for the slot type
+   * `key`. */
+  const served = (key: string, call: LongerCall): boolean => {
+    if (call.factory !== undefined && lowerer.coercions.variadicServedAdapters.has(call.factory))
+      return true;
+    const names =
+      lowerer.coercions.variadicWideServed.get(call.typeKey) ??
+      lowerer.coercions.variadicWideServed.get(key);
+    const member = /^'([^']*)'$/.exec(call.what);
+    return names !== undefined && member !== null && names.has(member[1]!);
+  };
   for (const [key, { text, locs }] of receiverStores) {
     const hit = firstCall(key, receiverCalls);
     if (hit === undefined) continue;
@@ -483,7 +558,11 @@ function walkVariadicFunctions(lowerer: Lowerer, functions: readonly IrFunction[
   libraryCalls(lowerer, callsLonger, (loc) => boxedAt.has(place(loc)));
 
   for (const { key, text, names, locs, kind } of stored.values()) {
-    const hit = firstCall(key, longer[kind]);
+    // A caller that passes more than the slot's type names reaches the
+    // stored function through the look-through function-views.ts installed
+    // for it; a store is refused only when one of its callers is not
+    // served.
+    const hit = allCalls(key, longer[kind]).find((call) => !served(key, call));
     if (hit === undefined) continue;
     for (const loc of locs)
       lowerer.pushDiag(

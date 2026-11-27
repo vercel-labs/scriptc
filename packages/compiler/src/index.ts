@@ -128,7 +128,11 @@ import {
   readProfileFunctionNames,
   writeLlvmSource,
 } from "./backend/native-codegen.js";
-import { nativeBuildPartitions, nativePartitionPaths } from "./backend/native-codegen-core.js";
+import {
+  generatedDispatchOptFor,
+  nativeBuildPartitions,
+  nativePartitionPaths,
+} from "./backend/native-codegen-core.js";
 import { privateSiblingPath } from "./backend/build-cache.js";
 import {
   nativeCodegenTarget,
@@ -859,6 +863,7 @@ async function compileExecutableNative(
     ...(features.fsFlags ? { fsFlags: true } : {}),
     ...(features.fsExistsValue ? { fsExistsValue: true } : {}),
     ...(features.moduleCompileCache ? { moduleCompileCache: true } : {}),
+    ...(features.sourceMap ? { sourceMap: true } : {}),
     ...(features.fnMemberProps ? { fnMemberProps: true } : {}),
     ...(features.fsBytesWrites ? { fsBytesWrites: true } : {}),
     ...(features.strdecDyn ? { strdecDyn: true } : {}),
@@ -885,6 +890,7 @@ async function compileExecutableNative(
     dynInvoke: features.dynInvoke,
     dc: features.dc,
     dynAsync: features.dynAsync,
+    ...(features.fsOpenAsBlob ? { fsOpenAsBlob: true } : {}),
     ...(features.dynTier ? { dynTier: true } : {}),
     ...(features.promiseGeneric ? { promiseGeneric: true } : {}),
     ...(features.streamDyn ? { streamDyn: true } : {}),
@@ -1025,6 +1031,7 @@ async function emitNativeProgramObject(
       outputKind: "obj",
       sourcePath: entryPath,
       optimization: opts.optimization === "dev" ? "0" : "2",
+      dispatchOpt: generatedDispatchOptFor(opts.optimization),
       ...(opts.sanitize === undefined ? {} : { sanitize: opts.sanitize }),
       partitions,
       ...(profile === undefined ? {} : { profile }),
@@ -1388,6 +1395,7 @@ async function prepareExecutableInput(
           outputKind,
           sourcePath: entryPath,
           optimization: opts.optimization === "dev" ? "0" : "2",
+          dispatchOpt: generatedDispatchOptFor(opts.optimization),
           ...(opts.sanitize === undefined ? {} : { sanitize: opts.sanitize }),
         });
       } catch (err) {

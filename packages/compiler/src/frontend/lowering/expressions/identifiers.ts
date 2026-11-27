@@ -1039,6 +1039,10 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       `module namespace objects as values (access '${expr.text}' members directly)`,
     );
   }
+  {
+    const webStream = lowerWebStreamClassRead(lowerer, expr);
+    if (webStream) return webStream;
+  }
   if (lowerer.stdlibGlobalFnOf(expr)) {
     // JavaScript reads the global functions with values as those values
     // (global-function-values.ts).
@@ -1172,10 +1176,6 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
   // flows (the harness's knownGlobals Set, === comparisons) and `typeof`
   // are exact; any other value is refused by name where it is read
   // (node-value-reads.ts).
-  {
-    const webStream = lowerWebStreamClassRead(lowerer, expr);
-    if (webStream) return webStream;
-  }
   if (stdlibGlobalNameOf(lowerer, expr) === "globalThis") {
     return lowerGlobalValue(lowerer, expr);
   }
@@ -1250,7 +1250,7 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
           "Proxy constructor values have no native lowering; use a direct new Proxy with checked-native plain objects",
         Reflect:
           "reflective property access has no static lowering — read and call members directly",
-        Intl: 'native Intl supports Intl.NumberFormat and Intl.DateTimeFormat objects with format() (the default locale, "en-US" or "en"), the toLocaleString() forms that construct them, and Intl.Segmenter with grapheme or word granularity; locale negotiation and the other Intl constructors remain unsupported',
+        Intl: "native Intl supports Intl.NumberFormat and Intl.DateTimeFormat objects with format() (the default locale or a string locale tag, negotiated as Node does), the toLocaleString() forms that construct them, and Intl.Segmenter with grapheme or word granularity; locale lists and the other Intl constructors remain unsupported",
         SharedArrayBuffer: "use direct new SharedArrayBuffer(length) for fixed shared storage",
         ArrayBuffer:
           "ArrayBuffer constructor values have no native lowering; use new ArrayBuffer(length) for fixed-length shared storage",

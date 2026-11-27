@@ -1,0 +1,2 @@
+- **Module customization hooks:** `module.register()`, `module.registerHooks()` and the hook functions they accept (`resolve`, `load` and `initialize`) are not supported: a compiled program has no JavaScript module loader for a hook to observe or change, and its module graph is resolved at build time.
+  An island build's modules are loaded by Node.js inside the program's process, but the compiled program cannot register hooks into that loader.

@@ -52,6 +52,28 @@ console.log("dialed", socket !== null);
   expect(stdout).not.toContain("dialed");
 });
 
+test("a foreign value typed as http.Agent refuses the typed dialer", async () => {
+  // A Node-island https.Agent reaches the rewrite with a handle the runtime
+  // cannot classify; dialing it plaintext would downgrade the TLS connection
+  // the island agent would have made. The same fail-closed branch serves any
+  // non-agent value that gets here through a cast.
+  const { code, stderr, stdout } = await run(
+    "foreign-typed",
+    `import * as http from "node:http";
+import * as net from "node:net";
+const foreign = new net.Socket() as unknown as http.Agent;
+const socket = foreign.createConnection({ port: 1, host: "127.0.0.1" });
+console.log("dialed", socket !== null);
+`,
+  );
+  expect(code).toBe(1);
+  expect(stderr).toContain(
+    "createConnection on an Agent this compiled program did not create is not supported yet",
+  );
+  expect(stderr).toContain("SC2020");
+  expect(stdout).not.toContain("dialed");
+});
+
 test("an http agent typed as http.Agent still dials", async () => {
   const { code, stdout } = await run(
     "plain-typed",

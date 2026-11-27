@@ -298,6 +298,9 @@ extern SCR_TL const ScrEmitterRefHooks *scr_emitter_ref_hooks;
 void scr_emitter_reserve(ScrEmitter *em, const char *name);
 ScrArr *scr_emitter_listeners(ScrEmitter *em, ScrStr *name); /* +1 closures */
 ScrDyn *scr_emitter_listeners_dyn(ScrEmitter *em, ScrStr *name); /* +1 dyn array */
+/* rawListeners(name) through an untyped value: Node's array, with the once
+ * wrapper in place of a once() registration. +1. */
+ScrDyn *scr_emitter_raw_listeners_dyn(ScrEmitter *em, ScrStr *name);
 ScrEmitter *scr_emitter_set_max(ScrEmitter *em, double n);   /* returns em +1 */
 double scr_emitter_get_max(ScrEmitter *em);
 void scr_emitter_set_default_max(double n);

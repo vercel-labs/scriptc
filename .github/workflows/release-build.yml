@@ -8,9 +8,10 @@ name: Release build
 # Two workflows call it, so the release and its rehearsal build exactly the
 # same way:
 # - release.yml, before it publishes;
-# - release-dry-run.yml, nightly on main and on pull requests that prepare a
-#   release or change how it builds, so a package that no longer builds shows
-#   up before a release run instead of in it.
+# - release-dry-run.yml, on the newest green main commit (postmerge.yml) and
+#   on pull requests that prepare a release or change how it builds, so a
+#   package that no longer builds shows up before a release run instead of in
+#   it.
 #
 # Only the native CLIs use the compiler profile. The helpers and runtime packs
 # (packs), the mobile packs, and the caller's libnode packs build while
@@ -28,6 +29,10 @@ on:
           release build falls back to when the collection fails.
         type: boolean
         default: false
+      ref:
+        description: The commit to build. Empty builds the caller's commit; every checkout reads it.
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -43,6 +48,8 @@ jobs:
       platforms: ${{ steps.platforms.outputs.platforms }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
       - id: platforms
         run: echo "platforms=$(jq -c . .github/release-platforms.json)" >> "$GITHUB_OUTPUT"
 
@@ -65,6 +72,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 11.1.3
@@ -111,6 +120,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 11.1.3
@@ -168,6 +179,8 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 11.1.3
@@ -271,6 +284,8 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 11.1.3
@@ -319,11 +334,11 @@ jobs:
         run: |
           if [ -n "$COLLECTED" ]; then
             echo "SCRIPTC_NATIVE_PROFILE_USE=$COLLECTED" >> "$GITHUB_ENV"
-            echo "The native CLI builds with the profile collected on $GITHUB_SHA"
+            echo "The native CLI builds with the profile collected on $(git rev-parse HEAD)"
             layout="$(dirname "$COLLECTED")/cli.layout.gz"
             if [ -f "$layout" ]; then
               echo "SCRIPTC_NATIVE_LAYOUT=$layout" >> "$GITHUB_ENV"
-              echo "The native CLI builds with the function layout collected on $GITHUB_SHA"
+              echo "The native CLI builds with the function layout collected on $(git rev-parse HEAD)"
             fi
           elif [ "$COLLECTED_PROFILE" = true ]; then
             echo "::warning::No profile was collected on this commit; the native CLI builds with the committed profile"
@@ -381,6 +396,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
       - uses: ./.github/actions/mobile-runtime-pack
         with:
           runtime: ${{ matrix.runtime }}

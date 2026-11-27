@@ -27,6 +27,8 @@ export interface NativeLinkFeatures {
    * jsObjectModelFact ORs this fact into. */
   bigintBytes: boolean;
   fileHandle: boolean;
+  /** fs.openAsBlob: scr_fs_blob.c, the Blob unit over a file's reads. */
+  fsOpenAsBlob?: boolean;
   /** filehandle.readableWebStream: scr_fs_web_stream.c. */
   fsWebStream?: boolean;
   fetch: boolean;
@@ -61,6 +63,8 @@ export interface NativeLinkFeatures {
   fsExistsValue?: boolean;
   /** node:module's compile cache family: scr_module_cache.c. */
   moduleCompileCache?: boolean;
+  /** node:module's SourceMap class: scr_source_map.c. */
+  sourceMap?: boolean;
   /** node:module's Module class object: scr_module_class.c and the
    * class installs in scr_dyn_handle_class.c. */
   moduleClass?: boolean;
@@ -472,7 +476,9 @@ interface LinkFeatureRequirement {
  * scr_symbol.c, and its object keeps those functions when Windows links
  * it. */
 export const LINK_FEATURE_REQUIREMENTS: readonly LinkFeatureRequirement[] = [
-  { feature: "http2", requires: ["http", "net"] },
+  // scr_http2.c reports DEP0194 (stream.priority) through scr_emit_warning
+  // (scr_async_dyn.c, Node's process warning report and listeners).
+  { feature: "http2", requires: ["http", "net", "dynAsync"] },
   // scr_dgram.c reads the options' net.BlockList members through scr_net.c's
   // matcher (createSocket's checks and the send/connect filters), so the
   // block-list unit comes with the dgram unit.
@@ -492,6 +498,14 @@ export const LINK_FEATURE_REQUIREMENTS: readonly LinkFeatureRequirement[] = [
   { feature: "eventTarget", requires: ["emitter", "symbol"] },
   { feature: "abortSignal", requires: ["emitter", "symbol"] },
   { feature: "fetch", requires: ["emitter", "symbol"] },
+  // A Blob (built, or produced by a body read) is a native handle of the
+  // blob unit, which the checked-dynamic tier links; the fetch unit's
+  // SCR_WEB_BODIES build reads its bytes through that unit.
+  { feature: "webBodies", requires: ["dynAsync"] },
+  // scr_sqlite.c interns DatabaseSync's Symbol(sqlite-type) brand through
+  // the symbol unit's registry, and reflection and util.inspect show it
+  // whatever the program does with symbols.
+  { feature: "sqlite", requires: ["symbol"] },
   // events.once with options registers the await through the emitter unit.
   { feature: "eventsOnceSignal", requires: ["emitter"] },
   // scr_perf.c resolves performance.measure's Node timing milestone names
@@ -510,8 +524,6 @@ export const LINK_FEATURE_REQUIREMENTS: readonly LinkFeatureRequirement[] = [
   // still needs the hook when it can reach one.
   { feature: "pki", requires: ["mlkem"] },
   { feature: "mlkem", requires: ["pki"] },
-  // scr_fs_web_stream.c reads through the FileHandle unit; the web stream
-  // unit comes with it through executable-features' webStreams OR.
   { feature: "fsWebStream", requires: ["fileHandle"] },
   // scr_stream_dyn.c tests values and calls JavaScript stream members through
   // the dyn-invoke unit (the checked-dynamic stream slots).
@@ -520,6 +532,13 @@ export const LINK_FEATURE_REQUIREMENTS: readonly LinkFeatureRequirement[] = [
   // inspect unit's console entries, and colorMode 'auto' reads the
   // environment's color depth (scr_tty_colors.c).
   { feature: "consoleOptions", requires: ["inspect"] },
+  // scr_webstreams.c runs its stream algorithms through the checked-dynamic
+  // async unit (promise reactions, scratch streams) and calls the program's
+  // callbacks through the dyn-invoke unit; the compression streams'
+  // webstream.compressClass reaches the unit without any other call that
+  // would select them, so the requirement is stated here.
+  { feature: "webStreams", requires: ["dynAsync", "dynInvoke"] },
+  { feature: "fsOpenAsBlob", requires: ["fileHandle", "dynAsync"] },
 ];
 
 /** Turns on, in `features`, every feature that one of its features

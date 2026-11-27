@@ -65,6 +65,31 @@ export function isSafeToDiscard(expr: IrExpr): boolean {
 }
 
 /**
+ * Whether evaluating an expression only reads: no call, assignment or other
+ * operation that may write a variable, field or element. A read whose own
+ * operands only read qualifies. This is the test for moving one operand ahead
+ * of another: the earlier read must be snapshotted first when the moved
+ * operand may write what it reads.
+ */
+export function isReadOnlyEvaluation(expr: IrExpr): boolean {
+  if (isSafeToDiscard(expr)) return true;
+  switch (expr.kind) {
+    case "varRef":
+      return true;
+    case "recordGet":
+    case "fieldGet":
+      return isReadOnlyEvaluation(expr.obj);
+    case "arrayGet":
+      return isReadOnlyEvaluation(expr.arr) && isReadOnlyEvaluation(expr.index);
+    case "unionNarrow":
+    case "downcast":
+      return isReadOnlyEvaluation(expr.value);
+    default:
+      return false;
+  }
+}
+
+/**
  * Whether a condition may be evaluated earlier without changing observable behavior.
  */
 export function isSafeToMoveConditionEarlier(expr: IrExpr): boolean {

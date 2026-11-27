@@ -45,6 +45,11 @@ export class Ts7RpcClient {
     this.callbacks.set(name, { invoke: callback });
   }
 
+  /** The server process's ID, when the transport knows it. */
+  get pid(): number | undefined {
+    return this.wire.pid;
+  }
+
   timing(): Ts7RpcTiming {
     return {
       requests: this.requests,

@@ -17,7 +17,7 @@ import { InternalCompilerError } from "../../errors.js";
  * process transport; program and filesystem behavior is shared by the Node
  * and statically compiled clients. */
 
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { Ts7Api } from "./api.js";
 import { Ts7FrameLimitError } from "./rpc-wire.js";
@@ -391,6 +391,22 @@ export class Ts7Host {
     // Another load may resolve the same declaration differently: its option
     // set, path mappings, provenance and file shadow are not this one's.
     this.aliasMembers.clear();
+  }
+
+  /** The checker server's resident set size in megabytes, or 0 when the
+   * transport does not name the process or the host is not Linux. The
+   * caller uses it to decide whether the server is worth keeping for the
+   * next load (services.ts). */
+  serverRssMb(): number {
+    const pid = this.api.serverPid;
+    if (pid === undefined) return 0;
+    try {
+      const status = readFileSync(`/proc/${pid}/status`, "utf8");
+      const match = /^VmRSS:\s+(\d+) kB$/m.exec(status);
+      return match === null ? 0 : Math.round(Number(match[1]) / 1024);
+    } catch {
+      return 0;
+    }
   }
 
   /** Close the server connection, even when the host is pooled. */

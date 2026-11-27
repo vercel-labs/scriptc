@@ -34,9 +34,13 @@ describe("the features a link feature requires", () => {
   test("http2 links the http and net units it calls into", () => {
     const features = withRequiredLinkFeatures({ ...noLinkFeatures(), http2: true });
     expect(Object.entries(features).filter(([, on]) => on)).toEqual([
+      // http2 reports DEP0194 through the dyn-async unit, which rides the
+      // performance-loop unit (#4261).
+      ["dynAsync", true],
       ["net", true],
       ["http", true],
       ["http2", true],
+      ["perfLoop", true],
     ]);
     // The keys and their order are the ones cache keys carry.
     expect(Object.keys(features)).toEqual([...REQUIRED_LINK_FEATURES]);

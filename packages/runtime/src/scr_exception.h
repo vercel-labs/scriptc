@@ -212,6 +212,9 @@ void scr_exc_keep_first(ScrCaught *first);
 bool scr_exc_suppressed_values(const void *error_object, const ScrCaught **error,
                                const ScrCaught **suppressed);
 void scr_exc_suppressed_forget(const void *error_object);
+/* The collector's detach: removes the entry WITHOUT releasing the two
+ * snapshots, which its trace visits as edges. */
+void scr_exc_suppressed_detach(const void *error_object);
 /* Borrows the box; re-raises the saved exception exactly (payload RETAINED
  * — the binding stays live until its scope exits). */
 void scr_rethrow(const ScrCaught *c);

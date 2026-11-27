@@ -38,13 +38,75 @@ import { weakKeyUnits } from "./weak-keys.js";
  * subclass and retain touches the cycle header, so header presence must be
  * uniform across an extends tree): a unit is cycle-capable iff ANY member
  * is — every backend uses the same grouping. */
+/** The record shapes the program gives a prototype with
+ * Object.setPrototypeOf (reflection.ts lowers the receiver through a live
+ * `dynFrom`). A receiver owns the reference in a hidden slot, so its shape
+ * must be traced for the collector to walk the edge and reclaim a prototype
+ * whose closure captures the receiver; the emitter adds these shapes to the
+ * traced set and emits the slot (llvm/shapes.ts recordPrototypeIndex). */
+export function prototypeOverrides(mod: IrModule): {
+  shapes: Set<string>;
+  arrays: boolean;
+  /** Some call's receiver is held as a checked-dynamic (or union) value: any
+   * record shape can arrive, so every shape needs the hidden slot. */
+  allRecords: boolean;
+} {
+  const shapes = new Set<string>();
+  let arrays = false;
+  let allRecords = false;
+  const seen = new Set<object>();
+  const scan = (value: unknown): void => {
+    if (typeof value !== "object" || value === null) return;
+    if (seen.has(value)) return;
+    seen.add(value);
+    if (Array.isArray(value)) {
+      for (const item of value) scan(item);
+      return;
+    }
+    const node = value as { kind?: unknown; fn?: unknown; args?: unknown };
+    if (node.kind === "libCall" && node.fn === "dyn.setPrototype" && Array.isArray(node.args)) {
+      const receiver = node.args[0] as
+        | { kind?: unknown; type?: IrType; value?: { type?: IrType } }
+        | undefined;
+      const type = receiver?.kind === "dynFrom" ? receiver.value?.type : receiver?.type;
+      if (type?.kind === "record") shapes.add(type.shapeId);
+      else if (type?.kind === "array") arrays = true;
+      else if (type === undefined || type.kind === "dyn" || type.kind === "union")
+        allRecords = true;
+    }
+    for (const key of Object.keys(value)) scan((value as Record<string, unknown>)[key]);
+  };
+  scan(mod);
+  return { shapes, arrays, allRecords };
+}
+
+/** The record shapes that carry the hidden prototype slot: the ones a call
+ * names, plus every shape when a checked-dynamic receiver can hold any of
+ * them at run time. */
+export function prototypeShapeIds(mod: IrModule): Set<string> {
+  const override = prototypeOverrides(mod);
+  return override.allRecords
+    ? new Set([...override.shapes, ...(mod.records ?? []).map((shape) => shape.id)])
+    : override.shapes;
+}
+
 export function computeTraced(
   mod: IrModule,
   stores?: DynamicFieldStores,
   /** computeCycleMutability's answer for this module, when the caller has it. */
   precomputed?: CycleMutability,
+  prototypeShapes?: ReadonlySet<string>,
+  forcedArrayKinds?: ReadonlySet<number>,
 ): { shapes: Set<string>; unions: Set<string> } {
-  const { shapes, unions } = analyzeCycles(mod, false, stores, precomputed);
+  const { shapes, unions } = analyzeCycles(
+    mod,
+    false,
+    stores,
+    precomputed,
+    true,
+    prototypeShapes,
+    forcedArrayKinds,
+  );
   return { shapes, unions };
 }
 
@@ -72,9 +134,12 @@ export function computeCyclic(
   mod: IrModule,
   stores?: DynamicFieldStores,
   precomputed?: CycleMutability,
+  prototypeShapes?: ReadonlySet<string>,
+  forcedArrayKinds?: ReadonlySet<number>,
 ): ReadonlySet<string> | null {
   if (mod.weakKeys === undefined) return null;
-  return analyzeCycles(mod, false, stores, precomputed, false).cyclic;
+  return analyzeCycles(mod, false, stores, precomputed, false, prototypeShapes, forcedArrayKinds)
+    .cyclic;
 }
 
 /** Values that can reference any object. */
@@ -131,6 +196,25 @@ export function explainCycle(mod: IrModule, key: string): CycleExplanation | nul
   return analyzeCycles(mod, true).explain(key);
 }
 
+/** The SCR_ELEM_* kind an array of `elem` allocates as: llvm/shapes.ts's
+ * arrayAllocKind and the runtime's scr_arr_new argument. */
+function arrayAllocKindOf(elem: IrType): number {
+  switch (elem.kind) {
+    case "f64":
+      return 0;
+    case "bool":
+      return 1;
+    case "string":
+      return 2;
+    case "array":
+      return 3;
+    case "bytes":
+      return 4;
+    default:
+      return 5;
+  }
+}
+
 function analyzeCycles(
   mod: IrModule,
   labels: boolean,
@@ -139,6 +223,16 @@ function analyzeCycles(
   /** Whether weak-collection keys are intrinsic (computeCyclic asks for the
    * answer without them). */
   weakMarks = true,
+  /** Record shapes that can receive a prototype (prototypeOverrides): their
+   * hidden slot holds a checked-dynamic value, which can reference any
+   * object, so the shape is intrinsic from the start — and every shape that
+   * holds it is traced with it. */
+  prototypeShapes?: ReadonlySet<string>,
+  /** Array element kinds the program gives a prototype
+   * (prototypeOverrideArrayKinds): such an array is born with the collector
+   * header and keeps a protected prototype, so a shape that holds one can
+   * reach anything through it. */
+  forcedArrayKinds?: ReadonlySet<number>,
 ): {
   shapes: Set<string>;
   /** The shapes that are traced themselves, before a hierarchy shares the
@@ -376,9 +470,25 @@ function analyzeCycles(
         addType(from, t.value, true, label?.kind === "field" ? { ...label, via: "map" } : label);
         break;
       case "set":
-      case "array":
+      case "array": {
+        // A forced-cyclic array keeps its prototype on its own metadata, and
+        // that prototype's closure can capture whatever holds the array: the
+        // holder reaches any object through it.
+        if (t.kind === "array" && forcedArrayKinds?.has(arrayAllocKindOf(t.elem))) {
+          from.intrinsic = true;
+          from.edges.clear();
+          if (from.labels !== null) {
+            from.labels.clear();
+            from.intrinsicField = {
+              field: label?.kind === "field" ? label.field : "",
+              holds: "dyn",
+            };
+          }
+          break;
+        }
         addType(from, t.elem, true, label?.kind === "field" ? { ...label, via: t.kind } : label);
         break;
+      }
     }
   };
   for (const s of shapeDefs) {
@@ -398,6 +508,22 @@ function analyzeCycles(
   for (const u of mod.unions ?? [])
     for (const arm of u.arms)
       addType(unions.get(u.id)!, arm, mutability.all, labels ? { kind: "arm" } : null);
+  // A record that can receive a prototype holds it in a hidden slot that is
+  // not a declared field: the prototype is a checked-dynamic value, so the
+  // record can reference any object and is intrinsic. Seeding it before the
+  // analysis (not after) lets everything that holds the record inherit that
+  // answer, so a cycle through a class that owns such a record is walked.
+  if (prototypeShapes !== undefined)
+    for (const shapeId of prototypeShapes) {
+      const n = shapes.get(`record:${shapeId}`);
+      if (n !== undefined)
+        addType(
+          n,
+          { kind: "dyn" },
+          true,
+          labels ? { kind: "field", field: "<prototype>", mutable: true } : null,
+        );
+    }
 
   // Tarjan's strongly connected components, iteratively (shape chains can
   // be thousands deep).

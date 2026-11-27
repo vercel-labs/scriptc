@@ -2568,8 +2568,40 @@ export function collectClassShapeInner(
             decl.members.nodes.find((member): member is ts.ConstructorDeclaration =>
               ts.isConstructorDeclaration(member),
             );
-          if (constructor !== undefined)
-            legacyCtorParameters.push(...parameterDecoratorsOf(constructor));
+          if (constructor !== undefined) {
+            const entries = parameterDecoratorsOf(constructor);
+            // A parameter decorator can install a validating setter on the
+            // prototype for its parameter property. With constructor-assigned
+            // fields Node's `this.x = x` goes through that setter, but
+            // compiled parameter-property initialization writes the field
+            // directly, so the pattern is refused there.
+            if (
+              entries.length > 0 &&
+              lowerer.parameterPropertiesFirst?.has(
+                ts.getSourceFileOfNode(constructor).fileName,
+              ) === true
+            )
+              for (const entry of entries) {
+                const parameter = constructor.parameters.nodes[entry.index]!;
+                const isParameterProperty = (
+                  (parameter as { modifiers?: ts.NodeArray<ts.Node> }).modifiers?.nodes ?? []
+                ).some((modifier) =>
+                  [
+                    ts.SyntaxKind.PublicKeyword,
+                    ts.SyntaxKind.PrivateKeyword,
+                    ts.SyntaxKind.ProtectedKeyword,
+                    ts.SyntaxKind.ReadonlyKeyword,
+                  ].includes(modifier.kind),
+                );
+                if (isParameterProperty)
+                  lowerer.unsupported(
+                    "SC1090",
+                    entry.decorators[0]!,
+                    "constructor parameter decorators on a parameter property in a project whose fields are assigned in the constructor (useDefineForClassFields: false or a target below ES2022; a decorator-installed prototype accessor would be bypassed by the compiled field write)",
+                  );
+              }
+            legacyCtorParameters.push(...entries);
+          }
         }
         const legacyDecoratedMembers = legacyDecorators
           ? decl.members.nodes.filter(
@@ -7187,6 +7219,31 @@ function lowerLegacyMemberDecorations(lowerer: Lowerer, info: ClassInfo): IrStmt
     lowerer.stats.statementsFailed++;
     lowerer.bumpFileStat(loc.file, "failed");
     return [];
+  }
+}
+
+/** Legacy member decorations on a class with a GENERIC subclass cannot stay
+ * exact: a generic subclass compiles per instantiation, and an instantiated
+ * family has no reflected prototype of its own, so calls on its instances
+ * would run the declared member and silently bypass a decorator-installed
+ * replacement (a security wrapper, for example). Refuse the combination with
+ * a named diagnostic instead of diverging. */
+export function validateLegacyMemberDispatch(lowerer: Lowerer): void {
+  for (const info of lowerer.classes.values()) {
+    const members = info.legacyMemberDecorations;
+    if (members === undefined || members.length === 0) continue;
+    for (const candidate of lowerer.classes.values()) {
+      if (candidate === info) continue;
+      if (candidate.generic === undefined && candidate.genericInstance === undefined) continue;
+      if (candidate.def.name === info.def.name) continue;
+      if (!lowerer.isSubclassOf(candidate.def.name, info.def.name)) continue;
+      const first = members[0]!;
+      lowerer.unsupported(
+        "SC1090",
+        first.decorators[0] ?? first.parameters[0]!.decorators[0]!,
+        `legacy ${first.kind} decorators on '${info.def.jsName ?? info.def.name}' with a generic subclass ('${candidate.def.jsName ?? candidate.def.name}' instances would run the declared member and bypass the decorated one)`,
+      );
+    }
   }
 }
 
@@ -14186,11 +14243,14 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   // CONSTRUCTION, when Node parses too, so unparseable input throws
   // Node's exact PEM error here (ERR_OSSL_PEM_NO_START_LINE) and the
   // handle never exists. Both import forms (`crypto.X509Certificate`
-  // through the namespace, named `X509Certificate`); Buffer input only
-  // — the readFileSync idiom. mapType interns the matching record, so
-  // locals and the composed member reads all flow. The data argument
-  // feeds THREE field computations, so construction goes through an
-  // interned helper whose parameter evaluates it exactly once.
+  // through the namespace, named `X509Certificate`); a PEM string or
+  // Buffer takes the static helper, and any other argument type goes
+  // through the runtime's dispatch (crypto.x509RawDyn) so a dynamic
+  // value parses or throws Node's argument error. mapType interns the
+  // matching record, so locals and the composed member reads all flow.
+  // The data argument feeds THREE field computations, so construction
+  // goes through an interned helper whose parameter evaluates it exactly
+  // once.
   // It runs before the standard-library constructor fence below, which
   // also sees `const X = require("crypto").X509Certificate` as the
   // builtin class.
@@ -14207,25 +14267,36 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
         })());
     if (isX509) {
       const args: readonly ts.Expression[] = expr.arguments?.nodes ?? [];
-      if (args.length !== 1) {
+      if (args.length > 1) {
         lowerer.noLowering(
           "X509Certificate with this argument shape",
           expr,
-          "the supported form is new X509Certificate(readFileSync(path))",
-        );
-      }
-      const data = lowerer.lowerExpr(args[0]!);
-      const isBytes = data.type.kind === "bytes" && data.type.elem === "u8";
-      if (!isBytes && data.type.kind !== "string") {
-        lowerer.noLowering(
-          `X509Certificate over '${lowerer.fmt(data.type)}' data`,
-          args[0]!,
-          "pass the certificate Buffer or PEM string (an fs.readFileSync result)",
+          "the supported form is new X509Certificate(data)",
         );
       }
       const t = lowerer.mapTypeOf(lowerer.typeOf(expr));
       if (t?.kind !== "record") lowerer.badType(expr, lowerer.typeOf(expr));
-      return x509RecordCall(lowerer, data, t, loc);
+      const arg = args[0];
+      // A statically known PEM string or Buffer takes the field-by-field
+      // helper. Any other argument — `unknown`, `any`, a primitive, a
+      // union — becomes a dynamic value the runtime dispatches on: a
+      // string or Buffer parses as those do, and every other value throws
+      // Node's ERR_INVALID_ARG_TYPE for "buffer" (Node validates the
+      // argument before it parses, so the error names the received value).
+      // No argument at all reads as Node's undefined.
+      const staticType = arg === undefined ? null : lowerer.mapTypeOf(lowerer.typeOf(arg));
+      const isStatic =
+        staticType?.kind === "string" || (staticType?.kind === "bytes" && staticType.elem === "u8");
+      if (arg !== undefined && isStatic)
+        return x509RecordCall(lowerer, lowerer.lowerExpr(arg), t, loc);
+      const decoded: IrExpr = {
+        kind: "libCall",
+        fn: "crypto.x509RawDyn",
+        args: [arg === undefined ? dynUndefinedExpr(loc) : lowerer.lowerExprExpecting(arg, DYN)],
+        type: BYTES_U8,
+        loc,
+      };
+      return x509RecordCall(lowerer, decoded, t, loc, true);
     }
   }
   // `new crypto.Certificate()` — the SPKAC class. Its instance holds no

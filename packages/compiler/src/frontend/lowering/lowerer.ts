@@ -183,8 +183,10 @@ import { valueStreamOf, writableStreamOf } from "./builtins/hash-stream.js";
 import { lowerNetAddressCall, lowerNetAddressNew } from "./builtins/net-address.js";
 import { lowerMimeCall, lowerMimeNew } from "./builtins/mime.js";
 import { lowerSqliteCall, lowerSqliteNew } from "./builtins/sqlite.js";
+import { lowerSourceMapNew } from "./builtins/source-map.js";
 import { lowerPerfNew } from "./builtins/performance.js";
 import {
+  installCompressionStreamZlib,
   installFetchBodyWebStreams,
   lowerWebStreamNew,
   lowerWebStreamStaticCall,
@@ -595,6 +597,7 @@ import {
   builtinEmitterInfoOf,
   builtinStreamInfoOf,
   analyzeClassDecoration,
+  validateLegacyMemberDispatch,
   classIteratorDrainCall,
   classIteratorMethodCall,
   classIteratorNextCall,
@@ -4107,6 +4110,10 @@ export class Lowerer {
    * that assigns module.exports) does not change the binding. Required
    * bindings read the live slot at their own position instead. */
   readonly cjsRuntimeExportSnapshotGlobals = new Map<ts.SourceFile, IrGlobal>();
+  /** Element kinds (SCR_ELEM_* numbers) whose arrays the program gives a
+   * prototype: their allocations carry the collector header, so the
+   * prototype the array owns is an edge the collector can see. */
+  readonly prototypeArrayKinds = new Set<number>();
   /** Per module some namespace import reads, the export members its
    * functions assign (`cjsExportsAssignedInFunctions`): each member's slot
    * takes the values the module's exports held when the first ESM module
@@ -6067,6 +6074,9 @@ export class Lowerer {
   /** web-streams-dyn.ts's answer: whether a TypeScript source uses a web
    * stream operation the native streams lack; undefined until asked. */
   typedWebStreams: boolean | undefined = undefined;
+  /** web-streams-dyn.ts's answer: whether the program names CompressionStream
+   * or DecompressionStream; undefined until asked. */
+  compressionStreams: boolean | undefined = undefined;
   /** The first lifted function of each name (liftedFnNamed), for the first
    * liftedFnsIndexed entries of liftedFns, and the last of those entries.
    * liftedFns mostly grows; the unit journal cuts it back and record-links.ts
@@ -6821,6 +6831,10 @@ export class Lowerer {
     "wholeSlotDegradation",
     "untypedConstructors",
     "dynamicClassValues",
+    // Element kinds the program gives a prototype: a program fact the
+    // setPrototypeOf lowerings record, and a replay of a unit records its
+    // kinds again (the set only grows with the program's own calls).
+    "prototypeArrayKinds",
     // Which refusals involve a held constructor (held-constructors.ts): a
     // count and its mark for the statement being lowered, and the answers
     // per named type, computed again when asked.
@@ -6962,6 +6976,7 @@ export class Lowerer {
     "nodeObjectValueReads",
     "namesWebStreamClass",
     "typedWebStreams",
+    "compressionStreams",
     "timeValueDateDecisions",
     "timeValueDateWrites",
     "dynamicOverloadAnswers",
@@ -15380,6 +15395,7 @@ export class Lowerer {
     // class, and reference lowering needs each class's rebindability
     // (valueGlobalId) settled before any body lowers.
     for (const info of this.classes.values()) analyzeClassDecoration(this, info);
+    validateLegacyMemberDispatch(this);
     this.prepareModuleInits(parts);
     prepareCjsModuleGraph(this, parts);
 
@@ -15691,6 +15707,9 @@ export class Lowerer {
     // exists, so every buffer in it is detachable from the start.
     const buffersMutable = this.buffersMutable && installMutableBuffersArm(functions);
     this.timedPass("installFetchBodyWebStreams", () => installFetchBodyWebStreams(this, functions));
+    this.timedPass("installCompressionStreamZlib", () =>
+      installCompressionStreamZlib(this, functions),
+    );
     this.timedPass("returnDispatchReceivers", () =>
       returnDispatchReceivers(this, functions, census),
     );
@@ -15803,6 +15822,9 @@ export class Lowerer {
             ...(this.usesLifetimeRegions ? { lifetimeRegions: true as const } : {}),
             ...(this.usesNodeIsland ? { nodeIsland: this.nodeIslandRecord() } : {}),
             ...(this.declBoundary ? { declBoundary: true as const } : {}),
+            ...(this.prototypeArrayKinds.size > 0
+              ? { prototypeOverrideArrayKinds: [...this.prototypeArrayKinds].sort((a, b) => a - b) }
+              : {}),
             ...(shapeOverlayFileNames().length > 0
               ? {
                   inferredFactFiles: shapeOverlayFileNames()
@@ -16207,6 +16229,7 @@ export class Lowerer {
       // lower the decoration calls, whose edges (decorator bodies, construct
       // thunks) reachable emit must see.
       for (const info of this.classes.values()) analyzeClassDecoration(this, info);
+      validateLegacyMemberDispatch(this);
       this.prepareModuleInits(parts);
       prepareCjsModuleGraph(this, parts);
     } catch (e) {
@@ -18751,6 +18774,34 @@ export class Lowerer {
     }
   }
 
+  /** mapTypeOf for the TARGET TYPE of a static assertion: a record
+   * intersection with a bound type parameter keeps the bound layout, because
+   * the assertion does not make the parameter's values carry the members it
+   * names (type-mapper.ts, TypeMapperCtx.assertionTarget). */
+  mapAssertionTargetType(t: ts.Type): IrType | null {
+    // Outside a generic instantiation no bound parameter can make the
+    // mapping differ, so the ordinary path (and its memo) answers.
+    if (this.typeParamBindings === null && this.typeParamTsBindings === null)
+      return this.mapTypeOf(t);
+    // A BINDING-SCOPED answer must not be stored under the key a
+    // non-assertion mapping of the same checker type uses: the asserted
+    // layout (the bound one) is right here and wrong there. Map with a
+    // throwaway memo for this call; shapes and unions intern globally, so
+    // type identity is unchanged.
+    const memo = new Map<number, IrType>();
+    return this.mapTypeWithContext(t, {
+      ...this.typeCtx,
+      assertionTarget: true as const,
+      typeMemo: memo,
+      typeMemoFor: () => memo,
+    });
+  }
+  private mapTypeWithContext(t: ts.Type, ctx: TypeMapperCtx): IrType | null {
+    const mapped = mapType(t, ctx);
+    return mapped === null || mapped.kind === "func"
+      ? (jsArgumentsFunctionType(this, t) ?? mapped)
+      : mapped;
+  }
   /** mapType with this Lowerer's registries and (while a generic instance
    * body lowers) type-parameter bindings threaded through. A supplied mapper
    * retains interface-view substitutions while sharing ABI normalization. */
@@ -25218,6 +25269,7 @@ export class Lowerer {
       lowerNetAddressNew(this, expr) ??
       lowerMimeNew(this, expr) ??
       lowerSqliteNew(this, expr) ??
+      lowerSourceMapNew(this, expr) ??
       lowerPerfNew(this, expr) ??
       lowerWebStreamNew(this, expr) ??
       lowerStaticReadableStreamNew(this, expr) ??
@@ -26257,6 +26309,8 @@ export class Lowerer {
     if (module === "module" && member === "builtinModules") return this.builtinModulesValue(loc);
     if (module === "module" && member === "Module")
       return { kind: "libCall", fn: "module.ctor", args: [], type: DYN, loc };
+    if (module === "module" && member === "constants")
+      return { kind: "libCall", fn: "module.compileCacheConstants", args: [], type: DYN, loc };
     if (module === "http" && member === "METHODS")
       return { kind: "libCall", fn: "http.methods", args: [], type: arrayOf(STRING), loc };
     if ((module === "http" || module === "https") && member === "globalAgent")

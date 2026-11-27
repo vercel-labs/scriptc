@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/compression-streams-event-loop.ts"
+ ],
+ "diags": []
+}

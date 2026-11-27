@@ -321,3 +321,11 @@ static const ScrZlibCodecHooks scr_brotli_hooks = {scr_brotli_options, scr_brotl
 void scr_brotli_install(void) {
   scr_zlib_brotli_hooks = &scr_brotli_hooks;
 }
+
+ScrZlibEngine *scr_brotli_web_engine(bool decompressing) {
+  scr_brotli_install(); /* the codec hooks the engine path relies on */
+  int mode = decompressing ? SCR_BROTLI_DECODE : SCR_BROTLI_ENCODE;
+  ScrZlibOptions o;
+  if (!scr_brotli_options_object(mode, NULL, &o)) scr_trap("scriptc: brotli setup failed\n");
+  return scr_brotli_engine(mode, &o);
+}

@@ -1490,12 +1490,13 @@ function watchListenerArity(lowerer: Lowerer, cb: IrExpr): 0 | 1 | 2 | null {
  * shape). The listener fires with "rename"/"change" and takes zero
  * parameters, the eventType string, or (eventType, filename: string |
  * null) — the filename is the entry name on a directory watch and the
- * watched file's basename otherwise (Linux inotify names both; a macOS
- * directory watch has no name source until F3). The options record follows the options-record
+ * watched file's basename otherwise (Linux inotify names both; a
+ * non-recursive macOS directory watch does not pass the entry name
+ * through yet). The options record follows the options-record
  * stance: persistent (default true) is the watcher's loop liveness and is
  * passed through, recursive is a run-time truthiness read the platform
  * backends honor (a directory subtree on Linux and Windows, the FSEvents
- * arm for a recursive macOS directory), encoding: "utf8" states the
+ * arm for a macOS directory), encoding: "utf8" states the
  * lowered behavior and is accepted; signal and non-utf8 encodings fence by
  * name; undocumented keys drop like Node. A reffed watcher keeps the loop
  * alive until watcher.close(). */
@@ -1522,7 +1523,7 @@ export function lowerFsWatchCall(lowerer: Lowerer, expr: ts.CallExpression, loc:
   }
   let persistent: IrExpr = boolLit(true, loc);
   // Node reads `recursive` for truthiness; a directory subtree is watched
-  // on Linux and Windows, and a recursive macOS directory uses FSEvents.
+  // on Linux and Windows, and every macOS directory watch uses FSEvents.
   let recursive: IrExpr = boolLit(false, loc);
   if (hasOptions) {
     for (const prop of (expr.arguments.nodes[1] as ts.ObjectLiteralExpression).properties.nodes) {

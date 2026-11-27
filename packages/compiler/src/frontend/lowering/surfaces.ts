@@ -4655,6 +4655,28 @@ export function stdlibGlobalMember(
  * nothing. Only the globals with lowered member surfaces alias this
  * way; aliasing, say, `Math` would change nothing (its members lower
  * by receiver too). Returns true when recognized. */
+/** The WebCrypto object a `const` initializer names: the `subtle` member of
+ * a Crypto receiver ("crypto.subtle"), or node:crypto's `webcrypto` member
+ * ("crypto", the Crypto object). Null for anything else. */
+function webcryptoAliasNameOf(lowerer: Lowerer, expr: ts.Expression): string | null {
+  let e = expr;
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  if (!ts.isPropertyAccessExpression(e) || e.questionDotToken) return null;
+  if (e.name.text === "subtle") {
+    const member = lowerer.builtinMemberOf(e);
+    if (member?.module === "crypto" && member.member === "subtle") return "crypto.subtle";
+    if (stdlibGlobalNameOf(lowerer, e.expression) === "crypto") return "crypto.subtle";
+    if (ts.isPropertyAccessExpression(e.expression)) {
+      const receiver = lowerer.builtinMemberOf(e.expression);
+      if (receiver?.module === "crypto" && receiver.member === "webcrypto") return "crypto.subtle";
+    }
+    return null;
+  }
+  const member = lowerer.builtinMemberOf(e);
+  if (member?.module === "crypto" && member.member === "webcrypto") return "crypto";
+  return null;
+}
+
 export function stdlibGlobalAliasNameOf(
   lowerer: Lowerer,
   init: ts.Expression | undefined,
@@ -4682,6 +4704,8 @@ export function stdlibGlobalAliasNameOf(
   // globalThis.process`. Preflight admits exactly this shape
   // (processModuleAliasRequire7); commander's lib/command.js opens with
   // it.
+  const webcrypto = webcryptoAliasNameOf(lowerer, aliasExpr);
+  if (webcrypto !== null) return webcrypto;
   const requireSpec = requireSpecOf(aliasExpr);
   const name =
     requireSpec === "process" || requireSpec === "node:process"
@@ -4732,6 +4756,14 @@ export function stdlibGlobalAliasDecl(
   if (!ts.isIdentifier(nameNode)) return false;
   const name = stdlibGlobalAliasNameOf(lowerer, init);
   if (name === null) return false;
+  // The WebCrypto snapshots name an immutable object; a mutable binding can
+  // be reassigned, so it keeps its ordinary storage.
+  if (
+    (name === "crypto.subtle" || name === "crypto") &&
+    ts.isVariableDeclaration(nameNode.parent) &&
+    (ts.getCombinedNodeFlags(nameNode.parent) & ts.NodeFlags.Const) === 0
+  )
+    return false;
   // Mutable global-object bindings keep real storage, even when never
   // reassigned: var can be observed before initialization and let has TDZ.
   if (

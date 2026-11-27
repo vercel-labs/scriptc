@@ -118102,6 +118102,8 @@
           "tests/corpus/compat-webcrypto-algorithms.ts",
           "tests/corpus/compat-webcrypto-modern-params.ts",
           "tests/corpus/crypto-argon2.ts",
+          "tests/corpus/crypto-subtle-alias.mjs",
+          "tests/corpus/crypto-subtle-alias.ts",
           "tests/corpus/jose-jwe-asymmetric/main.mjs",
           "tests/corpus/key-object-from-arguments.mjs",
           "tests/corpus/key-object-from-crypto-key.ts",
@@ -122189,7 +122191,8 @@
         "tests": [
           "tests/corpus/7120-webcrypto-random-uuid.ts",
           "tests/corpus/7121-webcrypto-crypto-object.mjs",
-          "tests/corpus/6293-webcrypto-digest.ts"
+          "tests/corpus/6293-webcrypto-digest.ts",
+          "tests/corpus/crypto-subtle-alias.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -122277,7 +122280,9 @@
           "tests/corpus/6292-webcrypto-hmac-errors.ts",
           "tests/corpus/6293-webcrypto-digest.ts",
           "tests/corpus/6294-webcrypto-js-values.mjs",
-          "tests/corpus/6295-jose-hs256/main.mjs"
+          "tests/corpus/6295-jose-hs256/main.mjs",
+          "tests/corpus/crypto-subtle-alias.ts",
+          "tests/corpus/crypto-subtle-alias.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -122565,7 +122570,9 @@
           "tests/corpus/6292-webcrypto-hmac-errors.ts",
           "tests/corpus/6293-webcrypto-digest.ts",
           "tests/corpus/6294-webcrypto-js-values.mjs",
-          "tests/corpus/6295-jose-hs256/main.mjs"
+          "tests/corpus/6295-jose-hs256/main.mjs",
+          "tests/corpus/crypto-subtle-alias.ts",
+          "tests/corpus/crypto-subtle-alias.mjs"
         ]
       },
       "anchorSource": "exact"

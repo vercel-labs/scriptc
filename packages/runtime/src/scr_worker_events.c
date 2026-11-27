@@ -234,6 +234,10 @@ static void scr_worker_view_trace(void *ptr, ScrTraceVisit visit, void *ctx) {
 
 static void scr_worker_view_gcfree(void *ptr) {
   ScrWorkerView *view = ptr;
+  /* Both the reference-count destructor and the cycle collector end here,
+   * so the port's listener order (its allocation and its retained event
+   * names) is released on either path. */
+  scr_worker_order_clear(view);
   scr_worker_thread_release(view->thread);
   if (view->broadcast && view->channel && !view->closed) scr_broadcast_leave(view->channel);
   scr_channel_release(view->channel);
@@ -250,7 +254,6 @@ static void scr_worker_view_gcfree(void *ptr) {
 
 static void scr_worker_view_destroy(void *ptr) {
   ScrWorkerView *view = ptr;
-  scr_worker_order_clear(view);
   scr_emitter_release(view->events);
   while (view->termination) {
     ScrTermWait *wait = view->termination;
@@ -1171,22 +1174,39 @@ static ScrDyn *scr_worker_view_invoke(void *ptr, ScrDyn *self, const char *metho
                      method_is(method, "removeEventListener") || method_is(method, "dispatchEvent"))) {
     ScrDyn *out = NULL;
     ScrEventTargetCore *core = scr_port_core(view);
-    if (core && scr_et_broadcast_ops->method(core, self, method, args, argc, &out)) {
-      if (argc > 0 && args[0]->kind == SCR_DYN_STR && args[0]->v.str->len == 7 &&
-          !memcmp(args[0]->v.str->data, "message", 7))
-        scr_port_message_refs(view);
+    /* One conversion of an addEventListener type, as Node performs it once:
+     * the coerced name is both what the core registers under and what the
+     * eventNames order records, so an object name's toString cannot run a
+     * second time after a registration has happened. */
+    ScrStr *type = NULL;
+    ScrDyn *type_value = NULL;
+    ScrDyn *rebuilt[3];
+    const ScrDyn *const *call_args = args;
+    size_t call_argc = argc;
+    if (core && method_is(method, "addEventListener") && argc > 0) {
+      type = scr_worker_event_name(view, args[0]);
+      if (!type) return NULL;
+      type_value = scr_dyn_new_str(type);
+      call_argc = argc > 3 ? 3 : argc;
+      rebuilt[0] = type_value;
+      for (size_t i = 1; i < call_argc; i++) rebuilt[i] = args[i];
+      call_args = rebuilt;
+    }
+    if (core && scr_et_broadcast_ops->method(core, self, method, call_args, call_argc, &out)) {
+      const ScrStr *name = type ? type : (argc > 0 && args[0]->kind == SCR_DYN_STR ? args[0]->v.str : NULL);
+      if (name && name->len == 7 && !memcmp(name->data, "message", 7)) scr_port_message_refs(view);
       /* A type's first EventTarget listener enters the eventNames order
        * (removeEventListener's departures come through the core's hook). */
-      if (method_is(method, "addEventListener") && argc > 0 && !scr_exc_pending()) {
-        ScrStr *type = scr_emitter_name_dyn(args[0]);
-        if (type) {
-          if (scr_worker_core_count(view, type) > 0) scr_worker_order_note(view, type, true);
-          else scr_worker_drop_if_empty(view, type);
-          scr_str_release(type);
-        }
+      if (type && !scr_exc_pending()) {
+        if (scr_worker_core_count(view, type) > 0) scr_worker_order_note(view, type, true);
+        else scr_worker_drop_if_empty(view, type);
       }
+      scr_dyn_release(type_value);
+      scr_str_release(type);
       return out;
     }
+    scr_dyn_release(type_value);
+    scr_str_release(type);
   }
   return scr_worker_refusal("This Worker or MessagePort method is not supported yet");
 }

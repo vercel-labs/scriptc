@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/node-island-shared-function-rebind/main.mjs"
+ ],
+ "diags": []
+}

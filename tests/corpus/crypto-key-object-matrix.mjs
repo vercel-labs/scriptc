@@ -3,6 +3,36 @@ import * as crypto from "node:crypto";
 // generateKeyPairSync across the key types and formats Node 24 accepts, with
 // the export/import round trips, encrypted PEM, JWK, raw encodings, key-source
 // shapes and the option errors.
+// Fixed pre-encrypted keys: a wrong passphrase over a fixed ciphertext fails
+// the padding every time, so the error it reports is deterministic.
+const FIXED_ENCRYPTED_PKCS8 = `-----BEGIN ENCRYPTED PRIVATE KEY-----
+MIIC5TBfBgkqhkiG9w0BBQ0wUjAxBgkqhkiG9w0BBQwwJAQQjX6uXTbSKXaRvhBA
+sU+ZsgICCAAwDAYIKoZIhvcNAgkFADAdBglghkgBZQMEASoEEDwnW0hnJbC9dSxS
+/svI3IoEggKAr6dEcI0l0sfiiLDmokhoTMuAk1Qm2YCCtBokqFvvB9syOINUj3tO
+LQeD87CWDqOE0+CT7v5lt3BVg8SeZm3pneDZpIo2S3eovuGVT9Okn8FFXE8fURHT
+AG50jcu92otc61s6P49dMjQzmyJ/2t0Lmcab0MVTeUCAmoEVZvcqOyrWGNACZnUg
+GFk/H4UYOIbyUf9linxDk2j9BkDrW9A/myHwdDfdkeWhUd/E+x+e8x1FUmagwT1e
+zoxKEbxT+Ugy0+E/8lzDCDcN93WjMmkM96AidY7AHBx4IHocr+YJvO5G009pd3nR
+aY11qqe7sZMhKsOPrIipZTL/U2sIEJhnFp0c3DDcSRN9HjB8+RGTOm8Ymf4Z5d6l
+VwnoerruVQvKIt+cgbpIXYZHomjN9belQYlaxyoE7yQHEYsNkeBW3RfMS67pKrlz
+SLXCKRo25XV0LgFqIVqltul6q+mqyLYgFyrzebDWm6WGPoKTPe6Ono3r67dlJwa6
+pIVelpSvO46gmRaqvIDWignkAPrG2gYQV7Ahvr8efgSZ2zbREEQr6aLeVNEF3KF+
+PofDJjsv5GboH8JQhcF5KlUa+cSU/+Di4b5cpMVp4fNVD7zqQN6MOEof5jrnCDa6
++/LV9RwxHnQ5K8qj7lN01gIyeOGdqwIOo51VHo+D43rX3je/4CTzCQHg3u/F+G5A
+b8Mguh6AhzbRqqX/EgrmQUSilZMQCwQ1egtZc+G2LJtDwJ+VpY2nB7IlJc8wmthL
+sQ+j2yxWn+3LDN6VJiltcjWBMeqZuG/3orDvFCEJn/Rn8EgtgsvuW70tmrpVUMG1
+TmgWJxBKdqhJJokZ3I+sVCKUPQ/ANqJLzg==
+-----END ENCRYPTED PRIVATE KEY-----`;
+
+const FIXED_ENCRYPTED_SEC1 = `-----BEGIN EC PRIVATE KEY-----
+Proc-Type: 4,ENCRYPTED
+DEK-Info: AES-128-CBC,1AF07BF18C97889152D50CA99BDF1778
+
+oopdyUpr6y8FKhVIM9QuP4im08z1ezHD9u7gYuSZv2kZLU7JRkAGySiCGdrEef5+
+L75/+DTI5NpFTQ3VQDTsO4aKvBxIX0ehKGkutEVq3WQBxA3+OE6UbmCJnq3DYd8C
+3TeQhI+Plju6w0Qb6yvIX7fEF4U+Q0q7Ln9MMQDpE1U=
+-----END EC PRIVATE KEY-----`;
+
 const out = [];
 const show = (label, f) => {
   try {
@@ -78,10 +108,12 @@ t("createPublicKey private der", () => crypto.createPublicKey({ key: rsaDer, for
 t("createPublicKey sec1 ec", () => crypto.createPublicKey({ key: ec.privateKey.export({ format: "der", type: "sec1" }), format: "der", type: "sec1" }).asymmetricKeyType);
 t("createPublicKey spki as private", () => crypto.createPrivateKey({ key: rsa.publicKey.export({ format: "der", type: "spki" }), format: "der", type: "spki" }).asymmetricKeyType);
 t("encrypted no pass", () => { const p = rsa.privateKey.export({ format: "pem", type: "pkcs8", cipher: "aes-256-cbc", passphrase: "x" }); return crypto.createPrivateKey({ key: p, format: "pem", type: "pkcs8" }); });
-t("encrypted wrong pass", () => { const p = rsa.privateKey.export({ format: "pem", type: "pkcs8", cipher: "aes-256-cbc", passphrase: "x" }); return crypto.createPrivateKey({ key: p, format: "pem", type: "pkcs8", passphrase: "y" }); });
+t("fixed encrypted right pass", () => crypto.createPrivateKey({ key: FIXED_ENCRYPTED_PKCS8, format: "pem", type: "pkcs8", passphrase: "pw" }).asymmetricKeyType);
+t("fixed encrypted wrong pass", () => crypto.createPrivateKey({ key: FIXED_ENCRYPTED_PKCS8, format: "pem", type: "pkcs8", passphrase: "nope" }));
 t("encrypted der pkcs8", () => { const d = rsa.privateKey.export({ format: "der", type: "pkcs8", cipher: "aes-256-cbc", passphrase: "x" }); return crypto.createPrivateKey({ key: d, format: "der", type: "pkcs8", passphrase: "x" }).asymmetricKeyType; });
 t("encrypted sec1 no pass", () => { const p = ec.privateKey.export({ format: "pem", type: "sec1", cipher: "aes-128-cbc", passphrase: "x" }); return crypto.createPrivateKey({ key: p, format: "pem", type: "sec1" }); });
-t("encrypted sec1 wrong pass", () => { const p = ec.privateKey.export({ format: "pem", type: "sec1", cipher: "aes-128-cbc", passphrase: "x" }); return crypto.createPrivateKey({ key: p, format: "pem", type: "sec1", passphrase: "y" }); });
+t("fixed sec1 right pass", () => crypto.createPrivateKey({ key: FIXED_ENCRYPTED_SEC1, format: "pem", type: "sec1", passphrase: "pw" }).asymmetricKeyType);
+t("fixed sec1 wrong pass", () => crypto.createPrivateKey({ key: FIXED_ENCRYPTED_SEC1, format: "pem", type: "sec1", passphrase: "nope" }));
 t("pkcs1 encrypted", () => { const p = rsa.privateKey.export({ format: "pem", type: "pkcs1", cipher: "aes-128-cbc", passphrase: "x" }); return crypto.createPrivateKey({ key: p, format: "pem", type: "pkcs1", passphrase: "x" }).asymmetricKeyType; });
 t("jwk as private of public", () => crypto.createPrivateKey({ key: rsa.publicKey.export({ format: "jwk" }), format: "jwk" }));
 t("jwk bad kty", () => crypto.createPrivateKey({ key: { kty: "XYZ" }, format: "jwk" }));

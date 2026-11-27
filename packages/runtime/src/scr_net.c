@@ -1834,7 +1834,15 @@ static void scr_net_sock_flush(ScrNetSocket *s) {
                            : scr_net_send(s->fd, s->wbuf + s->whead, s->wlen - s->whead);
     if (sent < 0) {
       if (errno == EINTR) continue;
-      if (errno == EAGAIN || errno == EWOULDBLOCK) return;
+      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        /* bytes went out before the socket filled: a layer waiting on a
+         * message's last byte (HTTP/1 responses) must still hear about the
+         * progress, or a response whose final byte just went out waits for a
+         * flush that may never come */
+        if (progressed && s->native_write_progress != NULL)
+          s->native_write_progress(s->native_ctx);
+        return;
+      }
       char msg[96];
       snprintf(msg, sizeof msg, "write %s", scr_net_errname(errno));
       if (!s->pending_err) s->pending_err = scr_str_new(msg, strlen(msg));

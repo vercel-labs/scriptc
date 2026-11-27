@@ -157,3 +157,14 @@ test.each([32, 64])(
     expect(rendered).toContain('name: "ScrUnion_value"');
   },
 );
+
+test("a sourcePathMap renames the emitted file, not the text it looks up", () => {
+  const debug = new LlvmDebugInfo(file, new Map([[file, text]]), 64, [], new Map(), (path) =>
+    path === file ? "/project/src/lib.ts" : path,
+  );
+  expect(debug.function(fn())).not.toBeNull();
+  const rendered = debug.render();
+  expect(rendered).toContain('filename: "lib.ts"');
+  expect(rendered).toContain('directory: "/project/src"');
+  expect(rendered).not.toContain("/source/");
+});

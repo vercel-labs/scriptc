@@ -250,7 +250,7 @@
  * surface beyond the three ask-5 keys. */
 import { isNativeOptimization, type NativeOptimization } from "../backend/optimization.js";
 import { readFileSync } from "node:fs";
-import { dirname, isAbsolute, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { libProfileDiag, type ScrDiagnostic } from "../diagnostics/diagnostic.js";
 import {
   resolveLibraryFences,
@@ -408,6 +408,11 @@ export interface LibraryProfile {
   /** Native optimizer posture. release preserves the production -O2 archive;
    * dev uses -O0 for fast iterative embedding builds. */
   optimization: NativeOptimization;
+  /** `-ffile-prefix-map` for emitted source names: `folder` and `prefix`
+   * are absolute (profile-relative in the JSON), and the first entry whose
+   * folder holds a file rewrites its emitted name. Debug info, stack frames
+   * and conversion traces use it; diagnostics keep the paths scriptc read. */
+  filePrefixMap: { folder: string; prefix: string }[];
   /** Explicit source-inference attempts, including packages without declarations. */
   npmStatic: string[];
   prefix: string;
@@ -508,6 +513,42 @@ function rejectUnknownKeys(obj: object, path: string, known: readonly string[]):
   }
 }
 
+/** The profile's `file_prefix_map`, with both sides resolved against the
+ * profile's directory: `{ "stage": "src" }` maps a file read from
+ * `<profile>/stage/...` to `<profile>/src/...`. */
+function parseFilePrefixMap(
+  value: unknown,
+  profilePath: string,
+): { folder: string; prefix: string }[] {
+  if (value === undefined) return [];
+  if (value === null || typeof value !== "object" || Array.isArray(value))
+    throw new ProfileError("'file_prefix_map' must be an object of folder → prefix strings");
+  const base = dirname(profilePath);
+  const entries: { folder: string; prefix: string }[] = [];
+  for (const [folder, prefix] of Object.entries(value as Record<string, unknown>)) {
+    if (folder === "" || typeof prefix !== "string" || prefix === "")
+      throw new ProfileError(
+        "'file_prefix_map' entries must be non-empty strings (a profile-relative folder and its replacement)",
+      );
+    entries.push({ folder: resolve(base, folder), prefix: resolve(base, prefix) });
+  }
+  return entries;
+}
+
+/** The name a library build emits for a source file, through the profile's
+ * `file_prefix_map`; the read path when no folder holds it. */
+export function emittedSourcePath(
+  profile: Pick<LibraryProfile, "filePrefixMap">,
+  file: string,
+): string {
+  for (const { folder, prefix } of profile.filePrefixMap) {
+    if (file === folder) return prefix;
+    const withSep = folder.endsWith(sep) ? folder : folder + sep;
+    if (file.startsWith(withSep)) return join(prefix, relative(folder, file));
+  }
+  return file;
+}
+
 /** Parse + validate a profile file. Returns the profile or the SC4001
  * diagnostics (one per problem found before parsing had to stop). */
 export function loadLibraryProfile(
@@ -558,6 +599,7 @@ export function loadLibraryProfile(
           "entry",
           "emission",
           "optimization",
+          "file_prefix_map",
           "npm_static",
           "abi",
           "exports",
@@ -1037,6 +1079,7 @@ export function loadLibraryProfile(
     }
 
     const entry = isAbsolute(entryRel) ? entryRel : resolve(dirname(profilePath), entryRel);
+    const filePrefixMap = parseFilePrefixMap(p["file_prefix_map"], profilePath);
     return {
       ok: true,
       profile: {
@@ -1046,6 +1089,7 @@ export function loadLibraryProfile(
         entry,
         emission,
         optimization,
+        filePrefixMap,
         npmStatic,
         prefix,
         initSymbol,

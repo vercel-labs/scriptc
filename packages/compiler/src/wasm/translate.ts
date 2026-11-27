@@ -2069,6 +2069,10 @@ class FunctionTranslator {
       this.simdInteger(sub);
       return;
     }
+    if (sub >= 0x100 && sub <= 0x113) {
+      this.simdRelaxed(sub);
+      return;
+    }
     throw new WasmTranslateError(`SIMD instruction 0xfd ${sub} is not supported yet`);
   }
 
@@ -2837,6 +2841,86 @@ class FunctionTranslator {
       return;
     }
     throw new WasmTranslateError(`SIMD instruction 0xfd ${sub} is not supported yet`);
+  }
+
+  /** Relaxed SIMD. Each instruction lowers to one deterministic outcome of
+   * the spec's allowed set, so native and Node agree on ordinary inputs. */
+  simdRelaxed(sub: number): void {
+    if (sub === 256) {
+      this.simdSwizzle();
+      return;
+    }
+    if (sub === 257 || sub === 258) {
+      this.simdConvert(sub === 257 ? 248 : 249);
+      return;
+    }
+    if (sub === 259 || sub === 260) {
+      this.simdConvert(sub === 259 ? 252 : 253);
+      return;
+    }
+    if (sub >= 261 && sub <= 264) {
+      // relaxed_madd/nmadd: a*b + c, or -(a*b) + c, with two roundings.
+      const shape = sub <= 262 ? SHAPE_F32 : SHAPE_F64;
+      const negate = sub === 262 || sub === 264;
+      const c = this.popShape(shape, "relaxed_madd");
+      const b = this.popShape(shape, "relaxed_madd");
+      const a = this.popShape(shape, "relaxed_madd");
+      const product = this.emit(`fmul ${shape.type} ${a}, ${b}`);
+      const sum = this.emit(
+        negate ? `fsub ${shape.type} ${c}, ${product}` : `fadd ${shape.type} ${product}, ${c}`,
+      );
+      this.push(this.canon(sum, shape), VAL_V128);
+      return;
+    }
+    if (sub >= 265 && sub <= 268) {
+      this.simdBitwise(82); // relaxed_laneselect is bitselect
+      return;
+    }
+    if (sub >= 269 && sub <= 272) {
+      const mapped = sub === 269 ? 234 : sub === 270 ? 235 : sub === 271 ? 246 : 247;
+      this.simdFloat(mapped); // relaxed_min/max as pmin/pmax
+      return;
+    }
+    if (sub === 273) {
+      this.simdQ15(); // relaxed q15mulr as the saturating rounding form
+      return;
+    }
+    if (sub === 274) {
+      this.push(this.canon(this.relaxedDot(), SHAPE_I16), VAL_V128);
+      return;
+    }
+    if (sub === 275) {
+      const c = this.popType(VAL_V128, "relaxed_dot_add");
+      const dot = this.relaxedDot();
+      const widened = this.emit(`sext ${V8I16} ${dot} to <8 x i32>`);
+      const evens = this.emit(
+        `shufflevector <8 x i32> ${widened}, <8 x i32> undef, <4 x i32> <i32 0, i32 2, i32 4, i32 6>`,
+      );
+      const odds = this.emit(
+        `shufflevector <8 x i32> ${widened}, <8 x i32> undef, <4 x i32> <i32 1, i32 3, i32 5, i32 7>`,
+      );
+      const sums = this.emit(`add ${V4I32} ${evens}, ${odds}`);
+      this.push(this.emit(`add ${V4I32} ${sums}, ${c.v}`), VAL_V128);
+      return;
+    }
+    throw new WasmTranslateError(`SIMD instruction 0xfd ${sub} is not supported yet`);
+  }
+
+  /** The i8x16 x i7x16 dot product, both operands sign-extended, pairwise
+   * summed into eight i16 lanes. */
+  relaxedDot(): string {
+    const b = this.popShape(SHAPE_I8, "relaxed_dot");
+    const a = this.popShape(SHAPE_I8, "relaxed_dot");
+    const wa = this.emit(`sext ${V16I8} ${a} to <16 x i16>`);
+    const wb = this.emit(`sext ${V16I8} ${b} to <16 x i16>`);
+    const product = this.emit(`mul <16 x i16> ${wa}, ${wb}`);
+    const evens = this.emit(
+      `shufflevector <16 x i16> ${product}, <16 x i16> undef, <8 x i32> <i32 0, i32 2, i32 4, i32 6, i32 8, i32 10, i32 12, i32 14>`,
+    );
+    const odds = this.emit(
+      `shufflevector <16 x i16> ${product}, <16 x i16> undef, <8 x i32> <i32 1, i32 3, i32 5, i32 7, i32 9, i32 11, i32 13, i32 15>`,
+    );
+    return this.emit(`add ${V8I16} ${evens}, ${odds}`);
   }
 
   /** Float/integer conversions, including the saturating truncations. */

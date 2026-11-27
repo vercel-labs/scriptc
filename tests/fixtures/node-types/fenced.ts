@@ -104,8 +104,8 @@ async function encapsulatedWithWebCrypto(key: import("node:crypto").webcrypto.Cr
   await crypto.subtle.encapsulateBits("ML-KEM-768", key);
 }
 void encapsulatedWithWebCrypto;
-/* Node's navigator global: navigator.locks (the Web Locks API) fences
- * by name. */
-const locks = navigator.locks;
-void locks;
+/* Node's navigator global: navigator.locks (the Web Locks API) fences by
+ * name. The LockManager type it answers is declared, so a binding of it is
+ * no fence of its own; the value read is. */
+void navigator.locks;
 // End of the declared-but-not-lowered surface.

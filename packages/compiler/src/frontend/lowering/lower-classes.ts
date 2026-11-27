@@ -2569,6 +2569,11 @@ export function collectClassShapeInner(
           string,
           {
             first: ts.GetAccessorDeclaration | ts.SetAccessorDeclaration;
+            /** The declaration carrying the member decorators: tsc emits the
+             * pair's single decoration at that declaration's position (a
+             * setter's parameter decorators alone keep the first
+             * declaration's position). */
+            memberDecorated: ts.GetAccessorDeclaration | ts.SetAccessorDeclaration | null;
             decorators: ts.Decorator[];
             parameters: LegacyParameterDecoration[];
           }
@@ -2597,12 +2602,14 @@ export function collectClassShapeInner(
             if (group === undefined)
               accessorGroups.set(name, {
                 first: member,
+                memberDecorated: decorators.length > 0 ? member : null,
                 decorators: [...decorators],
                 parameters: [...parameters],
               });
             else {
               group.decorators.push(...decorators);
               group.parameters.push(...parameters);
+              if (decorators.length > 0) group.memberDecorated = member;
             }
           }
         if (legacyDecorators) {
@@ -2708,10 +2715,11 @@ export function collectClassShapeInner(
               const group = accessorGroups.get(name);
               // One event per property, at its FIRST declaration; the other
               // half only contributes its decorators/parameters to the group.
-              if (group === undefined || group.first !== member) continue;
+              if (group === undefined || (group.memberDecorated ?? group.first) !== member)
+                continue;
               legacyInstanceMembers.push({
                 kind: "accessor",
-                member: group.first,
+                member: group.memberDecorated ?? group.first,
                 decorators: group.decorators,
                 name,
                 static: false,

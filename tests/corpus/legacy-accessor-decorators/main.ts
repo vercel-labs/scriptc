@@ -81,6 +81,24 @@ class P {
   }
 }
 
+class R {
+  private v = 0;
+
+  set pair2(@param("setter2") n: number) {
+    this.v = n;
+  }
+
+  @acc("between")
+  between(): number {
+    return 7;
+  }
+
+  @acc("getter2")
+  get pair2(): number {
+    return this.v;
+  }
+}
+
 const c = new C();
 console.log("read", c.x, c.y);
 c.x = 7;
@@ -93,3 +111,6 @@ console.log("setter-param", e.e);
 const p = new P();
 p.pair = 4;
 console.log("pair", p.pair);
+const r = new R();
+r.pair2 = 9;
+console.log("reversed", r.pair2, r.between());

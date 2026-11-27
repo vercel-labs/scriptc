@@ -58,6 +58,7 @@ import {
   STRING_MAP_ENTRY_DECL,
 } from "./map-number-lookup.js";
 import { RUNTIME_ABI_MARKER } from "../runtime-abi.js";
+import { bytesOfText, type TextPart, textOfPart } from "../../text-parts.js";
 import { threadSlotsBlockDefinitions } from "./thread-slots.js";
 import {
   ABSENT_FIELD_PAYLOAD,
@@ -411,10 +412,10 @@ function sectionedSymbols(text: string): string[] {
  * places STARTUP_SECTION first, its definitions move into that section, and the
  * symbols come back in that order: the link plan hands them to the linker. */
 function writeDefinitions(
-  out: string[],
+  out: TextPart[],
   layout: FunctionLayout | undefined,
   helperTexts: readonly (readonly string[])[],
-  fnDefs: readonly string[],
+  fnDefs: readonly TextPart[],
   groups: readonly string[],
   entries: readonly boolean[],
   roots: readonly string[] = [],
@@ -463,8 +464,13 @@ function writeDefinitions(
     }
   }
   const unlisted: number[] = [];
-  fnDefs.forEach((text, i) => {
-    const tier = layout === undefined || layout.size === 0 ? undefined : layoutTierOf(layout, text);
+  fnDefs.forEach((part, i) => {
+    if (layout === undefined || layout.size === 0) {
+      unlisted.push(i);
+      return;
+    }
+    const text = textOfPart(part);
+    const tier = layoutTierOf(layout, text);
     if (tier === undefined) unlisted.push(i);
     else {
       const body = definitionText(tier, text);
@@ -554,11 +560,11 @@ function siteUses(def: string): SiteUse[] {
  * partition the LLVM helper could reuse (native-codegen.ts). Named by its
  * function, a site keeps its name wherever its function lands. A site
  * another function or a helper also names keeps its number. */
-function nameSitesByOwner(emitter: LlEmitter, fnDefs: string[]): Map<string, string> {
+function nameSitesByOwner(emitter: LlEmitter, fnDefs: TextPart[]): Map<string, string> {
   const owner = new Map<string, number>();
   const usesOf: (SiteUse[] | undefined)[] = [];
-  fnDefs.forEach((def, index) => {
-    const uses = siteUses(def);
+  fnDefs.forEach((part, index) => {
+    const uses = siteUses(textOfPart(part));
     if (uses.length === 0) return;
     usesOf[index] = uses;
     for (const { name } of uses) {
@@ -568,13 +574,19 @@ function nameSitesByOwner(emitter: LlEmitter, fnDefs: string[]): Map<string, str
     }
   });
   const renames = new Map<string, string>();
+  // Only a function whose own site names it keeps needs its text decoded
+  // again: every other function keeps its part as it is.
+  const rewrittenAt = usesOf.map(
+    (uses, index) => uses !== undefined && uses.some(({ name }) => owner.get(name) === index),
+  );
   usesOf.forEach((uses, index) => {
     const fn = emitter.mod.functions[index];
-    if (uses === undefined || fn === undefined) return;
+    if (uses === undefined || fn === undefined || rewrittenAt[index] !== true) return;
     const symbol = mangleFunction(fn.name);
     const counts = new Map<string, number>();
     const parts: string[] = [];
-    const def = fnDefs[index]!;
+    const original = fnDefs[index]!;
+    const def = textOfPart(original);
     let from = 0;
     for (const { start, end, name, prefix } of uses) {
       if (owner.get(name) !== index) continue;
@@ -590,27 +602,56 @@ function nameSitesByOwner(emitter: LlEmitter, fnDefs: string[]): Map<string, str
     if (parts.length === 0) return;
     parts.push(def.slice(from));
     const text = parts.join("");
-    fnDefs[index] = text;
-    if (emitter.fnDefText.get(fn.name) === def) emitter.fnDefText.set(fn.name, text);
+    const rewritten: TextPart = typeof original === "string" ? text : bytesOfText(text);
+    fnDefs[index] = rewritten;
+    if (emitter.fnDefText.get(fn.name) === original) emitter.fnDefText.set(fn.name, rewritten);
   });
   return renames;
 }
 
-export function emitModuleParts(emitter: LlEmitter): string[] {
+/** The emitted function texts past this many characters are kept as UTF-8
+ * bytes, off the V8 heap: on a large program they are most of the heap the
+ * build holds while it emits (see `emitModuleParts`). A program whose text
+ * stays under it keeps the strings and pays no re-decoding. */
+const OFF_HEAP_TEXT_CHARS = 16 * 1024 * 1024;
+
+export function emitModuleParts(emitter: LlEmitter): TextPart[] {
   // Function bodies first (the literal/unit/fn-value tables fill as they
   // emit), then the file assembles around them — the runtime ABI’s order.
   const chunks = emitter.targetOptions.functionChunks ?? 1;
-  const fnDefs =
+  const fnDefs: TextPart[] =
     (chunks > 1 ? emitFunctionsInChunks(emitter, chunks) : null) ??
     emitFunctionsOnWorkers(emitter, emitter.targetOptions.functionWorkers ?? 1) ??
     [];
-  if (fnDefs.length === 0)
+  if (fnDefs.length === 0) {
+    // A function's whole text is built once and then held until the file is
+    // written; on a very large program that holding is the heap's peak, and a
+    // 2 GB heap cannot hold the text beside the typed IR. Past the threshold,
+    // every text emitted so far and every later one is kept as UTF-8 bytes,
+    // which V8 does not count in its heap; the passes that read a text then
+    // decode it one at a time.
+    const offHeapChars = emitter.targetOptions.offHeapTextChars ?? OFF_HEAP_TEXT_CHARS;
+    let chars = 0;
+    let offHeap = false;
     for (const fn of emitter.mod.functions) {
       const def = emitter.emitFunction(fn);
-      fnDefs.push(def);
-      emitter.fnDefText.set(fn.name, def);
+      chars += def.length;
+      if (!offHeap && chars >= offHeapChars) {
+        offHeap = true;
+        for (const [name, part] of emitter.fnDefText) {
+          if (typeof part === "string") emitter.fnDefText.set(name, bytesOfText(part));
+        }
+        for (let i = 0; i < fnDefs.length; i++) {
+          const converted = emitter.fnDefText.get(emitter.mod.functions[i]!.name);
+          if (converted !== undefined) fnDefs[i] = converted;
+        }
+      }
+      const part = offHeap ? bytesOfText(def) : def;
+      fnDefs.push(part);
+      emitter.fnDefText.set(fn.name, part);
       relieveHeapPressure();
     }
+  }
   emitter.selectStacklessAsync(fnDefs);
   const siteNames = nameSitesByOwner(emitter, fnDefs);
   const errorViews: string[] = [];
@@ -1080,7 +1121,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     for (const decl of code.decls) emitter.declare(decl);
   }
 
-  const out: string[] = [
+  const out: TextPart[] = [
     `; Generated by scriptc (LLVM backend) from ${emitter.mod.sourceFile}. Do not edit.`,
     ``,
     // Type shapes shared with the runtime's C ABI. ScrStr is the header
@@ -1510,9 +1551,11 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     partitionEntries(emitter.mod.functions, emitter.mod.sourceFile),
     // The entry and the initialisers start the start-up walk, whether or not
     // the layout lists them.
-    emitter.mod.functions.flatMap((fn, i) =>
-      fn.name === "%main" || fn.name.startsWith("%init.") ? [fnDefs[i] ?? ""] : [],
-    ),
+    emitter.mod.functions.flatMap((fn, i) => {
+      if (fn.name !== "%main" && !fn.name.startsWith("%init.")) return [];
+      const part = fnDefs[i];
+      return [part === undefined ? "" : textOfPart(part)];
+    }),
     emitter.targetOptions.startupSection === true,
   );
   if (startupSymbols.length > 0)
@@ -1847,11 +1890,12 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     layout !== undefined
   )
     for (let i = entryStart; i < out.length; i++) {
-      const text = out[i]!;
+      const part = out[i]!;
+      const text = textOfPart(part);
       if (!text.includes("define ")) continue;
       const sectioned = startupSectioned(text, layout);
       if (sectioned === text) continue;
-      out[i] = sectioned;
+      out[i] = typeof part === "string" ? sectioned : bytesOfText(sectioned);
       for (const symbol of sectionedSymbols(sectioned)) lateStartup.push(symbol);
     }
   if (lateStartup.length > 0) out.push("", `${STARTUP_ORDER_MARKER} ${lateStartup.join(" ")}`);
@@ -3304,8 +3348,8 @@ export function emitFfiCallbackDefs(emitter: LlEmitter): { globals: string[]; de
   return { globals, defs };
 }
 
-export function emitParts(emitter: LlEmitter): string[] {
-  const parts = [
+export function emitParts(emitter: LlEmitter): TextPart[] {
+  const parts: TextPart[] = [
     ...limitInlineReleases(emitter.emitModuleParts(), emitter.shapeHost.rcMode),
     ...emitter.disposeObserverGates(),
   ];
@@ -3318,8 +3362,8 @@ export function emitParts(emitter: LlEmitter): string[] {
   // plus an add), and even initial-exec (relaxed to `mov $offset` plus an
   // indexed access), become one %fs-relative operand LLVM can fold into
   // loads and compares. Darwin's thread-local variables have one model.
-  return parts.map((part) =>
-    part
+  const localexec = (text: string): string =>
+    text
       .replace(
         /^(@[-$._A-Za-z0-9]+ = internal )thread_local global /gm,
         "$1thread_local(localexec) global ",
@@ -3327,6 +3371,8 @@ export function emitParts(emitter: LlEmitter): string[] {
       .replace(
         /^(@[-$._A-Za-z0-9]+ = external )thread_local global /gm,
         "$1thread_local(localexec) global ",
-      ),
+      );
+  return parts.map((part) =>
+    typeof part === "string" ? localexec(part) : bytesOfText(localexec(textOfPart(part))),
   );
 }

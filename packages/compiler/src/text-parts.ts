@@ -6,37 +6,66 @@ import { StringDecoder } from "node:string_decoder";
  * limit. */
 const TEXT_PART_LENGTH = 64 * 1024 * 1024;
 
+/** One part of compiler text: a string, or the UTF-8 bytes of one, which a
+ * large build keeps off the V8 heap (`TextPart` in the LLVM emitter). */
+export type TextPart = string | Uint8Array;
+
+/** A part as text: a byte part is its UTF-8 decoding (the emitter writes
+ * ASCII, which round-trips exactly). */
+export function textOfPart(part: TextPart): string {
+  return typeof part === "string" ? part : Buffer.from(part.subarray(0)).toString("utf8");
+}
+
+/** Whether a part's text contains `needle` (ASCII), without decoding a byte
+ * part. */
+export function partIncludes(part: TextPart, needle: string): boolean {
+  if (typeof part === "string") return part.includes(needle);
+  return Buffer.from(part.subarray(0)).includes(needle);
+}
+
+/** Text as a part kept off the V8 heap. */
+export function bytesOfText(text: string): Uint8Array {
+  return Buffer.from(text, "utf8");
+}
+
 /** Writes compiler text artifacts (LLVM, serialized IR) in large batches.
  * Programs past the engine's string limit arrive as many parts, and writing
  * each part separately is several times slower than writing the same bytes in
- * a few large chunks. Batches stay far below the limit. */
+ * a few large chunks. Batches stay far below the limit. A part that arrives
+ * as bytes is written as it is. */
 export async function writeTextParts(
   path: string,
-  text: string | readonly string[],
+  text: TextPart | readonly TextPart[],
   mode = 0o666,
 ): Promise<void> {
   const file = await open(path, "w", mode);
   try {
-    const write = async (chunk: string): Promise<void> => {
-      const bytes = Buffer.from(chunk, "utf8");
+    const write = async (chunk: TextPart): Promise<void> => {
+      const bytes = typeof chunk === "string" ? Buffer.from(chunk, "utf8") : chunk;
       for (let offset = 0; offset < bytes.length;) {
         const { bytesWritten } = await file.write(bytes, offset, bytes.length - offset);
         offset += bytesWritten;
       }
     };
-    if (typeof text === "string") return await write(text);
-    let batch: string[] = [];
+    if (!Array.isArray(text)) return await write(text as TextPart);
+    // A byte part and the newline around it arrive as separate parts, so the
+    // batch holds bytes: a string part is encoded into it, and each batch is
+    // one write.
+    let batch: Uint8Array[] = [];
     let length = 0;
+    const flush = async (): Promise<void> => {
+      if (batch.length === 0) return;
+      await write(batch.length === 1 ? batch[0]! : Buffer.concat(batch));
+      batch = [];
+      length = 0;
+    };
     for (const part of text) {
-      batch.push(part);
-      length += part.length;
-      if (length >= 16 * 1024 * 1024) {
-        await write(batch.join(""));
-        batch = [];
-        length = 0;
-      }
+      const bytes = typeof part === "string" ? Buffer.from(part, "utf8") : part;
+      batch.push(bytes);
+      length += bytes.byteLength;
+      if (length >= 16 * 1024 * 1024) await flush();
     }
-    if (batch.length > 0) await write(batch.join(""));
+    await flush();
   } finally {
     await file.close();
   }

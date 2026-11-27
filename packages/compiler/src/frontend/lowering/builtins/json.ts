@@ -347,7 +347,9 @@ function recordDeclaresToJson(
 /** True when a lowered type's value may be undefined at run time: the
  * undefined type itself, or a union with an undefined arm. */
 export function jsonTypeMaybeUndefined(lowerer: Lowerer, t: IrType): boolean {
-  if (t.kind === "undefinedT") return true;
+  // A call to a function declared to return undefined lowers to the void
+  // type: its value is undefined, Node's stringify of it is not a string.
+  if (t.kind === "undefinedT" || t.kind === "void") return true;
   if (t.kind !== "union") return false;
   const def = lowerer.unions.get(t.unionId);
   return def !== undefined && def.arms.some((arm) => arm.kind === "undefinedT");
@@ -381,7 +383,7 @@ function lowerMaybeUndefinedStringifyRoot(
   argNode: ts.Expression,
   call: ts.CallExpression,
 ): IrExpr | null {
-  if (value.type.kind === "undefinedT") {
+  if (value.type.kind === "undefinedT" || value.type.kind === "void") {
     const missing = lowerer.wrappedUndefined(lowerer.withUndefinedArm(STRING), loc);
     if (!missing)
       throw new InternalCompilerError("JSON.stringify of undefined needs an undefined arm");

@@ -1619,8 +1619,15 @@ static ScrStr *ws_canonicalize_pattern_path(ScrStr *value, ScrUrl *base) {
         if (cut == 0) cut = 1;
       }
       ScrStr *dir = ws_slice(base_path, 0, cut);
-      base_segs = ws_split_pattern_path(dir, 1, &base_n);
+      /* The base's directory is literal text: escape it BEFORE the pattern's
+       * own segmentation, so a metacharacter cannot hide the slash behind
+       * it. An unmatched "(" would otherwise swallow the following
+       * separator, shifting every segment and letting the ".." arithmetic
+       * climb above the intended directory. */
+      ScrStr *dir_text = ws_escape_pattern(dir);
       scr_str_release(dir);
+      base_segs = ws_split_pattern_path(dir_text, 1, &base_n);
+      scr_str_release(dir_text);
       /* the directory's trailing empty segment is the boundary, not a
        * component of the path */
       if (base_n > 0 && base_segs[base_n - 1]->len == 0) {
@@ -1634,12 +1641,7 @@ static ScrStr *ws_canonicalize_pattern_path(ScrStr *value, ScrUrl *base) {
   if (out == NULL || out_literal == NULL) scr_trap("scriptc: out of memory\n");
   size_t out_n = 0;
   for (size_t b = 0; b < base_n; b++) {
-    /* The base's directory is literal text, never pattern syntax: its
-     * metacharacters are escaped, or an inherited "(" would read as a group
-     * and the pattern would admit URLs outside the directory (and "a+b" or
-     * "a{b}" would not even construct). */
-    out[out_n] = ws_escape_pattern(base_segs[b]);
-    scr_str_release(base_segs[b]);
+    out[out_n] = base_segs[b];
     out_literal[out_n++] = true;
   }
   for (size_t i = 0; i < n; i++) {

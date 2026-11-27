@@ -24,5 +24,7 @@ listen(destination);
 const source = new ThisIsAVeryLongStreamSubclassNameForTheTypeKeyOverflowCheck12345();
 source.pipe(destination);
 await new Promise((resolve) => setTimeout(resolve, 100));
+const own = kept.length > 0 ? Object.keys(kept[0]) : [];
 console.log("kept", kept.length, "name", kept.length > 0 ? kept[0].constructor.name.length : 0);
 console.log("readable", kept.length > 0 && typeof kept[0].readableHighWaterMark === "number");
+console.log("ownKey", own.includes("constructor"));

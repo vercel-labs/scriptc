@@ -535,7 +535,13 @@ function isNameChar(code: number): boolean {
   );
 }
 
-/** The uses of numbered sites in `def`, in text order. */
+/** The uses of numbered sites in `def`, in text order. A use's name is the
+ * constant prefix plus the site's digits, never a slice of `def`: a V8 string
+ * slice of 13 characters or more is a view that keeps the whole function text
+ * alive, and `nameSitesByOwner` collects the names of every function before it
+ * rewrites any of them, so a sliced name would hold the module's decoded text
+ * on the heap again. A module's counter passes 99 sites early, which makes the
+ * name 13 characters (9 of prefix, 3 of digits) at the first hundred. */
 function siteUses(def: string): SiteUse[] {
   const uses: SiteUse[] = [];
   for (const prefix of SITE_PREFIXES) {
@@ -544,7 +550,11 @@ function siteUses(def: string): SiteUse[] {
       while (end < def.length && def.charCodeAt(end) >= 48 && def.charCodeAt(end) <= 57) end++;
       if (end === at + prefix.length || (end < def.length && isNameChar(def.charCodeAt(end))))
         continue;
-      uses.push({ start: at, end, name: def.slice(at + 1, end), prefix: prefix.slice(1, -1) });
+      // The digits are a slice of `def` too, but a short one: a counter has at
+      // most ten digits, and V8 copies a slice below 13 characters rather than
+      // viewing its parent.
+      const digits = def.slice(at + prefix.length, end);
+      uses.push({ start: at, end, name: prefix.slice(1) + digits, prefix: prefix.slice(1, -1) });
     }
   }
   return uses.sort((left, right) => left.start - right.start);

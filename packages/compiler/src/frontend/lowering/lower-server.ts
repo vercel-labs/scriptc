@@ -4164,16 +4164,32 @@ function lowerNetSocketMethodCall(
     if (certificate) return certificate;
   }
   if (name === "isSessionReused" && args.length === 0) {
-    // TLSSocket.isSessionReused(): the client never offers a cached
-    // session (no session resumption, a documented TLS divergence), so
-    // no handshake resumes one. A plain socket asserted to be a
-    // TLSSocket answers false too, where Node has no such method.
+    // TLSSocket.isSessionReused(): whether the handshake that stands
+    // resumed a session (the peer's ticket, or the session this client
+    // offered with tls.connect's session option).
     const receiver = coerceToHandle(lowerer, access.expression, NETSOCKET_T);
     return {
-      kind: "seqExpr",
-      stmts: [{ kind: "exprStmt", expr: receiver, loc }],
-      result: boolLit(false, loc),
+      kind: "libCall",
+      fn: "tls.sockIsSessionReused",
+      args: [receiver],
       type: BOOL,
+      loc,
+    };
+  }
+  if (name === "setSession") {
+    // TLSSocket.setSession(session): Node converts a string from latin1,
+    // then the engine offers the bytes if the handshake has not started
+    // (and ignores what it cannot decode).
+    const receiver = coerceToHandle(lowerer, access.expression, NETSOCKET_T);
+    const session =
+      args.length > 0
+        ? lowerer.coerceToExpected(lowerer.lowerExpr(args[0]!), DYN)
+        : dynUndefinedExpr(loc);
+    return {
+      kind: "libCall",
+      fn: "tls.sockSetSession",
+      args: [receiver, session],
+      type: VOID,
       loc,
     };
   }

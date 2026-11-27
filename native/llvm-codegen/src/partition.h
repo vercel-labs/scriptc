@@ -24,7 +24,7 @@ struct ProgramPartitions {
 };
 
 // Divides the LLVM assembly scriptc emits into Count modules without parsing
-// it, so the partitions can be parsed concurrently. In modules of 32 or
+// it, so the partitions can be parsed concurrently. In modules of 16 or
 // more partitions, functions under a "; scriptc-group <key>" line are placed
 // with the other functions of that source-module group, which is divided
 // into chunks when it is larger than the mean partition or 1 MiB; other

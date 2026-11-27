@@ -226,6 +226,16 @@ export const netSignatures = defineLibFnSignatures({
   "net.sockWriteBytes": { argTypes: [NETSOCKET_T, BYTES_U8], result: BOOL },
   "net.sockEnd": { argTypes: [NETSOCKET_T], result: VOID },
   "net.sockEndStr": { argTypes: [NETSOCKET_T, STRING], result: VOID },
+  /** socket.write(data, encoding) / socket.end(data, encoding): the string
+   * is encoded like Buffer.from's (Node's encoding ladder; an unknown name
+   * throws ERR_UNKNOWN_ENCODING catchably), then written/ended. MAY THROW. */
+  "net.sockWriteEnc": { argTypes: [NETSOCKET_T, STRING, STRING], result: BOOL },
+  "net.sockEndEnc": { argTypes: [NETSOCKET_T, STRING, STRING], result: VOID },
+  /** write/end(data, encoding) with a Buffer chunk: the encoding is
+   * validated like Node's Writable (Buffer.isEncoding, plus the exact
+   * "buffer" spelling) and then ignored. MAY THROW. */
+  "net.sockWriteBytesEnc": { argTypes: [NETSOCKET_T, BYTES_U8, STRING], result: BOOL },
+  "net.sockEndBytesEnc": { argTypes: [NETSOCKET_T, BYTES_U8, STRING], result: VOID },
   "net.sockEndBytes": { argTypes: [NETSOCKET_T, BYTES_U8], result: VOID },
   /** write/end with a CHECKED-DYNAMIC chunk (an untyped JS payload into a
    * typed socket): the runtime dispatches STR/BYTES and throws Node's

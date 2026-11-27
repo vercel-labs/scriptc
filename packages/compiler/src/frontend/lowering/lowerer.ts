@@ -183,6 +183,7 @@ import { valueStreamOf, writableStreamOf } from "./builtins/hash-stream.js";
 import { lowerNetAddressCall, lowerNetAddressNew } from "./builtins/net-address.js";
 import { lowerMimeCall, lowerMimeNew } from "./builtins/mime.js";
 import { lowerSqliteCall, lowerSqliteNew } from "./builtins/sqlite.js";
+import { lowerSourceMapNew } from "./builtins/source-map.js";
 import { lowerPerfNew } from "./builtins/performance.js";
 import {
   installFetchBodyWebStreams,
@@ -595,6 +596,7 @@ import {
   builtinEmitterInfoOf,
   builtinStreamInfoOf,
   analyzeClassDecoration,
+  validateLegacyMemberDispatch,
   classIteratorDrainCall,
   classIteratorMethodCall,
   classIteratorNextCall,
@@ -1321,6 +1323,10 @@ export interface LowerOptions {
   dependencyJs?: ((file: string) => boolean) | undefined;
   /** LoadResult.parameterPropertiesFirst. */
   parameterPropertiesFirst?: ReadonlySet<string> | undefined;
+  /** LoadResult.typeWorld.legacyDecoratorFiles: the files whose tsconfig
+   * sets `experimentalDecorators`, which take the legacy decorator order,
+   * calling convention and descriptor rules. */
+  legacyDecoratorFiles?: ReadonlySet<string> | undefined;
   /** Coverage: additionally lower the unreached remainder (bodies nothing
    * on the entry path reaches) in a throwaway pass and report its
    * diagnostics and stats under `unreached` — the whole-program analysis
@@ -1530,6 +1536,8 @@ export interface LowererMode {
   dependencyJs?: ((file: string) => boolean) | undefined;
   /** LoadResult.parameterPropertiesFirst. */
   parameterPropertiesFirst?: ReadonlySet<string> | undefined;
+  /** LoadResult.typeWorld.legacyDecoratorFiles. */
+  legacyDecoratorFiles?: ReadonlySet<string> | undefined;
   /** Names of bodies a prior reachability pass reached; null lowers everything. */
   reachable?: ReadonlySet<string> | null;
   /** Coverage remainder: lower ONLY bodies outside `reachable`, skip the
@@ -2000,6 +2008,7 @@ function lowerToIrWithIslands(
       projectCheckJs: options.projectCheckJs ?? false,
       dependencyJs: options.dependencyJs,
       parameterPropertiesFirst: options.parameterPropertiesFirst,
+      legacyDecoratorFiles: options.legacyDecoratorFiles,
       targetPlatform,
       define: options.define,
       startupCrash,
@@ -2037,6 +2046,7 @@ function lowerToIrWithIslands(
             projectCheckJs: options.projectCheckJs ?? false,
             dependencyJs: options.dependencyJs,
             parameterPropertiesFirst: options.parameterPropertiesFirst,
+            legacyDecoratorFiles: options.legacyDecoratorFiles,
             targetPlatform,
             define: options.define,
             startupCrash,
@@ -2170,6 +2180,7 @@ function lowerToIrWithIslands(
         projectCheckJs: options.projectCheckJs ?? false,
         dependencyJs: options.dependencyJs,
         parameterPropertiesFirst: options.parameterPropertiesFirst,
+        legacyDecoratorFiles: options.legacyDecoratorFiles,
         ...(general
           ? {
               generalNodeStreams: true,
@@ -2266,6 +2277,7 @@ function lowerToIrWithIslands(
       projectCheckJs: options.projectCheckJs ?? false,
       dependencyJs: options.dependencyJs,
       parameterPropertiesFirst: options.parameterPropertiesFirst,
+      legacyDecoratorFiles: options.legacyDecoratorFiles,
       targetPlatform,
       define: options.define,
       startupCrash,
@@ -2360,6 +2372,7 @@ function lowerToIrWithIslands(
       projectCheckJs: options.projectCheckJs ?? false,
       dependencyJs: options.dependencyJs,
       parameterPropertiesFirst: options.parameterPropertiesFirst,
+      legacyDecoratorFiles: options.legacyDecoratorFiles,
       ...(generalNodeStreams ? { generalNodeStreams: true } : {}),
       ...(dynNodeStreams ? { dynNodeStreams: true } : {}),
       reachable,
@@ -2612,6 +2625,7 @@ function lowerToIrWithIslands(
       projectCheckJs: options.projectCheckJs ?? false,
       dependencyJs: options.dependencyJs,
       parameterPropertiesFirst: options.parameterPropertiesFirst,
+      legacyDecoratorFiles: options.legacyDecoratorFiles,
       ...(general ? { generalNodeStreams: true } : {}),
       ...(general && dyn ? { dynNodeStreams: true } : {}),
       reachable,
@@ -4095,6 +4109,10 @@ export class Lowerer {
    * that assigns module.exports) does not change the binding. Required
    * bindings read the live slot at their own position instead. */
   readonly cjsRuntimeExportSnapshotGlobals = new Map<ts.SourceFile, IrGlobal>();
+  /** Element kinds (SCR_ELEM_* numbers) whose arrays the program gives a
+   * prototype: their allocations carry the collector header, so the
+   * prototype the array owns is an edge the collector can see. */
+  readonly prototypeArrayKinds = new Set<number>();
   /** Per module some namespace import reads, the export members its
    * functions assign (`cjsExportsAssignedInFunctions`): each member's slot
    * takes the values the module's exports held when the first ESM module
@@ -6802,12 +6820,17 @@ export class Lowerer {
     // fixed for the program, like projectCheckJs.
     "dependencyJs",
     "parameterPropertiesFirst",
+    "legacyDecoratorFiles",
     "libraryCallbacks",
     "ffiBindingSymbols",
     "priorRetriedSymbols",
     "wholeSlotDegradation",
     "untypedConstructors",
     "dynamicClassValues",
+    // Element kinds the program gives a prototype: a program fact the
+    // setPrototypeOf lowerings record, and a replay of a unit records its
+    // kinds again (the set only grows with the program's own calls).
+    "prototypeArrayKinds",
     // Which refusals involve a held constructor (held-constructors.ts): a
     // count and its mark for the statement being lowered, and the answers
     // per named type, computed again when asked.
@@ -7333,6 +7356,9 @@ export class Lowerer {
   /** The files whose classes assign parameter properties before their
    * field initializers run (LoadResult.parameterPropertiesFirst). */
   readonly parameterPropertiesFirst: ReadonlySet<string> | null;
+  /** The files whose tsconfig sets `experimentalDecorators`
+   * (LoadResult.typeWorld.legacyDecoratorFiles). */
+  readonly legacyDecoratorFiles: ReadonlySet<string> | null;
   private readonly checkedJsFiles = new Map<ts.SourceFile, boolean>();
   /** Outbound native bindings by their source-level ambient name. */
   readonly ffiImports: readonly IrFfiImport[];
@@ -7999,6 +8025,7 @@ export class Lowerer {
     this.projectCheckJs = mode.projectCheckJs ?? false;
     this.dependencyJs = mode.dependencyJs ?? null;
     this.parameterPropertiesFirst = mode.parameterPropertiesFirst ?? null;
+    this.legacyDecoratorFiles = mode.legacyDecoratorFiles ?? null;
     this.reachable = mode.reachable ?? null;
     this.remainder = mode.remainder ?? false;
     this.coverageReached = mode.coverageReached ?? false;
@@ -10666,11 +10693,23 @@ export class Lowerer {
       this.facts.npmStaticModule(ts.getSourceFileOfNode(node), spec, "require");
     if (!dep || dep.fileName.endsWith(".json")) return null;
     if (this.asyncInitFiles.has(dep)) {
-      this.unsupported(
-        "SC1090",
-        node,
-        `require() of '${spec}' (its ES-module graph uses top-level await; use import() instead)`,
-      );
+      // Node throws here: the require is synchronous and the graph is not.
+      const loc = locOf(node);
+      return {
+        kind: "exprStmt",
+        expr: nodeThrowExpr(
+          0,
+          "ERR_REQUIRE_ASYNC_MODULE",
+          "require() cannot be used on an ESM graph with top-level await. " +
+            "Use import() instead. To see where the top-level await comes from, " +
+            "use --experimental-print-required-tla." +
+            `\nRequired module: ${dep.fileName}` +
+            `\nRequire stack:\n- ${ts.getSourceFileOfNode(node).fileName}`,
+          VOID,
+          loc,
+        ),
+        loc,
+      };
     }
     const initName = this.initNameOf.get(dep);
     if (initName === undefined) return null;
@@ -15351,6 +15390,7 @@ export class Lowerer {
     // class, and reference lowering needs each class's rebindability
     // (valueGlobalId) settled before any body lowers.
     for (const info of this.classes.values()) analyzeClassDecoration(this, info);
+    validateLegacyMemberDispatch(this);
     this.prepareModuleInits(parts);
     prepareCjsModuleGraph(this, parts);
 
@@ -15774,6 +15814,9 @@ export class Lowerer {
             ...(this.usesLifetimeRegions ? { lifetimeRegions: true as const } : {}),
             ...(this.usesNodeIsland ? { nodeIsland: this.nodeIslandRecord() } : {}),
             ...(this.declBoundary ? { declBoundary: true as const } : {}),
+            ...(this.prototypeArrayKinds.size > 0
+              ? { prototypeOverrideArrayKinds: [...this.prototypeArrayKinds].sort((a, b) => a - b) }
+              : {}),
             ...(shapeOverlayFileNames().length > 0
               ? {
                   inferredFactFiles: shapeOverlayFileNames()
@@ -16178,6 +16221,7 @@ export class Lowerer {
       // lower the decoration calls, whose edges (decorator bodies, construct
       // thunks) reachable emit must see.
       for (const info of this.classes.values()) analyzeClassDecoration(this, info);
+      validateLegacyMemberDispatch(this);
       this.prepareModuleInits(parts);
       prepareCjsModuleGraph(this, parts);
     } catch (e) {
@@ -18722,6 +18766,34 @@ export class Lowerer {
     }
   }
 
+  /** mapTypeOf for the TARGET TYPE of a static assertion: a record
+   * intersection with a bound type parameter keeps the bound layout, because
+   * the assertion does not make the parameter's values carry the members it
+   * names (type-mapper.ts, TypeMapperCtx.assertionTarget). */
+  mapAssertionTargetType(t: ts.Type): IrType | null {
+    // Outside a generic instantiation no bound parameter can make the
+    // mapping differ, so the ordinary path (and its memo) answers.
+    if (this.typeParamBindings === null && this.typeParamTsBindings === null)
+      return this.mapTypeOf(t);
+    // A BINDING-SCOPED answer must not be stored under the key a
+    // non-assertion mapping of the same checker type uses: the asserted
+    // layout (the bound one) is right here and wrong there. Map with a
+    // throwaway memo for this call; shapes and unions intern globally, so
+    // type identity is unchanged.
+    const memo = new Map<number, IrType>();
+    return this.mapTypeWithContext(t, {
+      ...this.typeCtx,
+      assertionTarget: true as const,
+      typeMemo: memo,
+      typeMemoFor: () => memo,
+    });
+  }
+  private mapTypeWithContext(t: ts.Type, ctx: TypeMapperCtx): IrType | null {
+    const mapped = mapType(t, ctx);
+    return mapped === null || mapped.kind === "func"
+      ? (jsArgumentsFunctionType(this, t) ?? mapped)
+      : mapped;
+  }
   /** mapType with this Lowerer's registries and (while a generic instance
    * body lowers) type-parameter bindings threaded through. A supplied mapper
    * retains interface-view substitutions while sharing ABI normalization. */
@@ -25189,6 +25261,7 @@ export class Lowerer {
       lowerNetAddressNew(this, expr) ??
       lowerMimeNew(this, expr) ??
       lowerSqliteNew(this, expr) ??
+      lowerSourceMapNew(this, expr) ??
       lowerPerfNew(this, expr) ??
       lowerWebStreamNew(this, expr) ??
       lowerStaticReadableStreamNew(this, expr) ??
@@ -26228,6 +26301,8 @@ export class Lowerer {
     if (module === "module" && member === "builtinModules") return this.builtinModulesValue(loc);
     if (module === "module" && member === "Module")
       return { kind: "libCall", fn: "module.ctor", args: [], type: DYN, loc };
+    if (module === "module" && member === "constants")
+      return { kind: "libCall", fn: "module.compileCacheConstants", args: [], type: DYN, loc };
     if (module === "http" && member === "METHODS")
       return { kind: "libCall", fn: "http.methods", args: [], type: arrayOf(STRING), loc };
     if ((module === "http" || module === "https") && member === "globalAgent")

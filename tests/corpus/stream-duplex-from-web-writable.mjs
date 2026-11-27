@@ -70,4 +70,25 @@ function sinkInto(into, tag) {
   log.push(`destroy events ${events.join(" | ")} destroyed=${duplex.destroyed}`);
 }
 
+{
+  // a null a web stage enqueues reaches a lone web WritableStream's write
+  const got = [];
+  const nuller = new TransformStream({
+    transform(_chunk, controller) {
+      controller.enqueue(null);
+    },
+  });
+  const sink = new WritableStream({
+    write(chunk) {
+      got.push(chunk === null ? "null" : String(chunk));
+    },
+  });
+  const composed = compose(new PassThrough(), nuller, sink);
+  const done = new Promise((resolve, reject) => composed.on("finish", resolve).on("error", reject));
+  composed.write("x");
+  composed.end();
+  await done;
+  console.log("null stage", got.join(","));
+}
+
 console.log(log.join("\n"));

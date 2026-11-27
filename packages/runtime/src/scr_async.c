@@ -585,10 +585,35 @@ static void scr_rjh_enqueue(ScrPromise *p) {
   scr_rjh_queue[scr_rjh_len++] = scr_promise_retain(p);
 }
 
+/* Events a throwing listener stopped before delivery: Node keeps them
+ * queued, so a handler that recovers continues with them, and the process
+ * ends with them undelivered when none does. Entries own their reference
+ * until they are delivered or dropped. */
+static SCR_TL ScrPromise **scr_rjh_owed = NULL;
+static SCR_TL size_t scr_rjh_owed_head = 0, scr_rjh_owed_len = 0, scr_rjh_owed_cap = 0;
+
+static void scr_rjh_owe(ScrPromise *const *entries, size_t count) {
+  if (count == 0) return;
+  size_t need = scr_rjh_owed_len + count;
+  if (need > scr_rjh_owed_cap) {
+    size_t cap = scr_rjh_owed_cap == 0 ? 8 : scr_rjh_owed_cap;
+    while (cap < need) cap *= 2;
+    ScrPromise **next = realloc(scr_rjh_owed, cap * sizeof *next);
+    if (next == NULL) scr_oom();
+    scr_rjh_owed = next;
+    scr_rjh_owed_cap = cap;
+  }
+  memcpy(scr_rjh_owed + scr_rjh_owed_len, entries, count * sizeof *entries);
+  scr_rjh_owed_len = need;
+}
+
 /* Drops what no checkpoint delivered (loop exit, context shutdown). */
 static void scr_rjh_clear(void) {
   for (size_t i = scr_rjh_head; i < scr_rjh_len; i++) scr_promise_release(scr_rjh_queue[i]);
   scr_rjh_head = scr_rjh_len = 0;
+  for (size_t i = scr_rjh_owed_head; i < scr_rjh_owed_len; i++)
+    scr_promise_release(scr_rjh_owed[i]);
+  scr_rjh_owed_head = scr_rjh_owed_len = 0;
 }
 
 /* Delivers what was queued since the previous checkpoint. A listener
@@ -599,19 +624,38 @@ static void scr_rjh_clear(void) {
  * overwriting a promise whose delivery is still due. Each entry's
  * reference moves with it into this batch, so a promise is released once. */
 static bool scr_drain_rejection_handled(void) {
+  if (!scr_rjh_pending() && scr_rjh_owed_head == scr_rjh_owed_len) return true;
+  bool ok = true;
+  /* Events a recovered throw stopped earlier run first: Node resumes its
+   * rejection queue where the handler left off, in the same order. */
+  while (scr_rjh_owed_head < scr_rjh_owed_len) {
+    ScrPromise *p = scr_rjh_owed[scr_rjh_owed_head++];
+    if (scr_rjh_notify_fn != NULL) scr_rjh_notify_fn(p);
+    scr_promise_release(p);
+    if (scr_exc_pending()) {
+      ok = false;
+      break;
+    }
+  }
+  if (scr_rjh_owed_head == scr_rjh_owed_len) scr_rjh_owed_head = scr_rjh_owed_len = 0;
+  if (!ok) return false;
   if (!scr_rjh_pending()) return true;
   ScrPromise **batch = scr_rjh_queue;
   size_t head = scr_rjh_head, len = scr_rjh_len;
   scr_rjh_queue = NULL;
   scr_rjh_head = scr_rjh_len = scr_rjh_cap = 0;
-  bool ok = true;
   for (size_t i = head; i < len; i++) {
     ScrPromise *p = batch[i];
-    /* A throwing listener stops delivery, but every queued reference is
-     * still dropped. */
-    if (ok && scr_rjh_notify_fn != NULL) scr_rjh_notify_fn(p);
+    if (scr_rjh_notify_fn != NULL) scr_rjh_notify_fn(p);
     scr_promise_release(p);
-    if (ok && scr_exc_pending()) ok = false;
+    if (scr_exc_pending()) {
+      /* A throwing listener stops delivery here and keeps the rest of the
+       * batch for the next drain, so a handler that recovers still sees
+       * every event. */
+      scr_rjh_owe(batch + i + 1, len - i - 1);
+      ok = false;
+      break;
+    }
   }
   free(batch);
   return ok;
@@ -1817,7 +1861,12 @@ static void scr_async_gen_resume_ready(ScrGen *g);
  * deadline and seq, so ties against later timers stay FIFO like Node's. */
 typedef struct {
   double deadline_ms;
-  unsigned long seq;
+  /* The tiebreak and the turn's eligibility snapshot compare this counter
+   * with `<`, so it must outlive any program's timer arming: a 32-bit
+   * counter (unsigned long on Windows) would wrap, and a timer armed before
+   * the wrap would read as armed by the current turn forever, blocking the
+   * heap's root. Same width as the net unit's registration sequence. */
+  unsigned long long seq;
   ScrClosure *cb; /* owned */
   double repeat_ms;
   unsigned long id;
@@ -1828,7 +1877,7 @@ typedef struct {
 
 static SCR_TL ScrTimer *scr_timers = NULL;
 static SCR_TL size_t scr_ntimers = 0, scr_timers_cap = 0;
-static SCR_TL unsigned long scr_timer_seq = 0;
+static SCR_TL unsigned long long scr_timer_seq = 0;
 /* REF'd armed timers — the loop's timer-liveness count (an unref'd timer
  * sits in the heap and still FIRES if the loop runs for other reasons, but
  * does not by itself keep the loop alive). Kept in sync by push/pop/remove
@@ -6684,6 +6733,18 @@ static void scr_hosted_settle_exception(void) {
   scr_process_exit((double)scr_exit_code_hint_get());
 }
 
+/* The 'rejectionHandled' queue with Node's throw behaviour: a listener
+ * throw is an uncaught exception, and the uncaught path decides whether the
+ * program continues. A handler that recovers keeps the events the throw
+ * had left queued, so delivery resumes with them (Node's own order);
+ * without one scr_hosted_settle_exception prints and ends the process. */
+static void scr_drain_rejection_handled_or_uncaught(void) {
+  while (!scr_drain_rejection_handled()) {
+    scr_hosted_settle_exception();
+    if (scr_exc_pending()) return; /* the fatal path left it pending */
+  }
+}
+
 static SCR_TL bool scr_hosted_turn_ran = false;
 
 void scr_loop_hosted_run(uint32_t kind, uint32_t token) {
@@ -6853,7 +6914,7 @@ static SCR_TL bool scr_hosted_deciding = false;
  * listeners: what they queued belongs to this turn. */
 static void scr_hosted_deciding_tick(void) {
   while (scr_hosted_finish_turn() && scr_hosted_unobserved_rejections()) {
-    if (!scr_drain_rejection_handled()) scr_hosted_settle_exception();
+    scr_drain_rejection_handled_or_uncaught();
     if (scr_report_unhandled_rejections()) {
       scr_discard_unhandled_rejections();
       scr_process_exit((double)scr_exit_code_hint_get());
@@ -6878,7 +6939,7 @@ static void scr_hosted_deciding_tick(void) {
 void scr_loop_hosted_microtasks_done(void) {
   /* A handler native code attached since the last checkpoint raises its
    * 'rejectionHandled' now, in this turn's tick phase. */
-  if (!scr_drain_rejection_handled()) scr_hosted_settle_exception();
+  scr_drain_rejection_handled_or_uncaught();
   if (scr_nunhandled == 0 || scr_hosted_deciding) return;
   if (!scr_hosted_unobserved_rejections()) return;
   const ScrPromise *root = scr_loop_root;
@@ -7064,7 +7125,7 @@ void scr_loop_hosted_io_state(ScrNodeIoState *st) {
  * it left, then Node's checkpoint (ticks and microtasks of both sides). */
 static void scr_hosted_macrotask_done(void) {
   scr_hosted_settle_exception();
-  if (!scr_drain_rejection_handled()) scr_hosted_settle_exception();
+  scr_drain_rejection_handled_or_uncaught();
   scr_loop_hosted->checkpoint(0);
 }
 
@@ -7286,7 +7347,7 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
    * callbacks already armed timers; the flag resets when the turn completes.
    * One scr_loop_run_pass call runs many turns, so it cannot be captured once
    * per call — that would strand every timer armed in an earlier turn. */
-  unsigned long timer_seq_at_turn_start = scr_timer_seq;
+  unsigned long long timer_seq_at_turn_start = scr_timer_seq;
   bool timer_snapshot_taken = false;
   for (;;) {
     if (SCR_PASS_HANDED_OVER()) return rejection_failed;

@@ -38,6 +38,14 @@ export const ADOPTED_OPTIONS = [
   "jsxFragmentFactory",
   "jsxImportSource",
   "reactNamespace",
+  // Decorator semantics: the checker must grade a legacy decorator against
+  // the legacy signature (`(target, key, descriptor)`), not the standard
+  // context call; `emitDecoratorMetadata` also changes the declared design
+  // types the checker admits. Programs with the latter setting are refused
+  // until the metadata lowering lands, but the checker still answers as the
+  // project's tsc would.
+  "experimentalDecorators",
+  "emitDecoratorMetadata",
 ] as const;
 
 /* ── The early-error boundary (read this before relaxing a code) ────────
@@ -594,9 +602,9 @@ const newTargetInMethod = (node: ts.Node, _d: ts.Diagnostic): boolean => {
 };
 
 /** TS1345 at a PREFIX `!` whose boolean is discarded (`!register();`,
- * `!function () { … }();`): the operand still evaluates once for its
- * effects and any exception, while the value the negation would read is
- * never consumed. */
+ * `!function () { … }();`, `!!callback();`, `!!!(callback());`): the operand
+ * still evaluates once for its effects and any exception, while the value
+ * the negation chain would read is never consumed. */
 const discardedVoidNegation = (node: ts.Node): boolean => {
   // The diagnostic's span is the void-typed OPERAND (the call), so climb
   // to the `!` that tests it, then out of any parentheses.
@@ -610,9 +618,26 @@ const discardedVoidNegation = (node: ts.Node): boolean => {
     negation.operator !== ts.SyntaxKind.ExclamationToken
   )
     return false;
+  // Every enclosing `!` and parenthesis shares the innermost negation's
+  // discarded fate: the chain answers one boolean and nothing reads it.
+  // A consumed chain (`const b = !!callback()`) keeps the refusal.
   let outer: ts.Node = negation;
-  while (outer.parent !== undefined && ts.isParenthesizedExpression(outer.parent))
-    outer = outer.parent;
+  for (;;) {
+    const parent = outer.parent;
+    if (parent !== undefined && ts.isParenthesizedExpression(parent)) {
+      outer = parent;
+      continue;
+    }
+    if (
+      parent !== undefined &&
+      ts.isPrefixUnaryExpression(parent) &&
+      parent.operator === ts.SyntaxKind.ExclamationToken
+    ) {
+      outer = parent;
+      continue;
+    }
+    break;
+  }
   return outer.parent !== undefined && ts.isExpressionStatement(outer.parent);
 };
 
@@ -2612,7 +2637,7 @@ const TRIAGE_ROWS: readonly (readonly [number, JsTscCodeTriage])[] = [
     2629,
     REWRITE(
       "assigning to a class binding",
-      "a class declaration's outer binding is mutable, so Node replaces it; only a named class expression's inner binding is immutable, where strict code throws a TypeError. The class lowering does not model either assignment",
+      "a class declaration's outer binding is mutable, so Node replaces it, but the class's name inside its own body is an immutable inner binding for a declaration and a named class expression alike: strict code throws a TypeError assigning it once initialized, and a ReferenceError assigning (or reading) it before initialization, which a computed member name runs in. The class lowering does not model the assignment",
     ),
   ],
   [

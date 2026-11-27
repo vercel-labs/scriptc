@@ -572,7 +572,7 @@ declare var process: {
   prependListener(event: "beforeExit", listener: (code: number) => void): void;
   prependListener(
     event: "uncaughtException" | "uncaughtExceptionMonitor",
-    listener: (err: unknown, origin: string) => void,
+    listener: (err: unknown, origin: "uncaughtException" | "unhandledRejection") => void,
   ): void;
   /* 'warning' — Node's process-warning channel: listeners receive the
    * warning Error (as a dyn value); emitWarning and the runtime's
@@ -583,14 +583,17 @@ declare var process: {
    * suppressing the default report. 'rejectionHandled' — the sibling
    * event, fired once when a delivered promise later gains a handler
    * (promise payload, Node's shape). */
-  on(event: "unhandledRejection", listener: (reason: unknown, promise: unknown) => void): void;
-  on(event: "rejectionHandled", listener: (promise: unknown) => void): void;
+  on(
+    event: "unhandledRejection",
+    listener: (reason: unknown, promise: Promise<unknown>) => void,
+  ): void;
+  on(event: "rejectionHandled", listener: (promise: Promise<unknown>) => void): void;
   /* 'multipleResolves' — a resolution or rejection that reached a promise
    * which already resolved: (type, promise, value), delivered on the tick
    * queued at that settle, with Node's one-time DEP0160 warning. */
   on(
     event: "multipleResolves",
-    listener: (type: "resolve" | "reject", promise: unknown, value: unknown) => void,
+    listener: (type: "resolve" | "reject", promise: Promise<unknown>, value: unknown) => void,
   ): void;
   /* 'uncaughtException' and 'uncaughtExceptionMonitor' — Node's process
    * error channel: the monitor listener observes a thrown error before the
@@ -598,34 +601,40 @@ declare var process: {
    * channel that raised it. */
   on(
     event: "uncaughtException" | "uncaughtExceptionMonitor",
-    listener: (err: unknown, origin: string) => void,
+    listener: (err: unknown, origin: "uncaughtException" | "unhandledRejection") => void,
   ): void;
   once(event: "SIGINT" | "SIGTERM", listener: () => void): void;
   once(event: "exit", listener: (code: number) => void): void;
   once(event: "beforeExit", listener: (code: number) => void): void;
-  once(event: "unhandledRejection", listener: (reason: unknown, promise: unknown) => void): void;
-  once(event: "rejectionHandled", listener: (promise: unknown) => void): void;
+  once(
+    event: "unhandledRejection",
+    listener: (reason: unknown, promise: Promise<unknown>) => void,
+  ): void;
+  once(event: "rejectionHandled", listener: (promise: Promise<unknown>) => void): void;
   once(
     event: "multipleResolves",
-    listener: (type: "resolve" | "reject", promise: unknown, value: unknown) => void,
+    listener: (type: "resolve" | "reject", promise: Promise<unknown>, value: unknown) => void,
   ): void;
   once(
     event: "uncaughtException" | "uncaughtExceptionMonitor",
-    listener: (err: unknown, origin: string) => void,
+    listener: (err: unknown, origin: "uncaughtException" | "unhandledRejection") => void,
   ): void;
   off(event: "SIGINT" | "SIGTERM", listener: () => void): void;
   off(event: "exit", listener: (code: number) => void): void;
   off(event: "beforeExit", listener: (code: number) => void): void;
   off(event: "warning", listener: (warning: Error & { code?: string }) => void): void;
-  off(event: "unhandledRejection", listener: (reason: unknown, promise: unknown) => void): void;
-  off(event: "rejectionHandled", listener: (promise: unknown) => void): void;
+  off(
+    event: "unhandledRejection",
+    listener: (reason: unknown, promise: Promise<unknown>) => void,
+  ): void;
+  off(event: "rejectionHandled", listener: (promise: Promise<unknown>) => void): void;
   off(
     event: "multipleResolves",
-    listener: (type: "resolve" | "reject", promise: unknown, value: unknown) => void,
+    listener: (type: "resolve" | "reject", promise: Promise<unknown>, value: unknown) => void,
   ): void;
   off(
     event: "uncaughtException" | "uncaughtExceptionMonitor",
-    listener: (err: unknown, origin: string) => void,
+    listener: (err: unknown, origin: "uncaughtException" | "unhandledRejection") => void,
   ): void;
   /* removeListener IS off — Node aliases them; both lower identically. */
   removeListener(event: "SIGINT" | "SIGTERM", listener: () => void): void;
@@ -634,16 +643,16 @@ declare var process: {
   removeListener(event: "warning", listener: (warning: Error & { code?: string }) => void): void;
   removeListener(
     event: "unhandledRejection",
-    listener: (reason: unknown, promise: unknown) => void,
+    listener: (reason: unknown, promise: Promise<unknown>) => void,
   ): void;
-  removeListener(event: "rejectionHandled", listener: (promise: unknown) => void): void;
+  removeListener(event: "rejectionHandled", listener: (promise: Promise<unknown>) => void): void;
   removeListener(
     event: "multipleResolves",
-    listener: (type: "resolve" | "reject", promise: unknown, value: unknown) => void,
+    listener: (type: "resolve" | "reject", promise: Promise<unknown>, value: unknown) => void,
   ): void;
   removeListener(
     event: "uncaughtException" | "uncaughtExceptionMonitor",
-    listener: (err: unknown, origin: string) => void,
+    listener: (err: unknown, origin: "uncaughtException" | "unhandledRejection") => void,
   ): void;
   /* emitWarning — Node's full grammar (string or Error warning; type/
    * ctor/options second; code/ctor third). */
@@ -1803,6 +1812,7 @@ declare var Headers: {
 };
 interface Response {
   readonly ok: boolean;
+  readonly type: "basic" | "cors" | "default" | "error" | "opaque" | "opaqueredirect";
   readonly status: number;
   readonly statusText: string;
   readonly url: string;

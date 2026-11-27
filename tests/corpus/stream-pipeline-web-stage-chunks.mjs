@@ -3,8 +3,9 @@
 // buffered, so two writes in the same tick reach the web transform as one
 // chunk. An object-mode stage hands over one value per read, and a write in a
 // later tick is a read of its own.
-import { PassThrough, Writable, compose } from "node:stream";
+import { PassThrough, Readable, Writable, compose } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import { createGunzip } from "node:zlib";
 
 const log = [];
 
@@ -78,6 +79,41 @@ function sinkFor(into, tag) {
   head.end();
   await done;
   log.push(`pipeline separate ticks in[${seen.join(" | ")}] out[${out.join(" | ")}]`);
+}
+
+{
+  // an encoded source's strings stay strings at the web stage
+  const seen = [];
+  const out = [];
+  const source = new PassThrough();
+  source.setEncoding("utf8");
+  const done = pipeline(source, record(seen), sinkFor(out, "encoded"));
+  source.write("ab");
+  source.end();
+  await done;
+  log.push(`pipeline encoded in[${seen.join(" | ")}] out[${out.join(" | ")}]`);
+}
+
+{
+  // a handled upstream failure through a web stage settles the pipeline
+  const outcome = await pipeline(
+    Readable.from([Buffer.from("not gzip data")]),
+    createGunzip(),
+    new TransformStream({
+      transform(chunk, controller) {
+        controller.enqueue(chunk);
+      },
+    }),
+    new Writable({
+      write(_chunk, _enc, cb) {
+        cb();
+      },
+    }),
+  ).then(
+    () => "no error",
+    (error) => `rejected ${error.code}`,
+  );
+  log.push(`pipeline corrupt gzip ${outcome}`);
 }
 
 console.log(log.join("\n"));

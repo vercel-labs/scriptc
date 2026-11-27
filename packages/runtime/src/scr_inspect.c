@@ -6376,6 +6376,18 @@ ScrStr *scr_insp_console_format(ScrDyn *pack, ScrDyn *inspect_options, const cha
   return insp_fmt_pack(pack, &o);
 }
 
+ScrStr *scr_insp_console_format_argv(ScrDyn *const *args, size_t argc, ScrDyn *inspect_options,
+                                     const char *surface, int colors_mode) {
+  ScrInspFormatOptions o;
+  scr_insp_format_defaults(&o, surface);
+  if (!insp_console_read_options(&o, inspect_options)) return NULL;
+  if (!insp_console_options_has_colors(inspect_options)) {
+    if (scr_exc_pending()) return NULL;
+    insp_console_colors(&o, colors_mode);
+  }
+  return scr_insp_format(args, argc, &o);
+}
+
 ScrStr *scr_insp_console_inspect(ScrDyn *value, ScrDyn *inspect_options, ScrDyn *call_options,
                                  double argc, int colors_mode) {
   ScrInspFormatOptions o;

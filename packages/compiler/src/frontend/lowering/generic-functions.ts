@@ -2769,9 +2769,9 @@ function genericValueInstance(
     const params = paramShapes(lowerer, info.decl.parameters.nodes, declSig);
     const retTs = lowerer.checker.getReturnTypeOfSignature(declSig);
     let returnType = lowerer.mapTypeOf(retTs);
-    // A generic instance whose declared result is `any` has no static type to
-    // put in the function value's signature. The instance's results are
-    // checked at each call, which is exactly a checked-dynamic value.
+    // A generic instance whose declared result is `any` has no static type in
+    // the function value's signature. The instance's results are checked at
+    // each call, which is a checked-dynamic value.
     if (returnType === null && (retTs.flags & ts.TypeFlags.Any) !== 0) {
       returnType = DYN;
     }

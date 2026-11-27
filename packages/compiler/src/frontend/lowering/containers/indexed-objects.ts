@@ -2433,7 +2433,22 @@ export function lowerEnvToPairsHelper(
   // f64 formats via toString, string[] expands element-wise — repeated
   // same-name pairs, one per element — and units skip).
   let siteNo = 0;
-  const writeFor = (k: IrExpr, raw: IrExpr, t: IrType): IrStmt => {
+  /* A request-header key is a user value here (a record's field or a run-time
+   * key), and a NUL in it is not a header name Node accepts — it would also
+   * read as the array marker further down. The check runs before the entry's
+   * value is looked at, as Node validates the name whatever the value. */
+  const keyCheck = (k: IrExpr): IrStmt => ({
+    kind: "exprStmt",
+    expr: {
+      kind: "libCall",
+      fn: "http.validateHeaderName",
+      args: [k, { kind: "strLit", value: "", type: STRING, loc }],
+      type: { kind: "void" },
+      loc,
+    },
+    loc,
+  });
+  const writeForInner = (k: IrExpr, raw: IrExpr, t: IrType): IrStmt => {
     const st = strArmTag(t);
     if (st !== null) {
       const write = push(k, asStr(raw, t));
@@ -2578,6 +2593,10 @@ export function lowerEnvToPairsHelper(
       ];
     }
     return { kind: "block", body: chain, loc };
+  };
+  const writeFor = (k: IrExpr, raw: IrExpr, t: IrType): IrStmt => {
+    const body = writeForInner(k, raw, t);
+    return markArrays ? { kind: "block", body: [keyCheck(k), body], loc } : body;
   };
   const body: IrStmt[] = [
     {

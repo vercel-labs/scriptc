@@ -288,6 +288,7 @@ const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
   "fetch.responseError",
   "fetch.responseRedirect",
   "fetch.responseJsonStatic",
+  "fetch.responseBlob",
   "abort.timeout",
   "abort.any",
   "event.new",

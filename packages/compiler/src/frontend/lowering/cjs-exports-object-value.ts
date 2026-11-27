@@ -407,7 +407,12 @@ export function cjsExportStatementObjectWrites(lowerer: Lowerer, stmt: ts.Statem
   // only in the static member slots. A whole-table replacement is not
   // mirrored onto it — that would replace the registered object instead of
   // filling it.
-  const g = cjsExportsObjectOf(lowerer, sf) ?? lowerer.cjsExportsThis.get(sf) ?? null;
+  const thisObject = lowerer.cjsExportsThis.get(sf);
+  // A table replacement assigns a NEW object: onto the module's materialized
+  // exports object when it has one, never onto top-level `this`, which Node
+  // keeps as the original exports object for the module's life (the
+  // replacement does not rebind it).
+  const g = cjsExportsObjectOf(lowerer, sf) ?? (cjs.kind === "table" ? null : (thisObject ?? null));
   if (g === null) return [];
   // A statement Node discards writes onto the exports object a
   // `module.exports =` assignment replaced: the module's object no longer

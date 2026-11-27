@@ -21274,6 +21274,16 @@ void scr_clone_value_error(const ScrDyn *v) {
     return;
   }
   ScrStr *what = scr_dyn_string_coerce(v);
+  if (what == NULL) {
+    /* The value has no primitive rendering — a handle whose conversion
+     * throws, an island object among them. Its conversion's own error is
+     * dropped and the clone reports the generic sentence, so the caller
+     * always answers a catchable DataCloneError instead of dying on a null
+     * dereference. */
+    scr_exc_clear();
+    scr_throw_domex("DataCloneError", "The value could not be cloned.");
+    return;
+  }
   static const char suffix[] = " could not be cloned.";
   size_t len = what->len + sizeof suffix - 1;
   char *msg = malloc(len + 1);

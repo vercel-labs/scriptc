@@ -24,6 +24,18 @@ if (isMainThread) {
     worker.terminate();
   });
   show("clone function", () => structuredClone(() => 1));
+  /* The uncloneable member is what stops the clone: Node renders that
+   * member's source text, and the object's own conversions never run. */
+  const conversions = {
+    toString() {
+      throw new Error("toString called");
+    },
+    valueOf() {
+      throw new Error("valueOf called");
+    },
+  };
+  show("post member function", () => port2.postMessage({ conversions }));
+  show("clone member function", () => structuredClone({ conversions }));
   port1.close();
   port2.close();
 }

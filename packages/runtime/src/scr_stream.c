@@ -4067,6 +4067,12 @@ static ScrClosure *scr_stream_eos_impl(ScrStream *s, ScrClosure *cb, ScrStreamEr
  * and value_p its promise (NULL for an async generator destination). */
 typedef void (*ScrPipeValInv)(ScrClosure *cb, ScrError *err, ScrDyn *value, ScrPromise *value_p);
 
+/* the readable-only Duplexify a web stage is fed through; the pipeline owns
+ * it and drops it when the pipeline settles */
+static ScrStream *scr_stream_duplexify_owned(ScrStream *r);
+/* drops a wrapper the runtime created; the stream it read is left alone */
+static void scr_stream_duplexify_dispose(ScrStream *d);
+
 /* stream.pipeline over streams (lib/internal/streams/pipeline.js). Each
  * stream gets the destroyer (a 'close' listener and an eos watcher over
  * the sides it plays), an 'error' listener, and each adjacent pair the
@@ -4107,6 +4113,10 @@ typedef struct {
   ScrPromise *value_p;
   /* the final callback with the value: callback(error, value) */
   ScrPipeValInv val_inv;
+  /* the wrapper a web stage is fed through (+1 each): the context owns it
+   * and drops it when the pipeline settles */
+  ScrStream **feeds;
+  size_t feeds_n, feeds_cap;
   void *live_prev, *live_next;
 } ScrStreamPipeCtx;
 
@@ -4133,6 +4143,15 @@ static void scr_stream_pipectx_drop(ScrStreamPipeCtx *ctx) {
     for (size_t i = 0; i < ctx->n; i++) scr_stream_release(ctx->streams[i]);
     free(ctx->streams);
     ctx->streams = NULL;
+  }
+  if (ctx->feeds) {
+    for (size_t i = 0; i < ctx->feeds_n; i++) {
+      scr_stream_duplexify_dispose(ctx->feeds[i]);
+      scr_stream_release(ctx->feeds[i]);
+    }
+    free(ctx->feeds);
+    ctx->feeds = NULL;
+    ctx->feeds_n = ctx->feeds_cap = 0;
   }
   if (ctx->cb) {
     scr_closure_release(ctx->cb);
@@ -4165,6 +4184,16 @@ static void scr_stream_pipectx_drop(ScrStreamPipeCtx *ctx) {
     scr_promise_release(ctx->value_p);
     ctx->value_p = NULL;
   }
+}
+
+/* The context owns a web stage's feed wrapper; a +1 moves in. */
+static void scr_pipe_track_feed(ScrStreamPipeCtx *ctx, ScrStream *feed) {
+  if (ctx->feeds_n == ctx->feeds_cap) {
+    ctx->feeds_cap = ctx->feeds_cap ? ctx->feeds_cap * 2 : 2;
+    ctx->feeds = realloc(ctx->feeds, ctx->feeds_cap * sizeof *ctx->feeds);
+    if (!ctx->feeds) scr_stream_oom();
+  }
+  ctx->feeds[ctx->feeds_n++] = feed;
 }
 
 static void scr_stream_pipectx_release_v(void *p) {
@@ -5146,7 +5175,7 @@ static ScrStream *scr_stream_pipeline_ex(size_t n, ScrStream **streams, ScrClosu
       /* An encoded source answers strings, which the wrapper's byte-mode
        * readable side would turn back into Buffers; it keeps the plain pipe. */
       if (s->st->web_pair_body && !ret->st->r.encoded) {
-        feed = scr_stream_duplexify(ret, NULL); /* +1 */
+        feed = scr_stream_duplexify_owned(ret); /* +1, the context's */
         if (!feed) {
           scr_stream_pipectx_drop(ctx);
           scr_stream_pipectx_release_v(ctx);
@@ -5165,17 +5194,22 @@ static ScrStream *scr_stream_pipeline_ex(size_t n, ScrStream **streams, ScrClosu
         ScrClosure *feed_error = scr_pipe_closure((void *)&scr_pipe_feed_error_l, ctx, 0);
         scr_pipe_on(feed, "error", scr_closure_retain(feed_error), scr_ee_inv_fixed1, false);
         scr_closure_release(feed_error);
+        scr_pipe_track_feed(ctx, feed); /* the reference moves */
       }
       /* pipe(feed, s, finish, finishOnlyHandleError, { end }) */
       ctx->finish_count += 2;
       scr_pipe_on(s, "close", scr_pipe_closure((void *)&scr_pipe_dst_close_l, ctx, i), scr_ee_inv_fixed0,
                   false);
       scr_stream_release(scr_stream_pipe(feed, s, false));
-      if (feed != ret) scr_stream_release(feed);
+      /* The destination ends when what feeds it ends. With a wrapper that is
+       * the wrapper: it ends once its buffered values reach the destination,
+       * while the stage it wrapped ends as soon as the values are buffered.
+       * Ending on the stage's 'end' would close the destination ahead of the
+       * values still buffered in the wrapper. */
       if (end) {
         ScrClosure *end_fn = scr_pipe_closure((void *)&scr_pipe_end_fn, ctx, i);
-        if (ret->st->r.end_emitted) scr_next_tick(end_fn);
-        else scr_pipe_on(ret, "end", end_fn, scr_ee_inv_fixed0, true);
+        if (feed->st->r.end_emitted) scr_next_tick(end_fn);
+        else scr_pipe_on(feed, "end", end_fn, scr_ee_inv_fixed0, true);
       } else {
         scr_pipe_finish_impl(ctx, NULL, --ctx->finish_count == 0);
       }
@@ -5617,6 +5651,9 @@ typedef struct ScrDuplexify {
   /* Duplex.fromWeb's pair: destroying it without an error closes the web
    * sides cleanly, Node's web-pair adapter (no synthesized AbortError). */
   bool web_pair;
+  /* the pipeline's feed wrapper: it is dropped by the pipeline, so its eos
+   * listeners come off with it instead of staying on the streams it read */
+  bool owned;
   /* The error this duplexify was destroyed with while the peers settle
    * (the destroy callback receives it, not a peer's secondary error). +1. */
   ScrError *destroy_err;
@@ -5658,12 +5695,19 @@ static void scr_dupx_on(ScrStream *s, const char *name, ScrClosure **slot, void 
   scr_str_release(n);
 }
 
-/* Drop the Duplex and the listeners on r and w (the eos listeners stay
- * registered; their cleanups, which hold the context, are dropped). */
+/* Drop the Duplex and the listeners on r and w (the eos listeners of a
+ * Duplex the user made stay registered, their cleanups dropped; a wrapper
+ * the pipeline owns takes its eos listeners with it). */
 static void scr_dupx_teardown(ScrDuplexify *x) {
   if (!x->d) return;
-  if (x->r_eos) scr_closure_release(x->r_eos);
-  if (x->w_eos) scr_closure_release(x->w_eos);
+  if (x->r_eos) {
+    if (x->owned) ((void (*)(ScrClosure *))x->r_eos->fn)(x->r_eos);
+    scr_closure_release(x->r_eos);
+  }
+  if (x->w_eos) {
+    if (x->owned) ((void (*)(ScrClosure *))x->w_eos->fn)(x->w_eos);
+    scr_closure_release(x->w_eos);
+  }
   x->r_eos = x->w_eos = NULL;
   if (x->w) {
     scr_compose_off(x->w, "drain", &x->drain_l);
@@ -5681,6 +5725,14 @@ static void scr_dupx_teardown(ScrDuplexify *x) {
   x->d = NULL;
   scr_stream_release(d);
   scr_dupx_release_v(x); /* the live list's reference */
+}
+
+/* The pipeline drops the wrapper it fed a web stage through: the wrapper's
+ * listeners and buffered values go; the stream it read is left alone. */
+static void scr_stream_duplexify_dispose(ScrStream *d) {
+  ScrDuplexify *x = scr_dupx_live;
+  while (x && x->d != d) x = x->live_next;
+  if (x) scr_dupx_teardown(x);
 }
 
 /* At exit, a Duplexify still open also drops its eos listeners on r and
@@ -5892,14 +5944,15 @@ static void scr_dupx_destroy_inv(ScrClosure *cb, ScrStream *s, ScrError *err) {
 
 /* _duplexify({ readable: r, writable: w }): r and w borrowed, either NULL.
  * +1. */
-static ScrStream *scr_stream_duplexify_impl(ScrStream *r, ScrStream *w, bool web_pair) {
+static ScrStream *scr_stream_duplexify_impl(ScrStream *r, ScrStream *w, bool web_pair, bool owned) {
   ScrDuplexify *x = calloc(1, sizeof *x);
   if (!x) scr_stream_oom();
   x->rc = 1;
   x->r = r ? scr_stream_retain(r) : NULL;
   x->w = w ? scr_stream_retain(w) : NULL;
-  x->onclose = SCR_DUPX_UNSET;
+  x->onclose = owned ? SCR_DUPX_NULL : SCR_DUPX_UNSET;
   x->web_pair = web_pair;
+  x->owned = owned;
   x->readable = r && scr_stream_prop(r, "readable") != 0;
   x->writable = w && scr_stream_prop(w, "writable") != 0;
   /* new Duplexify({ readableObjectMode, writableObjectMode, readable, writable }) */
@@ -5940,8 +5993,14 @@ static ScrStream *scr_stream_duplexify_impl(ScrStream *r, ScrStream *w, bool web
   return d;
 }
 
+/* The readable-only wrapper a pipeline feeds a web stage through. The
+ * pipeline owns it and drops it without destroying the readable it reads. */
+static ScrStream *scr_stream_duplexify_owned(ScrStream *r) {
+  return scr_stream_duplexify_impl(r, NULL, false, true);
+}
+
 ScrStream *scr_stream_duplexify(ScrStream *r, ScrStream *w) {
-  return scr_stream_duplexify_impl(r, w, false);
+  return scr_stream_duplexify_impl(r, w, false, false);
 }
 
 /* Duplex.from(promise) (duplexify.js): a Duplexify({ objectMode: true,
@@ -6008,7 +6067,7 @@ ScrStream *scr_stream_duplexify_pair(ScrStream *r, ScrStream *w) { return scr_st
  * adapter passes false (adapters.js's newStreamDuplexFromReadableWritablePair
  * defaults it). */
 ScrStream *scr_stream_duplexify_pair_opt(ScrStream *r, ScrStream *w, bool allow_half_open) {
-  ScrStream *d = scr_stream_duplexify_impl(r, w, true);
+  ScrStream *d = scr_stream_duplexify_impl(r, w, true, false);
   if (d->st) d->st->allow_half_open = allow_half_open;
   return d;
 }

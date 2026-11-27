@@ -9,6 +9,15 @@ import { InternalCompilerError } from "../../../errors.js";
 import * as ts from "../../ts7/adapter.js";
 import { withoutParentheses } from "../../outer-expressions.js";
 import { type Lowerer } from "../lowerer.js";
+
+/** Whether `node`, seen through parentheses and a non-null assertion, reads
+ * a runtime-optional origin (an element or index-signature read): the value
+ * can be absent at run time even when the checker names the present type. */
+function runtimeOptionalRead(lowerer: Lowerer, node: ts.Expression): boolean {
+  let read = node;
+  while (ts.isParenthesizedExpression(read) || ts.isNonNullExpression(read)) read = read.expression;
+  return lowerer.isRuntimeOptionalOrigin(read);
+}
 import { locOf } from "../../program.js";
 import {
   isJsonStringifyDynamicType,
@@ -108,6 +117,10 @@ export function lowerJsonMethodCall(
         narrowed &&
         !isUnitType(narrowed) &&
         narrowed.kind !== "void" &&
+        // A runtime-optional read (an absent dictionary key, an empty array
+        // slot) can still BE the absent arm at run time: narrowing to the
+        // checker's type would throw where Node serializes the absence.
+        !runtimeOptionalRead(lowerer, argNode) &&
         !widensReducedRecords(lowerer, narrowed, value.type)
       ) {
         const helper =
@@ -278,6 +291,24 @@ export function lowerJsonMethodCall(
       // deliberate, not a gap. (Undefined-armed RECORD FIELDS pass the
       // fence: the field drops from the output, exactly Node.)
       if (lowerer.bareUndefinedArmedUnion(value.type)) {
+        // A runtime-optional read (an absent dictionary key) can BE the
+        // undefined arm: the runtime walker answers Node's undefined for a
+        // dropped root and the text for every other value.
+        if (runtimeOptionalRead(lowerer, argNode)) {
+          const boxed: IrExpr = { kind: "dynFrom", value, type: DYN, loc };
+          const raw: IrExpr = {
+            kind: "libCall",
+            fn: "json.stringifyReplacer",
+            args: [
+              boxed,
+              dynUndefinedExpr(loc),
+              { kind: "strLit", value: indent, type: STRING, loc },
+            ],
+            type: DYN,
+            loc,
+          };
+          return { kind: "dynCheck", value: raw, type: lowerer.withUndefinedArm(STRING), loc };
+        }
         lowerer.unsupported(
           "SC1090",
           argNode,

@@ -146,6 +146,9 @@ describe.skipIf(!zigOnPath() || !wasmPackInstalled())("wasm32-wasi differential"
     "js-default-listener-arguments.cjs",
     "js-reflect-receivers.js",
     "js-loose-dynamic-primitives.js",
+    // The dictionary read lowering's jsval conversion reads the checked-
+    // dynamic layout, whose kind and value offsets follow the pointer width.
+    "asserted-dictionary-read.ts",
     "js-promise-pending-reactions.js",
     "js-promise-all-values.js",
     "js-promise-catch-handler.js",

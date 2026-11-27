@@ -654,13 +654,23 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     // use sees the undefined itself (String(x) is "undefined"). This is the
     // fast path the scalar-union extraction replaced.
     if (inner.type.kind === "dyn" && assertedDictionaryRead(lowerer, expr.expression)) {
-      if (assertedDictionaryReadUse(lowerer, expr) === "raw") return inner;
       const asserted = lowerer.mapTypeOf(lowerer.typeOf(expr));
-      if (asserted?.kind === "f64")
+      if (assertedDictionaryReadUse(lowerer, expr) === "raw") {
+        // A value or string use observes the runtime value, so the read
+        // keeps the index value's own arms and the undefined arm: typeof
+        // answers "undefined", String() and templates print it, JSON omits
+        // an object member, and a typed argument receives the absence as
+        // the record's own missing-key read does. The armed value only
+        // serves non-hot uses.
+        const declared = assertedDictionaryReadType(lowerer, expr.expression);
+        const armed = declared === null ? null : lowerer.withUndefinedArmOf(declared);
+        return armed !== null ? lowerer.coerceToExpected(inner, armed) : inner;
+      }
+      if (asserted !== null && numericAssertionType(lowerer, asserted))
         // ToNumber with the missing key answered as NaN on the inline fast
         // path (js.toNumberOrNaN), so the read stays unboxed: a present
-        // number unboxes in place and `undefined` is NaN, exactly what the
-        // arithmetic computes.
+        // number unboxes in place, `undefined` is NaN and `null` is 0,
+        // exactly what the arithmetic computes.
         return { kind: "libCall", fn: "dyn.toNumberOrNaN", args: [inner], type: F64, loc };
       return inner;
     }
@@ -1920,14 +1930,32 @@ function scalarUnion(lowerer: Lowerer, unionId: string): boolean {
  * value to a string (a template span, `+` with a string), "value" where the
  * consumer lowers the union itself (equality, truthiness, a comparison with
  * a string), null for other uses. */
+/** Whether the asserted type of a dictionary read is a number, or a union of
+ * a number with null and undefined: ToNumber has a value for every arm
+ * (undefined and null both convert), so a numeric use can lower inline. */
+function numericAssertionType(lowerer: Lowerer, type: IrType): boolean {
+  if (type.kind === "f64") return true;
+  if (type.kind !== "union") return false;
+  return (lowerer.unions.get(type.unionId)?.arms ?? []).every(
+    (arm) => arm.kind === "f64" || isUnitType(arm),
+  );
+}
+
 /** Whether `node` reads a checked-dynamic dictionary through its string
  * index signature (the read #4192 arms with an undefined arm), so a
  * surrounding non-null assertion keeps the runtime value for the consumer. */
 function assertedDictionaryRead(lowerer: Lowerer, node: ts.Expression): boolean {
+  return assertedDictionaryReadType(lowerer, node) !== null;
+}
+
+/** The declared index-signature value type of a dictionary read, or null
+ * when `node` is not one. The runtime value may be absent (undefined) or the
+ * index value's own null arm whatever the assertion claims. */
+function assertedDictionaryReadType(lowerer: Lowerer, node: ts.Expression): IrType | null {
   let read = node;
   while (ts.isParenthesizedExpression(read)) read = read.expression;
-  if (!ts.isElementAccessExpression(read) && !ts.isPropertyAccessExpression(read)) return false;
-  return lowerer.dynIndexSignatureValueRead(read) !== null;
+  if (!ts.isElementAccessExpression(read) && !ts.isPropertyAccessExpression(read)) return null;
+  return lowerer.dynIndexSignatureValueRead(read);
 }
 
 /** How the consumer of a non-null asserted checked-dynamic dictionary read
@@ -1941,6 +1969,11 @@ function assertedDictionaryReadUse(lowerer: Lowerer, expr: ts.NonNullExpression)
   let outer: ts.Expression = expr;
   while (ts.isParenthesizedExpression(outer.parent)) outer = outer.parent;
   const parent = outer.parent;
+  // An object literal property holds the value itself: a missing read keeps
+  // its undefined arm, so the record field widens and JSON drops it (or
+  // typeof answers "undefined"), as Node does.
+  if (ts.isPropertyAssignment(parent) && parent.initializer === outer) return "raw";
+  if (ts.isShorthandPropertyAssignment(parent)) return "raw";
   if (ts.isCallExpression(parent) && parent.arguments.nodes.includes(outer)) {
     const callee = parent.expression;
     if (
@@ -1961,6 +1994,11 @@ function assertedDictionaryReadUse(lowerer: Lowerer, expr: ts.NonNullExpression)
       ts.isPropertyAccessExpression(callee) &&
       lowerer.isStdlibGlobal(callee.expression, "Number")
     )
+      return "raw";
+    // A parameter typed unknown or any receives the value itself: a typeof
+    // test through such a call must observe the undefined, not a number.
+    const contextual = lowerer.checker.getContextualType(outer);
+    if (contextual && (contextual.flags & (ts.TypeFlags.Unknown | ts.TypeFlags.Any)) !== 0)
       return "raw";
   }
   return "number";

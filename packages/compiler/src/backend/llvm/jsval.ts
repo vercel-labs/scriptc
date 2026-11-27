@@ -407,17 +407,20 @@ export function emitJsLibCall(host: Host, e: LibCallExpr): LlValue {
       return { name: out, type: e.type };
     }
     case "js.toNumberOrNaN": {
-      // ToNumber with the missing value answered as NaN, which is what
-      // `undefined + n` computes. Undefined reaches here either as its
-      // immediate word or as a dyn cell of kind SCR_DYN_UNDEF; a present
-      // number unboxes on js.toF64's inline fast path, and every other
-      // value keeps js.toF64's checked TypeError.
+      // ToNumber with the values a missing or null dictionary entry answers:
+      // undefined is NaN (what `undefined + n` computes) and null is 0.
+      // Undefined reaches here as its immediate word or as a dyn cell of kind
+      // SCR_DYN_UNDEF, null as its word or kind SCR_DYN_NULL; a present
+      // number unboxes on js.toF64's inline fast path, and every other value
+      // keeps js.toF64's checked TypeError.
       const a = operand(host, e.args[0]!);
       const word = a.word();
       const slot = B.slot();
       B.entryAllocas.push(`${slot} = alloca double`);
       const undefBlock = B.newLabel("js.non.u");
+      const nullBlock = B.newLabel("js.non.z");
       const classify = B.newLabel("js.non.y");
+      const classifyAfterNull = B.newLabel("js.non.y2");
       const doubleBlock = B.newLabel("js.non.d");
       const cellBlock = B.newLabel("js.non.c");
       const live = B.newLabel("js.non.l");
@@ -432,6 +435,10 @@ export function emitJsLibCall(host: Host, e: LibCallExpr): LlValue {
         B.line(`${isUndef} = icmp eq i64 ${bits}, ${JS_BITS.undefined}`);
         B.condBr(isUndef, undefBlock, classify);
         B.startBlock(classify);
+        const isNull = B.tmp();
+        B.line(`${isNull} = icmp eq i64 ${bits}, ${JS_BITS.null}`);
+        B.condBr(isNull, nullBlock, classifyAfterNull);
+        B.startBlock(classifyAfterNull);
         const isDouble = B.tmp();
         const tagBlock = B.newLabel("js.non.t");
         B.line(`${isDouble} = icmp ult i64 ${bits}, ${JS_BITS.limit}`);
@@ -453,6 +460,9 @@ export function emitJsLibCall(host: Host, e: LibCallExpr): LlValue {
       B.startBlock(undefBlock);
       B.line(`store double 0x7FF8000000000000, ptr ${slot}`);
       B.br(done);
+      B.startBlock(nullBlock);
+      B.line(`store double 0x0000000000000000, ptr ${slot}`);
+      B.br(done);
       if (jsImmediates(host)) {
         B.startBlock(doubleBlock);
         const bits = bitsOf(host, word);
@@ -470,7 +480,9 @@ export function emitJsLibCall(host: Host, e: LibCallExpr): LlValue {
       B.startBlock(live);
       const kp = B.tmp();
       const kind = B.tmp();
-      B.line(`${kp} = getelementptr inbounds i8, ptr ${cell}, i64 8 ; ->kind`);
+      B.line(
+        `${kp} = getelementptr inbounds i8, ptr ${cell}, i64 ${host.abiOffset(8, 4)} ; ->kind`,
+      );
       B.line(`${kind} = load i32, ptr ${kp}`);
       const isNum = B.tmp();
       B.line(`${isNum} = icmp eq i32 ${kind}, 2`);
@@ -479,11 +491,19 @@ export function emitJsLibCall(host: Host, e: LibCallExpr): LlValue {
       const isUndefKind = B.tmp();
       // SCR_DYN_UNDEF: the checked-dynamic tree's undefined.
       B.line(`${isUndefKind} = icmp eq i32 ${kind}, 6`);
-      B.condBr(isUndefKind, undefBlock, slowBlock);
+      const nullKindBlock = B.newLabel("js.non.m");
+      B.condBr(isUndefKind, undefBlock, nullKindBlock);
+      B.startBlock(nullKindBlock);
+      // SCR_DYN_NULL: ToNumber(null) is 0.
+      const isNullKind = B.tmp();
+      B.line(`${isNullKind} = icmp eq i32 ${kind}, 0`);
+      B.condBr(isNullKind, nullBlock, slowBlock);
       B.startBlock(numBlock);
       const np = B.tmp();
       const n = B.tmp();
-      B.line(`${np} = getelementptr inbounds i8, ptr ${cell}, i64 16 ; ->v.num`);
+      B.line(
+        `${np} = getelementptr inbounds i8, ptr ${cell}, i64 ${host.abiOffset(16, 8)} ; ->v.num`,
+      );
       B.line(`${n} = load double, ptr ${np}`);
       B.line(`store double ${n}, ptr ${slot}`);
       B.br(done);
@@ -730,6 +750,7 @@ function emitBoxedJsLibCall(host: Host, e: LibCallExpr): LlValue {
       const slot = B.slot();
       B.entryAllocas.push(`${slot} = alloca double`);
       const undefBlock = B.newLabel("js.non.u");
+      const nullBlock = B.newLabel("js.non.z");
       const kindBlock = B.newLabel("js.non.k");
       const numberBlock = B.newLabel("js.non.n");
       const done = B.newLabel("js.non.j");
@@ -741,13 +762,22 @@ function emitBoxedJsLibCall(host: Host, e: LibCallExpr): LlValue {
       const kp = B.tmp();
       const kind = B.tmp();
       const undef = B.tmp();
-      B.line(`${kp} = getelementptr inbounds i8, ptr ${v}, i64 8 ; ->kind`);
+      B.line(`${kp} = getelementptr inbounds i8, ptr ${v}, i64 ${host.abiOffset(8, 4)} ; ->kind`);
       B.line(`${kind} = load i32, ptr ${kp}`);
-      // SCR_DYN_UNDEF: the checked-dynamic tree's undefined.
+      // SCR_DYN_UNDEF is the checked-dynamic tree's undefined, SCR_DYN_NULL
+      // its null (ToNumber(null) is 0).
       B.line(`${undef} = icmp eq i32 ${kind}, 6`);
-      B.condBr(undef, undefBlock, numberBlock);
+      const nullKindCheck = B.newLabel("js.non.m");
+      const nullKind = B.tmp();
+      B.line(`${nullKind} = icmp eq i32 ${kind}, 0`);
+      B.condBr(undef, undefBlock, nullKindCheck);
+      B.startBlock(nullKindCheck);
+      B.condBr(nullKind, nullBlock, numberBlock);
       B.startBlock(undefBlock);
       B.line(`store double 0x7FF8000000000000, ptr ${slot}`);
+      B.br(done);
+      B.startBlock(nullBlock);
+      B.line(`store double 0x0000000000000000, ptr ${slot}`);
       B.br(done);
       B.startBlock(numberBlock);
       const helper = host.dyn.dynCheckHelper(e.type, undefined);

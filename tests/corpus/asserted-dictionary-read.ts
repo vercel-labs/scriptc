@@ -52,3 +52,25 @@ console.log("write", (counter as Record<string, number>).hits);
 
 const absent: unknown = {};
 console.log("probe", (absent as Record<string, number>).hits === undefined);
+
+// JSON, typed arguments and null cells observe the runtime value too.
+function missingJson(target: unknown): void {
+  const record = target as Record<string, number>;
+  console.log("json", String(JSON.stringify(record["v"]!)), JSON.stringify({ k: record["v"]! }));
+  const toUnknown = (v: unknown): string => typeof v;
+  console.log("typed", toUnknown(record["v"]!));
+}
+
+missingJson({});
+
+function nullCell(target: unknown): void {
+  const record = target as Record<string, number | null>;
+  console.log(
+    "null cell",
+    record["cell"]! + 1,
+    Math.abs(record["cell"]!),
+    String(record["cell"]!),
+  );
+}
+
+nullCell({ cell: null });

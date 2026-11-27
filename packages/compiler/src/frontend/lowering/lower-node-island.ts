@@ -2095,6 +2095,22 @@ function classMethodsBuilderOf(
     for (const m of [...(c.def.methods ?? []), ...(c.genericMethods?.keys() ?? [])])
       if (!names.includes(m) && (islandMethodName(m) || islandAccessorName(m))) names.push(m);
   }
+  // A BASE-typed slot builds this table for the STATIC class, while the
+  // value crossing the boundary can be any subclass at run time and the
+  // island dispatches accessors on the instance's own class. A decorated
+  // member declared by a descendant would therefore be bypassed; refuse the
+  // crossing instead of compiling it with the wrapper skipped.
+  for (const candidate of lowerer.classes.values()) {
+    if (candidate === info) continue;
+    if (candidate.legacyMemberDecorations === undefined) continue;
+    if (!lowerer.isSubclassOf(candidate.def.name, info.def.name)) continue;
+    const first = candidate.legacyMemberDecorations[0]!;
+    lowerer.unsupported(
+      "SC1090",
+      first.decorators[0] ?? first.parameters[0]!.decorators[0]!,
+      `an instance crossing into a Node island through a '${className}' slot whose class '${candidate.def.jsName ?? candidate.def.name}' declares legacy member decorations (the island accessor table is built from the static class, so the descendant's decorated member would be bypassed — pass the instance's own class type, or remove the decorations)`,
+    );
+  }
   if (names.length === 0) return null;
   // A decorated accessor's replacement lives on the reflected prototype,
   // while this island table can only hold the declared accessor halves: an

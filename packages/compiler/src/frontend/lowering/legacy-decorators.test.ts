@@ -482,3 +482,57 @@ test("accessor decorators on a class extending Date are refused", async () => {
   ].join("\n");
   expect(await refusalCodes(source, legacyTsconfig)).toContain("SC1090");
 });
+
+test("an island crossing through a base slot with a decorated descendant is refused", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-legacy-decorators-island-descendant-"));
+  try {
+    await writeFile(join(dir, "package.json"), JSON.stringify({ private: true, type: "module" }));
+    const dep = join(dir, "node_modules/isle");
+    await mkdir(dep, { recursive: true });
+    await writeFile(
+      join(dep, "package.json"),
+      JSON.stringify({ name: "isle", version: "1.0.0", type: "module", main: "index.js" }),
+    );
+    await writeFile(join(dep, "index.js"), "export function poke(o, v) { o.x = v; return o.x; }\n");
+    await writeFile(
+      join(dep, "index.d.ts"),
+      "export declare function poke(o: { x: number }, v: number): number;\n",
+    );
+    await writeFile(join(dir, "tsconfig.json"), JSON.stringify(legacyTsconfig));
+    const entry = join(dir, "main.ts");
+    await writeFile(
+      entry,
+      [
+        'import { poke } from "isle";',
+        "function check(t: object, k: string, d: PropertyDescriptor): void {",
+        "  d.set = function (this: unknown, value: number): void { console.log(value); };",
+        "}",
+        "class Base {",
+        "  v = 0;",
+        "  set x(value: number) { this.v = value; }",
+        "  get x(): number { return this.v; }",
+        "}",
+        "class Sub extends Base {",
+        "  @check",
+        "  override set x(value: number) { super.x = value; }",
+        "  override get x(): number { return super.x; }",
+        "}",
+        "const asBase: Base = new Sub();",
+        "poke(asBase, -5);",
+        "",
+      ].join("\n"),
+    );
+    const result = await compile(entry, {
+      outDir: dir,
+      outPath: join(dir, "main.ir.json"),
+      outputKind: "ir",
+      nodeIslands: { mode: "explicit", islands: ["isle"] },
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected a refusal");
+    const refusal = result.diagnostics.find((d) => d.code === "SC1090");
+    expect(refusal?.message).toContain("static class");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

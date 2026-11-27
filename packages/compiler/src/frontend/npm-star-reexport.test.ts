@@ -20,7 +20,10 @@ function diagnostics(files: Record<string, string>, entry: string) {
     '{"name":"facade-pkg","version":"1.0.0","main":"index.js","types":"index.d.ts"}',
   );
   writeFileSync(join(pkg, "index.js"), "exports.a = 1;\nexports.b = 'b';\n");
-  writeFileSync(join(pkg, "index.d.ts"), "export declare const a: number;\nexport declare const b: string;\n");
+  writeFileSync(
+    join(pkg, "index.d.ts"),
+    "export declare const a: number;\nexport declare const b: string;\n",
+  );
   for (const [name, text] of Object.entries(files)) writeFileSync(join(directory, name), text);
   const load = loadProgram(join(directory, entry));
   try {

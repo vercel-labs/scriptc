@@ -233,6 +233,11 @@ static void scr_worker_view_gcfree(void *ptr) {
 
 static void scr_worker_view_destroy(void *ptr) {
   ScrWorkerView *view = ptr;
+  /* The registry can outlive the view: a once() wrapper taken from
+   * rawListeners() keeps the emitter alive, and a later add or remove runs
+   * the owner hook. The hook's context is the view itself, so it is cleared
+   * here rather than left pointing at freed state. */
+  scr_emitter_observe(view->events, NULL, NULL);
   scr_emitter_release(view->events);
   while (view->termination) {
     ScrTermWait *wait = view->termination;

@@ -20,6 +20,20 @@ for (let i = 0; i < 96; i++) {
   registry.register({ i }, i, token);
 }
 console.log("unregister", registry.unregister(live), registry.unregister(live));
+// A Blob is not a weak collection key: the runtime refuses the key rather
+// than keying an allocation whose liveness it cannot trace, so the payloads
+// below must not accumulate either.
+const map = new WeakMap();
+let refused = 0;
+for (let i = 0; i < 64; i++) {
+  const key = new Blob([new Uint8Array(4 * 1024 * 1024)]);
+  try {
+    map.set(key, { key, i });
+  } catch {
+    refused++;
+  }
+}
+console.log("weakmap keys refused", refused);
 console.log("maxrss", Math.round(process.resourceUsage().maxRSS));
 `;
 
@@ -53,8 +67,9 @@ test("a registry that outlives its Blob tokens keeps no payload", async () => {
   expect(stdout).toContain("unregister true false");
   const match = /maxrss (\d+)/.exec(stdout);
   expect(match).not.toBeNull();
-  /* 96 discarded tokens carry 384 MiB of payloads; a registry that kept
-   * them would put the peak near 480 MiB. The runtime's own footprint is
-   * about 100 MiB, so 200 MiB leaves room for the transient copies only. */
+  /* 96 discarded tokens and 64 refused weak-map keys carry 640 MiB of
+   * payloads; keeping any of them would put the peak far above this bound.
+   * The runtime's own footprint is about 100 MiB, so 200 MiB leaves room for
+   * the transient copies only. */
   if (process.env["SCRIPTC_SAN"] !== "1") expect(Number(match![1])).toBeLessThan(200 * 1024);
 }, 300_000);

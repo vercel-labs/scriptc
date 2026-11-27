@@ -213,6 +213,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.fsExistsValue === true, "scr_fs_exists_dyn.c"),
   // node:module's compile cache family (scr_module_cache.c).
   unit((u) => u.opts.moduleCompileCache === true, "scr_module_cache.c"),
+  // node:module's SourceMap class (scr_source_map.c).
+  unit((u) => u.opts.sourceMap === true, "scr_source_map.c"),
   // The BYTE-data spellings of the options write and fs.promises.writeFile
   // (scr_fs_bytes_write.c), gated apart from the string forms' unit so a
   // program that writes no byte payload keeps both objects unchanged.

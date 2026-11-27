@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/object-set-prototype-of-dyn-cycle-reclaim.ts"
+ ],
+ "diags": []
+}

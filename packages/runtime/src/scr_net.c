@@ -6123,6 +6123,54 @@ void scr_net_sock_end_bytes(ScrNetSocket *s, ScrBytes *data /*borrowed*/) {
   scr_net_sock_end(s);
 }
 
+/* socket.write(data, encoding): Node encodes the string like Buffer.from's
+ * (its encoding ladder; an unknown name throws ERR_UNKNOWN_ENCODING
+ * catchably), then the bytes take the ordinary write path. */
+bool scr_net_sock_write_encoded(ScrNetSocket *s, ScrStr *data /*borrowed*/,
+                                ScrStr *enc /*borrowed*/) {
+  ScrBytes *b = scr_bytes_from_str_checked(data, enc); /* +1, or NULL with the exception pending */
+  if (b == NULL) return false;
+  bool ok = scr_net_sock_write_bytes(s, b);
+  scr_bytes_release(b);
+  return ok;
+}
+
+/* socket.end(data, encoding): the same encoding ladder, then the end. */
+void scr_net_sock_end_encoded(ScrNetSocket *s, ScrStr *data /*borrowed*/,
+                              ScrStr *enc /*borrowed*/) {
+  ScrBytes *b = scr_bytes_from_str_checked(data, enc);
+  if (b == NULL) return;
+  scr_net_sock_end_bytes(s, b);
+  scr_bytes_release(b);
+}
+
+/* The encoding beside a Buffer chunk: Writable validates it ("Buffer.isEncoding,
+ * plus the exact 'buffer' spelling") and then ignores it. An unknown name
+ * throws Node's ERR_UNKNOWN_ENCODING catchably. */
+static bool scr_net_write_encoding_ok(const ScrStr *enc) {
+  if (enc->len == 0) return true; /* an empty name reads as utf8 */
+  if (enc->len == 6 && memcmp(enc->data, "buffer", 6) == 0) return true;
+  if (scr_bytes_is_encoding(enc)) return true;
+  /* unknown: Node's ERR_UNKNOWN_ENCODING (the throw is pending) */
+  ScrStr *norm = scr_bytes_normalize_encoding(enc);
+  if (norm != NULL) scr_str_release(norm);
+  return false;
+}
+
+/* socket.write(data, encoding) with a Buffer chunk: validated, ignored. */
+bool scr_net_sock_write_bytes_encoded(ScrNetSocket *s, ScrBytes *data /*borrowed*/,
+                                      ScrStr *enc /*borrowed*/) {
+  if (!scr_net_write_encoding_ok(enc)) return false;
+  return scr_net_sock_write_bytes(s, data);
+}
+
+/* socket.end(data, encoding) with a Buffer chunk. */
+void scr_net_sock_end_bytes_encoded(ScrNetSocket *s, ScrBytes *data /*borrowed*/,
+                                    ScrStr *enc /*borrowed*/) {
+  if (!scr_net_write_encoding_ok(enc)) return;
+  scr_net_sock_end_bytes(s, data);
+}
+
 /* socket.pause(): reads stay off — the kernel buffer (and TCP flow
  * control) holds arrived bytes. Delivery restarts on
  * resume(), always from the poller/sweep, never this stack. Answers the

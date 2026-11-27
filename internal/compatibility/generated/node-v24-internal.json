@@ -64104,6 +64104,7 @@
           "tests/corpus/http2-respond-with-file/main.ts",
           "tests/corpus/http2-server-close-late-stream.ts",
           "tests/corpus/http2-server-close.ts",
+          "tests/corpus/http2-session-controls.ts",
           "tests/corpus/http2-session-error.ts",
           "tests/corpus/http2-session-local-window.ts",
           "tests/corpus/http2-session-properties.ts",
@@ -64534,10 +64535,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:http2.http2session.goaway",
         "tests": [
-          "tests/diagnostics/compat-absent-http2-members.ts"
+          "tests/corpus/http2-session-controls.ts"
         ]
       },
       "anchorSource": "exact"
@@ -64635,10 +64636,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:http2.http2session.setTimeout",
         "tests": [
-          "tests/diagnostics/compat-absent-http2-members.ts"
+          "tests/corpus/http2-session-controls.ts"
         ]
       },
       "anchorSource": "exact"
@@ -64687,10 +64688,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:http2.http2session.unref",
         "tests": [
-          "tests/diagnostics/compat-absent-http2-members.ts"
+          "tests/corpus/http2-session-controls.ts"
         ]
       },
       "anchorSource": "exact"
@@ -65257,10 +65258,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:http2.'timeout'",
         "tests": [
-          "tests/diagnostics/compat-absent-http2-members.ts"
+          "tests/corpus/http2-session-controls.ts"
         ]
       },
       "anchorSource": "exact"
@@ -74921,7 +74922,12 @@
           "tests/corpus/module-create-require-shapes/main.cjs",
           "tests/corpus/module-find-package-json/main.ts",
           "tests/corpus/module-function-values/main.ts",
+          "tests/corpus/module-source-map-class-values.mjs",
+          "tests/corpus/module-source-map-class.ts",
+          "tests/corpus/module-source-maps-values.mjs",
+          "tests/corpus/module-source-maps.ts",
           "tests/harness/module-compile-cache.test.ts",
+          "tests/harness/module-source-maps.test.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -75330,8 +75336,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:module"
+        "status": "supported",
+        "evidence": "compiler-feature:module.module.SourceMap",
+        "tests": [
+          "tests/corpus/module-source-map-class.ts",
+          "tests/corpus/module-source-map-class-values.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -75353,8 +75363,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:module"
+        "status": "supported",
+        "evidence": "compiler-feature:module.sourceMap.findEntry",
+        "tests": [
+          "tests/corpus/module-source-map-class.ts",
+          "tests/corpus/module-source-map-class-values.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -75376,8 +75390,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:module"
+        "status": "supported",
+        "evidence": "compiler-feature:module.sourceMap.findOrigin",
+        "tests": [
+          "tests/corpus/module-source-map-class.ts",
+          "tests/corpus/module-source-map-class-values.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -75399,8 +75417,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:module"
+        "status": "supported",
+        "evidence": "compiler-feature:module.payload",
+        "tests": [
+          "tests/corpus/module-source-map-class.ts",
+          "tests/corpus/module-source-map-class-values.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -75422,8 +75444,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:module"
+        "status": "supported",
+        "evidence": "compiler-feature:module.module.getSourceMapsSupport",
+        "tests": [
+          "tests/corpus/module-source-maps.ts",
+          "tests/corpus/module-source-maps-values.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -75445,8 +75471,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:module"
+        "status": "partial",
+        "evidence": "compiler-feature:module.module.findSourceMap",
+        "tests": [
+          "tests/corpus/module-source-maps.ts",
+          "tests/corpus/module-source-maps-values.mjs",
+          "tests/harness/module-source-maps.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -75468,8 +75499,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:module"
+        "status": "supported",
+        "evidence": "compiler-feature:module.module.setSourceMapsSupport",
+        "tests": [
+          "tests/corpus/module-source-maps.ts",
+          "tests/corpus/module-source-maps-values.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -77238,6 +77273,7 @@
           "tests/corpus/net-socket-construct-dyn.cjs",
           "tests/corpus/net-socket-construct.ts",
           "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-encodings.ts",
           "tests/corpus/net-socket-method-values.cjs",
           "tests/corpus/net-socket-set-encoding-names.ts",
           "tests/corpus/net-socket-tos-keepalive.ts",
@@ -77892,6 +77928,7 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-encodings.ts",
           "tests/corpus/net-socket-construct.ts",
           "tests/corpus/net-socket-construct-dyn.cjs"
         ]
@@ -78014,6 +78051,7 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-encodings.ts",
           "tests/corpus/net-socket-construct.ts",
           "tests/corpus/net-socket-construct-dyn.cjs"
         ]
@@ -78492,6 +78530,7 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-encodings.ts",
           "tests/corpus/net-socket-construct.ts",
           "tests/corpus/net-socket-construct-dyn.cjs"
         ]
@@ -78544,6 +78583,7 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-encodings.ts",
           "tests/corpus/net-socket-construct.ts",
           "tests/corpus/net-socket-construct-dyn.cjs"
         ]
@@ -78574,6 +78614,7 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-encodings.ts",
           "tests/corpus/net-socket-construct.ts",
           "tests/corpus/net-socket-construct-dyn.cjs"
         ]
@@ -78647,6 +78688,7 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-encodings.ts",
           "tests/corpus/net-socket-construct.ts",
           "tests/corpus/net-socket-construct-dyn.cjs"
         ]
@@ -78677,6 +78719,7 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-encodings.ts",
           "tests/corpus/net-socket-construct.ts",
           "tests/corpus/net-socket-construct-dyn.cjs"
         ]
@@ -78797,6 +78840,7 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-encodings.ts",
           "tests/corpus/net-socket-construct.ts",
           "tests/corpus/net-socket-construct-dyn.cjs"
         ]
@@ -78890,6 +78934,7 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-encodings.ts",
           "tests/corpus/net-socket-construct.ts",
           "tests/corpus/net-socket-construct-dyn.cjs"
         ]
@@ -81601,6 +81646,7 @@
           "tests/corpus/net-socket-construct-dyn.cjs",
           "tests/corpus/net-socket-construct.ts",
           "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-encodings.ts",
           "tests/corpus/net-socket-method-values.cjs",
           "tests/corpus/net-socket-set-encoding-names.ts",
           "tests/corpus/net-socket-write-rejected.cjs",
@@ -81938,6 +81984,7 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-encodings.ts",
           "tests/corpus/net-socket-construct.ts",
           "tests/corpus/net-socket-construct-dyn.cjs"
         ]

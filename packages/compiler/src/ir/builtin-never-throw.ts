@@ -31,6 +31,7 @@ import { promiseNeverThrow } from "./builtin-never-throw/promise.js";
 import { readableNeverThrow } from "./builtin-never-throw/readable.js";
 import { recordNeverThrow } from "./builtin-never-throw/record.js";
 import { seaNeverThrow } from "./builtin-never-throw/sea.js";
+import { sourceMapNeverThrow } from "./builtin-never-throw/sourceMap.js";
 import { sqliteNeverThrow } from "./builtin-never-throw/sqlite.js";
 import { statWatcherNeverThrow } from "./builtin-never-throw/statWatcher.js";
 import { streamNeverThrow } from "./builtin-never-throw/stream.js";
@@ -93,6 +94,7 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   ...readableNeverThrow,
   ...recordNeverThrow,
   ...seaNeverThrow,
+  ...sourceMapNeverThrow,
   ...sqliteNeverThrow,
   ...statWatcherNeverThrow,
   ...streamNeverThrow,

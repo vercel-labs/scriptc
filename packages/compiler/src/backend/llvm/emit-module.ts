@@ -1093,7 +1093,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     `%ScrUnion = type { ${emitter.sizeType}, i32, ptr, ptr, ptr, i64 }`,
     `%ScrClosure = type { ${emitter.sizeType}, ptr, ${emitter.sizeType}, ptr, i32, i32, ptr, ptr }`,
     `%ScrFfiTable = type { ptr, ${emitter.sizeType}, ${emitter.sizeType}, ptr, i8, ptr, ptr, ${emitter.sizeType}, ${emitter.sizeType}, ${emitter.sizeType}, ptr, ptr }`,
-    `%ScrRegex = type { ${emitter.sizeType}, ptr, ptr, ptr, double, ptr, ptr, ptr }`,
+    `%ScrRegex = type { ${emitter.sizeType}, ptr, ptr, ptr, double, ptr, ptr, ptr, ptr }`,
     // The library host-callback state (scr_core.h's ScrLibHostState, built
     // by lib-host-state.ts): native call sites GEP a channel's fn, ctx and
     // the callback-depth counter through it instead of calling the
@@ -1414,7 +1414,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     // global, not constant. The last slot is the build-time matcher.
     const matcher = regexMatchers.has(key) ? `@${re.sym}_match` : "null";
     out.push(
-      `@${re.sym} = internal ${tl}global %ScrRegex { ${emitter.sizeType} -1, ptr ${re.src}, ptr ${re.fl}, ptr null, double 0.0, ptr null, ptr null, ptr ${matcher} } ; ${key.replace(/\n/g, "\\n")}`,
+      `@${re.sym} = internal ${tl}global %ScrRegex { ${emitter.sizeType} -1, ptr ${re.src}, ptr ${re.fl}, ptr null, double 0.0, ptr null, ptr null, ptr ${matcher}, ptr null } ; ${key.replace(/\n/g, "\\n")}`,
     );
   }
   if (emitter.regexInstances.size > 0) out.push(``);

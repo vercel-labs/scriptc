@@ -69,6 +69,8 @@ export const TRAP_SIGNATURE = 8;
 export const TRAP_NULL = 9;
 /** scr_wasm_abi.h SCR_WASM_TRAP_EXHAUSTION. */
 export const TRAP_EXHAUSTION = 100;
+/** scr_wasm_abi.h SCR_WASM_TRAP_HOST: a JavaScript exception is pending. */
+export const TRAP_HOST = 101;
 
 /** The descriptor ABI version both sides agree on. */
 /** The descriptor version: 2 for scalar modules (unchanged), 3 when a
@@ -447,6 +449,12 @@ class ModuleTranslator {
     for (let i = 0; i < ft.params.length; i++) args.push(`${llType(ft.params[i]!)} %p${i}`);
     out.push(`  %host = load ptr, ptr %inst`);
     out.push(`  %ref = call ptr @scr_wasm_import_funcref(ptr %host, i32 ${index})`);
+    out.push(`  %missing = icmp eq ptr %ref, null`);
+    out.push(`  br i1 %missing, label %missing${index}, label %call${index}`);
+    out.push(`missing${index}:`);
+    out.push(`  call void @scr_wasm_trap(i32 ${TRAP_HOST})`);
+    out.push(`  unreachable`);
+    out.push(`call${index}:`);
     out.push(`  %code.p = getelementptr inbounds i8, ptr %ref, i64 0`);
     out.push(`  %code = load ptr, ptr %code.p, align 8`);
     out.push(`  %cinst.p = getelementptr inbounds i8, ptr %ref, i64 16`);

@@ -551,6 +551,9 @@ describe("SIMD translation", () => {
     expect(importedText).toContain("declare ptr @scr_wasm_import_funcref(ptr, i32)");
     expect(importedText).toContain("@scr_wasm_import_funcref(ptr %host, i32 0)");
     expect(importedText).toContain("%code(ptr %cinst, <4 x i32> %p0, <4 x i32> %p1)");
+    // A JavaScript-backed v128 import must throw, never be dereferenced.
+    expect(importedText).toContain("icmp eq ptr %ref, null");
+    expect(importedText).toContain("call void @scr_wasm_trap(i32 101)");
     // A scalar module keeps descriptor ABI 2.
     const scalar = translateWasmModule(ADD, SHA, { boundsChecks: false });
     expect(descLine(scalar)).toContain("i64 2, i64 0,");

@@ -1395,8 +1395,12 @@ void *scr_wasm_import_funcref(void *hostp, int32_t index) {
   ScrWasmInst *host = hostp;
   ScrWasmFuncRef *ref = scr_wasm_funcref_of(host->funcs[index]);
   if (!ref) {
+    /* The import is a plain JavaScript function (or not a function at
+     * all): Node throws this TypeError instead of calling it. The trap
+     * abandons the call with the pending exception; this function never
+     * returns a null reference to the stub. */
     scr_wasm_type_error("type incompatibility when transforming from/to JS");
-    return NULL;
+    scr_wasm_trap(SCR_WASM_TRAP_HOST);
   }
   return ref;
 }

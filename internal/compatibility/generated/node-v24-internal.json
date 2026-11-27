@@ -20723,6 +20723,7 @@
           "tests/corpus/crypto-create-mac.ts",
           "tests/corpus/crypto-dep0203-deprecation-flags.cjs",
           "tests/corpus/crypto-dep0203-warning-override.cjs",
+          "tests/corpus/crypto-dh-diffie-hellman.mjs",
           "tests/corpus/crypto-dh-key-parse.mjs",
           "tests/corpus/crypto-dh-keyobjects.mjs",
           "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
@@ -21262,6 +21263,7 @@
         "evidence": "compiler-feature:crypto.crypto.createDiffieHellman",
         "tests": [
           "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
+          "tests/corpus/crypto-dh-diffie-hellman.mjs",
           "tests/corpus/6700-ecdh-shared-secret.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
@@ -21296,6 +21298,7 @@
         "evidence": "compiler-feature:crypto.crypto.createDiffieHellman",
         "tests": [
           "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
+          "tests/corpus/crypto-dh-diffie-hellman.mjs",
           "tests/corpus/6700-ecdh-shared-secret.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
@@ -21330,6 +21333,7 @@
         "evidence": "compiler-feature:crypto.crypto.createDiffieHellmanGroup",
         "tests": [
           "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
+          "tests/corpus/crypto-dh-diffie-hellman.mjs",
           "tests/corpus/6700-ecdh-shared-secret.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
@@ -21364,6 +21368,7 @@
         "evidence": "compiler-feature:crypto.crypto.createECDH",
         "tests": [
           "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
+          "tests/corpus/crypto-dh-diffie-hellman.mjs",
           "tests/corpus/6700-ecdh-shared-secret.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
@@ -21735,6 +21740,7 @@
         "evidence": "compiler-feature:crypto.crypto.diffieHellman",
         "tests": [
           "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
+          "tests/corpus/crypto-dh-diffie-hellman.mjs",
           "tests/corpus/6700-ecdh-shared-secret.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
@@ -22063,6 +22069,7 @@
         "evidence": "compiler-feature:crypto.crypto.getDiffieHellman",
         "tests": [
           "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
+          "tests/corpus/crypto-dh-diffie-hellman.mjs",
           "tests/corpus/6700-ecdh-shared-secret.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",

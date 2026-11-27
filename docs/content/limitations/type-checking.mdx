@@ -21,8 +21,8 @@ As a value the name is absent at run time, as under Node.js: a read throws `Refe
 A global that Node.js defines is never treated as absent.
 A `/// <reference lib="dom" />` directive in a source file does load the library into the compiled program, where it conflicts with the declarations scriptc bundles for a project without `@types/node`; name the library in `lib` instead.
 TypeScript files are ES modules or CommonJS by Node.js's rules (the file extension and the nearest `package.json`), whatever `module` and `moduleResolution` say, so `import x = require()` and `export =` are refused with `SC0016` in a project that sets `module` to `commonjs`.
-Legacy decorators (`experimentalDecorators`) follow tsc's emit: class decorators and instance method decorators compile with the legacy calling convention and evaluation order, and a member whose descriptor is replaced dispatches through the observed prototype slot.
-Field, accessor, static member and parameter decorators are refused with `SC1090` until their lowering lands, and `emitDecoratorMetadata` is refused with `SC0016`.
+Legacy decorators (`experimentalDecorators`) follow tsc's emit: class decorators, instance method decorators, property decorators and constructor and method parameter decorators compile with the legacy calling convention and evaluation order, and a member whose descriptor is replaced dispatches through the observed prototype slot.
+Accessor, static method and computed-name decorators are refused with `SC1090` until their lowering lands, as are instance property decorators in a project whose fields are assigned in the constructor (a decorator-installed prototype accessor would be bypassed by the compiled field write), and `emitDecoratorMetadata` is refused with `SC0016`.
 A project that does not enable `strict` or `strictNullChecks` is refused with `SC0002`.
 
 TypeScript keeps the type of an assignment across a call, so after `x = undefined` a read of `x` is typed `undefined` even when a function called in between assigns `x` again.

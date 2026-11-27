@@ -125968,6 +125968,7 @@
           "tests/corpus/worker-cpu-usage-quiet/main.ts",
           "tests/corpus/worker-cpu-usage.ts",
           "tests/corpus/worker-env-option.ts",
+          "tests/corpus/worker-heap-statistics.ts",
           "tests/corpus/worker-messageerror-events.ts",
           "tests/corpus/worker-messageerror-surface.ts",
           "tests/corpus/worker-performance.ts",
@@ -126694,8 +126695,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.worker.getHeapStatistics",
+        "tests": [
+          "tests/corpus/worker-heap-statistics.ts"
+        ]
       },
       "anchorSource": "exact"
     },

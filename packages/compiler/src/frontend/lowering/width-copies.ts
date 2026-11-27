@@ -321,10 +321,13 @@ function collectCopies(
  * SC6001 decides, and a copy nothing can tell from its object stays a native
  * copy, so the dynamic field tests a view target pays are confined to
  * programs that can observe the difference. A pair this pass cannot prove
- * viewable (a freezable shape, an arm of a shape union) keeps its copies and
- * its warning. A worker program and one that publishes values have no view
- * target at all (other threads cannot read one), so those programs keep
- * every copy. Returns the number of conversions rewritten. */
+ * viewable keeps its copies and its warning: a freezable shape, an arm of a
+ * shape union, and a pair the backend could not answer with a view (a source
+ * that holds a function or a class instance, an unboxable field such as
+ * fs.Stats, or the target itself). A worker program and one that publishes
+ * values have no view target at all (other threads cannot read one), so
+ * those programs keep every copy. Returns the number of conversions
+ * rewritten. */
 export function viewObservedRecordCopies(lowerer: Lowerer, functions: IrFunction[]): number {
   if (lowerer.usesWorkers) return 0;
   const helpers = new Map<string, IrFunction>();
@@ -436,6 +439,27 @@ function viewableRecordPair(lowerer: Lowerer, from: IrType, to: IrType): boolean
   const sourceFields = new Map(source.fields.map((field) => [field.name, typeKey(field.type)]));
   if (!target.fields.every((field) => sourceFields.get(field.name) === typeKey(field.type)))
     return false;
+  // The view conversion starts by boxing the source as a live capsule. A
+  // source that holds a function or a class instance cannot be boxed that
+  // way (the backend declines the pair, and a synthesized dynFrom is
+  // refused), and a source that holds the target recurses. Such a pair
+  // keeps its copy and its SC6001 warning instead of copying silently.
+  if (source.fields.some((field) => field.type.kind === "func" || field.type.kind === "object"))
+    return false;
+  // The capsule is a checked-dynamic box of the source record: a field that
+  // cannot be boxed (fs.Stats and the other native-handle kinds) has no
+  // dynFrom, which the backend would refuse after the copy was already
+  // rewritten.
+  if (!lowerer.dynConvertible(from)) return false;
+  if (
+    holdsShape(
+      lowerer,
+      source.fields.map((field) => field.type),
+      to.shapeId,
+      new Set(),
+    )
+  )
+    return false;
   // Only a union of TWO OR MORE record shapes tags its arms' reserved word
   // (the backend's shape union): the target keeps that encoding and cannot
   // carry a view. A single record arm beside a unit arm (`T | null`) does
@@ -453,6 +477,25 @@ function viewableRecordPair(lowerer: Lowerer, from: IrType, to: IrType): boolean
     (id) => lowerer.shapes.get(id),
     (id) => lowerer.unions.get(id),
   );
+}
+
+/** Whether any of `types` is, or holds through an array or union, a record
+ * of `shapeId`. */
+function holdsShape(
+  lowerer: Lowerer,
+  types: readonly IrType[],
+  shapeId: string,
+  seen: Set<string>,
+): boolean {
+  for (const type of types) {
+    if (type.kind === "record" && type.shapeId === shapeId) return true;
+    if (type.kind === "array" && holdsShape(lowerer, [type.elem], shapeId, seen)) return true;
+    if (type.kind !== "union" || seen.has(type.unionId)) continue;
+    seen.add(type.unionId);
+    const arms = lowerer.unions.get(type.unionId)?.arms ?? [];
+    if (holdsShape(lowerer, arms, shapeId, seen)) return true;
+  }
+  return false;
 }
 
 /** Finds the copy helper calls of a function list and whether each

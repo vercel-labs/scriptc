@@ -263,7 +263,7 @@ export class GeneratorDynamicDispatch {
       runtimeSteps &&
       !this.membersRegistered &&
       firstFn !== undefined &&
-      [...this.generators.values()].some((t) => t.async !== true)
+      this.generators.size > 0
     ) {
       const loc = firstFn.loc;
       const read = (method: string): KeyGet => ({
@@ -290,7 +290,7 @@ export class GeneratorDynamicDispatch {
         expr: {
           kind: "libCall",
           fn: "dyn.setGeneratorMembers",
-          args: [getterValue("next"), getterValue("return")],
+          args: [getterValue("next"), getterValue("return"), getterValue("throw")],
           type: VOID,
           loc,
         },

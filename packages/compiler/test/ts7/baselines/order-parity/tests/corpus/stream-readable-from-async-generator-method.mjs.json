@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/stream-readable-from-async-generator-method.mjs"
+ ],
+ "diags": []
+}

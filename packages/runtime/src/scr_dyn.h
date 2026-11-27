@@ -1991,6 +1991,14 @@ ScrDyn *scr_dyn_destructure_rest(const ScrDyn *src, const ScrStr *msg);
  * `spell` is the compile-time not-iterable wording, or NULL. +1, or NULL
  * with the error pending. */
 ScrDyn *scr_dyn_iter_take(const ScrDyn *src, size_t n, const char *spell);
+/* A WebIDL sequence conversion's values: true with *out a fresh array (+1) of
+ * what `src` yields — packed for arrays, typed arrays and native collections,
+ * stepped through the iterator protocol for any other object with
+ * Symbol.iterator (a compiled generator included). False with *out untouched
+ * when `src` is not an object with an iterator (the caller's record branch or
+ * its own not-iterable message), or with the exception pending from reading
+ * the iterator. */
+bool scr_dyn_sequence_values(const ScrDyn *src, ScrDyn **out);
 /* True for typed capsules that iterate through the protocol (a compiled
  * synchronous generator) rather than through their materialized view. */
 bool scr_dyn_iterates_by_protocol(const ScrDyn *value);

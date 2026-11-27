@@ -1,8 +1,13 @@
-tsconfig-legacy-decorators/main.ts:14:3 - error SC0016: this project's tsconfig sets "experimentalDecorators", which scriptc does not follow: a decorator here has the legacy semantics (it is called with the target, the member name and a descriptor, in another order), and scriptc compiles standard decorators only (3 places in this program)
+tsconfig-legacy-decorators/main.ts:14:3 - error SC1090: field decorators under "experimentalDecorators" (an instance method with a literal name lowers in this change; the other member kinds land next) is not supported yet
 
   13 | class Row {
   14 |   @column id = 1;
      |   ^~~~~~~
   15 |   @column name = "n";
 
-  hint: remove the decorators from the compiled program, or write them as standard decorators and drop the setting
+tsconfig-legacy-decorators/main.ts:20:13 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
+
+  19 | 
+  20 | console.log(new Row().id);
+     |             ^~~~~~~~~
+  21 | 

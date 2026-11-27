@@ -1468,6 +1468,11 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
         (arm) =>
           arm.kind === "object" ||
           arm.kind === "promise" ||
+          // No program class can extend Map or Set (lower-classes.ts
+          // refuses the built-in base), so such an arm never holds an
+          // instance of the tested class: the helper answers false for it.
+          arm.kind === "map" ||
+          arm.kind === "set" ||
           arm.kind === "record" ||
           arm.kind === "array" ||
           arm.kind === "f64" ||

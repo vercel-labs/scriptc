@@ -105,6 +105,9 @@ declare module "http" {
      * throw a "not supported yet" Error at runtime; unknown names throw
      * ERR_UNKNOWN_ENCODING). */
     setEncoding(encoding: string): void;
+    /* The body as an async iterable: for-await yields the message's chunks
+     * (strings after setEncoding, Buffers otherwise), as Node's Readable. */
+    [Symbol.asyncIterator](): AsyncIterableIterator<any>;
     /* The proxy legs: the body streams into a ServerResponse, a
      * ClientRequest, or a raw Socket; natural end ends the destination. */
     pipe(

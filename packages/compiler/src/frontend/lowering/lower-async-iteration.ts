@@ -33,7 +33,15 @@ interface NodeReadablePlan {
   source: ts.Expression;
   type: IrType & { kind: "object" };
   destroyOnReturn: boolean;
+  /** An http.IncomingMessage (a server request or a client response): the
+   * loop consumes the Readable the runtime bridges from the message's body
+   * events (http.reqBodyStream), not a stream value the source holds. */
+  requestBody?: boolean;
 }
+
+/** The Readable the bridge call answers: the built-in readable class, whose
+ * stream spoke owns nextChunk/iteratorClose. */
+const BRIDGE_READABLE_T: IrType & { kind: "object" } = { kind: "object", className: "%Readable" };
 
 interface WebReadablePlan {
   source: ts.Expression;
@@ -129,6 +137,16 @@ function nodeReadablePlan(lowerer: Lowerer, expression: ts.Expression): NodeRead
     lowerer.receiverTypeOverrides.get(expression) ??
     lowerer.stageSourceType(expression) ??
     lowerer.mapTypeOf(lowerer.typeOf(expression));
+  if (direct?.kind === "httpReq") {
+    // `for await (const chunk of req)`: the message body as a Readable,
+    // bridged from its data/end events by the runtime.
+    return {
+      source: expression,
+      type: BRIDGE_READABLE_T,
+      destroyOnReturn: true,
+      requestBody: true,
+    };
+  }
   if (direct?.kind === "object") {
     const sides = streamSidesOf(lowerer, lowerer.classes.get(direct.className));
     if (sides === "r" || sides === "rw") {
@@ -372,6 +390,15 @@ function streamSource(
   plan: NodeReadablePlan,
   loc: ReturnType<typeof locOf>,
 ): IrExpr {
+  if (plan.requestBody === true) {
+    return {
+      kind: "libCall",
+      fn: "http.reqBodyStream",
+      args: [lowerer.lowerExpr(plan.source)],
+      type: plan.type,
+      loc,
+    };
+  }
   const v = lowerer.lowerExpr(plan.source);
   if (v.type.kind === "union") return lowerer.coerceToExpected(v, plan.type);
   if (v.type.kind !== "dyn") return v;

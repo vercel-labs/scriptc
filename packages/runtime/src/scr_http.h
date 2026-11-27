@@ -336,6 +336,10 @@ void scr_http_req_set_timeout(ScrHttpReq *r, double ms, ScrClosure *cb /*moves, 
 void scr_http_req_set_timeout_plain(ScrHttpReq *r, double ms);
 bool scr_http_req_destroyed_flag(ScrHttpReq *r);
 bool scr_http_req_readable(ScrHttpReq *r);
+/* for-await over the body: an on-demand Readable fed by the request's body
+ * events, ended when the body completes (+1). */
+struct ScrStream;
+struct ScrStream *scr_http_req_body_stream(ScrHttpReq *r);
 /* flushHeaders/cork/uncork/writableCorked, the res.req backref, the
  * socket-delegated setTimeout, and write(chunk, cb)'s deferred callback. */
 void scr_http_res_flush_headers(ScrHttpRes *r);

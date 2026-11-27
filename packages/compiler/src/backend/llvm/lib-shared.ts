@@ -2068,6 +2068,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "net.setDefaultAutoSel": "scr_net_set_default_autosel",
   "http.reqUrl": "scr_http_req_url",
   "http.reqSignal": "scr_http_req_signal",
+  "http.reqBodyStream": "scr_http_req_body_stream",
   "http.validateHeaderName": "scr_http_validate_header_name",
   "http.validateHeaderValue": "scr_http_validate_header_value",
   "http.setMaxIdleParsers": "scr_http_set_max_idle_parsers",

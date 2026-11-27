@@ -37,6 +37,11 @@ describe("the features a link feature requires", () => {
       // http2 reports DEP0194 through the dyn-async unit, which rides the
       // performance-loop unit (#4261).
       ["dynAsync", true],
+      // http2 calls into the http unit, which links the stream unit for its
+      // IncomingMessage body bridge; the stream unit dispatches through the
+      // emitter unit.
+      ["emitter", true],
+      ["stream", true],
       ["net", true],
       ["http", true],
       ["http2", true],

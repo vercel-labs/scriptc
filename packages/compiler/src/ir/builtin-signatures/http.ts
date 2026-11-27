@@ -124,6 +124,12 @@ export const httpSignatures = defineLibFnSignatures({
   "http.reqHeaderValues": { argTypes: [HTTPREQ_T, STRING], result: VOID },
   "http.reqTrailerValues": { argTypes: [HTTPREQ_T, STRING], result: VOID },
   "http.reqOnData": { argTypes: [HTTPREQ_T, null, BOOL], result: VOID },
+  /** The for-await bridge: the request body as a Readable fed by its data
+   * and end events. */
+  "http.reqBodyStream": {
+    argTypes: [HTTPREQ_T],
+    result: { kind: "object", className: "%Readable" },
+  },
   "http.reqOnEnd": {
     argTypes: [HTTPREQ_T, { kind: "func", params: [], ret: VOID }, BOOL],
     result: VOID,

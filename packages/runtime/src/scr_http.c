@@ -215,6 +215,8 @@ void scr_http_set_h2_upgrade_hook(void (*hook)(void *h2ctx, ScrClosure *cb, void
 
 /* ── the request handle ──────────────────────────────────────────────── */
 
+typedef struct ScrHttpBodyBridge ScrHttpBodyBridge;
+
 struct ScrHttpReq {
   size_t rc;
   /* The AsyncLocalStorage context of its creation (+1, NULL outside a
@@ -248,6 +250,9 @@ struct ScrHttpReq {
   ScrHttpRes *pipe_res;
   struct ScrHttpClientReq *pipe_client;
   ScrNetSocket *pipe_sock;
+  /* the for-await bridge Readable (borrowed; NULL until the body is
+   * iterated) — see scr_http_req_body_stream */
+  struct ScrHttpBodyBridge *body_bridge;
   bool ended; /* body complete (or connection dead): data/end drop */
   bool end_consumed; /* 'end' fired on a body read through data listeners or a pipe */
   bool enc_utf8; /* setEncoding('utf8'): 'data' delivers strings */
@@ -769,13 +774,13 @@ static bool scr_http_req_holding(const ScrHttpReq *r) {
  * request buffers this many body bytes before its socket stops reading. */
 #define SCR_HTTP_REQ_HOLD_BYTES 65536u
 
-/* Stops the socket's reads while an HTTP/1 server request holds a full
- * buffer, and restarts them once it flows, ends or is dumped, as Node's
- * readStop when push() returns false. Client responses and h2 compat
- * requests keep reading. */
+/* Stops the socket's reads while an HTTP/1 message holds a full buffer (a
+ * server request, or a client response nothing has read yet), and restarts
+ * them once it flows, ends or is dumped, as Node's readStop when push()
+ * returns false. h2 compat requests keep reading. */
 static void scr_http_req_update_hold(ScrHttpReq *r) {
-  bool hold = r->sock != NULL && r->status == -1 && !r->http2 && !r->ended &&
-              scr_http_req_holding(r) && r->pend_len >= SCR_HTTP_REQ_HOLD_BYTES;
+  bool hold = r->sock != NULL && !r->http2 && !r->ended && scr_http_req_holding(r) &&
+              r->pend_len >= SCR_HTTP_REQ_HOLD_BYTES;
   if (hold == r->sock_held) return;
   r->sock_held = hold;
   scr_net_sock_hold(r->sock, hold);
@@ -804,7 +809,13 @@ static void scr_http_req_consume(ScrHttpReq *r) {
 
 /* resume(): releases what pause() or the initial paused state held. */
 void scr_http_req_resume(ScrHttpReq *r) {
-  if (!scr_http_req_holding(r)) return;
+  if (!scr_http_req_holding(r)) {
+    /* Node's resume() starts the flow even before a body chunk arrives (a
+     * client response whose callback resumes immediately): later chunks are
+     * delivered, or discarded when nothing consumes them, and 'end' fires. */
+    if (r->status >= 0 && !r->ended) scr_http_req_flow(r);
+    return;
+  }
   scr_http_req_flow(r);
 }
 
@@ -849,6 +860,106 @@ void scr_http_req_set_timeout(ScrHttpReq *r, double ms, ScrClosure *cb /*moves, 
 
 void scr_http_req_set_timeout_plain(ScrHttpReq *r, double ms) {
   scr_http_req_set_timeout(r, ms, NULL);
+}
+
+/* ── for-await over an IncomingMessage ─────────────────────────────────
+ * The body is a push stream (data/end listeners), while the compiled
+ * `for await (const chunk of req)` consumes a Readable's pull protocol.
+ * A bridge Readable is created on demand: the request pushes each body
+ * chunk into it, a full bridge pauses the request until the bridge's
+ * _read asks for more, and the body's end closes it. The bridge holds
+ * the request (+1), so the request outlives the bridge; the request
+ * keeps only a borrowed pointer, which the bridge's destroy clears. */
+struct ScrHttpBodyBridge {
+  int rc;
+  ScrHttpReq *req;   /* +1 */
+  ScrStream *stream; /* borrowed while the bridge lives */
+  bool destroyed;
+};
+
+static ScrHttpBodyBridge *scr_http_body_bridge_retain(ScrHttpBodyBridge *b) {
+  b->rc++;
+  return b;
+}
+
+static void scr_http_body_bridge_release(ScrHttpBodyBridge *b) {
+  if (--b->rc > 0) return;
+  if (b->req != NULL) scr_http_req_release(b->req);
+  free(b);
+}
+
+static void *scr_http_body_bridge_retain_v(void *p) { return scr_http_body_bridge_retain(p); }
+static void scr_http_body_bridge_release_v(void *p) { scr_http_body_bridge_release(p); }
+
+/* The bridge Readable's _read: the consumer drained below the high-water
+ * mark, so a paused request delivers its held body again. */
+static void scr_http_body_bridge_read_inv(ScrClosure *cb, ScrStream *s, double size) {
+  (void)s;
+  (void)size;
+  ScrHttpBodyBridge *b = scr_box_get_ref(cb->caps[0]);
+  if (b->req != NULL && !b->destroyed) scr_http_req_resume(b->req);
+  scr_http_body_bridge_release(b);
+}
+
+/* The bridge Readable's _destroy: detach from the request. A completed
+ * iteration and an early break both land here; the connection is left to
+ * the response's own teardown (an unread or partly read request body is
+ * dumped when the response finishes, as Node's resOnFinish does). */
+static void scr_http_body_bridge_destroy_inv(ScrClosure *cb, ScrStream *s, ScrError *err) {
+  (void)s;
+  (void)err;
+  ScrHttpBodyBridge *b = scr_box_get_ref(cb->caps[0]);
+  if (!b->destroyed) {
+    b->destroyed = true;
+    b->stream = NULL;
+    if (b->req != NULL) {
+      if (b->req->body_bridge == b) b->req->body_bridge = NULL;
+      scr_http_req_release(b->req);
+      b->req = NULL;
+    }
+  }
+  scr_http_body_bridge_release(b);
+}
+
+static ScrClosure *scr_http_body_bridge_closure(void *fn) {
+  ScrClosure *c = scr_closure_new(fn, 1);
+  c->caps[0] = scr_box_new_obj(scr_http_body_bridge_retain_v, scr_http_body_bridge_release_v, NULL);
+  return c;
+}
+
+/* req[Symbol.asyncIterator](): the Readable the compiled for-await loop
+ * consumes. The first call creates the bridge and starts the body flow;
+ * a request whose body already completed answers an ended Readable. */
+ScrStream *scr_http_req_body_stream(ScrHttpReq *r) {
+  if (r->body_bridge != NULL) return scr_stream_retain(r->body_bridge->stream);
+  ScrHttpBodyBridge *b = calloc(1, sizeof *b);
+  if (!b) scr_http_oom();
+  b->req = scr_http_req_retain(r);
+  ScrClosure *read = scr_http_body_bridge_closure((void *)&scr_http_body_bridge_read_inv);
+  ScrClosure *destroy = scr_http_body_bridge_closure((void *)&scr_http_body_bridge_destroy_inv);
+  scr_box_set_ref(read->caps[0], scr_http_body_bridge_retain(b));
+  scr_box_set_ref(destroy->caps[0], scr_http_body_bridge_retain(b));
+  ScrStream *s = scr_stream_new_readable(-1, true, false, read,
+                                         (ScrStreamReadInv)&scr_http_body_bridge_read_inv, destroy,
+                                         (ScrStreamErrInv)&scr_http_body_bridge_destroy_inv);
+  b->stream = s;
+  r->body_bridge = b;
+  if (r->enc_utf8) {
+    /* setEncoding('utf8'): the iterator's chunks are strings, Node's
+     * readable's encoded mode (setEncoding answers the receiver +1) */
+    ScrStr *enc = scr_str_new("utf8", 4);
+    ScrStream *chained = scr_stream_set_encoding(s, enc);
+    scr_stream_release(chained);
+    scr_str_release(enc);
+  }
+  if (r->ended || r->destroyed || r->close_emitted) {
+    scr_stream_push_null(s);
+  } else {
+    scr_http_req_consume(r);
+  }
+  /* the constructor's +1 is the caller's reference; the bridge keeps only a
+   * borrowed pointer */
+  return s;
 }
 
 bool scr_http_req_destroyed_flag(ScrHttpReq *r) { return r->destroyed; }
@@ -921,6 +1032,8 @@ static void scr_http_req_finish(ScrHttpReq *r, bool fire) {
   }
   r->ended = true;
   scr_http_req_update_hold(r);
+  if (r->body_bridge != NULL && r->body_bridge->stream != NULL)
+    scr_stream_push_null(r->body_bridge->stream);
   r->end_consumed = fire && (r->data_ls.n > 0 || r->pipe_res || r->pipe_client || r->pipe_sock);
   if (fire) scr_net_fire0_this(&r->end_ls, r, SCR_DYNH_HTTP_REQ);
   scr_net_ls_drop(&r->data_ls);
@@ -5089,7 +5202,18 @@ static void scr_http_req_deliver(ScrHttpReq *r, const char *data, size_t n) {
     return;
   }
   bool piped = r->pipe_res != NULL || r->pipe_client != NULL || r->pipe_sock != NULL;
-  if (r->data_ls.n == 0 && !piped) {
+  if (r->data_ls.n == 0 && !piped && r->body_bridge == NULL) {
+    if (!r->flowing && r->status >= 0) {
+      /* A client response starts paused, like Node's IncomingMessage: held
+       * body bytes wait for a consumer (a data listener, a pipe or a
+       * for-await loop) instead of being discarded, so a consumer attached
+       * a turn later reads the whole body. resume() sets flowing, and the
+       * discard below is the path it takes. Re-entering deliver buffers
+       * through the holding branch above. */
+      r->gated = true;
+      scr_http_req_deliver(r, data, n);
+      return;
+    }
     /* nobody reads this body: the bytes are discarded, so their receive
      * credit returns now rather than stalling the peer's window */
     scr_http_req_h2_consume(r, n);
@@ -5112,6 +5236,13 @@ static void scr_http_req_deliver(ScrHttpReq *r, const char *data, size_t n) {
     free(snap);
   }
   if (!scr_exc_pending()) {
+    if (r->body_bridge != NULL && r->body_bridge->stream != NULL) {
+      /* the for-await bridge: a full Readable pauses the request, and the
+       * bridge's _read resumes it once the consumer drained. An encoded
+       * bridge (req.setEncoding) decodes the bytes itself, so a multi-byte
+       * character split across body slices stays whole. */
+      if (!scr_stream_push(r->body_bridge->stream, chunk)) scr_http_req_pause(r);
+    }
     if (r->pipe_res) scr_http_res_write_bytes(r->pipe_res, chunk);
     if (r->pipe_client) scr_http_client_write_bytes(r->pipe_client, chunk);
     if (r->pipe_sock) scr_net_sock_write_bytes(r->pipe_sock, chunk);

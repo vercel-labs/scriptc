@@ -480,6 +480,13 @@ interface LinkFeatureRequirement {
  * scr_symbol.c, and its object keeps those functions when Windows links
  * it. */
 export const LINK_FEATURE_REQUIREMENTS: readonly LinkFeatureRequirement[] = [
+  // scr_http.c bridges an IncomingMessage body to a Readable for `for await`
+  // and pushes each body chunk through the stream unit, so every http program
+  // links the stream unit with it.
+  { feature: "http", requires: ["stream"] },
+  // scr_stream.c dispatches every stream event through the emitter unit, so
+  // the stream feature links it whatever selected the stream.
+  { feature: "stream", requires: ["emitter"] },
   // scr_http2.c reports DEP0194 (stream.priority) through scr_emit_warning
   // (scr_async_dyn.c, Node's process warning report and listeners).
   { feature: "http2", requires: ["http", "net", "dynAsync"] },
@@ -501,7 +508,9 @@ export const LINK_FEATURE_REQUIREMENTS: readonly LinkFeatureRequirement[] = [
   // it.
   { feature: "eventTarget", requires: ["emitter", "symbol"] },
   { feature: "abortSignal", requires: ["emitter", "symbol"] },
-  { feature: "fetch", requires: ["emitter", "symbol"] },
+  // fetch's HTTP/1 client and its body streams ride the same IncomingMessage
+  // bridge as http's, so fetch links http (and, through it, stream).
+  { feature: "fetch", requires: ["emitter", "symbol", "http"] },
   // scr_websocket.c dials through scr_net.c and sc_http.c's client, wraps
   // wss connections with scr_tls.c, and dispatches its events through
   // scr_event_target.c (with the emitter and symbol units that unit needs).

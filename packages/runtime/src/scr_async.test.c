@@ -1,10 +1,16 @@
 /* White-box memory contract: small suspended fibers must not commit their
  * whole stack, but large live frames must still survive awaits and yields.
  * With the argument `timers`: the order of a loop turn's due timers and
- * immediates. */
+ * immediates. With `resolve`: the off-loop lookup the WebSocket dial runs
+ * through the worker pool, and with `timerwrap`: the timer sequence's
+ * ordering across the 2^32 boundary. */
 #undef NDEBUG
 #include "scr_async.c"
 #include <assert.h>
+#ifndef _WIN32
+#include <arpa/inet.h>
+#include <netdb.h>
+#endif
 
 static void assert_sparse(ScrFiber *f, const void *anchor) {
   size_t used = 0;
@@ -703,6 +709,105 @@ static void promise_resolve_hook_can_drop_the_settling_promise(void) {
   printf("a promiseResolve hook may drop the settling promise's owner\n");
 }
 
+/* ── the off-loop lookup (scr_net.c's scr_net_resolve_async) ─────────── */
+
+#ifndef _WIN32
+/* Interposed for this binary: the resolve the WebSocket dial submits must
+ * spend its time on a pool thread, so the loop keeps turning while it
+ * waits. POSIX-only; the Windows build calls Winsock's getaddrinfo. */
+int getaddrinfo(const char *node, const char *service, const struct addrinfo *hints,
+                struct addrinfo **res) {
+  (void)service;
+  (void)hints;
+  if (strcmp(node, "slow.invalid") != 0) return EAI_NONAME;
+  scr_loop_sleep(120);
+  struct addrinfo *ai = calloc(1, sizeof *ai);
+  struct sockaddr_in *addr = calloc(1, sizeof *addr);
+  assert(ai != NULL && addr != NULL);
+  addr->sin_family = AF_INET;
+  addr->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  ai->ai_family = AF_INET;
+  ai->ai_socktype = SOCK_STREAM;
+  ai->ai_addrlen = sizeof *addr;
+  ai->ai_addr = (struct sockaddr *)addr;
+  *res = ai;
+  return 0;
+}
+
+void freeaddrinfo(struct addrinfo *res) {
+  if (res == NULL) return;
+  free(res->ai_addr);
+  free(res);
+}
+
+static char lookup_order[8];
+static size_t lookup_order_len;
+static int lookup_answers;
+
+static void lookup_notes(char at) {
+  if (lookup_order_len < sizeof lookup_order) lookup_order[lookup_order_len++] = at;
+}
+
+static void lookup_timer_second(ScrClosure *self) {
+  (void)self;
+  lookup_notes('u');
+}
+
+static void lookup_timer_first(ScrClosure *self) {
+  (void)self;
+  lookup_notes('t');
+  scr_set_timeout(scr_closure_new((void *)lookup_timer_second, 0), 0);
+}
+
+static void lookup_answered(void *ctx, ScrStr **ips, size_t n) {
+  (void)ctx;
+  lookup_notes('r');
+  lookup_answers = (int)n;
+  if (n == 1) assert(strcmp(ips[0]->data, "127.0.0.1") == 0);
+}
+
+static void lookup_cancelled(void *ctx) {
+  (void)ctx;
+  lookup_notes('c');
+}
+
+/* The dial's lookup runs on a worker thread: both timers armed before it
+ * fire while the resolver is still waiting, and the answer arrives through
+ * the loop afterwards. A resolver run on the loop thread would hold the
+ * second timer behind the answer. */
+static void async_lookup_leaves_the_loop_free(void) {
+  lookup_order_len = 0;
+  lookup_answers = -1;
+  scr_set_timeout(scr_closure_new((void *)lookup_timer_first, 0), 0);
+  ScrStr *host = scr_str_new("slow.invalid", 12);
+  scr_net_resolve_async(host, &lookup_answered, &lookup_cancelled, NULL);
+  scr_str_release(host);
+  assert(!scr_loop_run(NULL));
+  assert(!scr_exc_pending());
+  assert(lookup_answers == 1);
+  assert(lookup_order_len == 3 && memcmp(lookup_order, "tur", 3) == 0);
+  puts("the dial's lookup runs off the loop thread");
+}
+#endif
+
+/* The timer heap's FIFO tiebreak and the turn's eligibility snapshot order
+ * timers by this sequence, so it must keep counting past 2^32: on Windows an
+ * unsigned long sequence wraps there, and a timer armed before the wrap read
+ * as armed by the current turn — an ineligible heap root that never fires
+ * again. */
+static void timer_sequence_orders_past_the_32_bit_boundary(void) {
+  _Static_assert(sizeof(((ScrTimer *)0)->seq) >= 8,
+                 "the timer sequence must outlast 2^32 arms");
+  ScrTimer older = {0};
+  ScrTimer newer = {0};
+  older.deadline_ms = newer.deadline_ms = 1.0;
+  older.seq = 0xFFFFFFF0ull;  /* armed just before the 2^32 wrap */
+  newer.seq = 0x100000010ull; /* two turns past it */
+  assert(scr_timer_before(&older, &newer));
+  assert(!scr_timer_before(&newer, &older));
+  printf("timer sequence orders past the 32-bit boundary\n");
+}
+
 int main(int argc, char **argv) {
   scr_init();
   if (argc > 1 && strcmp(argv[1], "promises") == 0) {
@@ -717,6 +822,16 @@ int main(int argc, char **argv) {
     timer_armed_during_turn_waits_for_next_timers_phase();
     timer_armed_by_io_callback_waits_for_next_timers_phase();
     tick_armed_timer_runs_before_turn_immediates();
+    return 0;
+  }
+#ifndef _WIN32
+  if (argc > 1 && strcmp(argv[1], "resolve") == 0) {
+    async_lookup_leaves_the_loop_free();
+    return 0;
+  }
+#endif
+  if (argc > 1 && strcmp(argv[1], "timerwrap") == 0) {
+    timer_sequence_orders_past_the_32_bit_boundary();
     return 0;
   }
   if (argc > 1 && strcmp(argv[1], "destroy") == 0) {

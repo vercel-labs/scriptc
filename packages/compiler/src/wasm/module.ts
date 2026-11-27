@@ -11,11 +11,13 @@
  * i64 values never become JavaScript numbers: the translator reads their
  * LEB128 encodings into two 32-bit halves. Plain TypeScript, so the native
  * compiler compiles it too. */
+import { simdOp } from "./simd.js";
 
 export const VAL_I32 = 0x7f;
 export const VAL_I64 = 0x7e;
 export const VAL_F32 = 0x7d;
 export const VAL_F64 = 0x7c;
+export const VAL_V128 = 0x7b;
 export const VAL_FUNCREF = 0x70;
 export const VAL_EXTERNREF = 0x6f;
 
@@ -249,6 +251,7 @@ export class WasmCursor {
       b === VAL_I64 ||
       b === VAL_F32 ||
       b === VAL_F64 ||
+      b === VAL_V128 ||
       b === VAL_FUNCREF ||
       b === VAL_EXTERNREF
     ) {
@@ -355,6 +358,30 @@ export function skipImmediates(c: WasmCursor, op: number): void {
     case 0xd0:
       c.valType();
       return;
+    case 0xfd: {
+      const op = simdOp(c.u32());
+      if (op === undefined) return;
+      switch (op.immediate) {
+        case 1:
+        case 2:
+          c.pos += 16;
+          return;
+        case 3:
+          c.u8();
+          return;
+        case 4:
+          readMemargFlags(() => c.u32());
+          c.u32();
+          return;
+        case 5:
+          readMemargFlags(() => c.u32());
+          c.u32();
+          c.u8();
+          return;
+        default:
+          return;
+      }
+    }
     case 0xfc: {
       const sub = c.u32();
       switch (sub) {

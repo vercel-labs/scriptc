@@ -602,10 +602,9 @@ static bool scr_cl_worker_connected(ScrClusterWorker *w) {
 /* Node's send callback is asynchronous and carries the write's outcome:
  * the channel's send entry reports a write that could not complete (the
  * broken pipe of a worker that is already gone) as well as a channel
- * closed first. The thunk below turns that outcome into a queued callback
- * pair — it does not box the channel's error, so nothing of the error
- * survives the send — and the drain calls the program's callback on the
- * next tick with null or the canonical ERR_IPC_CHANNEL_CLOSED. */
+ * closed first. The queue below serves the serialization-refusal path,
+ * which has no channel completion; a channel completion calls the
+ * program's callback directly when it lands. */
 typedef struct {
   ScrDyn *cb; /* +1 */
   bool failed;
@@ -650,16 +649,25 @@ static void scr_cl_send_cb_drain(void) {
 }
 
 /* The channel's completion entry: it runs once, with the send's error or
- * NULL, and hands the outcome to the callback queue. The channel owns the
- * closure and releases it after this call. */
+ * NULL, and calls the program's callback here — Node runs a send callback
+ * when the write completes, and a closed channel's send already queued
+ * its one nextTick. Queuing another tick would let a user nextTick
+ * scheduled between two sends run ahead of the first send's callback.
+ * The channel owns the closure and releases it after this call. */
 static void scr_cl_send_done_thunk(ScrClosure *cb, ScrError *error) {
   ScrDyn *dyn_cb = scr_box_get_ref(cb->caps[0]); /* +1 */
-  scr_cl_send_cb_queue(dyn_cb, error != NULL);
+  /* Node's success argument is null (not undefined): a typed
+   * (error: Error | null) parameter converts it. The channel's error is
+   * not boxed; the callback receives the canonical closed-channel error. */
+  ScrDyn *arg = error != NULL ? scr_cl_channel_closed_error() : scr_dyn_new_null();
+  ScrDyn *args[] = {arg};
+  ScrDyn *r = scr_dyn_call(dyn_cb, args, 1, "send callback");
+  scr_dyn_release(r);
+  scr_dyn_release(arg);
   scr_dyn_release(dyn_cb);
   /* The completion's error belongs to this callback (the channel releases
-   * it only when no callback runs); its outcome is all the queue keeps. */
+   * it only when no callback runs); its outcome is all the callback sees. */
   scr_error_release(error);
-  if (scr_cl_send_cbs_n == 1) scr_next_tick_raw(&scr_cl_send_cb_drain);
 }
 
 static ScrClosure *scr_cl_send_done_closure(ScrDyn *callback) {
@@ -902,14 +910,29 @@ static void scr_cl_child_disconnect_thunk(ScrClosure *cb) {
   scr_cl_defer_release(w);
 }
 
+/* A worker whose process could not start reports Node's error object, which
+ * the child unit leaves in the event payload while its listeners run; the
+ * worker and the cluster both answer 'error' with it. */
 static void scr_cl_child_error_thunk(ScrClosure *cb, ScrStr *msg) {
-  (void)cb;
-  (void)msg;
+  ScrClusterWorker *w = scr_cl_box_of(cb);
+  if (w == NULL) return;
+  ScrDyn *error = scr_event_error_payload != NULL ? scr_dyn_from_error(scr_event_error_payload)
+                                                  : scr_dyn_new_str(msg);
+  /* Node answers a launch that could not start on the worker alone: the
+   * cluster-level listener does not see it. */
+  ScrDyn *worker_args[] = {error};
+  scr_cl_ls_emit(&w->ls, "error", worker_args, 1);
+  scr_dyn_release(error);
+  scr_clw_release(w);
 }
 
 /* A cluster worker's channel starts armed: the raw listeners below hold
  * the reader and the exit/disconnect observation. */
 static void scr_cl_arm_child(ScrClusterWorker *w) {
+  /* The error listeners below are C callbacks, so the child unit's spawn
+   * failure payload (Node's error object) has to be installed here: the
+   * compiled listener path installs it for itself. */
+  scr_child_error_event_install();
   scr_child_ipc_on_message(w->child, scr_cl_closure(w, (void *)&scr_cl_child_message_thunk),
                            scr_cl_child_message_thunk, false);
   scr_child_on_exit(w->child, scr_cl_closure(w, (void *)&scr_cl_child_exit_thunk),
@@ -1030,11 +1053,17 @@ ScrDyn *scr_cluster_fork(const ScrDyn *env) {
   w->id = id;
   w->child = child;
   w->state = "none";
+  /* The arming below hands out references of its own, and a child that
+   * failed to spawn has no channel for them: the registrations release their
+   * closures at once, so the worker keeps a reference of its creator's while
+   * the other owners are put in place. */
+  scr_clw_retain(w);
   scr_cl_arm_child(w);
   scr_cl_register(w);
   w->all_next = scr_cl_all_workers;
   scr_cl_all_workers = scr_clw_retain(w);
   scr_cl_queue_fork(w);
+  scr_clw_release(w); /* the creator's reference: the owners above hold it now */
   return scr_cl_worker_handle(w);
 }
 

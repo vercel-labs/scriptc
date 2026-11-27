@@ -10,6 +10,7 @@
  * roots are refcounted the same way, so a dispatch keeps walking a root
  * that removeEventListener dropped from the target's map.
  */
+#include "scr_optional.h"
 #include "scr_runtime.h"
 
 #if defined(__APPLE__)
@@ -540,7 +541,14 @@ static bool scr_et_symbol_type_fail(const ScrDyn *type) {
   return true;
 }
 
-ScrDyn *scr_et_add_listener(ScrEventTargetCore *core, ScrDyn *const *args, size_t argc) {
+/* addEventListener's DOM steps. `type_out` (may be NULL) receives the
+ * converted type's name (+1) when the listener was registered, so an owner
+ * that keeps a listener order can record the exact name the registration
+ * used without converting it a second time; it stays NULL when nothing was
+ * registered (an aborted signal, a null listener, a refused argument). */
+static ScrDyn *scr_et_add_listener_core(ScrEventTargetCore *core, ScrDyn *const *args, size_t argc,
+                                        ScrStr **type_out) {
+  if (type_out) *type_out = NULL;
   if (argc < 2) {
     scr_et_type_error("The \"type\" and \"listener\" arguments must be specified", "ERR_MISSING_ARGS");
     return NULL;
@@ -593,8 +601,18 @@ ScrDyn *scr_et_add_listener(ScrEventTargetCore *core, ScrDyn *const *args, size_
   bool duplicate;
   ScrEtListener *l = scr_et_append(core, type, args[1], flags, &duplicate);
   if (l) scr_et_new_listener(core, l->root);
-  scr_str_release(type);
+  if (type_out) *type_out = type;
+  else scr_str_release(type);
   return scr_dyn_retain(scr_dyn_undefined());
+}
+
+ScrDyn *scr_et_add_listener(ScrEventTargetCore *core, ScrDyn *const *args, size_t argc) {
+  return scr_et_add_listener_core(core, args, argc, NULL);
+}
+
+ScrDyn *scr_et_add_listener_named(ScrEventTargetCore *core, ScrDyn *const *args, size_t argc,
+                                  ScrStr **type) {
+  return scr_et_add_listener_core(core, args, argc, type);
 }
 
 ScrDyn *scr_et_remove_listener(ScrEventTargetCore *core, ScrDyn *const *args, size_t argc) {
@@ -956,11 +974,23 @@ void scr_et_handler_set(ScrEventTargetCore *core, const char *type, const ScrDyn
     ScrDyn *old = h->handler;
     h->handler = next;
     scr_dyn_release(old);
-    if (root) {
-      if (was) root->size--;
-      if (now) {
+    if (was && root) root->size--;
+    if (now) {
+      if (root) {
         root->size++;
         scr_et_new_listener(core, root);
+      } else {
+        /* removeAllListeners() cleared the attribute's registration and kept
+         * its value; assigning the attribute again registers the wrapper
+         * anew, as Node's setter does. */
+        bool duplicate;
+        ScrEtListener *l = scr_et_append(core, h->type, NULL, 0, &duplicate);
+        h->rc++;
+        l->native = scr_et_handler_fire;
+        l->native_kind = SCR_ET_VALUE_HANDLER;
+        l->ctx = h;
+        l->ctx_release = scr_et_handler_release;
+        scr_et_new_listener(core, l->root);
       }
     }
     return;
@@ -983,8 +1013,51 @@ void scr_et_handler_set(ScrEventTargetCore *core, const char *type, const ScrDyn
 
 /* ── Event handles ─────────────────────────────────────────────────── */
 
+static void scr_event_drop_refs(ScrEvent *ev);
+
+/* An event carries references to its target (a handle that retains the
+ * object dispatching it), its detail, ports and source: a handler that
+ * keeps its last event keeps that graph. The event therefore carries a
+ * cycle header so the collector can see the edges and reclaim a socket /
+ * target / handler / event cycle. The strings and the exit-registry entry
+ * are the teardown's complement. */
+static void scr_event_trace(void *p, ScrTraceVisit visit, void *ctx) {
+  ScrEvent *ev = p;
+  visit(ev->target, ctx);
+  visit(ev->detail, ctx);
+  visit(ev->ports, ctx);
+  visit(ev->source, ctx);
+}
+
+static void scr_event_gcfree(void *p) {
+  ScrEvent *ev = p;
+  scr_event_untrack(ev);
+  scr_str_release(ev->type);
+  scr_str_release(ev->origin);
+  scr_str_release(ev->last_event_id);
+  scr_str_release(ev->reason);
+  scr_obj_free_note();
+  scr_cyc_free(ev);
+}
+
+static void scr_event_destroy(void *p) {
+  ScrEvent *ev = p;
+  /* A field's release can run the collector; re-entrant releases of an
+   * event already being torn down are no-ops. */
+  ev->rc = SIZE_MAX;
+  scr_event_drop_refs(ev);
+  scr_str_release(ev->type);
+  ev->rc = 0;
+  scr_obj_free_note();
+  scr_cyc_free(ev);
+}
+
 static ScrEvent *scr_event_alloc(ScrStr *type /* moves */, bool custom) {
-  ScrEvent *ev = scr_et_calloc(sizeof *ev);
+  static ScrCycType cyc_type = {&scr_event_trace, &scr_event_gcfree, SCR_CYC_KIND_NONE, 0};
+  ScrEvent *ev = scr_cyc_alloc(sizeof *ev, &cyc_type);
+  if (!ev) scr_et_oom();
+  memset(ev, 0, sizeof *ev);
+  scr_obj_alloc_note();
   ev->rc = 1;
   ev->type = type;
   ev->custom = custom;
@@ -1024,10 +1097,13 @@ static void scr_event_drop_refs(ScrEvent *ev) {
 
 static void scr_event_release_v(void *p) {
   ScrEvent *ev = p;
-  if (--ev->rc > 0) return;
-  scr_event_drop_refs(ev);
-  scr_str_release(ev->type);
-  free(ev);
+  if (ev->rc == SIZE_MAX) return; /* the teardown's own releases */
+  if (--ev->rc > 0) {
+    scr_cyc_released(ev);
+    return;
+  }
+  scr_cyc_dead(ev);
+  scr_rc_destroy(ev, scr_event_destroy);
 }
 
 static bool scr_et_key(const char *key, size_t len, const char *want) {
@@ -1879,6 +1955,33 @@ ScrDyn *scr_event_new_trusted(const char *type) {
   return out;
 }
 
+/* The trusted events a native emitter dispatches (the WebSocket client): a
+ * MessageEvent carrying `data`, and a CloseEvent with its code, reason and
+ * wasClean flag. Both borrow their payloads; +1. */
+ScrDyn *scr_message_event_with(ScrDyn *data, bool trusted) {
+  scr_et_install();
+  ScrEvent *ev = scr_event_alloc(scr_str_new("message", 7), false);
+  ev->trusted = trusted;
+  ev->message = true;
+  ev->detail = scr_dyn_retain(data);
+  ScrDyn *out = scr_dyn_new_handle(ev, SCR_DYNH_MESSAGE_EVENT);
+  scr_event_release_v(ev);
+  return out;
+}
+
+ScrDyn *scr_close_event_with(int64_t code, ScrStr *reason, bool was_clean, bool trusted) {
+  scr_et_install();
+  ScrEvent *ev = scr_event_alloc(scr_str_new("close", 5), false);
+  ev->trusted = trusted;
+  ev->close = true;
+  ev->code = code;
+  ev->reason = scr_str_retain(reason);
+  ev->was_clean = was_clean;
+  ScrDyn *out = scr_dyn_new_handle(ev, SCR_DYNH_CLOSE_EVENT);
+  scr_event_release_v(ev);
+  return out;
+}
+
 /* The constructor's options: null/undefined are none, other non-objects
  * throw; bubbles, cancelable and composed are read in order. */
 static ScrEvent *scr_event_construct(ScrDyn *args, bool custom) {
@@ -2222,12 +2325,54 @@ static double scr_et_broadcast_listener_count(ScrEventTargetCore *core, const ch
   return root ? (double)root->size : 0;
 }
 
+/* Every listener of `root` leaves, the on<type> attribute's registration
+ * with them; the attribute's stored value stays (Node keeps answering it
+ * from the property). The owner hears one change for the type. */
+static void scr_et_clear_root(ScrEventTargetCore *core, ScrEtRoot *root) {
+  scr_et_root_retain(root);
+  while (root->head) {
+    ScrEtListener *l = root->head;
+    scr_et_listener_remove(l);
+    root->size--;
+  }
+  scr_et_root_unmap(core, root);
+  scr_et_changed(core, root->type);
+  scr_et_root_release(root);
+}
+
+static void scr_et_broadcast_remove_all(ScrEventTargetCore *core, const char *type) {
+  if (type) {
+    ScrStr *name = scr_str_new(type, strlen(type));
+    ScrEtRoot *root = scr_et_root_find(core, name);
+    scr_str_release(name);
+    if (root) scr_et_clear_root(core, root);
+    return;
+  }
+  /* Every type, in the map's order; each root leaves the map as it is
+   * cleared, so its `next` is read first. */
+  ScrEtRoot *root = core->roots;
+  while (root) {
+    ScrEtRoot *next = root->map_next;
+    scr_et_clear_root(core, root);
+    root = next;
+  }
+}
+
+static bool scr_et_broadcast_has_type(ScrEventTargetCore *core, const char *type) {
+  ScrStr *name = scr_str_new(type, strlen(type));
+  bool has = scr_et_root_find(core, name) != NULL;
+  scr_str_release(name);
+  return has;
+}
+
 static const ScrEtBroadcastOps scr_et_broadcast_table = {
     &scr_et_broadcast_core_new,  &scr_et_broadcast_core_free, &scr_et_broadcast_dispatch,
     &scr_et_broadcast_dispatch_type, &scr_et_broadcast_listener_count,
     &scr_et_broadcast_watch,
     &scr_et_target_method,       &scr_et_broadcast_method_value,
     &scr_et_handler_get,         &scr_et_handler_set,
+    &scr_et_broadcast_remove_all, &scr_et_broadcast_has_type,
+    &scr_et_add_listener_named,
 };
 
 void scr_et_broadcast_install(void) {
@@ -4202,4 +4347,11 @@ void scr_events_on_error_fire(ScrClosure *cb, ScrArr *args) {
   scr_arr_release(args);
   scr_eon_on_error(st, err);
   scr_eon_state_release(st);
+}
+
+/* The abort-listener entry other units reach through scr_optional.h. */
+static const ScrEventTargetOps scr_event_target_optional_ops = {scr_events_add_abort_listener};
+
+__attribute__((constructor)) static void scr_event_target_install(void) {
+  scr_optional_event_target = &scr_event_target_optional_ops;
 }

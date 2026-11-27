@@ -478,7 +478,9 @@ async function build() {
               unit.source === "scr_webcrypto_aes.c"
                 ? ["-I", join(mbedtls, "include")]
                 : []),
-              ...(unit.source === "scr_zlib.c" || unit.source === "scr_fetch.c"
+              ...(unit.source === "scr_zlib.c" ||
+              unit.source === "scr_fetch.c" ||
+              unit.source === "scr_webstream_compress.c"
                 ? ["-I", zlib]
                 : []),
               ...(unit.source === "scr_brotli.c" ? ["-I", join(brotli, "include")] : []),
@@ -862,7 +864,7 @@ async function build() {
       package: packageManifest.name,
       version: packageManifest.version,
       target: matrix.target,
-      runtime_abi: { version: 52, marker: "scr_runtime_abi_v52" },
+      runtime_abi: { version: 53, marker: "scr_runtime_abi_v53" },
       compiler: {
         command: compiler,
         identity: compilerVersion,

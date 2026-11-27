@@ -412,7 +412,7 @@ function isUndefinedValue(expr: ts.Expression): boolean {
 
 /** True for a read of the createRequire import binding itself (the value
  * tested by a conditional initializer). */
-function isCreateRequireImportValue(lowerer: Lowerer, expr: ts.Expression): boolean {
+export function isCreateRequireImportValue(lowerer: Lowerer, expr: ts.Expression): boolean {
   const e = withoutParenthesesTypeWrappers(expr);
   if (!ts.isIdentifier(e)) return false;
   const bi = builtinImportOf(lowerer, e);

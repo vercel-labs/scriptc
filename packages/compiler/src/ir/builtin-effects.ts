@@ -131,6 +131,10 @@ const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
   "worker.setEnvironmentData",
   "worker.getEnvironmentData",
   "worker.broadcastChannel",
+  // callback while the lock is held.
+
+  // The heap figures are sampled and the promise may reject.
+
   "process.exit",
   // process.exit(expr) and the exitCode writes convert the value with
   // Node's setter rules: the non-numeric-string TypeError, the Symbol and
@@ -222,6 +226,12 @@ const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
   // (scr_module_cache.c), and reading the options object can run a getter.
   "module.compileCacheEnable",
   "module.compileCacheFlush",
+  // setSourceMapsSupport validates a boolean and an options object
+  // (scr_lib.c), and reading the options members can run a getter.
+  "module.setSourceMapsSupport",
+  // The SourceMap constructor validates its payload and reads its members,
+  // whose getters can throw.
+  "sourceMap.new",
   "bytes.construct",
   "arrayBuffer.new",
   "sharedArrayBuffer.new",
@@ -254,6 +264,7 @@ const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
   "text.decoderInput",
   "text.decoderFlag",
   "text.decodeStreamOption",
+  "text.encodeInput",
   "text.decoderEncodingOptions",
   "text.decodeBufferSource",
 
@@ -274,7 +285,13 @@ const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
   "fetch.requestNew",
   "fetch.headersNew",
   "fetch.responseNew",
+  "fetch.responseError",
+  "fetch.responseRedirect",
   "fetch.responseJsonStatic",
+  // Response.blob() is a body collector like the siblings above: a receiver
+  // that is not a fetch response throws "Illegal invocation" before its
+  // promise exists.
+  "fetch.responseBlob",
   "abort.timeout",
   "abort.any",
   "event.new",
@@ -353,6 +370,10 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "icu.dateTimeFormatNew",
   "icu.dateTimeFormatFormat",
   "icu.dateToLocale",
+  "icu.dateToLocaleDyn",
+  // Reads a computed locales value's locale-list length, which may run a
+  // getter and throw, and raises Node's TypeError and RangeError.
+  "icu.localeValue",
   "num.toStringRadix",
   "num.toStringRadixF64",
   "insp.jsonDyn",
@@ -540,6 +561,7 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "emitter.emitMixed",
   "emitter.hasDyn",
   "emitter.listenersDyn",
+  "emitter.rawListenersDyn",
   "emitter.emitError",
   "emitter.on",
   "emitter.onNamed",
@@ -569,10 +591,27 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   // exportKeyingMaterial throws Node's validation ladder (ERR_OUT_OF_RANGE,
   // ERR_INVALID_ARG_TYPE) and the TLS state error.
   "tls.sockExportKeyingMaterial",
+  // setMaxSendFragment throws Node's ERR_OUT_OF_RANGE for NaN, an infinity
+  // or a fraction.
+  "tls.sockSetMaxFragment",
   "net.sockWriteDyn",
   "net.sockEndDyn",
+  // socket.write/end(data, encoding): Buffer.from's encoding ladder throws
+  // ERR_UNKNOWN_ENCODING for an unknown name.
+  "net.sockWriteEnc",
+  "net.sockEndEnc",
+  // write/end(data, encoding) with a Buffer chunk: the encoding is
+  // validated (Buffer.isEncoding, plus "buffer") before it is ignored.
+  "net.sockWriteBytesEnc",
+  "net.sockEndBytesEnc",
   "http.resWriteDyn",
   "http.resEndDyn",
+  // write/end with extra arguments throw Node's chunk TypeError, the
+  // unknown-encoding error, and run the flush callback (user code).
+  "http.resWriteArgs",
+  "http.resEndArgs",
+  "http.clientWriteArgs",
+  "http.clientEndArgs",
   // setHeaders walks the argument (a Map's entries) and throws Node's
   // ERR_INVALID_ARG_TYPE for anything else, ERR_HTTP_HEADERS_SENT once the
   // head is out, and the header name/value checks. pipe() emits
@@ -628,6 +667,13 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "https.requestUrlDynCb",
   // address() of a Unix-socket server read as the AddressInfo record.
   "net.serverAddressCheck",
+  // socket.connect() with no arguments throws Node's ERR_MISSING_ARGS;
+  // socket.connect(string) runs validatePort's ladder (ERR_SOCKET_BAD_PORT
+  // for the empty, whitespace and out-of-range strings), and registers a
+  // run-time function callback.
+  "net.sockConnectMissing",
+  "net.sockConnectPath",
+  "net.sockConnectPathCb",
   // net.createServer(options[, listener]): Node's ServerOpts ladders —
   // options itself must be an object, options.highWaterMark and
   // options.keepAliveInitialDelay numbers, options.blockList a
@@ -641,8 +687,14 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   // synchronously (the stream-operations stance below), so the data/
   // write paths that can fire inline join too.
   "http2.connect",
+  "http2.performServerHandshake",
+  "http2.performServerHandshakeOpts",
   "http2.connectCb",
   "http2.sessionRequest",
+  // setTimeout validates its duration like getTimerDuration: a negative or
+  // non-finite msecs throws ERR_OUT_OF_RANGE from the call.
+  "http2.sessionSetTimeout",
+  "http2.sessionSetTimeoutCb",
   "http2.streamSetEncoding",
   // Settings are validated (ERR_HTTP2_INVALID_SETTING_VALUE), a ping's
   // payload and a destroyed session are refused, and a dynamic listener
@@ -651,6 +703,7 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "http2.sessionSettingsCb0",
   "http2.sessionSettingsDynCb",
   "http2.sessionOnSettingsDyn",
+  "http2.sessionSetLocalWindowSize",
   "http2.sessionPing",
   "http2.sessionPingPayload",
   "http2.getPackedSettings",
@@ -737,6 +790,8 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "stream.duplexFromGen",
   "stream.duplexFromGenNoSource",
   "stream.duplexFromDyn",
+  "stream.composeStageDyn",
+  "stream.composeTailDyn",
   "stream.duplexFromPromise",
   "stream.duplexFromAsyncFn",
   "stream.duplexFromAsyncFnNoSource",
@@ -886,6 +941,9 @@ const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   "perf.histoLinearView",
   "perf.histoLogView",
   "perf.histoPercentilesAtView",
+  // new WebSocket(url[, protocols]): Node's URL and protocol validation
+  // throw catchably (a SyntaxError for the URL, a TypeError for protocols).
+  "websocket.new",
   // Non-TTY stdin: Node's stdin has no setRawMode member, so the call is
   // the exact catchable TypeError.
   "process.stdinSetRawMode",
@@ -1151,6 +1209,9 @@ const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   "dyn.objCreateWithProperties",
   "dyn.getPrototype",
   "dyn.classTestPrototype",
+  // Object.getPrototypeOf(null or undefined) throws Node's TypeError, and a
+  // comparison the lowerer folds into this test can be inside a catch.
+  "dyn.isPlainObject",
 ];
 
 const MAY_THROW_LIB_FNS_PART_4: readonly IrLibFn[] = [
@@ -1485,6 +1546,7 @@ const MAY_THROW_LIB_FNS_PART_5: readonly IrLibFn[] = [
   "fs.readFileChk",
   "fs.opendirChk",
   "fs.watchFileChk",
+  "fs.utf8StreamNew",
   "fs.lchmodChk",
   "fs.lchmodSyncChk",
   "fsp.lchmodChk",
@@ -1619,6 +1681,11 @@ const MAY_THROW_LIB_FNS_PART_5: readonly IrLibFn[] = [
   "http.serverOnDropRequest",
   "http2.serverOnStream",
   "http2.serverOnSession",
+  /* goaway() on a destroyed session throws Node's invalid-session error. */
+  "http2.sessionGoaway",
+  "http2.sessionGoawayData",
+  "http2.serverOnTimeout",
+  "http2.serverSetTimeoutCb",
   "http2.serverOnSessionError",
   "tls.serverOnClientError",
   // resetAndDestroy on a TLS socket throws ERR_INVALID_HANDLE_TYPE.
@@ -1842,6 +1909,7 @@ const MAY_THROW_LIB_FNS_PART_6: readonly IrLibFn[] = [
   // form turns them into a rejection, the sync form throws them).
   "fsp.mkdtempDisposable",
   "fs.mkdtempDisposableSync",
+  "fs.openAsBlob",
   "mkdtempResult.remove",
   "mkdtempResult.removeSync",
   "mkdtempResult.asyncDispose",
@@ -1895,6 +1963,7 @@ const MAY_THROW_LIB_FNS_PART_6: readonly IrLibFn[] = [
   "crypto.x509Raw",
   "crypto.x509RawDer",
   "crypto.x509RawStr",
+  "crypto.x509RawDyn",
   // Node's argument errors (name, options, pkey) and the key parse.
   "crypto.x509CheckHost",
   "crypto.x509CheckEmail",

@@ -16,7 +16,10 @@ declare module "http2" {
     destroy(): void;
   }
   export interface Http2ServerRequest {
-    readonly url: string;
+    /* Node's compat request keeps the frame's :path: a CONNECT block
+     * carries none, so the read is undefined there (Node's value; the
+     * h2enabled request object answers it through the same union). */
+    readonly url: string | undefined;
     readonly method: string;
     /* The trailer block the request carried (empty before the request
      * ends): a record of joined values, and the raw [name, value, ...]
@@ -89,6 +92,8 @@ declare module "http2" {
     /* A 1xx block before the response starts: 100..199 (never 101). */
     writeInformation(statusCode: number, headers?: OutgoingHttpHeaders): boolean;
     write(data: string | Uint8Array): void;
+    write(data: string | Uint8Array, callback: () => void): void;
+    write(data: string | Uint8Array, encoding: string, callback: () => void): void;
     flushHeaders(): void;
     cork(): void;
     uncork(): void;
@@ -115,6 +120,9 @@ declare module "http2" {
      * surface answers the record with port 0 there, the serverPort
      * stance). */
     address(): import("node:dgram").AddressInfo;
+    /* The server-level idle timeout, as on Http2Server. */
+    timeout: number;
+    setTimeout(msecs?: number, callback?: (session: Http2Session) => void): void;
     emit(event: "connection", socket: Socket): void;
     on(event: "connection", listener: (socket: Socket) => void): void;
     on(
@@ -127,6 +135,7 @@ declare module "http2" {
     ): void;
     on(event: "error", listener: (err: Error) => void): void;
     on(event: "close", listener: () => void): void;
+    on(event: "timeout", listener: (session: Http2Session) => void): void;
     on(event: "sessionError", listener: (err: Error, session: ServerHttp2Session) => void): void;
     /* The ALPN=h2 server's surface (createSecureServer WITHOUT
      * allowHTTP1 — the real h2-over-TLS stack): per-stream and
@@ -151,6 +160,7 @@ declare module "http2" {
     ): void;
     once(event: "error", listener: (err: Error) => void): void;
     once(event: "close", listener: () => void): void;
+    once(event: "timeout", listener: (session: Http2Session) => void): void;
     once(event: "sessionError", listener: (err: Error, session: ServerHttp2Session) => void): void;
     once(
       event: "stream",
@@ -169,6 +179,7 @@ declare module "http2" {
     ): void;
     addListener(event: "error", listener: (err: Error) => void): void;
     addListener(event: "close", listener: () => void): void;
+    addListener(event: "timeout", listener: (session: Http2Session) => void): void;
     addListener(
       event: "sessionError",
       listener: (err: Error, session: ServerHttp2Session) => void,
@@ -499,6 +510,9 @@ declare module "http2" {
     readonly localSettings: any;
     readonly remoteSettings: any;
     goaway(code?: number, lastStreamID?: number, opaqueData?: Uint8Array): void;
+    /* Node validates the argument and applies no observable change (the
+     * local settings record and the peer's view stay as they were). */
+    setLocalWindowSize(windowSize: number): void;
     on(event: "close" | "timeout", listener: () => void): void;
     on(event: "error", listener: (err: Error) => void): void;
     on(
@@ -789,7 +803,10 @@ declare module "http2" {
     /* Node's promisify(server.close): resolves when the server closed. */
     [Symbol.asyncDispose](): Promise<void>;
     address(): import("node:dgram").AddressInfo;
-    setTimeout(msecs?: number, callback?: () => void): void;
+    /* The server-level idle timeout: each accepted session's socket arms
+     * from it, and the optional callback is a 'timeout' listener. */
+    timeout: number;
+    setTimeout(msecs?: number, callback?: (session: Http2Session) => void): void;
     ref(): void;
     unref(): void;
     on(
@@ -806,7 +823,8 @@ declare module "http2" {
       listener: (req: Http2ServerRequest, res: Http2ServerResponse) => void,
     ): void;
     on(event: "error", listener: (err: Error) => void): void;
-    on(event: "close" | "listening" | "timeout", listener: () => void): void;
+    on(event: "close" | "listening", listener: () => void): void;
+    on(event: "timeout", listener: (session: Http2Session) => void): void;
     on(event: "connection", listener: (socket: import("net").Socket) => void): void;
     on(event: "sessionError", listener: (err: Error, session: ServerHttp2Session) => void): void;
     /* HTTP CONNECT, as on the secure server above: the compatibility
@@ -828,7 +846,8 @@ declare module "http2" {
       listener: (req: Http2ServerRequest, res: Http2ServerResponse) => void,
     ): void;
     once(event: "error", listener: (err: Error) => void): void;
-    once(event: "close" | "listening" | "timeout", listener: () => void): void;
+    once(event: "close" | "listening", listener: () => void): void;
+    once(event: "timeout", listener: (session: Http2Session) => void): void;
     once(event: "connection", listener: (socket: import("net").Socket) => void): void;
     once(event: "sessionError", listener: (err: Error, session: ServerHttp2Session) => void): void;
     once(event: "connect", listener: (req: any, resOrSocket: any, head?: Buffer) => void): void;
@@ -846,7 +865,8 @@ declare module "http2" {
       listener: (req: Http2ServerRequest, res: Http2ServerResponse) => void,
     ): void;
     addListener(event: "error", listener: (err: Error) => void): void;
-    addListener(event: "close" | "listening" | "timeout", listener: () => void): void;
+    addListener(event: "close" | "listening", listener: () => void): void;
+    addListener(event: "timeout", listener: (session: Http2Session) => void): void;
     addListener(event: "connection", listener: (socket: import("net").Socket) => void): void;
     addListener(
       event: "sessionError",
@@ -879,6 +899,13 @@ declare module "http2" {
     options: Record<string, unknown>,
     listener?: (session: ClientHttp2Session, socket: import("net").Socket) => void,
   ): ClientHttp2Session;
+
+  /* A server session over an existing connected socket; the session's own
+   * 'stream' listeners see its streams (it has no owning server). */
+  export function performServerHandshake(
+    socket: import("net").Socket,
+    options?: { settings?: any; maxSessionMemory?: number; peerMaxConcurrentStreams?: number },
+  ): ServerHttp2Session;
 
   export function getDefaultSettings(): any;
   export function getPackedSettings(settings?: any): Buffer;

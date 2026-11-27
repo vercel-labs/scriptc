@@ -385,7 +385,7 @@ bool scr_stream_unshift_str(ScrStream *s, ScrStr *str);
 bool scr_stream_unshift_dyn(ScrStream *s, const ScrDyn *d);
 ScrBytes *scr_stream_read(ScrStream *s, double size);
 ScrStream *scr_stream_on_dyn(ScrStream *s, ScrStr *name, ScrDyn *cb, bool once, bool prepend);
-ScrDyn *scr_stream_read_dyn(ScrStream *s, ScrDyn *size); /* +1 or NULL; size < 0 = all/first; throws once encoded (the static type is Buffer|null) */
+ScrDyn *scr_stream_read_dyn(ScrStream *s, ScrDyn *size); /* +1 or NULL; a NaN size = all/first; throws once encoded (the static type is Buffer|null) */
 /* setEncoding(enc): string-chunk mode — pushes decode through the
  * StringDecoder, 'data' delivers strings (the emit ABI carries both
  * payload slots; see scr_stream_emit_data), lengths count JS string
@@ -808,6 +808,16 @@ ScrStream *scr_stream_duplex_from_gen_nosource(ScrClosure *stage, ScrClosure *so
                                               ScrClosure *next, ScrClosure *read, ScrClosure *ret,
                                               ScrClosure *thr);
 ScrStream *scr_stream_duplex_from_dyn(struct ScrDyn *body);
+/* Duplex.from over a checked-dynamic compose stage in a position before the
+ * last: a web stream pair answers a Duplex whose chunks stay web values
+ * (object mode), as the pipeline's stages do; any other body is Duplex.from's
+ * (borrowed). +1. */
+ScrStream *scr_stream_duplex_stage_dyn(struct ScrDyn *body);
+/* Duplex.from over a checked-dynamic compose stage in the last position: a
+ * web stream pair answers duplexify's byte-for-byte sides (the composed Duplex
+ * reads them as Buffers), and a lone web WritableStream answers a writable
+ * Duplex that keeps the chunks the stage before it writes (borrowed). +1. */
+ScrStream *scr_stream_duplex_tail_dyn(struct ScrDyn *body);
 /* Readable.fromWeb(readableStream, { objectMode, highWaterMark, encoding })
  * (scr_stream_from_web.c): hwm < 0 is the mode's default, encoding NULL or
  * a known name; web and encoding borrowed. +1, or NULL with the error. */

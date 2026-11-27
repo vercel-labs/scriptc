@@ -1,6 +1,6 @@
 import { keyedHelperName } from "../stable-names.js";
 import { dynUndefinedExpr, nodeThrowExpr } from "../../../ir/build.js";
-import { buildFunctionAdapter } from "./builders.js";
+import { buildDynCallingAdapter, buildFunctionAdapter } from "./builders.js";
 import { InternalCompilerError } from "../../../errors.js";
 import type { IrExpr, IrParam, IrStmt, IrType, SrcLoc } from "../../../ir/ir.js";
 import {
@@ -335,11 +335,22 @@ export function funcSlotAdaptable(
  * one place that decides; funcCoerceAdapter, cleanFuncAdaptable and
  * funcSlotAdaptable all ask it.
  *
+ * The adapter's closure is a view function-views.ts knows the source of
+ * (variadicAdapterSources): where a caller passes more arguments than the
+ * slot's type names, that pass writes a test for the view and reaches the
+ * variadic function itself, with the caller's whole list.
+ *
  * Two checks over the finished IR complete the rule
  * (variadic-functions.ts): a variadic function that reaches a native call
  * of fixed arity unadapted is refused there by name, and a store is
  * refused when the program hands a function of the slot's type to a caller
- * that passes more than the type names.
+ * that passes more than the type names and the compiler cannot reach the
+ * stored function there. An array method's helper and every widening
+ * signature adapter test their operand for the store's view and, where it
+ * is one, call the variadic function with the caller's whole argument list
+ * instead (function-views.ts); only a caller neither of them serves (a
+ * replacer, a listener that names a prefix of the event's arguments) keeps
+ * the refusal.
  *
  * Two slots need neither condition, because the adapter is exact in them
  * for every caller a slot can have (exactVariadicSlot): a slot of the
@@ -491,6 +502,7 @@ function variadicBoundaryAdapter(
     key,
   );
   lowerer.coercions.retags.set(key, name);
+  lowerer.coercions.variadicAdapterSources.set(name, fromT);
   lowerer.freshClosureAdapters.add(name);
   const params: IrParam[] = toT.params.map((type, i) => ({
     localId: `a.${i}`,
@@ -519,7 +531,7 @@ function variadicBoundaryAdapter(
     });
     const call: IrExpr = {
       kind: "dynCall",
-      callee: { kind: "varRef", localId: "f.0", type: DYN, loc },
+      callee: { kind: "varRef", localId: "b.0", type: DYN, loc },
       receiver: { kind: "libCall", fn: "dyn.this", args: [], type: DYN, loc },
       calleeName: "value",
       args,
@@ -578,21 +590,17 @@ function variadicBoundaryAdapter(
     lowerer.fnStack.pop();
   }
   lowerer.liftedFns.push(
-    ...buildFunctionAdapter(name, { kind: "dyn" }, toT, params, context.locals, body, loc),
+    ...buildDynCallingAdapter(name, fromT, toT, params, context.locals, body, "b.0", loc),
   );
   return name;
 }
 
 /** The function `value` adapted to the slot type `type` by the adapter
- * funcCoerceAdapter answered: the adapter's factory applied to the value,
- * boxed first for the variadic adapter, which calls the boxed function. */
+ * funcCoerceAdapter answered: the adapter's factory applied to the value.
+ * The variadic adapter boxes the function itself, in its factory, and
+ * stands for it in its first capture (variadicBoundaryAdapter). */
 export function adaptedFunction(adapter: string, value: IrExpr, type: IrType, loc: SrcLoc): IrExpr {
-  const original: IrExpr =
-    adapter.startsWith(`${VARIADIC_ADAPTER_PREFIX}.`) ||
-    adapter.startsWith(`${EXACT_VARIADIC_ADAPTER_PREFIX}.`)
-      ? { kind: "dynFrom", value, type: DYN, loc }
-      : value;
-  return { kind: "call", callee: adapter, args: [original], type, loc };
+  return { kind: "call", callee: adapter, args: [value], type, loc };
 }
 
 /** Whether a typed-rest function (`(...m: T[]) => R`) can serve a slot
@@ -666,20 +674,97 @@ function restPackingAdapter(
   return name;
 }
 
+/** The adapter that calls a variadic function with the full parameter list
+ * of a fixed signature: every parameter of `toT` becomes one argument of
+ * the variadic function's hidden argument array (its own fixed parameters
+ * are filled first). function-views.ts builds it when a caller that passes
+ * more arguments than a stored slot's type names reaches a variadic
+ * store, so the stored function receives every argument the JavaScript
+ * call passes. A function that reads `arguments` (argumentsAll) sees the
+ * whole list there, its own named parameters included, as it does in a
+ * JavaScript call; a checked-dynamic rest holds the arguments the named
+ * parameters do not cover. Null when a parameter cannot become an untyped
+ * value or a result does not convert. */
+export function dynRestPackingAdapter(
+  lowerer: Lowerer,
+  fromT: IrType & { kind: "func" },
+  toT: IrType & { kind: "func" },
+  loc: SrcLoc,
+): string | null {
+  if (fromT.rest !== true || fromT.restAbi !== undefined || toT.rest === true) return null;
+  if (typeEquals(fromT, toT)) return null;
+  const fixed = fromT.params.length;
+  if (fixed > toT.params.length) return null;
+  for (let i = 0; i < fixed; i++) {
+    if (!lowerer.coercibleValue(toT.params[i]!, fromT.params[i]!)) return null;
+  }
+  // The hidden array repeats an all-arguments function's named parameters,
+  // so those must become untyped values too.
+  const packedFrom = fromT.argumentsAll === true ? 0 : fixed;
+  for (let i = packedFrom; i < toT.params.length; i++) {
+    const param = toT.params[i]!;
+    if (param.kind !== "dyn" && !lowerer.coercibleValue(param, DYN)) return null;
+  }
+  if (toT.ret.kind !== "void" && !lowerer.coercibleValue(fromT.ret, toT.ret)) return null;
+  const key = `fndynrest:${typeKey(fromT)}:${typeKey(toT)}`;
+  const existing = lowerer.coercions.retags.get(key);
+  if (existing) return existing;
+  const name = keyedHelperName(lowerer, "%fn.adapt", key);
+  lowerer.coercions.retags.set(key, name);
+  lowerer.coercions.signatureAdapters.set(name, "");
+  lowerer.freshClosureAdapters.add(name);
+  const params: IrParam[] = toT.params.map((type, i) => ({
+    localId: `a.${i}`,
+    name: `a${i}`,
+    type,
+  }));
+  const arg = (i: number, want: IrType): IrExpr =>
+    lowerer.coerceToExpected(
+      { kind: "varRef", localId: `a.${i}`, type: toT.params[i]!, loc },
+      want,
+    );
+  const fixedArgs: IrExpr[] = [];
+  for (let i = 0; i < fixed; i++) fixedArgs.push(arg(i, fromT.params[i]!));
+  const restElems: IrExpr[] = [];
+  for (let i = packedFrom; i < toT.params.length; i++) {
+    const boxed = arg(i, DYN);
+    if (boxed.type.kind !== "dyn") return null;
+    restElems.push(boxed);
+  }
+  const rest: IrExpr = { kind: "dynArrLit", elems: restElems, type: DYN, loc };
+  const call: IrExpr = {
+    kind: "callValue",
+    callee: { kind: "varRef", localId: "f.0", type: fromT, loc },
+    receiver: { kind: "libCall", fn: "dyn.this", args: [], type: DYN, loc },
+    args: [...fixedArgs, rest],
+    type: fromT.ret,
+    loc,
+  };
+  const body: IrStmt[] =
+    toT.ret.kind === "void"
+      ? [
+          { kind: "exprStmt", expr: call, loc },
+          { kind: "return", value: null, loc },
+        ]
+      : [{ kind: "return", value: lowerer.coerceToExpected(call, toT.ret), loc }];
+  lowerer.liftedFns.push(...buildFunctionAdapter(name, fromT, toT, params, [], body, loc));
+  return name;
+}
+
 /** Adapt a fixed-parameter function to a checked-dynamic rest signature
  * without fixed parameters (`() => {}` into mock.fn()'s `(...args: any[])
  * => undefined`): the adapter receives the hidden argument array and
- * passes its element i as parameter i, undefined when the caller passed
- * fewer arguments, as JS does. Null unless every parameter is
- * checked-dynamic, which holds a missing argument as undefined, and the
- * result is discarded or converts. */
+ * passes its element i as parameter i — converted into the parameter's
+ * type, a checked conversion that throws where the value is not one —
+ * undefined when the caller passed fewer arguments, as JS does. Null when
+ * the result does not convert. */
 function funcIntoDynRestAdapter(
   lowerer: Lowerer,
   fromT: IrType & { kind: "func" },
   toT: IrType & { kind: "func" },
   loc: SrcLoc,
 ): string | null {
-  if (fromT.rest === true || fromT.params.some((p) => p.kind !== "dyn")) return null;
+  if (fromT.rest === true) return null;
   if (toT.ret.kind !== "void" && !lowerer.coercibleValue(fromT.ret, toT.ret)) return null;
   const key = `fnadapt:${typeKey(fromT)}:${typeKey(toT)}`;
   const existing = lowerer.coercions.retags.get(key);
@@ -692,13 +777,16 @@ function funcIntoDynRestAdapter(
     kind: "callValue",
     callee: { kind: "varRef", localId: "f.0", type: fromT, loc },
     receiver: { kind: "libCall", fn: "dyn.this", args: [], type: DYN, loc },
-    args: fromT.params.map((_, i): IrExpr => ({
-      kind: "dynKeyGet",
-      value: { kind: "varRef", localId: "rest.0", type: DYN, loc },
-      key: { kind: "strLit", value: String(i), type: STRING, loc },
-      type: DYN,
-      loc,
-    })),
+    args: fromT.params.map((want, i): IrExpr => {
+      const element: IrExpr = {
+        kind: "dynKeyGet",
+        value: { kind: "varRef", localId: "rest.0", type: DYN, loc },
+        key: { kind: "strLit", value: String(i), type: STRING, loc },
+        type: DYN,
+        loc,
+      };
+      return want.kind === "dyn" ? element : lowerer.coerceToExpected(element, want);
+    }),
     type: fromT.ret,
     loc,
   };

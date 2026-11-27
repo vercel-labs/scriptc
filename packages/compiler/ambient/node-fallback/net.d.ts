@@ -29,7 +29,7 @@ declare module "net" {
      * The port form lowers; the path and options forms do not yet. */
     connect(port: number, host: string, connectionListener?: () => void): Socket;
     connect(port: number, connectionListener?: () => void): Socket;
-    connect(options: { port: number; host?: string }, connectionListener?: () => void): Socket;
+    connect(options: NetConnectOpts, connectionListener?: () => void): Socket;
     connect(path: string, connectionListener?: () => void): Socket;
     readonly remoteAddress: string | undefined;
     /* The peer's fields are cached at first read, like remoteAddress; the
@@ -68,12 +68,20 @@ declare module "net" {
     /* false when the bytes this write left unsent reach the 65536-byte
      * high-water mark, as in Node; 'drain' fires when they are all sent. */
     write(data: string | Uint8Array, callback?: (err?: Error | null) => void): boolean;
+    /* write(data, encoding): the string goes through Buffer.from's
+     * encoding ladder (an unknown name throws ERR_UNKNOWN_ENCODING, and
+     * "buffer" is not a string encoding); a Buffer chunk has the encoding
+     * validated like Writable (Buffer.isEncoding plus "buffer") and then
+     * ignored. */
+    write(data: string | Uint8Array, encoding: BufferEncoding): boolean;
     /* the bytes written and not yet sent */
     readonly writableLength: number;
     /* a write answered false and 'drain' has not fired yet */
     readonly writableNeedDrain: boolean;
     end(callback?: () => void): Socket;
     end(data: string | Uint8Array, callback?: () => void): Socket;
+    /* end(data, encoding): the same encoding rules as write(data, encoding) */
+    end(data: string | Uint8Array, encoding: BufferEncoding): Socket;
     /* An explicit destroy only; the error payload form is not lowered. */
     destroy(): Socket;
     /* Flow control: pause holds reads off (kernel/TCP backpressure is
@@ -583,26 +591,29 @@ declare module "net" {
       family?: number,
     ) => void,
   ) => void;
-  export function connect(
-    options: {
-      port: number;
-      host?: string;
-      autoSelectFamily?: boolean;
-      autoSelectFamilyAttemptTimeout?: number;
-      lookup?: LookupFunction;
-    },
-    connectListener?: () => void,
-  ): Socket;
-  export function createConnection(
-    options: {
-      port: number;
-      host?: string;
-      autoSelectFamily?: boolean;
-      autoSelectFamilyAttemptTimeout?: number;
-      lookup?: LookupFunction;
-    },
-    connectListener?: () => void,
-  ): Socket;
+  /* net.connect/createConnection and socket.connect's options record
+   * (@types/node's TcpNetConnectOpts, plus the IPC path form a union). */
+  export interface TcpConnectOpts {
+    port: number;
+    host?: string;
+    localAddress?: string;
+    localPort?: number;
+    family?: number;
+    hints?: number;
+    lookup?: LookupFunction;
+    noDelay?: boolean;
+    keepAlive?: boolean;
+    keepAliveInitialDelay?: number;
+    autoSelectFamily?: boolean;
+    autoSelectFamilyAttemptTimeout?: number;
+    blockList?: BlockList;
+    allowHalfOpen?: boolean;
+    signal?: AbortSignal;
+    timeout?: number;
+  }
+  export type NetConnectOpts = TcpConnectOpts | { path: string };
+  export function connect(options: NetConnectOpts, connectListener?: () => void): Socket;
+  export function createConnection(options: NetConnectOpts, connectListener?: () => void): Socket;
   /* A Unix domain socket client (Node's IpcNetConnectOpts and path
    * overloads). */
   export function connect(path: string, connectListener?: () => void): Socket;

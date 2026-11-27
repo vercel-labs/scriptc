@@ -84,6 +84,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // node:module's compile cache family (enableCompileCache and its
   // neighbours), linked only by a program that names one of them.
   ["scr_module_cache.c", "moduleCompileCache"],
+  // node:module's SourceMap class, linked only by a program that constructs
+  // one (or asks instanceof).
+  ["scr_source_map.c", "sourceMap"],
   // The BYTE-data spellings of the option write and fs.promises.writeFile.
   ["scr_fs_bytes_write.c", "fsBytesWrites"],
   // string_decoder's checked-dynamic chunk forms, apart from scr_bytes.c's
@@ -142,7 +145,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // fact arms it at the top of %main (arrayBuffer.armMutable); every other
   // program keeps the base units' hooks NULL and links no registry.
   ["scr_js_buffers.c", "mutableBuffers"],
-  ["scr_event_target.c", any("eventTarget", "nativeFetch", "abortSignal")],
+  ["scr_event_target.c", any("eventTarget", "nativeFetch", "abortSignal", "webSocket")],
+  // The WebSocket client (the global WebSocket class).
+  ["scr_websocket.c", "webSocket"],
   [
     "scr_async_dyn.c",
     any(
@@ -178,6 +183,7 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_js_iterator.c", "iteratorProto"],
   // Blob and File box their reads as dyn promises through scr_async_dyn.c.
   ["scr_blob.c", "dynAsync"],
+  ["scr_fs_blob.c", "fsOpenAsBlob"],
   ["scr_zlib.c", "zlib"],
   ["scr_brotli.c", all("zlib", "brotli")],
   ["scr_zstd.c", all("zlib", "zstd")],
@@ -205,7 +211,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // `scriptc build --large-pages`: executable code on transparent huge pages (Linux).
   ["scr_text_pages.c", "largePages"],
   ["scr_webstreams.c", "webStreams"],
+  ["scr_webstream_compress.c", all("webStreams", "zlib", "brotli")],
   ["scr_fs_web_stream.c", "fsWebStream"],
+  ["scr_fs_utf8_stream.c", "fsUtf8Stream"],
   // The class installs (scr_dyn_handle_class_install) that web streams and
   // the stub resolver's Resolver classes need.
   ["scr_dyn_handle_class.c", any("webStreams", "dnsResolve", "moduleClass")],

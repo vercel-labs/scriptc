@@ -28,6 +28,7 @@ import {
 } from "../../ir/ir.js";
 import { boolLit, numLit, strLit, varRef } from "../../ir/build.js";
 import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
+import { dynUndefinedExpr } from "../../ir/build.js";
 
 const MODULE_FIELDS = new Set([
   "children",
@@ -762,6 +763,20 @@ export function lowerNodeModuleProperty(
   }
   if (!moduleRef || moduleRef.type.kind !== "f64") return null;
   const loc = locOf(expr);
+  // `exports` read off ANOTHER module's handle is that module's own exports
+  // object — what Node's Module view answers — so it lowers to the
+  // checked-dynamic value the registry holds, not to a static exports table.
+  // `require.cache[file].exports` and the module's own `module.exports`
+  // therefore name one object.
+  if (!direct && member === "exports") {
+    return {
+      kind: "dynKeyGet",
+      value: { kind: "libCall", fn: "module.dynObject", args: [moduleRef], type: DYN, loc },
+      key: strLit("exports", loc),
+      type: DYN,
+      loc,
+    };
+  }
   const call = (
     fn:
       | "module.filename"
@@ -814,6 +829,19 @@ export function lowerNodeModuleProperty(
   }
 }
 
+/** `require.extensions`: Node's loader table (node:module's
+ * Module._extensions), one shared null-prototype object whose three
+ * handlers are function values that refuse when called — a compiled
+ * program loads no module at run time. */
+export function lowerRequireExtensionsProperty(
+  lowerer: Lowerer,
+  expr: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (expr.questionDotToken || expr.name.text !== "extensions") return null;
+  if (!isCjsRequireGlobal(lowerer, expr.expression)) return null;
+  return { kind: "libCall", fn: "module.extensions", args: [], type: DYN, loc: locOf(expr) };
+}
+
 /** `typeof module.parent`: null (the CommonJS entry) and a module (a module
  * required by CommonJS) both answer "object"; a module loaded by an ES-module
  * entry has no CommonJS parent and answers "undefined". The registry's
@@ -837,6 +865,79 @@ export function lowerModuleParentTypeof(lowerer: Lowerer, node: ts.Expression): 
     then: { kind: "strLit", value: "undefined", type: STRING, loc },
     else_: { kind: "strLit", value: "object", type: STRING, loc },
     type: STRING,
+    loc,
+  };
+}
+
+/** The module handle a require.cache read names: `module.cacheGet` answers
+ * the record's id, or -1 for a filename the cache does not hold. */
+function cacheViewHandleOf(lowerer: Lowerer, read: ts.ElementAccessExpression): IrExpr {
+  const key = lowerer.coerceInto(
+    read.argumentExpression,
+    lowerer.lowerExpr(read.argumentExpression),
+    STRING,
+  );
+  return { kind: "libCall", fn: "module.cacheGet", args: [key], type: F64, loc: locOf(read) };
+}
+
+/** The require.cache read `receiver` stands for: the read itself, or the
+ * initializer of a binding that holds one. */
+function cacheReadReceiverOf(
+  lowerer: Lowerer,
+  receiver: ts.Expression,
+): ts.ElementAccessExpression | null {
+  const direct = withoutParenthesesTypeWrappers(receiver);
+  const isCacheRead = (e: ts.Expression): e is ts.ElementAccessExpression =>
+    ts.isElementAccessExpression(e) &&
+    !e.questionDotToken &&
+    isRequireCacheExpr(lowerer, e.expression);
+  if (isCacheRead(direct)) return direct;
+  if (!ts.isIdentifier(direct)) return null;
+  let symbol = lowerer.checker.getSymbolAtLocation(direct);
+  if (symbol !== undefined && (symbol.flags & ts.SymbolFlags.Alias) !== 0)
+    symbol = lowerer.checker.getAliasedSymbol(symbol);
+  const decl = symbol ? symbol.declarations[0] : undefined;
+  if (decl === undefined || !ts.isVariableDeclaration(decl) || decl.initializer === undefined)
+    return null;
+  const init = withoutParenthesesTypeWrappers(decl.initializer);
+  return isCacheRead(init) ? init : null;
+}
+
+/** `require.cache[file].member` — and the same read through a binding that
+ * holds it: the Module view's live member, read from the registry, because
+ * Node's view IS the module's own object. `exports` is therefore the module's
+ * own exports object, the one its `module.exports` reads, so identity holds
+ * across the two. Null off the shape. */
+export function lowerModuleViewMember(
+  lowerer: Lowerer,
+  expr: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (expr.questionDotToken) return null;
+  // A private name is never a plain member read: it runs the declaring
+  // class's brand check, which throws Node's TypeError for a value that is
+  // not one of its instances.
+  if (ts.isPrivateIdentifier(expr.name)) return null;
+  const read = cacheReadReceiverOf(lowerer, expr.expression);
+  if (read === null) return null;
+  const loc = locOf(expr);
+  // A binding already holds the module the cache key picked: read it, and do
+  // not run the key expression again (its side effects happen once, and the
+  // module it picked then is the one this read answers).
+  const receiver = withoutParenthesesTypeWrappers(expr.expression);
+  const handle = ts.isIdentifier(receiver)
+    ? lowerer.coerceInto(receiver, lowerer.lowerExpr(receiver), F64)
+    : cacheViewHandleOf(lowerer, read);
+  return {
+    kind: "dynKeyGet",
+    value: {
+      kind: "libCall",
+      fn: "module.dynObjectOrAbsent",
+      args: [handle],
+      type: DYN,
+      loc,
+    },
+    key: strLit(expr.name.text, loc),
+    type: DYN,
     loc,
   };
 }
@@ -1066,6 +1167,21 @@ export function readsWrittenModuleRequireValue(lowerer: Lowerer, node: ts.Node):
   return ts.isCallExpression(init) && isWrittenModuleRequireCall(lowerer, init);
 }
 
+/** `require.cache` read as a VALUE — typeof, identity with Module._cache,
+ * storing it, `for..in` over it: the live cache object the runtime keeps (the
+ * same records the lookup, `in` and Object.keys lowerings walk). A program
+ * cannot change it (every write through require.cache is refused where it
+ * stands), so the object a program holds and the one the lookups read stay
+ * the same. `typeOfNode` answers `any` for the read, so its uses lower as
+ * checked-dynamic values. */
+export function lowerRequireCacheValue(
+  lowerer: Lowerer,
+  expr: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (expr.questionDotToken || !isRequireCacheExpr(lowerer, expr)) return null;
+  return { kind: "libCall", fn: "module.cacheObject", args: [], type: DYN, loc: locOf(expr) };
+}
+
 export function fenceNodeModuleMutation(
   lowerer: Lowerer,
   target: ts.PropertyAccessExpression | ts.ElementAccessExpression,
@@ -1131,4 +1247,204 @@ export function fenceNodeModuleMutationCall(
     call,
     "module.paths is introspection-only in a fixed compiled graph; configure resolution at build time",
   );
+}
+
+/** True when `expr` evaluates to node:module's `Module` class value: the
+ * member read on the node:module namespace, directly or through a const
+ * binding initialized with it. */
+export function isModuleClassValue(lowerer: Lowerer, expr: ts.Expression): boolean {
+  const value = withoutParenthesesTypeWrappers(expr);
+  const moduleMember = (e: ts.Expression): boolean => {
+    if (!ts.isPropertyAccessExpression(e) || e.questionDotToken || e.name.text !== "Module")
+      return false;
+    const bi = lowerer.builtinMemberOf(e);
+    return bi !== null && bi.module === "module" && bi.member === "Module";
+  };
+  if (moduleMember(value)) return true;
+  if (!ts.isIdentifier(value)) return false;
+  const symbol = lowerer.checker.getSymbolAtLocation(value);
+  const decl = symbol?.valueDeclaration;
+  if (
+    decl === undefined ||
+    !ts.isVariableDeclaration(decl) ||
+    decl.initializer === undefined ||
+    !ts.isVariableDeclarationList(decl.parent) ||
+    (decl.parent.flags & ts.NodeFlags.Const) === 0
+  )
+    return false;
+  return moduleMember(withoutParenthesesTypeWrappers(decl.initializer));
+}
+
+/** A static member of node:module's `Module` class read as a value
+ * (`Module.isBuiltin`, `Module.builtinModules`): the class carries the
+ * module surface as statics, identical to the namespace's exports, so the
+ * read lowers through the same member tables. Null when the class value is
+ * not the receiver or the member has no value lowering (an internal such as
+ * `_cache` stays unrepresented). */
+/** The members node:module's `Module` class carries as statics that the
+ * compiled surface can answer. */
+const MODULE_CLASS_STATIC_NAMES: readonly string[] = [
+  "Module",
+  "builtinModules",
+  "constants",
+  "isBuiltin",
+  "syncBuiltinESMExports",
+  "enableCompileCache",
+  "flushCompileCache",
+  "getCompileCacheDir",
+  "findPackageJSON",
+  "createRequire",
+  "getSourceMapsSupport",
+  "setSourceMapsSupport",
+  "findSourceMap",
+  "SourceMap",
+  "register",
+  "registerHooks",
+  "runMain",
+  "stripTypeScriptTypes",
+];
+
+/** `value`, preceded by the receiver's own evaluation when the receiver is
+ * an awaited literal import (`(await import("node:module")).Module`), which
+ * the read does not lower: Node evaluates the await where the member is
+ * read, before the call's own arguments and the computed key. */
+export function withModuleClassReceiverLoad(
+  lowerer: Lowerer,
+  receiver: ts.Expression,
+  value: IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  const load = lowerer.builtinReceiverLoad(receiver, loc);
+  return load === null
+    ? value
+    : { kind: "seqExpr", stmts: [load], result: value, type: value.type, loc };
+}
+
+/** `Module[key]` with a runtime STRING key: the key is evaluated once and
+ * matched against the class's statics the compiled surface answers, so a
+ * computed name reads the same value its own spelling does; any other name
+ * reads the class value itself, which answers the constructor's own `name`,
+ * `length` and `prototype` and undefined for a name it lacks. Non-string
+ * keys keep the general element-read behavior (Node's ToPropertyKey would
+ * stringify them, which no static needs here). */
+export function lowerModuleClassDynamicStatic(
+  lowerer: Lowerer,
+  expr: ts.ElementAccessExpression,
+): IrExpr | null {
+  if (expr.questionDotToken !== undefined) return null;
+  if (!isModuleClassValue(lowerer, expr.expression)) return null;
+  if (lowerer.foldedStringKeyOf(expr.argumentExpression) !== null) return null;
+  const type = lowerer.mapTypeOf(lowerer.typeOf(expr.argumentExpression));
+  if (type === null || type.kind !== "string") return null;
+  const loc = locOf(expr);
+  const keyLocal = lowerer.declareHiddenLocal("%moduleStaticKey", STRING);
+  const classValue = lowerer.lowerBuiltinMemberDynValue("module", "Module", loc);
+  let chain: IrExpr =
+    classValue === null
+      ? dynUndefinedExpr(loc)
+      : {
+          kind: "dynKeyGet",
+          value: classValue,
+          key: varRef(keyLocal.id, STRING, loc),
+          type: DYN,
+          loc,
+        };
+  for (let i = MODULE_CLASS_STATIC_NAMES.length - 1; i >= 0; i--) {
+    const member = MODULE_CLASS_STATIC_NAMES[i]!;
+    const value = lowerer.lowerBuiltinMemberDynValue("module", member, loc);
+    if (value === null) continue;
+    chain = {
+      kind: "ternary",
+      cond: {
+        kind: "strEq",
+        negated: false,
+        left: varRef(keyLocal.id, STRING, loc),
+        right: { kind: "strLit", value: member, type: STRING, loc },
+        type: { kind: "bool" },
+        loc,
+      },
+      then: lowerer.coerceInto(expr, value, DYN),
+      else_: chain,
+      type: DYN,
+      loc,
+    };
+  }
+  const load = lowerer.builtinReceiverLoad(expr.expression, loc);
+  return {
+    kind: "seqExpr",
+    stmts: [
+      ...(load === null ? [] : [load]),
+      {
+        kind: "varDecl",
+        localId: keyLocal.id,
+        init: lowerer.coerceInto(
+          expr.argumentExpression,
+          lowerer.lowerExpr(expr.argumentExpression),
+          STRING,
+        ),
+        loc,
+      },
+    ],
+    result: chain,
+    type: DYN,
+    loc,
+  };
+}
+
+export function lowerModuleClassStatic(
+  lowerer: Lowerer,
+  expr: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (expr.questionDotToken) return null;
+  if (!isModuleClassValue(lowerer, expr.expression)) return null;
+  const value = lowerer.lowerBuiltinMemberDynValue("module", expr.name.text, locOf(expr));
+  return value === null
+    ? null
+    : withModuleClassReceiverLoad(lowerer, expr.expression, value, locOf(expr));
+}
+
+/** A call to a static of node:module's `Module` class (`Module.isBuiltin(
+ * "fs")`): the static is the module surface's own value, so the call runs
+ * the same callable the namespace export is. Null when the receiver is not
+ * the class value, the call spreads, or the member has no value lowering. */
+export function lowerModuleClassStaticCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+): IrExpr | null {
+  const callee = call.expression;
+  if (call.questionDotToken !== undefined) return null;
+  let member: string | null = null;
+  let receiver: ts.Expression;
+  if (ts.isPropertyAccessExpression(callee) && !callee.questionDotToken) {
+    member = callee.name.text;
+    receiver = callee.expression;
+  } else if (ts.isElementAccessExpression(callee) && callee.questionDotToken === undefined) {
+    member = lowerer.foldedStringKeyOf(callee.argumentExpression);
+    receiver = callee.expression;
+  } else {
+    return null;
+  }
+  if (member === null) return null;
+  if (!isModuleClassValue(lowerer, receiver)) return null;
+  if (call.arguments.nodes.some(ts.isSpreadElement)) return null;
+  const value = lowerer.lowerBuiltinMemberDynValue("module", member, locOf(callee));
+  if (value === null) return null;
+  const loc = locOf(call);
+  const args = call.arguments.nodes.map((arg) =>
+    lowerer.coerceInto(arg, lowerer.lowerExpr(arg), DYN),
+  );
+  const called: IrExpr = {
+    kind: "dynCall",
+    callee: value,
+    calleeName: ts.getTextOfNode(callee),
+    args,
+    type: DYN,
+    loc,
+  };
+  const result = lowerer.mapTypeOf(lowerer.typeOf(call));
+  const value_ =
+    result !== null && result.kind !== "dyn" ? lowerer.coerceToExpected(called, result) : called;
+  // The receiver evaluates before the call's own arguments: an awaited
+  // literal import does its microtask hop where the call stands.
+  return withModuleClassReceiverLoad(lowerer, receiver, value_, loc);
 }

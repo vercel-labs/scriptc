@@ -636,6 +636,79 @@ static void checked_storage(void) {
   assert(!scr_exc_pending());
 }
 
+/* An Error's payload edges — the shared layout's cause, an
+ * AggregateError's errors list, a DOMException's cause — hold
+ * checked-dynamic values that can refer back to the error. The collector
+ * must visit them, or a self-referential error is never reclaimed; a
+ * replaced or deleted cause must publish the new slot before the old value
+ * is released, so a release that runs a pass never traces a dangling
+ * edge. Covers the collector path with and without an outside reference. */
+static void error_payload_cycles(void) {
+  scr_error_set_traced();
+  static const char key[] = "object:%Error";
+  for (int external = 0; external < 2; external++) {
+    for (int kind = 0; kind < 3; kind++) {
+#ifdef SCR_RC_AUDIT
+      long before_objects = scr_obj_live_count();
+      long before_dyns = scr_dyn_live_count();
+#endif
+      ScrError *e = kind == 1   ? scr_aggregate_alloc()
+                    : kind == 2 ? scr_domex_alloc()
+                                : scr_error_new(SCR_ERR_ERROR, NULL);
+      assert(e != NULL);
+      ScrDyn *ref = scr_dyn_new_typed_ref_traced(
+          e, &scr_error_retain_v, &scr_error_release_v, key, sizeof key - 1, NULL, NULL);
+      if (kind == 1) {
+        ScrDyn *list = scr_dyn_new_arr();
+        scr_dyn_arr_push(list, ref);
+        scr_aggregate_set_errors(e, list);
+        scr_dyn_release(list);
+      } else {
+        scr_error_set_cause(e, ref);
+        scr_dyn_release(ref);
+      }
+      ScrError *alias = external ? scr_error_retain(e) : NULL;
+      scr_error_release(e); /* the only outside reference goes away */
+      scr_collect_cycles();
+      if (alias != NULL) {
+        /* The outside reference plus the typed reference the cause holds. */
+        assert(alias->rc == 2);
+        scr_error_release(alias);
+        scr_collect_cycles();
+      }
+#ifdef SCR_RC_AUDIT
+      assert(scr_obj_live_count() == before_objects);
+      assert(scr_dyn_live_count() == before_dyns);
+#endif
+    }
+  }
+  /* Replacing and deleting a cause drops the old cycle: the slot is
+   * published first, then the old value released. */
+  for (int replace = 0; replace < 2; replace++) {
+#ifdef SCR_RC_AUDIT
+    long before_objects = scr_obj_live_count();
+    long before_dyns = scr_dyn_live_count();
+#endif
+    ScrError *e = scr_error_new(SCR_ERR_ERROR, NULL);
+    ScrDyn *ref = scr_dyn_new_typed_ref_traced(
+        e, &scr_error_retain_v, &scr_error_release_v, key, sizeof key - 1, NULL, NULL);
+    scr_error_set_cause(e, ref);
+    scr_dyn_release(ref);
+    if (replace) {
+      scr_error_set_cause(e, scr_dyn_undefined());
+    } else {
+      scr_error_delete_cause(e);
+    }
+    scr_collect_cycles();
+    scr_error_release(e);
+    scr_collect_cycles();
+#ifdef SCR_RC_AUDIT
+    assert(scr_obj_live_count() == before_objects);
+    assert(scr_dyn_live_count() == before_dyns);
+#endif
+  }
+}
+
 static void shared_property_keys(void) {
 #ifdef SCR_RC_AUDIT
   /* Layouts hold key references until the thread's state is torn down. */
@@ -1820,15 +1893,73 @@ static void stream_ref_member_questions(void) {
   assert(!scr_exc_pending());
 }
 
+/* scr_dyn_class_value_slot folds a class value's key at 32 bits, as
+ * ir/class-key-index.ts classValueSlot does. classval:Foo folds to a word
+ * whose length term and tail sum past INT32_MAX, so the arithmetic has to be
+ * unsigned. */
+static void class_value_slots(void) {
+  static const int expected[] = {1,   3,   6,    12,   25,   51,   103,  206,
+                                 412, 825, 1651, 3303, 6606, 13212, 26424, 52848};
+  ScrStr *name = scr_str_new("Foo", 3);
+  ScrClassObj tpl = {0};
+  tpl.name = name;
+  ScrClassObj *cls = scr_classobj_new(&tpl, 0);
+  ScrDyn *value = scr_dyn_new_class(cls, "classval:Foo");
+  scr_classobj_release(cls);
+  for (int bits = 1; bits <= 16; bits++) {
+    int slot = scr_dyn_class_value_slot(value, bits);
+    assert(slot == expected[bits - 1]);
+  }
+  assert(!scr_exc_pending());
+
+  /* A value that is not a class value, and a key shorter than four bytes. */
+  ScrDyn *plain = scr_dyn_new_obj();
+  assert(scr_dyn_class_value_slot(plain, 9) == -1);
+  scr_dyn_release(plain);
+  ScrStr *short_name = scr_str_new("Ab", 2);
+  ScrClassObj short_tpl = {0};
+  short_tpl.name = short_name;
+  ScrClassObj *short_cls = scr_classobj_new(&short_tpl, 0);
+  ScrDyn *short_value = scr_dyn_new_class(short_cls, "abc");
+  scr_classobj_release(short_cls);
+  assert(scr_dyn_class_value_slot(short_value, 9) == -1);
+  scr_dyn_release(short_value);
+  scr_str_release(short_name);
+  scr_str_release(name);
+  scr_dyn_release(value);
+}
+
+/* The leak scan's node record answers by provenance: an allocation the
+ * dynamic allocator did not make is not a node whatever its bytes hold, a
+ * node is, and a released node's memory is no longer one. */
+static void leak_scan_record_names_nodes(void) {
+#ifdef SCR_LSAN_IMMORTAL
+  extern bool scr_lsan_dyns_has(const void *node);
+  void *foreign = calloc(1, 256);
+  assert(foreign != NULL);
+  assert(!scr_lsan_dyns_has(foreign));
+  ScrDyn *node = scr_dyn_new_obj();
+  assert(scr_lsan_dyns_has(node));
+  scr_dyn_release(node);
+#ifdef SCR_RC_AUDIT
+  assert(!scr_lsan_dyns_has(node)); /* the memory went back to the allocator */
+#endif
+  free(foreign);
+#endif
+}
+
 int main(void) {
   json_string_boundaries();
   record_frozen_bit();
   json_indent_ownership();
   scr_init();
+  class_value_slots();
+  leak_scan_record_names_nodes();
   checked_storage();
   shared_property_keys();
   named_record_assignment();
   checked_leaf_cycles();
+  error_payload_cycles();
   checked_number_storage();
   buffered_leaf_release();
   json_intact_regions();

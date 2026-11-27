@@ -41,13 +41,10 @@ import { stdlibGlobalNameOf } from "./surfaces.js";
  * same reason.
  */
 export const NODE_GLOBALS_WITHOUT_NATIVE: ReadonlySet<string> = new Set([
-  "CompressionStream",
-  "DecompressionStream",
   "FormData",
   "Navigator",
   "Performance",
   "URLPattern",
-  "WebSocket",
 ]);
 
 /** Whether the read is the callee of a call or `new` — the one use a listed

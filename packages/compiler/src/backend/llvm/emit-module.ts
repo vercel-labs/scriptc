@@ -505,6 +505,97 @@ function writeDefinitions(
   return startupSymbols;
 }
 
+/** The per-site globals the emitter numbers from module-wide counters as it
+ * emits (inline caches, dyn read caches, guard groups), as `@<prefix><n>`. */
+const SITE_PREFIXES = ["@sc_js_ic_", "@sc_dyn_read_ic_", "@sc_js_group_"] as const;
+
+/** One use of a numbered site in a function's text. */
+interface SiteUse {
+  start: number;
+  end: number;
+  name: string;
+  prefix: string;
+}
+
+function isNameChar(code: number): boolean {
+  return (
+    (code >= 48 && code <= 57) ||
+    (code >= 65 && code <= 90) ||
+    (code >= 97 && code <= 122) ||
+    code === 95 ||
+    code === 46 ||
+    code === 36 ||
+    code === 45
+  );
+}
+
+/** The uses of numbered sites in `def`, in text order. */
+function siteUses(def: string): SiteUse[] {
+  const uses: SiteUse[] = [];
+  for (const prefix of SITE_PREFIXES) {
+    for (let at = def.indexOf(prefix); at >= 0; at = def.indexOf(prefix, at + 1)) {
+      let end = at + prefix.length;
+      while (end < def.length && def.charCodeAt(end) >= 48 && def.charCodeAt(end) <= 57) end++;
+      if (end === at + prefix.length || (end < def.length && isNameChar(def.charCodeAt(end))))
+        continue;
+      uses.push({ start: at, end, name: def.slice(at + 1, end), prefix: prefix.slice(1, -1) });
+    }
+  }
+  return uses.sort((left, right) => left.start - right.start);
+}
+
+/** Renames each numbered site global that exactly one function's body uses
+ * to a name of that function and the site's place in it
+ * (`sc_js_ic.<function>.<k>`), in `fnDefs` and `fnDefText`, and answers the
+ * renames. A counter numbers a site by every site any function emitted
+ * before it, so one more function earlier in the module renumbered every
+ * site after it: an edit, or another app's own code, changed the text of
+ * every function that holds an inline cache, and with it every compiled
+ * partition the LLVM helper could reuse (native-codegen.ts). Named by its
+ * function, a site keeps its name wherever its function lands. A site
+ * another function or a helper also names keeps its number. */
+function nameSitesByOwner(emitter: LlEmitter, fnDefs: string[]): Map<string, string> {
+  const owner = new Map<string, number>();
+  const usesOf: (SiteUse[] | undefined)[] = [];
+  fnDefs.forEach((def, index) => {
+    const uses = siteUses(def);
+    if (uses.length === 0) return;
+    usesOf[index] = uses;
+    for (const { name } of uses) {
+      const known = owner.get(name);
+      if (known === undefined) owner.set(name, index);
+      else if (known !== index) owner.set(name, -1);
+    }
+  });
+  const renames = new Map<string, string>();
+  usesOf.forEach((uses, index) => {
+    const fn = emitter.mod.functions[index];
+    if (uses === undefined || fn === undefined) return;
+    const symbol = mangleFunction(fn.name);
+    const counts = new Map<string, number>();
+    const parts: string[] = [];
+    const def = fnDefs[index]!;
+    let from = 0;
+    for (const { start, end, name, prefix } of uses) {
+      if (owner.get(name) !== index) continue;
+      let to = renames.get(name);
+      if (to === undefined) {
+        const k = counts.get(prefix) ?? 0;
+        counts.set(prefix, k + 1);
+        renames.set(name, (to = `${prefix}.${symbol}.${k}`));
+      }
+      parts.push(def.slice(from, start + 1), to);
+      from = end;
+    }
+    if (parts.length === 0) return;
+    parts.push(def.slice(from));
+    const text = parts.join("");
+    fnDefs[index] = text;
+    if (emitter.fnDefText.get(fn.name) === def) emitter.fnDefText.set(fn.name, text);
+  });
+  return renames;
+}
+
 export function emitModuleParts(emitter: LlEmitter): string[] {
   // Function bodies first (the literal/unit/fn-value tables fill as they
   // emit), then the file assembles around them — the runtime ABI’s order.
@@ -521,6 +612,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
       relieveHeapPressure();
     }
   emitter.selectStacklessAsync(fnDefs);
+  const siteNames = nameSitesByOwner(emitter, fnDefs);
   const errorViews: string[] = [];
   for (const property of ERROR_READER_PROPERTIES) {
     const reader = errorReaderName(property);
@@ -657,6 +749,9 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   // programs additionally stamp the httpReq/httpRes ops — the C main's
   // install lines, gated on the same predicates native/executable.ts links by.
   const usesNet = runtimeFeatures.net;
+  /** The global WebSocket client dials through the net unit: its loop hooks
+   * and its socket machinery are installed like node:net's. */
+  const usesWebSocket = runtimeFeatures.webSocket === true;
   const usesNetLookup = runtimeFeatures.netLookup;
   const usesDgram = runtimeFeatures.dgram;
   // The stub resolver (dns.Resolver, resolve*, reverse, setServers): its
@@ -699,6 +794,11 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   const testEntryPtr = usesNodeTest ? emitter.cstr(emitter.mod.sourceFile) : "";
   // Declared NOW — the extern block flushes before main assembles.
   if (usesEvents) emitter.declare(`declare void @scr_events_install()`);
+  // Arrays the program gives a prototype are born with the collector header
+  // (scr_array.h): their element kinds are stamped before %main.
+  const prototypeArrayKinds = emitter.mod.prototypeOverrideArrayKinds ?? [];
+  if (prototypeArrayKinds.length > 0)
+    emitter.declare(`declare void @scr_arr_force_cyclic_kind(double)`);
   if (usesChildProcess) emitter.declare(`declare void @scr_child_dyn_install()`);
   if (usesChildErrorEvent) emitter.declare(`declare void @scr_child_error_event_install()`);
   const childStreamBoxes =
@@ -752,10 +852,8 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   if (emitter.ffiHasForeignCallback) emitter.declare(`declare void @scr_ffi_install()`);
   if (usesStream) emitter.declare(`declare void @scr_stream_install()`);
   if (usesNetLookup) emitter.declare(`declare void @scr_net_lookup_install()`);
-  if (usesNet) {
-    emitter.declare(`declare void @scr_net_install()`);
-    emitter.declare(`declare void @scr_net_dyn_install()`);
-  }
+  if (usesNet || usesWebSocket) emitter.declare(`declare void @scr_net_install()`);
+  if (usesNet) emitter.declare(`declare void @scr_net_dyn_install()`);
   if (usesDgram) emitter.declare(`declare void @scr_dgram_install()`);
   if (usesDnsResolve) emitter.declare(`declare void @scr_dns_resolve_install()`);
   if (usesHttp2) emitter.declare(`declare void @scr_http2_dyn_install()`);
@@ -827,6 +925,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   const runsLoop =
     emitter.usesTimers ||
     emitter.usesPromises ||
+    usesWebSocket ||
     emitter.ffiHasForeignCallback ||
     emitter.mod.functions.some((f) => f.async === true || f.generator !== undefined);
   const uncaughtReleases = entryMayThrow && !asyncEntry ? exitReleaseLines("gu") : [];
@@ -996,7 +1095,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     `%ScrUnion = type { ${emitter.sizeType}, i32, ptr, ptr, ptr, i64 }`,
     `%ScrClosure = type { ${emitter.sizeType}, ptr, ${emitter.sizeType}, ptr, i32, i32, ptr, ptr }`,
     `%ScrFfiTable = type { ptr, ${emitter.sizeType}, ${emitter.sizeType}, ptr, i8, ptr, ptr, ${emitter.sizeType}, ${emitter.sizeType}, ${emitter.sizeType}, ptr, ptr }`,
-    `%ScrRegex = type { ${emitter.sizeType}, ptr, ptr, ptr, double, ptr, ptr, ptr }`,
+    `%ScrRegex = type { ${emitter.sizeType}, ptr, ptr, ptr, double, ptr, ptr, ptr, ptr }`,
     // The library host-callback state (scr_core.h's ScrLibHostState, built
     // by lib-host-state.ts): native call sites GEP a channel's fn, ctx and
     // the callback-depth counter through it instead of calling the
@@ -1163,15 +1262,18 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
         ? "thread_local "
         : "";
     out.push(...threadSlotsBlockDefinitions(emitter.threadSlotsBlocks, tl !== ""));
-    for (let site = 0; site < emitter.dynReadIcSites; site++)
+    const site = (name: string): string => siteNames.get(name) ?? name;
+    for (let n = 0; n < emitter.dynReadIcSites; n++)
       out.push(
-        `@sc_dyn_read_ic_${site} = internal ${tl}global { ptr, ${emitter.sizeType}, ${emitter.sizeType}, ptr } zeroinitializer`,
+        `@${site(`sc_dyn_read_ic_${n}`)} = internal ${tl}global { ptr, ${emitter.sizeType}, ${emitter.sizeType}, ptr } zeroinitializer`,
       );
-    for (let site = 0; site < emitter.jsIcSiteCount; site++)
-      out.push(`@sc_js_ic_${site} = internal ${tl}global [${JS_IC_WORDS} x i64] zeroinitializer`);
-    for (let group = 0; group < emitter.jsGroupCount; group++)
+    for (let n = 0; n < emitter.jsIcSiteCount; n++)
       out.push(
-        `@sc_js_group_${group} = internal ${tl}global [${JS_GROUP_WORDS} x i64] zeroinitializer`,
+        `@${site(`sc_js_ic_${n}`)} = internal ${tl}global [${JS_IC_WORDS} x i64] zeroinitializer`,
+      );
+    for (let n = 0; n < emitter.jsGroupCount; n++)
+      out.push(
+        `@${site(`sc_js_group_${n}`)} = internal ${tl}global [${JS_GROUP_WORDS} x i64] zeroinitializer`,
       );
     for (const [name, keys] of emitter.jsGroupKeysTable)
       out.push(
@@ -1314,7 +1416,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     // global, not constant. The last slot is the build-time matcher.
     const matcher = regexMatchers.has(key) ? `@${re.sym}_match` : "null";
     out.push(
-      `@${re.sym} = internal ${tl}global %ScrRegex { ${emitter.sizeType} -1, ptr ${re.src}, ptr ${re.fl}, ptr null, double 0.0, ptr null, ptr null, ptr ${matcher} } ; ${key.replace(/\n/g, "\\n")}`,
+      `@${re.sym} = internal ${tl}global %ScrRegex { ${emitter.sizeType} -1, ptr ${re.src}, ptr ${re.fl}, ptr null, double 0.0, ptr null, ptr null, ptr ${matcher}, ptr null } ; ${key.replace(/\n/g, "\\n")}`,
     );
   }
   if (emitter.regexInstances.size > 0) out.push(``);
@@ -1418,7 +1520,12 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   if (fnDefs.length === 0) out.push("");
   out.push(PARTITION_GROUP_END, "");
   // WebAssembly modules translated into this program, and the registry.
-  for (const line of emitWasmModules(emitter.mod, flushedDecls, emitter.wasmBoundsChecks))
+  for (const line of emitWasmModules(
+    emitter.mod,
+    flushedDecls,
+    emitter.wasmBoundsChecks,
+    targetCpuAttribute(emitter.targetCpu),
+  ))
     out.push(line);
   // The traces the weak analysis reads; overrides the runtime's weak, empty
   // default (scr_json.c).
@@ -1492,6 +1599,12 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
       ``,
     );
   }
+  // Every array of a prototype-bearing element kind carries the collector
+  // header, so the stamps that set the flags are shared by the executable
+  // entry and the library initializer: both run them before compiled code can
+  // allocate an array.
+  for (const kind of prototypeArrayKinds)
+    stamps.push(`  call void @scr_arr_force_cyclic_kind(double ${kind}.0)`);
   if (emitter.mod.lib !== undefined) {
     // LIBRARY mode: no @main — the profile-declared external
     // symbols specified by the library IR instead.
@@ -1570,6 +1683,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     ...(usesSymbolFor ? [`  call void @scr_sym_for_install()`] : []),
     ...(usesToPrimitiveNumber ? [`  call void @scr_dyn_to_primitive_number_install()`] : []),
     ...(usesNet ? [`  call void @scr_net_install()`, `  call void @scr_net_dyn_install()`] : []),
+    ...(usesWebSocket && !usesNet ? [`  call void @scr_net_install()`] : []),
     ...(usesNetLookup ? [`  call void @scr_net_lookup_install()`] : []),
     ...(usesHttp ? [`  call void @scr_http_dyn_install()`] : []),
     ...(usesDgram ? [`  call void @scr_dgram_install()`] : []),

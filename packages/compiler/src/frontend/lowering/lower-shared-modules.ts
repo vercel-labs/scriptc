@@ -365,6 +365,17 @@ export function statefulReason(sf: ts.SourceFile): string | null {
       }
       continue;
     }
+    // A function or class declaration binds a mutable module-level name
+    // (like `var`): a function body that reassigns it changes shared state,
+    // and the island must see the binding it reassigns to. Record them so
+    // the write scan below finds one.
+    if (
+      (ts.isFunctionDeclaration(stmt) || ts.isClassDeclaration(stmt)) &&
+      stmt.name !== undefined
+    ) {
+      moduleLevel.set(stmt.name.text, ts.isFunctionDeclaration(stmt) ? "function" : "class");
+      continue;
+    }
     if (
       ts.isFunctionDeclaration(stmt) ||
       ts.isClassDeclaration(stmt) ||

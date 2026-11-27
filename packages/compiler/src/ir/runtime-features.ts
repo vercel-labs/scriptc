@@ -751,6 +751,26 @@ export function isDynUndefined(e: IrExpr): boolean {
 
 /** With `nodes` (the module's node index), the scan reads the recorded
  * expressions and types instead of walking the module. */
+/** Whether the module reads the well-known symbol `name`. A checked-dynamic
+ * stream's [Symbol.asyncDispose]() reaches the runtime's disposal path
+ * through that read, and the path boxes the promise it answers through the
+ * checked-dynamic promise unit, so the unit has to be linked for a program
+ * whose only async use is the disposal call. */
+function readsWellKnownSymbol(mod: IrModule, name: string): boolean {
+  let found = false;
+  everyModuleNode(mod, {
+    expr: (expr) => {
+      if (expr.kind !== "libCall" || expr.fn !== "sym.wellKnown") return true;
+      const arg = expr.args[0];
+      if (arg !== undefined && arg.kind === "strLit" && arg.value === name) found = true;
+      return !found;
+    },
+    stmt: () => !found,
+    type: () => !found,
+  });
+  return found;
+}
+
 export function moduleRuntimeFeatures(mod: IrModule, nodes?: IrNodeIndex): RuntimeFeatures {
   return scanRuntimeFeatures(mod, undefined, nodes);
 }
@@ -1990,6 +2010,7 @@ const RUNTIME_FEATURE_RULES = {
   dynAsync: rule({
     initial: (mod) =>
       mod.workers === true ||
+      readsWellKnownSymbol(mod, "asyncDispose") ||
       mod.functions.some(
         (fn) => fn.async === true && fn.generator === undefined && fn.returnType.kind === "dyn",
       ),

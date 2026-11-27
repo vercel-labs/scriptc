@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/stream-async-dispose-only-async.mjs"
+ ],
+ "diags": []
+}

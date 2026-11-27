@@ -288,6 +288,10 @@ const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
   "fetch.responseError",
   "fetch.responseRedirect",
   "fetch.responseJsonStatic",
+  // Response.blob() is a body collector like the siblings above: a receiver
+  // that is not a fetch response throws "Illegal invocation" before its
+  // promise exists.
+  "fetch.responseBlob",
   "abort.timeout",
   "abort.any",
   "event.new",

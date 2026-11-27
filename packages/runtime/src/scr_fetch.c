@@ -1741,10 +1741,6 @@ static ScrStr *sf_mime_extract(const ScrStr *joined) {
             essence_charset_len = charset->value_len;
             essence_charset_present = true;
           }
-        } else if (essence_charset_present &&
-                   !sf_mime_param(&parsed, "charset", 7)) {
-          sf_mime_set_param(&parsed, "charset", 7, essence_charset,
-                            essence_charset_len);
         }
         if (have) sf_mime_free(&chosen);
         chosen = parsed;
@@ -1758,6 +1754,13 @@ static ScrStr *sf_mime_extract(const ScrStr *joined) {
     tlen = 0;
   }
   free(tmp);
+  /* The chosen value inherits the essence's charset once, here: copying it
+   * into every intermediate same-essence value instead would cost one
+   * charset-length copy per entry, which is quadratic for one long charset
+   * beside many short entries. */
+  if (have && essence_charset_present && !sf_mime_param(&chosen, "charset", 7)) {
+    sf_mime_set_param(&chosen, "charset", 7, essence_charset, essence_charset_len);
+  }
   free(essence_charset);
   if (!have) return NULL;
   ScrStr *serialized = sf_mime_serialize(&chosen);

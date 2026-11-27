@@ -1176,6 +1176,20 @@ export function voidTruthinessHeldCall(
   return ts.isCallExpression(call) && voidTruthinessNeedsRuntimeValue(call, program) ? call : null;
 }
 
+export function voidTruthinessAwaitedCall(node: ts.Node, program: ts.Program): boolean {
+  // The diagnostic can be reported on an enclosing parenthesized expression.
+  let awaited: ts.Node = node;
+  while (ts.isParenthesizedExpression(awaited)) awaited = awaited.expression;
+  if (!ts.isAwaitExpression(awaited)) return false;
+  let inner: ts.Expression = awaited.expression;
+  while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
+  return (
+    ts.isCallExpression(inner) &&
+    !undefinedAtRunTime(awaited, program) &&
+    voidTruthinessNeedsRuntimeValue(inner, program)
+  );
+}
+
 /** TS1345 where Node's ToBoolean of the operand is known: the boolean of a
  * discarded negation is never read, an operand that is always `undefined`
  * tests false, a call through a plain object's member reads the value
@@ -1187,7 +1201,8 @@ const voidTruthinessKnown = (node: ts.Node, _d: ts.Diagnostic, program: ts.Progr
   discardedVoidNegation(node) ||
   undefinedAtRunTime(node, program) ||
   voidTruthinessNeedsRuntimeValue(node, program) ||
-  voidTruthinessHeldCall(node, program) !== null;
+  voidTruthinessHeldCall(node, program) !== null ||
+  voidTruthinessAwaitedCall(node, program);
 
 /* ---- family reasons ---- */
 

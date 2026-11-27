@@ -112,7 +112,11 @@ import {
 import { cjsNamespaceImportDep, nsMemberIdentOf } from "./lower-namespaces.js";
 import { bindingNeverReassigned } from "./binding-analysis.js";
 import { implicitMonoFile } from "./generic-functions.js";
-import { lowerPrimitiveUnionNumber, lowerTaggedTemplate } from "./lower-calls.js";
+import {
+  lowerAwaitedVoidTruthinessCall,
+  lowerPrimitiveUnionNumber,
+  lowerTaggedTemplate,
+} from "./lower-calls.js";
 import { unitOnlyUnion } from "../type-mapper.js";
 import { lowerYield } from "./lower-generators.js";
 import { unionWideningTags } from "../../ir/analysis.js";
@@ -942,6 +946,11 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     }
     const uniformAll = lowerAwaitedUniformPromiseAll(lowerer, expr);
     if (uniformAll) return uniformAll;
+    // A void-typed call whose awaited result a truthiness test reads: the
+    // call runs through the checked-dynamic invocation and the await
+    // adopts its value, which the test reads (lower-calls.ts).
+    const awaitedVoid = lowerAwaitedVoidTruthinessCall(lowerer, expr, loc);
+    if (awaitedVoid !== null) return awaitedVoid;
     const value = lowerer.lowerExpr(expr.expression);
     // A promise-or-absent union (`Promise<T> | undefined` values, calls
     // of `(...) => Promise<void> | void` callbacks): the await handles

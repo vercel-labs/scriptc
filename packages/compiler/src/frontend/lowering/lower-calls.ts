@@ -655,6 +655,39 @@ function staticallyStringPattern(lowerer: Lowerer, pattern: ts.Expression | unde
   );
 }
 
+/** `await call` whose awaited result a truthiness test reads and whose
+ * call the checker types void (tsc-codes.ts voidTruthinessAwaitedCall):
+ * Node awaits the value the call answered. The call runs through the
+ * checked-dynamic invocation and the await adopts that value, so the test
+ * reads the value Node reads. Null for every other await. */
+export function lowerAwaitedVoidTruthinessCall(
+  lowerer: Lowerer,
+  expr: ts.AwaitExpression,
+  loc: SrcLoc,
+): IrExpr | null {
+  // The diagnostic can sit on an enclosing parenthesized expression
+  // (`(await obj.f()) || fallback`), so the site may be the await itself or
+  // one of the parentheses around it.
+  let admitted = lowerer.opinionAt(expr, 1345);
+  if (!admitted) {
+    let parent: ts.Node | undefined = expr.parent;
+    while (parent !== undefined && ts.isParenthesizedExpression(parent)) {
+      if (lowerer.opinionAtNode(parent, 1345)) {
+        admitted = true;
+        break;
+      }
+      parent = parent.parent;
+    }
+  }
+  if (!admitted) return null;
+  let inner: ts.Expression = expr.expression;
+  while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
+  if (!ts.isCallExpression(inner)) return null;
+  const call = lowerVoidTruthinessCall(lowerer, inner, true);
+  if (call === null) return null;
+  return { kind: "libCall", fn: "async.awaitDyn", args: [call], type: DYN, loc };
+}
+
 /** A void-typed call whose result a truthiness test reads (preflight
  * admitted the test, tsc-codes.ts TS1345, because the callee is one the
  * analysis cannot prove answers undefined). Node's ToBoolean reads the value

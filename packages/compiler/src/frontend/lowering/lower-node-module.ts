@@ -969,23 +969,96 @@ export function lowerModuleRequireMember(
 /** `module.require(...)` in a file that writes that member: a call of the
  * value the program stored (Node's require function delegates to it), not of
  * the loader. Null off that shape. */
-export function lowerModuleRequireCall(lowerer: Lowerer, call: ts.CallExpression): IrExpr | null {
+/** Whether `call` is `module.require(...)` in a file that writes that member:
+ * Node calls the replacement, with `this` bound to the module object. */
+export function isWrittenModuleRequireCall(lowerer: Lowerer, call: ts.CallExpression): boolean {
   const callee = call.expression;
-  if (!ts.isPropertyAccessExpression(callee) || callee.questionDotToken) return null;
-  if (callee.name.text !== "require" || !isCjsModuleGlobal(lowerer, callee.expression)) return null;
-  if (!writesModuleRequire(lowerer, call)) return null;
-  if (call.arguments.nodes.some((arg) => ts.isSpreadElement(arg))) return null;
+  if (!ts.isPropertyAccessExpression(callee) || callee.questionDotToken) return false;
+  if (callee.name.text !== "require" || !isCjsModuleGlobal(lowerer, callee.expression))
+    return false;
+  if (!writesModuleRequire(lowerer, call)) return false;
+  return !call.arguments.nodes.some((arg) => ts.isSpreadElement(arg));
+}
+
+/** The module object's checked-dynamic view. */
+function moduleViewValue(lowerer: Lowerer, node: ts.Node, loc: SrcLoc): IrExpr | null {
+  const ref = cjsModuleRef(lowerer, node);
+  if (ref === null) return null;
+  return { kind: "libCall", fn: "module.dynObject", args: [ref], type: DYN, loc };
+}
+
+/** `p.member` where `p` holds a written `module.require(...)` result: the
+ * checker types `p` from the module the specifier names, but the program's
+ * replacement answered the call, so the member reads dynamically. */
+export function lowerModuleRequireResultMember(
+  lowerer: Lowerer,
+  expr: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (expr.questionDotToken) return null;
+  const recv = withoutParenthesesTypeWrappers(expr.expression);
+  if (!ts.isIdentifier(recv)) return null;
+  const decl = lowerer.checker
+    .getSymbolAtLocation(recv)
+    ?.declarations.find(ts.isVariableDeclaration);
+  if (decl?.initializer === undefined) return null;
+  const init = withoutParenthesesTypeWrappers(decl.initializer);
+  if (!ts.isCallExpression(init) || !isWrittenModuleRequireCall(lowerer, init)) return null;
+  const loc = locOf(expr);
+  return {
+    kind: "dynKeyGet",
+    value: lowerer.coerceInto(recv, lowerer.lowerExpr(recv), DYN),
+    key: strLit(expr.name.text, loc),
+    type: DYN,
+    loc,
+  };
+}
+
+export function lowerModuleRequireCall(lowerer: Lowerer, call: ts.CallExpression): IrExpr | null {
+  if (!isWrittenModuleRequireCall(lowerer, call)) return null;
+  const callee = call.expression as ts.PropertyAccessExpression;
   const calleeValue = lowerModuleRequireMember(lowerer, callee);
   if (calleeValue === null) return null;
   const loc = locOf(call);
+  // Node calls module.require with `this` bound to the module object.
+  const receiver = moduleViewValue(lowerer, call, loc);
   return {
     kind: "dynCall",
     callee: calleeValue,
+    ...(receiver === null ? {} : { receiver }),
     calleeName: ts.getTextOfNode(callee),
     args: call.arguments.nodes.map((arg) => lowerer.coerceInto(arg, lowerer.lowerExpr(arg), DYN)),
     type: DYN,
     loc,
   };
+}
+
+/** Whether `node` reads a value out of the module.require a file writes — the
+ * call, a member read through its result, or a binding initialized with one.
+ * The checker types those from the module the specifier names; the program's
+ * own replacement answers them. */
+export function readsWrittenModuleRequireValue(lowerer: Lowerer, node: ts.Node): boolean {
+  let current: ts.Node = node;
+  for (;;) {
+    if (
+      ts.isParenthesizedExpression(current) ||
+      ts.isNonNullExpression(current) ||
+      ts.isPropertyAccessExpression(current) ||
+      ts.isElementAccessExpression(current) ||
+      ts.isCallExpression(current) ||
+      ts.isNewExpression(current)
+    ) {
+      current = current.expression;
+      continue;
+    }
+    break;
+  }
+  if (!ts.isIdentifier(current)) return false;
+  const decl = lowerer.checker
+    .getSymbolAtLocation(current)
+    ?.declarations.find(ts.isVariableDeclaration);
+  if (decl?.initializer === undefined) return false;
+  const init = withoutParenthesesTypeWrappers(decl.initializer);
+  return ts.isCallExpression(init) && isWrittenModuleRequireCall(lowerer, init);
 }
 
 export function fenceNodeModuleMutation(

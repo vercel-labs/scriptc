@@ -192,6 +192,7 @@ import {
 import {
   isCjsModuleGlobal,
   lowerModuleRequireMember,
+  lowerModuleRequireResultMember,
   lowerNodeModuleProperty,
   lowerRequireMainProperty,
 } from "../lower-node-module.js";
@@ -543,6 +544,10 @@ export function lowerPropertyAccessExpr(
   expr: ts.PropertyAccessExpression,
   loc: SrcLoc,
 ): IrExpr {
+  // A member on a stored written-module.require result reads dynamically:
+  // the checker typed the binding from the module the specifier names.
+  const requireResultMember = lowerModuleRequireResultMember(lowerer, expr);
+  if (requireResultMember) return requireResultMember;
   // worker.performance: the Worker's event-loop utilization object. It is a
   // runtime call rather than a plain handle read so a program that reads it
   // links the loop metrics and marks the loop's start, which is what the

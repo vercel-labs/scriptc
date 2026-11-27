@@ -557,6 +557,7 @@ import {
 import {
   isNodeModuleHandle,
   prepareCjsModuleGraph,
+  readsWrittenModuleRequireValue,
   untypedModuleValueFence,
   usesCjsTopLevelThis,
 } from "./lower-node-module.js";
@@ -18432,6 +18433,11 @@ export class Lowerer {
     // A binding initialized from such a read (and every use of it) holds
     // the read's value, not the type the checker inferred through the
     // original module.
+    // A value read out of the module.require a file writes — the call, a
+    // member read through its result, or a binding initialized with one —
+    // holds whatever the replacement returned.
+    if (isJsSourceFile(ts.getSourceFileOfNode(node)) && readsWrittenModuleRequireValue(this, node))
+      return this.checker.getAnyType();
     if (
       this.rebindableRequireDecls.size > 0 &&
       ts.isIdentifier(node) &&
@@ -25308,6 +25314,9 @@ export class Lowerer {
       writesModuleRequireFile(ts.getSourceFileOfNode(expr))
     )
       return null;
+    // A binding that holds a written module.require(...) result is not a
+    // builtin namespace.
+    if (readsWrittenModuleRequireValue(this, expr)) return null;
     // A require binding the file reassigns owns checked-dynamic storage
     // (rebindable-requires.ts): its member reads and calls read that storage,
     // never the builtin's static surface.
@@ -25591,6 +25600,9 @@ export class Lowerer {
     // A member read through a require binding the file reassigns reads that
     // binding's storage, not the builtin's static surface.
     if (reboundRequireBindingOf(this, access.expression) !== null) return null;
+    // A binding that holds a written module.require(...) result answers the
+    // program's replacement, not the module the checker inferred.
+    if (readsWrittenModuleRequireValue(this, access.expression)) return null;
     // A guarded step keeps its chain lowering, except one the chain lowering
     // has already found to be a plain access (a namespace is never nullish).
     if (access.questionDotToken && !this.chainHandled.has(access)) return null;

@@ -1,4 +1,5 @@
 #include "scr_worker.h"
+#include "scr_symbol.h"
 
 #ifdef SCR_WORKERS
 #include <limits.h>
@@ -765,6 +766,17 @@ static ScrStr *scr_worker_event_name(const ScrWorkerView *view, const ScrDyn *va
   return scr_emitter_name_dyn(value);
 }
 
+/* A name for the key-table walks. Node's NodeEventTarget converts a symbol
+ * with String() in listenerCount() and removeAllListeners(), so Symbol("s")
+ * names the string key "Symbol(s)" — a port cannot register a listener under
+ * a symbol (its on, once and off convert with the DOM string conversion and
+ * throw), so that string key is the only one it can match. A Worker is an
+ * EventEmitter: a symbol there stays its own key, as in Node. */
+static ScrStr *scr_worker_key_table_name(const ScrWorkerView *view, const ScrDyn *value) {
+  if (view->port && value->kind == SCR_DYN_SYMBOL) return scr_sym_to_string(value->v.symbol.value);
+  return scr_emitter_name_dyn(value);
+}
+
 static ScrDyn *scr_worker_view_invoke(void *ptr, ScrDyn *self, const char *method,
                                      ScrDyn *const *args, size_t argc, const char *what) {
   (void)what;
@@ -870,15 +882,15 @@ static ScrDyn *scr_worker_view_invoke(void *ptr, ScrDyn *self, const char *metho
   if (method_is(method, "removeAllListeners")) {
     bool all = !argc || args[0]->kind == SCR_DYN_UNDEF;
     /* No DOMString here: Node's removeAllListeners walks the key table, so a
-     * symbol name removes nothing instead of throwing. */
-    ScrStr *name = all ? NULL : scr_emitter_name_dyn(args[0]);
+     * symbol name is its String() form instead of throwing. */
+    ScrStr *name = all ? NULL : scr_worker_key_table_name(view, args[0]);
     if (!all && !name) return NULL;
     scr_emitter_release(scr_emitter_remove_all(view->events, name, all));
     scr_str_release(name);
     return scr_exc_pending() ? NULL : scr_dyn_retain(self);
   }
   if (method_is(method, "listenerCount")) {
-    ScrStr *name = scr_emitter_name_dyn(argc ? args[0] : scr_dyn_undefined());
+    ScrStr *name = scr_worker_key_table_name(view, argc ? args[0] : scr_dyn_undefined());
     if (!name) return NULL;
     double count = argc > 1 && args[1]->kind != SCR_DYN_UNDEF
       ? scr_emitter_listener_count_dyn(view->events, name, args[1])

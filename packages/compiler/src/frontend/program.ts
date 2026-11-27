@@ -1368,7 +1368,15 @@ function entryPackageProgramRoots7(
   const roots = new Set<string>();
   /** The file an edge adds to the roots, or null: a file the program
    * already holds, or an edge that names no compiled JavaScript. */
-  const rootOf = (from: string, spec: string, kind: "import" | "require"): string | null => {
+  const rootOf = (
+    from: string,
+    spec: string,
+    kind: "import" | "require",
+    /** True for an `export … from` edge: Node evaluates the module, so a
+     * declaration file cannot stand in for its runtime JavaScript, even in
+     * the project world that types authored code from declarations. */
+    evaluates = false,
+  ): string | null => {
     // The project edge, from any program file: a relative import, or a
     // tsconfig path, that lands on the entry package's JavaScript, on an
     // opted-in package's, or on a source package's (tsgo's own walk loads
@@ -1395,7 +1403,11 @@ function entryPackageProgramRoots7(
     if (packageRoots === null || isRelativeSpecifier(spec)) return null;
     if (target !== null && !(isNodeModulesPath(target) && !isJsSourceFileName(target))) return null;
     if (spec.startsWith("#") || canonicalBuiltinModule(spec) !== null) return null;
-    if (packageRoots.declared && resolveBareModule(from, spec, "types-only", kind) !== null)
+    if (
+      !evaluates &&
+      packageRoots.declared &&
+      resolveBareModule(from, spec, "types-only", kind) !== null
+    )
       return null;
     const npm = resolveBareModule(from, spec, undefined, kind);
     return npm !== null &&
@@ -1411,6 +1423,18 @@ function entryPackageProgramRoots7(
     for (const specifier of sf.imports) {
       if (!ts.isStringLiteralLike(specifier)) continue;
       const root = rootOf(sf.fileName, specifier.text, moduleSpecifierKind7(specifier));
+      if (root !== null) roots.add(root);
+    }
+    // `export … from "./pkg"` names a load edge too (Node evaluates the
+    // module), but TypeScript's import list holds only import declarations.
+    // Without this a star or named re-export from an opted-in package never
+    // roots the package's runtime JavaScript, so its implementation never
+    // joins the program and every name it supplies becomes an island.
+    for (const stmt of sf.statements.nodes) {
+      if (stmt.isTypeOnly || !ts.isExportDeclaration(stmt)) continue;
+      const specifier = stmt.moduleSpecifier;
+      if (specifier === undefined || !ts.isStringLiteralLike(specifier)) continue;
+      const root = rootOf(sf.fileName, specifier.text, "import", true);
       if (root !== null) roots.add(root);
     }
   }
@@ -7611,16 +7635,19 @@ function preflightStructure7(load: LoadResult): PreflightStructure {
           ) {
             continue;
           }
-          // NAMED re-exports from an INSTALLED npm package (`export
-          // { isUrl } from "url-or-path"` — the pattern's universal facade,
-          // `export { visitorKeys as default } from "@glimmer/syntax"`):
-          // import-plus-export plumbing. The lowering owns the package
-          // value diagnostic when no compiled source can supply the binding.
+          // NAMED and STAR re-exports from an INSTALLED npm package
+          // (`export { isUrl } from "url-or-path"` — the pattern's
+          // universal facade, `export { visitorKeys as default } from
+          // "@glimmer/syntax"`, and `export * from "@vercel/drives"`):
+          // import-plus-export plumbing. Importers chase each name through
+          // the alias chain to the package's own declarations; the lowering
+          // owns the package value diagnostic when no compiled source can
+          // supply the binding. A namespace re-export (`export * as ns`)
+          // still needs a namespace object, so it keeps its fence.
           if (
-            stmt.exportClause !== undefined &&
-            ts.isNamedExports(stmt.exportClause) &&
             !fromSpec.startsWith("#") &&
-            resolveNpmImport7(sf.fileName, fromSpec) !== null
+            resolveNpmImport7(sf.fileName, fromSpec) !== null &&
+            (stmt.exportClause === undefined || ts.isNamedExports(stmt.exportClause))
           ) {
             continue;
           }

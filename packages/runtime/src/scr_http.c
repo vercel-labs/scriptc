@@ -1224,7 +1224,7 @@ struct ScrHttpRes {
    * buffer (the corked bytes plus the socket's own) has emptied. */
   ScrNetLs drain_ls;
   bool need_drain;
-  bool drain_wait; /* the socket's 'drain' is armed for this message */
+  bool drain_wait;
   /* The AsyncLocalStorage context of the end() call (+1, NULL outside a
    * store) once `end_ctx_set`: 'finish', the end() callbacks and 'close'
    * after an end run in it, as Node's do. An http2 compatibility response
@@ -2917,10 +2917,19 @@ static void scr_http_res_arm_socket_drain(ScrHttpRes *r) {
 
 static void scr_http_res_maybe_drain(ScrHttpRes *r) {
   if (!r->need_drain || r->finished || r->destroyed) return;
-  if (scr_http_res_writable_length(r) != 0) {
+  /* 'drain' follows the socket's buffer. The message's own corked bytes
+   * leave at the cork flush (which drains again), so arming the socket for
+   * bytes it does not hold would wait on a flush that never comes and leave
+   * the loop turning on a waiter no event can satisfy. */
+  if (r->sock != NULL && scr_net_sock_writable_length(r->sock) != 0) {
     scr_http_res_arm_socket_drain(r);
     return;
   }
+  if (scr_http_res_writable_length(r) != 0) return;
+  r->need_drain = false;
+  /* Node emits 'drain' asynchronously: a handler that writes the next chunk
+   * must not re-enter this write's stack (a drain-driven upload would grow
+   * the native stack with every chunk) */
   r->need_drain = false;
   if (!scr_net_ls_has_live(&r->drain_ls)) return;
   scr_http_res_retain(r);
@@ -3445,7 +3454,8 @@ enum {
   SCR_HTTP_EMIT_CLIENT_DESTROY_ERROR = 11, /* ScrHttpClientReq: destroy(err) before a dial */
   SCR_HTTP_EMIT_CLIENT_WAE = 12, /* ScrHttpClientReq: a write after end() */
   SCR_HTTP_EMIT_CLIENT_WCB = 13, /* ScrHttpClientReq: write(chunk, cb) callbacks */
-  SCR_HTTP_EMIT_CLIENT_WAE_CB = 14 /* ScrHttpWaeCb: the late write callback, ahead of WAE */
+  SCR_HTTP_EMIT_CLIENT_WAE_CB = 14, /* ScrHttpWaeCb: the late write callback, ahead of WAE */
+  SCR_HTTP_EMIT_CLIENT_DRAIN = 15 /* ScrHttpClientReq: 'drain', off the write stack */
 };
 
 typedef struct {
@@ -3470,6 +3480,7 @@ static void scr_http_client_settle(struct ScrHttpClientReq *c);
 static void scr_http_client_fire_error_cb(ScrClosure *listener, const char *code,
                                           const char *message);
 static void scr_http_client_emit_socket(struct ScrHttpClientReq *c);
+static void scr_http_client_emit_drain(struct ScrHttpClientReq *c);
 static void scr_http_client_emit_finish(struct ScrHttpClientReq *c);
 static void scr_http_client_queue_wcb_handoff(struct ScrHttpClientReq *c);
 static void scr_http_client_emit_destroy_error(struct ScrHttpClientReq *c);
@@ -3524,6 +3535,7 @@ static void scr_http_emit_release(ScrHttpEmit *e) {
   case SCR_HTTP_EMIT_CLIENT_FINISH:
   case SCR_HTTP_EMIT_CLIENT_ABORT:
   case SCR_HTTP_EMIT_CLIENT_WAE:
+  case SCR_HTTP_EMIT_CLIENT_DRAIN:
   case SCR_HTTP_EMIT_CLIENT_DESTROY_ERROR:
     scr_http_client_release_internal((struct ScrHttpClientReq *)e->h);
     break;
@@ -3933,6 +3945,9 @@ static void scr_http_proto_sweep(void) {
         scr_http_client_fire_error_cb(p->listener, "ERR_STREAM_WRITE_AFTER_END", "write after end");
       break;
     }
+    case SCR_HTTP_EMIT_CLIENT_DRAIN:
+      scr_http_client_emit_drain((struct ScrHttpClientReq *)e.h);
+      break;
     case SCR_HTTP_EMIT_CLIENT_ABORT:
       scr_http_client_emit_abort((struct ScrHttpClientReq *)e.h);
       break;
@@ -6753,6 +6768,7 @@ struct ScrHttpClientReq {
   ScrNetLs drain_ls;
   bool need_drain;
   bool drain_wait;
+  bool drain_emit_queued; /* 'drain' queued for the emit sweep (Node emits it async) */
   ScrNetLs continue_ls; /* 'continue': a 100 Continue response arrived */
   ScrNetLs info_ls;     /* 'information': any 1xx response but 101 (ScrHttpRespFn fires) */
   ScrNetLs connect_ls;  /* 'connect': the response to a CONNECT request (ScrHttpUpgradeFn fires) */
@@ -7037,6 +7053,8 @@ static void scr_http_client_queue_finish(ScrHttpClientReq *c) {
   scr_http_emit_push(SCR_HTTP_EMIT_CLIENT_FINISH, scr_http_client_retain(c));
 }
 
+static void scr_http_client_maybe_drain(ScrHttpClientReq *c, bool flushed);
+
 static void scr_http_client_emit_socket(ScrHttpClientReq *c) {
   if (c->socket_emitted) return;
   if (c->destroyed) {
@@ -7058,6 +7076,20 @@ static void scr_http_client_emit_socket(ScrHttpClientReq *c) {
   scr_dyn_this_pop();
   free(snap);
   scr_net_ls_drop(&c->socket_ls);
+  /* Node's request 'drain' follows the socket's buffer, so a write that
+   * answered false drains here even while its corked bytes wait in the
+   * message (they do not hold the socket's 'drain' back). */
+  scr_http_client_maybe_drain(c, true);
+}
+
+/* 'drain' from the sweep: the write that answered false has returned, so a
+ * handler that writes the next chunk adds no frames to that stack. */
+static void scr_http_client_emit_drain(struct ScrHttpClientReq *c) {
+  c->drain_emit_queued = false;
+  /* end() or destroy() between the queue and this sweep: a request that is no
+   * longer writable emits no 'drain', as Node's Writable does not. */
+  if (c->ended || c->destroyed || c->close_emitted) return;
+  scr_net_fire0_this(&c->drain_ls, c, SCR_DYNH_HTTP_CLIENT);
 }
 
 static void scr_http_client_finish_flushed_nt(ScrClosure *cb) {
@@ -7328,10 +7360,13 @@ void scr_http_client_append_header_dyn(ScrHttpClientReq *c, ScrStr *name, ScrDyn
   if (scr_exc_pending()) return;
   ScrDyn *value = scr_http_header_value_plain(raw);
   if (scr_exc_pending()) { scr_dyn_release(value); return; }
+  /* The value's validation coerces it, which runs user code (a toString
+   * that may remove this header): the slot is looked up AFTER that, so it
+   * cannot name an entry the coercion dropped. */
+  if (!scr_http_client_value_valid(name, value)) { scr_dyn_release(value); return; }
   size_t pos = SIZE_MAX;
   for (size_t i = 0; i < c->nheaders; i++)
     if (scr_http_name_eq(c->hnames[i], name)) { pos = i; break; }
-  if (!scr_http_client_value_valid(name, value)) { scr_dyn_release(value); return; }
   if (pos == SIZE_MAX) {
     scr_http_client_store_header(c, name, value, SIZE_MAX);
     scr_dyn_release(value);
@@ -7703,7 +7738,7 @@ static void scr_http_client_autocork(ScrHttpClientReq *c) {
 /* write()'s answer, below with the rest of the OutgoingMessage
  * backpressure state. */
 static bool scr_http_client_write_backpressure(ScrHttpClientReq *c);
-static void scr_http_client_maybe_drain(ScrHttpClientReq *c);
+static void scr_http_client_maybe_drain(ScrHttpClientReq *c, bool flushed);
 
 bool scr_http_client_write_str(ScrHttpClientReq *c, ScrStr *data /*borrowed*/) {
   if (c->ended && !c->destroyed && !c->close_emitted) {
@@ -7780,7 +7815,7 @@ static void scr_http_client_cork_flush(ScrHttpClientReq *c) {
   free(held);
   c->ended = was_ended;
   scr_http_client_fire_write_flush(c);
-  scr_http_client_maybe_drain(c);
+  scr_http_client_maybe_drain(c, true);
 }
 
 void scr_http_client_cork(ScrHttpClientReq *c) { c->corked++; }
@@ -7834,7 +7869,7 @@ static void scr_http_client_socket_drained_nt(ScrClosure *cb) {
   if (c == NULL) return; /* the request settled: nothing waits on it */
   scr_http_client_drop_box(&c->drain_box);
   c->drain_wait = false;
-  scr_http_client_maybe_drain(c);
+  scr_http_client_maybe_drain(c, true);
   scr_http_client_release(c);
 }
 
@@ -7848,27 +7883,42 @@ static void scr_http_client_arm_socket_drain(ScrHttpClientReq *c) {
   scr_net_sock_on_write_flush(c->sock, cb);
 }
 
-static void scr_http_client_maybe_drain(ScrHttpClientReq *c) {
+static void scr_http_client_maybe_drain(ScrHttpClientReq *c, bool flushed) {
   if (!c->need_drain || c->ended || c->destroyed || c->close_emitted) return;
   /* While the CONNECT reply is pending nothing request-owned can leave, and
    * the socket's own buffer is empty: arming its flush callback here would
    * re-enter immediately on every tick. The establishment path resumes. */
   if (c->tunnel_pending) return;
-  if (scr_http_client_writable_length(c) != 0) {
+  /* No socket yet: the bytes wait in the message, and the socket's
+   * assignment (its 'socket' event, where Node's drain follows) runs this. */
+  if (c->sock == NULL || !c->socket_emitted) return;
+  /* Node's request 'drain' follows the SOCKET's buffer; the message's own
+   * corked bytes do not hold it back (they leave at the cork flush). Only
+   * bytes in the socket's buffer empty with its flush — arming for anything
+   * else would wait on a flush that never comes and leave the loop turning
+   * on a waiter no event can satisfy. */
+  if (scr_net_sock_writable_length(c->sock) != 0) {
     scr_http_client_arm_socket_drain(c);
     return;
   }
+  /* A write that lands in the message's own buffer is not a drain: Node
+   * emits 'drain' from a socket flush (or the socket's assignment), so a
+   * producer that keeps writing from 'drain' is paced by the socket instead
+   * of filling the message's buffer between flushes. */
+  if (!flushed) return;
   c->need_drain = false;
-  if (!scr_net_ls_has_live(&c->drain_ls)) return;
-  scr_http_client_retain(c);
-  scr_net_fire0_this(&c->drain_ls, c, SCR_DYNH_HTTP_CLIENT);
-  scr_http_client_release(c);
+  /* Node emits 'drain' asynchronously: a handler that writes the next chunk
+   * must not re-enter this write's stack (a drain-driven upload would grow
+   * the native stack with every chunk) */
+  if (c->drain_emit_queued) return;
+  c->drain_emit_queued = true;
+  scr_http_emit_push(SCR_HTTP_EMIT_CLIENT_DRAIN, scr_http_client_retain(c));
 }
 
 static bool scr_http_client_write_backpressure(ScrHttpClientReq *c) {
   bool ok = scr_http_client_writable_length(c) < c->hwm;
   if (!ok) c->need_drain = true;
-  scr_http_client_maybe_drain(c);
+  scr_http_client_maybe_drain(c, false);
   return ok;
 }
 
@@ -8757,7 +8807,7 @@ static void scr_http_client_sock_established(void *ctx) {
       scr_http_send_chunk_end(c->sock, &c->trailers);
   }
   /* the upload held for the tunnel can drain now */
-  scr_http_client_maybe_drain(c);
+  scr_http_client_maybe_drain(c, true);
   scr_http_client_queue_finish(c);
 }
 
@@ -11318,10 +11368,18 @@ static ScrArr *scr_http_dynh_flat_pairs(const ScrDyn *list) {
  * undefined value is ERR_HTTP_INVALID_HEADER_VALUE, not the text), then the
  * template's string form — an array joins with commas. */
 static bool scr_http_dynh_push_pair(ScrArr *pairs, const ScrStr *name, const ScrDyn *value) {
+  /* The value belongs to the headers object; its validation and conversion
+   * both run user code (toString), which may delete the entry and free the
+   * value — hold a reference across them. */
+  ScrDyn *held = scr_dyn_retain((ScrDyn *)value);
   scr_http_validate_header_name((ScrStr *)name, NULL);
-  if (!scr_exc_pending()) scr_http_validate_header_value((ScrStr *)name, value);
-  if (scr_exc_pending()) return false;
-  ScrStr *text = scr_dyn_string_coerce_js(value);
+  if (!scr_exc_pending()) scr_http_validate_header_value((ScrStr *)name, held);
+  if (scr_exc_pending()) {
+    scr_dyn_release(held);
+    return false;
+  }
+  ScrStr *text = scr_dyn_string_coerce_js(held);
+  scr_dyn_release(held);
   if (text == NULL) return false;
   scr_arr_push_ref(pairs, scr_str_retain((ScrStr *)name));
   scr_arr_push_ref(pairs, text);
@@ -12369,16 +12427,24 @@ static ScrDyn *scr_http_agent_create_connection(ScrHttpAgent *a, ScrDyn *const *
 
 /* The typed rewrite's receiver check: the net dialer it lowers to builds a
  * plaintext socket, so an Agent value whose class is secure (an https.Agent,
- * however it is typed at the call site) must refuse instead of dialing. */
+ * however it is typed at the call site) must refuse instead of dialing.
+ * The check is fail-closed: only an agent this runtime built and knows to be
+ * plaintext may dial. A Node-island (or otherwise foreign) value could be an
+ * https.Agent whose TLS dialer this lowering bypasses, which would silently
+ * downgrade the connection to plaintext, so it refuses too. */
 void scr_http_agent_create_connection_check(const ScrDyn *agent /*borrowed*/) {
-  if (agent == NULL || agent->kind != SCR_DYN_HANDLE ||
-      agent->v.handle.tag != SCR_DYNH_HTTP_AGENT)
+  if (agent == NULL) return;
+  if (agent->kind == SCR_DYN_HANDLE && agent->v.handle.tag == SCR_DYNH_HTTP_AGENT) {
+    ScrHttpAgent *a = (ScrHttpAgent *)agent->v.handle.ptr;
+    if (a == NULL || !a->secure) return;
+    static const char secure_text[] =
+        "https.Agent createConnection (a TLS dial from an options record) is not supported yet";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, secure_text, sizeof secure_text - 1, "SC2020");
     return;
-  ScrHttpAgent *a = (ScrHttpAgent *)agent->v.handle.ptr;
-  if (a == NULL || !a->secure) return;
-  static const char secure_text[] =
-      "https.Agent createConnection (a TLS dial from an options record) is not supported yet";
-  scr_throw_error_msg_code(SCR_ERR_ERROR, secure_text, sizeof secure_text - 1, "SC2020");
+  }
+  static const char foreign_text[] =
+      "createConnection on an Agent this compiled program did not create is not supported yet";
+  scr_throw_error_msg_code(SCR_ERR_ERROR, foreign_text, sizeof foreign_text - 1, "SC2020");
 }
 
 /* The dialer as a value, held like the other hooks. */

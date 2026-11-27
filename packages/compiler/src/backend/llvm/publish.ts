@@ -60,6 +60,9 @@ export interface PublishHost {
   /** The tag helper of a union whose values are tagged record pointers or
    * class instance pointers (nullable-unions.ts), or null. */
   pointerTagFn(t: IrType): string | null;
+  /** The struct index of a record's hidden prototype slot, or -1 when the
+   * shape has none (shapes.ts recordPrototypeIndex). */
+  recordPrototypeIndex?(shapeId: string): number;
   /** The struct index of a record shape's first field. */
   fieldBase(shapeId: string): number;
   /** Class layout: hierarchy membership, preorder interval, field slots
@@ -328,6 +331,19 @@ export class PublishWalkers {
               ]
             : []),
         ];
+        const protoIndex = this.host.recordPrototypeIndex?.(shape.id) ?? -1;
+        // A record that received a prototype refuses publication: the
+        // prototype is mutable, thread-local state the walk does not publish.
+        const guard =
+          protoIndex < 0
+            ? undefined
+            : {
+                index: protoIndex,
+                refuse: this.refusal(
+                  "Cannot publish a record with a prototype",
+                  `record:${shape.id}`,
+                ),
+              };
         return this.objectBody(
           head,
           mangleRecordStruct(shape.id),
@@ -335,6 +351,10 @@ export class PublishWalkers {
           members,
           path,
           loc,
+          false,
+          false,
+          undefined,
+          guard,
         );
       }
       case "object":
@@ -575,13 +595,24 @@ export class PublishWalkers {
     classId = false,
     compact = false,
     tail?: PublishClassInfo["tail"],
+    /** A hidden reference the value must not carry: a non-NULL slot refuses
+     * the publish before anything is marked. */
+    guard?: { index: number; refuse: string },
   ): string[] {
-    const lines = [
-      head,
-      `entry:`,
-      ...this.markLines(traced, PUB_KIND_OBJECT, classId, compact),
-      `walk:`,
-    ];
+    const lines = [head, `entry:`];
+    if (guard !== undefined) {
+      lines.push(
+        `  %gr = getelementptr inbounds %${struct}, ptr %o, i64 0, i32 ${guard.index}`,
+        `  %gv = load ptr, ptr %gr`,
+        `  %gn = icmp eq ptr %gv, null`,
+        `  br i1 %gn, label %marshal, label %guard.refuse`,
+        `guard.refuse:`,
+        `  call void ${guard.refuse}(ptr %o, ptr %ctx)`,
+        `  ret void`,
+        `marshal:`,
+      );
+    }
+    lines.push(...this.markLines(traced, PUB_KIND_OBJECT, classId, compact), `walk:`);
     let n = 0;
     for (const member of members) {
       const fn = this.walker(member.type, `${path}.${member.name}`, loc);

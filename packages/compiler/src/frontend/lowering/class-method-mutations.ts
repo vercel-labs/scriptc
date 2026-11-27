@@ -114,9 +114,23 @@ export function collectClassMethodMutations(
         ts.isIdentifier(node.name) ||
         ts.isStringLiteralLike(node.name) ||
         ts.isNumericLiteral(node.name)
-      )
+      ) {
         methods.add(node.name.text);
-      else if (ts.isComputedPropertyName(node.name)) computedMethods.push(node.name.expression);
+        // A LEGACY method decorator runs at the class statement with the
+        // member's descriptor and may replace its value (`descriptor.value =
+        // wrapper`), so every call of the name must be able to observe a
+        // replaced prototype slot. The class lowering emits the definition;
+        // this census only widens dispatch.
+        const decorated = (
+          (node as { modifiers?: ts.NodeArray<ts.Node> }).modifiers?.nodes ?? []
+        ).some((m) => m.kind === ts.SyntaxKind.Decorator);
+        if (
+          decorated &&
+          lowerer.legacyDecoratorFiles !== null &&
+          lowerer.legacyDecoratorFiles.has(ts.getSourceFileOfNode(node).fileName)
+        )
+          lowerer.noteMethodAccess(node.name.text, node);
+      } else if (ts.isComputedPropertyName(node.name)) computedMethods.push(node.name.expression);
     });
   }
   lowerer.checker.prefetchClassCollection(computedMethods, []);

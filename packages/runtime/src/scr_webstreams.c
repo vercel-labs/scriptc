@@ -881,9 +881,13 @@ static void ws_rcontroller_clear_algorithms(WsRController *c) {
 
 static void ws_readable_close(WsReadable *s) {
   s->state = WS_STATE_CLOSED;
+  /* Hold the reader across the settlements below: a promise reaction runs
+   * while they settle, and one that releases the lock can drop the reader's
+   * last reference before the requests are answered. */
+  WsReader *r = s->reader;
+  if (r) ws_reader_retain(r);
   if (s->closed_materialized) ws_deferred_resolve_undefined(&s->closed);
   if (s->controller && s->controller->bytes) ws_bytes_settle(s->controller, NULL, true);
-  WsReader *r = s->reader;
   if (!r) return;
   if (r->closed && r->closed_live) {
     r->closed_live = false;
@@ -891,7 +895,6 @@ static void ws_readable_close(WsReadable *s) {
     ws_fulfill(r->closed, u);
     scr_dyn_release(u);
   }
-  ws_reader_retain(r);
   while (r->head) {
     WsReadRequest *q = r->head;
     r->head = q->next;
@@ -907,12 +910,16 @@ static void ws_tee_source_error(WsTee *t, ScrDyn *error);
 static void ws_readable_error(WsReadable *s, ScrDyn *error) {
   s->state = WS_STATE_ERRORED;
   s->stored_error = scr_dyn_retain(error);
+  /* Hold the reader across the settlements below, as ws_readable_close
+   * does: a rejection reaction can release the lock and drop the reader's
+   * last reference. */
+  WsReader *r = s->reader;
+  if (r) ws_reader_retain(r);
   if (s->controller && s->controller->bytes) ws_bytes_settle(s->controller, error, false);
   if (s->closed_materialized) {
     ws_set_handled(s->closed.promise);
     ws_deferred_reject(&s->closed, error);
   }
-  WsReader *r = s->reader;
   if (!r) return;
   if (r->closed && r->closed_live) {
     r->closed_live = false;
@@ -920,7 +927,6 @@ static void ws_readable_error(WsReadable *s, ScrDyn *error) {
     ws_reject(r->closed, error);
   }
   if (r->tee) ws_tee_source_error(r->tee, error);
-  ws_reader_retain(r);
   while (r->head) {
     WsReadRequest *q = r->head;
     r->head = q->next;
@@ -6579,14 +6585,47 @@ WS_OPS(ws_byte_strategy_ops, "ByteLengthQueuingStrategy", ws_strategy_retain, ws
        "Value of \"this\" must be of type ByteLengthQueuingStrategy", ws_strategy_attrs, NULL, ws_strategy_inspect_view);
 static SCR_TL bool ws_installed;
 
-/* Defined by the stream unit; weak so a web-streams-only link stays valid. */
+/* Both are the stream unit's, and a program using web streams without it
+ * (no node:stream) links this object alone. ELF reads the weak references as
+ * 0 there; Mach-O refuses an undefined weak reference in an executable, so
+ * the Apple branch gives them weak definitions instead, and the stream unit's
+ * strong definitions replace them when it is linked. */
+#if defined(__APPLE__)
+__attribute__((weak)) ScrStream *(*scr_stream_web_pair_hook)(ScrDyn *value, double flags) = NULL;
+__attribute__((weak)) ScrStream *scr_stream_duplex_from_web(ScrDyn *pair, double flags) {
+  (void)pair;
+  (void)flags;
+  return NULL;
+}
+#else
 extern ScrStream *(*scr_stream_web_pair_hook)(ScrDyn *value, double flags) __attribute__((weak));
-
-/* The pair adaptation the hook answers with lives in the stream unit too
- * (a program that reaches it links streams, web streams and the dyn tier),
- * so the reference is weak: the hook is only called from the stream unit,
- * which links this one with it. */
 extern ScrStream *scr_stream_duplex_from_web(ScrDyn *pair, double flags) __attribute__((weak));
+#endif
+/* duplexify.js reads a body's `writable` alone as a writable-only Duplex
+ * (Duplex.from over a lone web WritableStream): the hook answers that writer's
+ * adapter and the stream unit duplexifies it. Weak for the same reason, with
+ * a weak definition on Mach-O for the same reason as the two above. */
+#if defined(__APPLE__)
+__attribute__((weak)) ScrStream *scr_stream_writable_from_web(ScrDyn *web, double flags) {
+  (void)web;
+  (void)flags;
+  return NULL;
+}
+#else
+extern ScrStream *scr_stream_writable_from_web(ScrDyn *web, double flags) __attribute__((weak));
+#endif
+/* The stream unit marks the adapter's chunks as web values. The hook only
+ * runs when that unit is linked, and a web-streams-only program links this
+ * object without it, so the reference is weak; Mach-O refuses an undefined
+ * weak reference in an executable, so it gets a weak definition there. */
+#if defined(__APPLE__)
+__attribute__((weak)) void scr_stream_set_web_chunks(ScrStream *s, bool on) {
+  (void)s;
+  (void)on;
+}
+#else
+extern void scr_stream_set_web_chunks(ScrStream *s, bool on) __attribute__((weak));
+#endif
 
 static ScrStream *ws_stream_web_pair(ScrDyn *value, double flags) {
   if (value == NULL) return NULL;
@@ -6605,11 +6644,36 @@ static ScrStream *ws_stream_web_pair(ScrDyn *value, double flags) {
               writable != NULL && writable->kind == SCR_DYN_HANDLE &&
               (writable->v.handle.tag == SCR_DYNH_WS_WRITABLE ||
                writable->v.handle.tag == SCR_DYNH_WEB_WRITABLE);
+  /* A lone web WritableStream is the value itself: it has no `writable`
+   * member the way a TransformStream's pair does. */
+  bool self_writable = target->kind == SCR_DYN_HANDLE &&
+                       (target->v.handle.tag == SCR_DYNH_WS_WRITABLE ||
+                        target->v.handle.tag == SCR_DYNH_WEB_WRITABLE);
+  bool has_readable = readable != NULL && readable->kind != SCR_DYN_UNDEF &&
+                      readable->kind != SCR_DYN_NULL;
   if (readable) scr_dyn_release(readable);
   if (writable) scr_dyn_release(writable);
+  /* Bit 16 is the compose tail: the stages before it hand a lone web
+   * WritableStream its chunks untouched, as the pipeline's stages do, where
+   * Duplex.from decodes them for its byte-mode writable. A pair keeps the
+   * flags it came with (its readable side must stay byte mode). */
+  int bits = (int)flags;
   ScrStream *out = NULL;
-  if (!scr_exc_pending() && pair && scr_stream_duplex_from_web != NULL)
-    out = scr_stream_duplex_from_web((ScrDyn *)target, flags);
+  if (!scr_exc_pending() && pair && scr_stream_duplex_from_web != NULL) {
+    out = scr_stream_duplex_from_web((ScrDyn *)target, (double)(bits & ~16));
+  } else if (!scr_exc_pending() && self_writable && !has_readable &&
+             scr_stream_writable_from_web != NULL) {
+    double wflags =
+        bits == 0 ? 0 : (double)(((bits & 16) != 0 ? (bits & ~16) | 2 : bits) | 8);
+    out = scr_stream_writable_from_web((ScrDyn *)target, wflags);
+    /* That adapter's flags name its options (bit 2 object mode, bit 4
+     * decodeStrings), so a pipeline or compose stage — any flagged body —
+     * keeps its web chunks here: a null a stage enqueued is a value its write
+     * carries, where Duplex.from's body (no flags) keeps node's null-write
+     * error. */
+    if (out != NULL && bits != 0 && scr_stream_set_web_chunks != NULL)
+      scr_stream_set_web_chunks(out, true);
+  }
   if (view) scr_dyn_release(view);
   return out;
 }

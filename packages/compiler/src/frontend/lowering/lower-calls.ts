@@ -47,7 +47,11 @@ import { lowerUnionEquality, tagEqualityMayMissAlias } from "./strict-equality.j
 import { lowerHashStreamCall } from "./builtins/hash-stream.js";
 import { lowerUntypedStringLastIndexOfCall } from "./builtins/strings.js";
 import { lowerWebAssemblyValueOf } from "./builtins/webassembly.js";
-import { lowerResponseStaticJson } from "./lower-stdlib.js";
+import {
+  lowerResponseStaticError,
+  lowerResponseStaticJson,
+  lowerResponseStaticRedirect,
+} from "./lower-stdlib.js";
 import { lowerArrayCallbackCall } from "./containers/array-callback-call.js";
 /** Dispatch source calls, builtin members and receiver-specific operations.
  * Signature collection, argument completion and function bodies have their
@@ -371,6 +375,7 @@ import { fenceExpandoRead } from "./lower-expando.js";
 import {
   fenceNodeModuleMutationCall,
   isCjsRequireGlobal,
+  lowerModuleClassStaticCall,
   lowerRequireCacheKeys,
 } from "./lower-node-module.js";
 import { builtinConstantsObject, pathModuleValue } from "./lower-builtin-values.js";
@@ -606,6 +611,9 @@ export function refuseWrittenBuiltin(
 }
 
 export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
+  // `Module.isBuiltin(...)`: the class's statics are the module surface.
+  const moduleStatic = lowerModuleClassStaticCall(lowerer, expr);
+  if (moduleStatic) return moduleStatic;
   // `fs.readFileSync(…)` where `fs` is a require binding the file
   // reassigns: the binding's storage holds whatever the program stored, so
   // the method is read and called through that checked-dynamic value.
@@ -2325,6 +2333,8 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       lowerStaticIsPrototypeOfCall(lowerer, expr, expr.expression) ??
       // Static Response.json(data, init?) builds a native Response.
       lowerResponseStaticJson(lowerer, expr) ??
+      lowerResponseStaticError(lowerer, expr) ??
+      lowerResponseStaticRedirect(lowerer, expr) ??
       // Refuse Response constructor operations before generic-call
       // fallbacks can report an unrelated SC1090 diagnostic.
       lowerer.fenceUnsupportedFetchConstructorMember(expr.expression) ??

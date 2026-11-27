@@ -1238,6 +1238,15 @@ struct ScrHttpRes {
   bool writable_finished; /* set where Node emits 'finish' (writableFinished) */
   bool finish_queued;
   bool finish_wait; /* 'finish' waits on the socket's write completion */
+  /* Node finishes a response when the socket has taken ITS last byte: the
+   * accepted-byte offset captured at that moment, and the connection's
+   * progress list this response waits in meanwhile. */
+  bool flush_target_set;
+  double flush_target;
+  struct ScrHttpConn *flush_conn; /* the connection's wait list this response
+                                   * belongs to (survives the request drop,
+                                   * which clears `conn`) */
+  struct ScrHttpRes *flush_next; /* conn->flush_wait, borrowed */
   ScrBox *finish_box; /* the waiter's owner-side box; cleared when the response settles */
   ScrBox *wcb_box;    /* the write-callback waiter's box; cleared at settle */
   ScrBox *drain_box;  /* the socket-drain waiter's box; cleared at settle */
@@ -3578,6 +3587,12 @@ static void scr_http_queue_req_aborted(ScrHttpReq *req) {
  * deferred emit — the res 'close' precedent). */
 static void scr_http_queue_res_finish(ScrHttpRes *res) {
   if (res->finish_queued || res->unflushed) return;
+  /* the offset the socket must have taken for this response to be done:
+   * its last byte is the newest accepted byte at this moment */
+  if (res->finished && !res->flush_target_set) {
+    res->flush_target_set = true;
+    if (res->sock != NULL) res->flush_target = scr_net_sock_bytes_written(res->sock);
+  }
   res->finish_queued = true;
   scr_http_emit_push(SCR_HTTP_EMIT_RES_FINISH, scr_http_res_retain(res));
 }
@@ -3795,10 +3810,39 @@ static void scr_http_res_drop_waiters(ScrHttpRes *res) {
   scr_http_res_drop_box(&res->drain_box);
 }
 
+/* The connection's flush-wait list: responses whose 'finish' waits for the
+ * socket to take their own bytes, in write order. */
+static void scr_http_res_flush_link(ScrHttpRes *res) {
+  struct ScrHttpConn *conn = res->flush_conn;
+  if (conn == NULL || conn->flush_wait == res || conn->flush_wait_tail == res) return;
+  res->flush_next = NULL;
+  if (conn->flush_wait_tail != NULL) conn->flush_wait_tail->flush_next = res;
+  else conn->flush_wait = res;
+  conn->flush_wait_tail = res;
+}
+
+static void scr_http_res_flush_unlink(ScrHttpRes *res) {
+  struct ScrHttpConn *conn = res->flush_conn;
+  ScrHttpRes *next = res->flush_next;
+  res->flush_next = NULL;
+  if (conn == NULL) return;
+  if (conn->flush_wait == res) {
+    conn->flush_wait = next;
+    if (next == NULL) conn->flush_wait_tail = NULL;
+    return;
+  }
+  ScrHttpRes *prev = conn->flush_wait;
+  while (prev != NULL && prev->flush_next != res) prev = prev->flush_next;
+  if (prev == NULL) return;
+  prev->flush_next = next;
+  if (conn->flush_wait_tail == res) conn->flush_wait_tail = prev;
+}
+
 static void scr_http_res_finish_flushed_nt(ScrClosure *cb) {
   ScrHttpRes *res = scr_box_get_ref(cb->caps[0]);
   if (res == NULL) return; /* the response settled: nothing waits on it now */
   res->finish_wait = false;
+  scr_http_res_flush_unlink(res);
   scr_http_res_drop_finish_box(res);
   scr_http_queue_res_finish(res);
 }
@@ -3806,6 +3850,7 @@ static void scr_http_res_finish_flushed_nt(ScrClosure *cb) {
 static void scr_http_res_arm_finish_flush(ScrHttpRes *res) {
   if (res->finish_wait) return;
   res->finish_wait = true;
+  scr_http_res_flush_link(res);
   ScrClosure *cb = scr_closure_new((void *)&scr_http_res_finish_flushed_nt, 1);
   cb->caps[0] = scr_box_new_obj(&scr_http_ptr_keep_v, &scr_http_ptr_drop_v, NULL);
   scr_box_set_ref(cb->caps[0], res);
@@ -3977,11 +4022,15 @@ static void scr_http_proto_sweep(void) {
       ScrHttpRes *res = (ScrHttpRes *)e.h;
       res->finish_queued = false; /* a later on('finish') on the finished res re-queues */
       /* Node's 'finish' follows the body leaving the socket buffer and its
-       * writes' callbacks: retry from the next tick while either is due. */
-      if (res->sock != NULL && scr_net_sock_writable_length(res->sock) != 0) {
+       * writes' callbacks: retry from the next tick while either is due.
+       * The socket has to have taken THIS response's bytes, not to be
+       * empty — a pipelined peer that does not read completes each
+       * response as the kernel accepts its data, as Node does. */
+      if (res->sock != NULL && scr_net_sock_bytes_flushed(res->sock) < res->flush_target) {
         scr_http_res_arm_finish_flush(res);
         break;
       }
+      scr_http_res_flush_unlink(res);
       /* the body is out: a write callback still waiting for the socket's own
        * flush runs before the response finishes, as Node's afterWrite does */
       if (scr_net_ls_has_live(&res->wcb_ls)) {
@@ -4098,6 +4147,9 @@ typedef struct ScrHttpConn {
    * positive number, like Node. */
   size_t requests_count;
   bool pumping; /* inside scr_http_conn_pump */
+  struct ScrHttpRes *flush_wait; /* responses whose 'finish' waits for the
+                                  * socket to take their bytes, in order */
+  struct ScrHttpRes *flush_wait_tail;
   bool keep_alive_timer; /* the socket's idle timer is the keep-alive timeout */
   /* The request's absolute deadlines (Node's connection checker): armed
    * when a request's first byte arrives, the headers deadline cleared when
@@ -5400,6 +5452,7 @@ static bool scr_http_conn_parse_head(ScrHttpConn *conn, size_t head_len, bool *o
   res->hwm = conn->srv != NULL ? conn->srv->hwm : scr_stream_get_default_hwm(false);
   res->sock = scr_net_sock_retain(conn->sock);
   res->conn = conn;
+  res->flush_conn = conn;
   res->keep_alive = req_keep_alive;
   res->reject_body_writes = conn->srv->reject_non_standard_body_writes;
   res->max_requests_reached = reqs_reached;
@@ -5885,6 +5938,15 @@ static bool scr_http_client_sock_err(ScrHttpConn *conn, ScrStr *msg);
  * back behind a flush that a settled socket will never deliver (Node's
  * socketOnError path). */
 static void scr_http_res_socket_lost(ScrHttpConn *conn) {
+  /* the socket can no longer take these responses' bytes: nothing of the
+   * connection's flush-wait list survives it */
+  ScrHttpRes *res = conn->flush_wait;
+  while (res != NULL) {
+    ScrHttpRes *next = res->flush_next;
+    scr_http_res_flush_unlink(res);
+    res->flush_conn = NULL;
+    res = next;
+  }
   if (conn->res == NULL || !conn->res->finished || conn->res->writable_finished) return;
   scr_http_res_mark_unflushed(conn->res);
 }
@@ -5949,6 +6011,23 @@ static bool scr_http_conn_server_timeout(void *ctx) {
   return handled;
 }
 
+/* The socket took more bytes: every response whose own offset is reached
+ * finishes now (Node's per-message completion), in write order. */
+static void scr_http_conn_write_progress(void *ctx) {
+  ScrHttpConn *conn = (ScrHttpConn *)ctx;
+  if (conn == NULL || conn->sock == NULL || conn->flush_wait == NULL) return;
+  double flushed = scr_net_sock_bytes_flushed(conn->sock);
+  ScrHttpRes *res = conn->flush_wait;
+  while (res != NULL) {
+    ScrHttpRes *next = res->flush_next;
+    if (flushed >= res->flush_target) {
+      scr_http_res_flush_unlink(res);
+      scr_http_queue_res_finish(res);
+    }
+    res = next;
+  }
+}
+
 /* The server's native connection hook: one parser per accepted socket. */
 static void scr_http_on_connection(void *ctx, ScrNetSocket *sock) {
   ScrHttpSrvCtx *srv = (ScrHttpSrvCtx *)ctx;
@@ -5964,6 +6043,7 @@ static void scr_http_on_connection(void *ctx, ScrNetSocket *sock) {
   scr_net_sock_set_native_idle_checker(sock, &scr_http_conn_is_idle);
   scr_net_sock_set_native_events(sock, NULL, &scr_http_conn_err);
   scr_net_sock_set_native_http_timeout(sock, &scr_http_conn_server_timeout);
+  scr_net_sock_set_native_write_progress(sock, &scr_http_conn_write_progress);
   /* Node starts the headers deadline at accept: a client that sends no
    * bytes at all must still time out. */
   scr_http_conn_arm_request_timers(conn);

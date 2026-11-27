@@ -802,6 +802,10 @@ struct ScrNetSocket {
   /* socket.bytesWritten: every byte accepted by the write paths (user
    * writes, protocol heads, pipe deliveries — plaintext on TLS sockets) */
   size_t bytes_written;
+  /* The prefix of bytes_written the kernel has actually taken: a protocol
+   * that finishes one message at a time (HTTP/1 responses) compares this
+   * against the offset its own last byte had when accepted. */
+  size_t bytes_flushed;
   /* end(callback)/write(chunk, callback): 'finish'-shaped callbacks fire
    * from the SWEEP (never the registering stack — Node defers them too).
    * finish_ls waits for the FIN (wr_done); wcb_ls waits for the write
@@ -843,6 +847,9 @@ struct ScrNetSocket {
   ScrNetNativeEventFn native_closed;
   ScrNetNativeEventFn native_timeout;
   ScrNetNativeTimeoutHandledFn native_http_timeout; /* HTTP req/res timeout handled */
+  ScrNetNativeEventFn native_write_progress; /* the write buffer moved: a
+                                              * protocol layer checks whether
+                                              * a waiting message completed */
   ScrNetNativeEventFn native_established; /* client connect completed (the
                                            * h2 session's 'connect' moment;
                                            * fires before conn_ls) */
@@ -1724,7 +1731,10 @@ static void scr_net_sock_write_raw(ScrNetSocket *s, const char *data, size_t len
     return;
   }
   ssize_t sent = s->tops ? s->tops->xwrite(s->tctx, data, len) : scr_net_send(s->fd, data, len);
-  if (sent > 0) scr_net_sock_touch(s);
+  if (sent > 0) {
+    scr_net_sock_touch(s);
+    s->bytes_flushed += (size_t)sent;
+  }
   if (sent < 0) {
     if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) sent = 0;
     else {
@@ -1783,7 +1793,10 @@ void scr_net_sock_writev_native(ScrNetSocket *s, const ScrNetSlice *slices, size
 #else
   ssize_t sent = sendmsg(s->fd, &msg, 0);
 #endif
-  if (sent > 0) scr_net_sock_touch(s);
+  if (sent > 0) {
+    scr_net_sock_touch(s);
+    s->bytes_flushed += (size_t)sent;
+  }
   if (sent < 0) {
     if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) sent = 0;
     else {
@@ -1815,6 +1828,7 @@ void scr_net_sock_writev_native(ScrNetSocket *s, const ScrNetSlice *slices, size
 static void scr_net_sock_flush(ScrNetSocket *s) {
   if (s->tunnel != NULL) return; /* nothing moves until the proxy answers */
   if (s->tops && !s->t_est) return; /* nothing moves until the handshake ends */
+  bool progressed = false;
   while (s->fd >= 0 && s->wlen > s->whead) {
     ssize_t sent = s->tops ? s->tops->xwrite(s->tctx, s->wbuf + s->whead, s->wlen - s->whead)
                            : scr_net_send(s->fd, s->wbuf + s->whead, s->wlen - s->whead);
@@ -1828,7 +1842,11 @@ static void scr_net_sock_flush(ScrNetSocket *s) {
       scr_net_sock_close_fd(s);
       return;
     }
-    if (sent > 0) scr_net_sock_touch(s);
+    if (sent > 0) {
+      scr_net_sock_touch(s);
+      progressed = true;
+      s->bytes_flushed += (size_t)sent;
+    }
     s->whead += (size_t)sent;
     scr_net_sock_wq_settle(s);
   }
@@ -1840,6 +1858,9 @@ static void scr_net_sock_flush(ScrNetSocket *s) {
      * now, unless the write half is ending or the socket is gone */
     scr_net_sock_maybe_drain(s);
   }
+  /* the kernel took more bytes: a layer that finishes messages one at a
+   * time checks its own offset here (HTTP/1 responses) */
+  if (progressed && s->native_write_progress != NULL) s->native_write_progress(s->native_ctx);
 }
 
 /* The decoded string of the 'data' emit in progress (borrowed, NULL for a
@@ -6705,6 +6726,9 @@ void scr_net_sock_on_write_flush(ScrNetSocket *s, ScrClosure *cb /*moves*/) {
 
 double scr_net_sock_bytes_written(ScrNetSocket *s) { return (double)s->bytes_written; }
 
+/* The prefix of bytes_written the kernel has taken (see the field). */
+double scr_net_sock_bytes_flushed(ScrNetSocket *s) { return (double)s->bytes_flushed; }
+
 /* socket.readable: true until the read half is done (peer FIN / destroy). */
 bool scr_net_sock_readable(ScrNetSocket *s) {
   if (s->adopted_by != NULL) return scr_net_sock_readable(s->adopted_by);
@@ -9271,6 +9295,7 @@ void scr_net_sock_clear_native_reader(ScrNetSocket *s) {
   s->native_closed = NULL;
   s->native_idle = NULL; /* upgraded and CONNECT sockets are outside HTTP close sweeps */
   s->native_http_timeout = NULL;
+  s->native_write_progress = NULL;
   s->native_reader_ctx = NULL;
   scr_net_sock_update_read(s);
 }
@@ -9310,6 +9335,12 @@ void scr_net_sock_set_native_events(ScrNetSocket *s, ScrNetNativeEventFn timeout
                                      ScrNetNativeErrFn err) {
   s->native_timeout = timeout;
   s->native_err = err;
+}
+
+/* The write buffer moved: `fn` runs once per flush, after the syscalls,
+ * with the socket's native context. */
+void scr_net_sock_set_native_write_progress(ScrNetSocket *s, ScrNetNativeEventFn fn) {
+  s->native_write_progress = fn;
 }
 
 void scr_net_sock_set_native_http_timeout(ScrNetSocket *s, ScrNetNativeTimeoutHandledFn fn) {
@@ -10167,6 +10198,7 @@ static void scr_net_cleanup_atexit(void) {
       s->native_closed = NULL;
       s->native_timeout = NULL;
       s->native_http_timeout = NULL;
+  s->native_write_progress = NULL;
       s->native_established = NULL;
       s->native_err = NULL;
       ctx_free(ctx);

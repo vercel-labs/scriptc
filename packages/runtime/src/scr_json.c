@@ -248,6 +248,8 @@ void scr_dyn_install_async_dispose_symbol(ScrDyn *key) {
   scr_atexit(scr_async_dispose_symbol_cleanup);
 }
 
+ScrDyn *scr_dyn_async_dispose_symbol_value(void) { return scr_async_dispose_symbol; }
+
 bool scr_dyn_is_async_dispose_symbol(const ScrDyn *key) {
   return scr_async_dispose_symbol && key->kind == SCR_DYN_SYMBOL &&
          key->v.symbol.value == scr_async_dispose_symbol->v.symbol.value;

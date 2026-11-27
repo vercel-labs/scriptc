@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/process-emit-nested-once/main.js"
+ ],
+ "diags": []
+}

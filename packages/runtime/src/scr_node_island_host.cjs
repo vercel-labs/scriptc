@@ -961,6 +961,9 @@ const clearFunctions = [
 
 const EVENT_SIGNAL = 1;
 const EVENT_EXIT = 2;
+// A manual process.emit of a signal: Node calls the listener with no
+// arguments (a real delivery carries the signal's name and number).
+const EVENT_SIGNAL_EMIT = 4;
 // Not a process event: from a tick of its own, the runtime asks for the
 // rest of the current turn before it decides its unhandled rejections
 // (scr_async.c, scr_hosted_deciding_tick). Node's tick callback, the
@@ -1084,6 +1087,7 @@ function emit(kind, id, name, arg) {
     process.rawListeners(entry.event).find((raw) => (raw.listener ?? raw) === entry.listener);
   if (registered === undefined) return;
   if (kind === EVENT_SIGNAL) Reflect.apply(registered, process, [name, arg]);
+  else if (kind === EVENT_SIGNAL_EMIT) Reflect.apply(registered, process, []);
   else Reflect.apply(registered, process, [arg]);
 }
 

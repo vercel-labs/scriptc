@@ -345,9 +345,13 @@ bool scr_process_emit_signal(ScrStr *name) {
   }
   for (size_t i = 0; i < n; i++) {
     if (!scr_exc_pending()) {
+      // A once entry another listener's nested emit already fired is gone
+      // from the registry: Node's once wrapper is a no-op after it fires, so
+      // the outer snapshot must not run the listener a second time.
+      bool live = true;
       if (snap[i].once) {
+        bool found = false;
         for (ScrSigReg *r = scr_sig_regs; r; r = r->next) {
-          bool found = false;
           for (size_t j = 0; j < r->n; j++) {
             if (r->ls[j].id == snap[i].id) {
               scr_sig_remove(r, j);
@@ -357,6 +361,12 @@ bool scr_process_emit_signal(ScrStr *name) {
           }
           if (found) break;
         }
+        live = found;
+      }
+      if (!live) {
+        scr_dyn_release(snap[i].cb);
+        scr_str_release(snap[i].name);
+        continue;
       }
       if (snap[i].island != 0 && scr_island_emit != NULL) {
         // Node calls a signal listener with no arguments, and an emit
@@ -451,9 +461,13 @@ static void scr_signals_drain(void) {
   }
   for (size_t i = 0; i < n; i++) {
     if (!scr_exc_pending()) {
+      // A once entry another listener's nested emit already fired is gone
+      // from the registry: Node's once wrapper is a no-op after it fires, so
+      // the outer snapshot must not run the listener a second time.
+      bool live = true;
       if (snap[i].once) {
+        bool found = false;
         for (ScrSigReg *reg = scr_sig_regs; reg; reg = reg->next) {
-          bool found = false;
           for (size_t j = 0; j < reg->n; j++) {
             if (reg->ls[j].id == snap[i].id) {
               scr_sig_remove(reg, j);
@@ -463,6 +477,12 @@ static void scr_signals_drain(void) {
           }
           if (found) break;
         }
+        live = found;
+      }
+      if (!live) {
+        scr_dyn_release(snap[i].cb);
+        scr_str_release(snap[i].name);
+        continue;
       }
       if (snap[i].island != 0 && scr_island_emit != NULL) {
         // A real delivery carries the signal's name and number, matching

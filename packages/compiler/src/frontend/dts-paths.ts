@@ -74,6 +74,7 @@ export function compilerOwnedFileName(file: string): string | null {
     overridesDtsPath(),
     fallbackDtsPath(),
     domExceptionDtsPath(),
+    webStreamsDtsPath(),
   ]) {
     if (path === declaration) return `scriptc:${path.slice(path.lastIndexOf("/") + 1)}`;
   }
@@ -115,6 +116,18 @@ export function fallbackDtsPath(): string {
  * declaration themselves. A standard-library file, like them. */
 export function domExceptionDtsPath(): string {
   return declarationPath("scriptc-dom-exception.d.ts");
+}
+
+/** Path of the shipped declaration of the web stream globals (ReadableStream,
+ * WritableStream, TransformStream and their readers, writers, controllers and
+ * strategies) for a program whose own @types/node declares none: added beside
+ * those types when the program names one of the globals (program.ts,
+ * nodeTypesSupplementRoots7). Node's runtime provides them whatever the
+ * project's @types/node says; @types/node 20.11 and earlier declare none. The
+ * fallback declarations carry the same declarations through a reference. A
+ * standard-library file, like them. */
+export function webStreamsDtsPath(): string {
+  return declarationPath("scriptc-web-streams.d.ts");
 }
 
 const FALLBACK_MODULE_DIRECTORY = "node-fallback";

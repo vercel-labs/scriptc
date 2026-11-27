@@ -984,6 +984,18 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
       guessedOverloadValue(lowerer, node)
     )
       return expr;
+    // `record[key]!`: the checker asserts the read present and JavaScript's
+    // `!` performs no check, so a checked-dynamic dictionary read keeps the
+    // direct value and the consuming operation converts it (js.toF64 for a
+    // number). A missing key answers NaN there, exactly what ToNumber gives
+    // the arithmetic that consumes it; the validated `T | undefined` read
+    // below is for reads whose absence the program observes.
+    if (
+      node.parent !== undefined &&
+      ts.isNonNullExpression(node.parent) &&
+      node.parent.expression === node
+    )
+      return expr;
     // A dynamic read names the member it validated, so a failing check
     // reports `$.projectId` (or `$[0]`) instead of the bare `$`. The path
     // spelling is a dot for a name and a decimal index for a position, so a

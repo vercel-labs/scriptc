@@ -2840,9 +2840,42 @@ __attribute__((noinline)) void *scr_sa_slow_ref(size_t n, bool zero) {
  * before 6.17 fails a fixed move that spans mappings (the destination is
  * unmapped). Consumed once. */
 bool scr_sa_test_fail_move;
+/* The next destination map of a run move, and the next re-map of the run it
+ * left, fail the way an exhausted address space fails them. Consumed once. */
+bool scr_sa_test_fail_map_dest;
+bool scr_sa_test_fail_map_src;
 #endif
 
 #if defined(__linux__) && defined(MREMAP_FIXED)
+/* Reports a grow whose new range could not be mapped, with the numbers a
+ * failure report needs: both runs' addresses and sizes, the errno and the
+ * window's bounds. A grow never traps for this: the caller copies the block
+ * into a fresh run instead, and the range that could not be mapped is burned
+ * so no free list hands it out again. */
+static void scr_sa_move_refused(const char *what, int err, const void *p, size_t have, const void *q,
+                                size_t n) {
+  char *w = __atomic_load_n(&scr_sa_window, __ATOMIC_ACQUIRE);
+  char line[320];
+  int len = snprintf(line, sizeof line,
+                     "scriptc: grow could not map %s (errno %d): run %p of %zu bytes, new run %p of "
+                     "%zu bytes, window %p of %zu chunks\n",
+                     what, err, p, have, q, n, (void *)w, scr_sa_window_chunks);
+  if (len > 0) (void)!write(2, line, (size_t)(len < (int)sizeof line ? len : (int)sizeof line - 1));
+}
+
+/* Takes the window range q of n bytes out of circulation: it could not be
+ * mapped, so handing it out again would hand out unmapped memory. Marked as a
+ * run, which no free list names. */
+static void scr_sa_run_burn(char *q, size_t n) {
+  size_t i = (size_t)(q - scr_sa_window) >> SCR_SA_CHUNK_SHIFT;
+  size_t chunks = (n + SCR_SA_CHUNK - 1) >> SCR_SA_CHUNK_SHIFT;
+  if (i >= scr_sa_window_chunks || chunks == 0) return;
+  if (i + chunks > scr_sa_window_chunks) chunks = scr_sa_window_chunks - i;
+  scr_sa_chunk_set(i, (uint16_t)SCR_SA_RUN_HEAD);
+  scr_sa_run_chunks[i] = (uint16_t)chunks;
+  for (size_t k = 1; k < chunks; k++) scr_sa_chunk_set(i + k, (uint16_t)SCR_SA_RUN_NEXT);
+}
+
 /* Grows the run p of `have` bytes to a run of n bytes (n > SCR_SA_LARGE_MAX)
  * by moving its pages to a new run, as the system allocator grows a mapped
  * block, instead of copying them; NULL when p is no run or the window has no
@@ -2873,15 +2906,45 @@ static void *scr_sa_run_move(void *p, size_t have, size_t n) {
     /* A failed fixed move has unmapped the destination already (the kernel
      * unmaps it before doing the move; before 6.17 a move that spans
      * mappings fails there), so map the new run again before copying into
-     * it. */
-    if (mmap(q, n, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_FIXED | MAP_NORESERVE, -1, 0) != q)
-      scr_trap("scriptc: out of memory\n");
+     * it. A new run that cannot be mapped costs this grow its move, not the
+     * program: the block stays where it is, the caller copies it, and the
+     * range that could not be mapped is burned. */
+#ifdef SCR_SA_TEST
+    bool dest_failed = scr_sa_test_fail_map_dest;
+    scr_sa_test_fail_map_dest = false;
+#else
+    bool dest_failed = false;
+#endif
+    if (dest_failed ||
+        mmap(q, n, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_FIXED | MAP_NORESERVE, -1, 0) != q) {
+      scr_sa_move_refused("the new run", dest_failed ? ENOMEM : errno, p, have, q, n);
+      scr_sa_run_burn(q, n);
+      return NULL;
+    }
     memcpy(q, p, have);
     scr_sa_run_free(p);
     return q;
   }
-  if (mmap(p, have, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_FIXED | MAP_NORESERVE, -1, 0) != p)
-    scr_trap("scriptc: out of memory\n");
+#ifdef SCR_SA_TEST
+  bool src_failed = scr_sa_test_fail_map_src;
+  scr_sa_test_fail_map_src = false;
+#else
+  bool src_failed = false;
+#endif
+  if (src_failed ||
+      mmap(p, have, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_FIXED | MAP_NORESERVE, -1, 0) != p) {
+    /* The page move worked but the old range cannot be mapped back as a
+     * zeroed run. The contents are at the new run: give them back to the old
+     * one when the kernel allows it, and keep them at the new run when it
+     * does not, burning the range that cannot be mapped. */
+    scr_sa_move_refused("the old run back", src_failed ? ENOMEM : errno, p, have, q, n);
+    if (mremap(q, have, have, MREMAP_MAYMOVE | MREMAP_FIXED, p) == p) {
+      scr_sa_run_burn(q, n);
+      return NULL;
+    }
+    scr_sa_run_burn(p, have);
+    return q;
+  }
 #ifdef SCR_SA_THP
   (void)madvise(p, have, MADV_NOHUGEPAGE);
 #endif

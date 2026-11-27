@@ -39,6 +39,8 @@ static uintptr_t chunk_of(const void *p) {
  * 6.17 fails a fixed move that spans mappings (the destination is
  * unmapped). */
 extern bool scr_sa_test_fail_move;
+extern bool scr_sa_test_fail_map_dest;
+extern bool scr_sa_test_fail_map_src;
 #endif
 
 /* The allocator unit needs only scr_trap from the rest of the runtime: the
@@ -1536,6 +1538,39 @@ static void check_large_blocks(void) {
     scr_mem_free(g2);
   }
 #ifdef SCR_SA_TEST
+  /* A new run that cannot be mapped: the grow loses its move, not the
+   * program. The block is copied into a fresh run and its bytes survive. */
+  {
+    size_t small_run = (size_t)5 << 20, big_run = (size_t)21 << 20;
+    unsigned char *r = scr_mem_alloc_ref(small_run);
+    fill(r, small_run, 0x35);
+    /* The move fails, and so does the map that would stand in for it. */
+    scr_sa_test_fail_move = true;
+    scr_sa_test_fail_map_dest = true;
+    unsigned char *g4 = scr_mem_realloc_ref(r, big_run);
+    assert(!scr_sa_test_fail_map_dest);
+    assert(g4 && in_window(g4));
+    verify(g4, small_run, 0x35);
+    fill(g4, big_run, 0x71);
+    verify(g4, big_run, 0x71);
+    assert(scr_mem_block_size(g4) >= big_run);
+    scr_mem_free(g4);
+  }
+  /* The old range cannot be mapped back after the move: the contents come
+   * back with the block, and nothing traps. */
+  {
+    size_t small_run = (size_t)5 << 20, big_run = (size_t)21 << 20;
+    unsigned char *r = scr_mem_alloc_ref(small_run);
+    fill(r, small_run, 0x46);
+    scr_sa_test_fail_map_src = true;
+    unsigned char *g5 = scr_mem_realloc_ref(r, big_run);
+    assert(!scr_sa_test_fail_map_src);
+    assert(g5 && in_window(g5));
+    verify(g5, small_run, 0x46);
+    fill(g5, big_run, 0x62);
+    verify(g5, big_run, 0x62);
+    scr_mem_free(g5);
+  }
   /* A failed fixed move leaves the destination unmapped (kernels before
    * 6.17, when the old run spans mappings): the fallback maps it again and
    * the copy keeps the run's contents. */

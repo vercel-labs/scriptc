@@ -87,13 +87,15 @@ export function int32ElementSlot(
  * back into the fields; a field of such a class stays a double when any
  * dynamic store in the program can name it (literal-keyed stores name one
  * property, every other store any property). Classes
- * with runtime-provided ancestors, generic families, fields under
- * `++`/`--`, and parameters of functions that escape as values, are
- * constructed through class values, or are virtual-dispatch targets are
- * excluded as well. Library builds keep ordinary storage: their instances
- * cross a native boundary. Worker builds do not: instances reach another
- * thread only through postMessage/workerData, whose dyn views read (and
- * commit) fields like every other dynamic reader. Reads are never
+ * with runtime-provided ancestors, fields under `++`/`--`, and parameters
+ * of functions that escape as values, are constructed through class values,
+ * or are virtual-dispatch targets are excluded as well. A generic
+ * instantiation keeps the fields it declares as its own family, so its
+ * number fields qualify like any class's. Library builds keep ordinary
+ * storage: their instances cross a native boundary. Worker builds do not:
+ * instances reach another thread only through postMessage/workerData, whose
+ * dyn views read (and commit) fields like every other dynamic reader. Reads
+ * are never
  * restricted: every reader (static code, dyn views, JSON, inspect) widens
  * the i32 exactly. */
 export class Int32Slots {
@@ -583,6 +585,10 @@ const DYN_READ_ONLY = new Set<IrLibFn>([
   "dyn.isFrozen",
   "dyn.increment",
   "dyn.negate",
+  // TextEncoder.encode's USVString conversion (scr_text_encode_input):
+  // undefined reads as "", every other value through ToString; it builds a
+  // new string and stores nothing.
+  "text.encodeInput",
   "dyn.iterator",
   "dyn.iteratorCanStep",
   "dyn.iteratorResult",
@@ -1247,15 +1253,15 @@ export function analyzeInt32Slots(mod: IrModule, inputs: Int32SlotInputs = {}): 
     }
     return out;
   };
-  const genericFamilies = new Set<string>();
-  for (const cls of classes.values())
-    if (cls.genericOf !== undefined) {
-      genericFamilies.add(cls.name);
-      genericFamilies.add(cls.genericOf);
-    }
+  /** A class whose field storage the program's own writes decide: no
+   * runtime-provided ancestor, and every ancestor declared here. A generic
+   * instantiation is a class of its own: it declares the fields the erased
+   * family does not, and the fields the erased family declares are one
+   * family shared by every instantiation, whose writes the fixpoint checks
+   * across all of them. */
   const plainClass = (cls: IrClassDef): boolean => {
     for (let c: IrClassDef | undefined = cls; c; c = c.base ? classes.get(c.base) : undefined) {
-      if (c.runtime || genericFamilies.has(c.name)) return false;
+      if (c.runtime) return false;
       if (c.base && !classes.has(c.base)) return false;
     }
     return true;
@@ -1270,7 +1276,7 @@ export function analyzeInt32Slots(mod: IrModule, inputs: Int32SlotInputs = {}): 
       const family = slots.family(cls.name, field.name)!;
       if (plainClass(cls)) {
         if (!slots.reasons.has(`field:${family}`)) slots.addField(family);
-      } else dropFamily(family, "runtime-provided or generic class");
+      } else dropFamily(family, "runtime-provided class");
     }
 
   /* ── dynamic, reflective and runtime exposure ── */

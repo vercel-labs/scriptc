@@ -171,6 +171,49 @@ test("subclass writes share the base field and ++ disqualifies it", () => {
   expect(slots.reasons.get("field:Base\0y")).toMatch(/\+\+/);
 });
 
+test("a generic instantiation proves its own number fields, independently of another's", () => {
+  // The lowering erases a generic family to a field-less class and gives each
+  // instantiation every field its own class uses.
+  const instantiation: IrClassDef = {
+    ...cls("Box<hash>", ["count", "value"]),
+    base: "Box",
+    genericOf: "Box",
+  };
+  const erased = cls("Box", []);
+  const functions = [
+    fn(
+      "%Box<hash>.constructor",
+      [{ id: "this", type: obj("Box<hash>") }, { id: "v" }],
+      [
+        set(ref("this", obj("Box<hash>")), "Box<hash>", "value", bin("|", ref("v"), num(0))),
+        set(ref("this", obj("Box<hash>")), "Box<hash>", "count", num(1)),
+      ],
+    ),
+    fn("use", [], [stmt(newOf("Box<hash>", [num(4)]))]),
+  ];
+  const slots = analyzeInt32Slots(mod([erased, instantiation], functions));
+  expect(slots.isField("Box<hash>", "value")).toBe(true);
+  expect(slots.isField("Box<hash>", "count")).toBe(true);
+  expect(slots.family("Box<hash>", "count")).toBe("Box<hash>\0count");
+
+  // Another instantiation's fractional write drops only its own family.
+  const other: IrClassDef = {
+    ...cls("Box<text>", ["count", "value"]),
+    base: "Box",
+    genericOf: "Box",
+  };
+  const fractional = fn(
+    "%Box<text>.constructor",
+    [{ id: "this", type: obj("Box<text>") }],
+    [set(ref("this", obj("Box<text>")), "Box<text>", "count", num(0.5))],
+  );
+  const mixed = analyzeInt32Slots(mod([erased, instantiation, other], [...functions, fractional]));
+  expect(mixed.isField("Box<text>", "count")).toBe(false);
+  expect(mixed.reasons.get("field:Box<text>\0count")).toMatch(/not int32/);
+  expect(mixed.isField("Box<hash>", "count")).toBe(true);
+  expect(mixed.isField("Box<hash>", "value")).toBe(true);
+});
+
 test("results are proven per return and parameters of escaping functions stay unknown", () => {
   const functions = [
     fn("bits", [{ id: "n" }], [ret(bin("&", ref("n"), num(255)))], F64),
@@ -278,6 +321,9 @@ test("dynamic stores disqualify the field names they can reach", () => {
     "dyn.ownKeys",
     "dyn.hasOwn",
     "dyn.toString",
+    // TextEncoder.encode's argument conversion (undefined reads as "", every
+    // other value through ToString) builds a new string and stores nothing.
+    "text.encodeInput",
     "dyn.typeof",
     "insp.dyn",
     "insp.dynS",

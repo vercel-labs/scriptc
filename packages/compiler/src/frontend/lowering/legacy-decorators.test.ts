@@ -361,3 +361,18 @@ test("a dynamic legacy class decorator on a base with subclasses is refused", as
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("constructor parameter decorators on a function-local class are refused", async () => {
+  const source = [
+    "function dec(t: object, k: string | symbol | undefined, i: number): void { console.log(i); }",
+    "function make() {",
+    "  class Local {",
+    "    constructor(@dec public x: number) {}",
+    "  }",
+    "  return Local;",
+    "}",
+    "new (make())(1);",
+    "",
+  ].join("\n");
+  expect(await refusalCodes(source, legacyTsconfig)).toContain("SC1090");
+});

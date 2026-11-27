@@ -13,7 +13,10 @@ import { checkPreflight, loadProgram } from "./program-node.js";
 
 function diagnostics(files: Record<string, string>, entry: string) {
   const directory = mkdtempSync(join(tmpdir(), "scriptc-json-named-"));
-  writeFileSync(join(directory, "package.json"), '{"type":"module","name":"probe","version":"1.2.3"}');
+  writeFileSync(
+    join(directory, "package.json"),
+    '{"type":"module","name":"probe","version":"1.2.3"}',
+  );
   writeFileSync(join(directory, "data.json"), '{"name":"probe","version":"1.2.3","count":2}');
   for (const [name, text] of Object.entries(files)) writeFileSync(join(directory, name), text);
   const load = loadProgram(join(directory, entry));

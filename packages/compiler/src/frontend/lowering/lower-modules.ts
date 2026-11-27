@@ -1103,11 +1103,7 @@ function parseJsonDocument(lowerer: Lowerer, jsonSf: ts.SourceFile, at: ts.Node)
     return JSON.parse(jsonSf.text);
   } catch (e) {
     lowerer.pushDiag(
-      invalidJsonModuleDiag(
-        jsonSf.fileName,
-        e instanceof Error ? e.message : String(e),
-        locOf(at),
-      ),
+      invalidJsonModuleDiag(jsonSf.fileName, e instanceof Error ? e.message : String(e), locOf(at)),
     );
     throw new PoisonError();
   }
@@ -1212,16 +1208,7 @@ export function collectJsonImports(lowerer: Lowerer, parts: FileParts[]): void {
           const nameSym = lowerer.checker.getSymbolAtLocation(defaultName);
           if (!nameSym || !(nameSym.flags & ts.SymbolFlags.Alias)) continue;
           const target = lowerer.checker.getAliasedSymbol(nameSym);
-          bakeJsonBinding(
-            lowerer,
-            fp,
-            stmt,
-            defaultName,
-            target,
-            defaultName.text,
-            doc(),
-            "$",
-          );
+          bakeJsonBinding(lowerer, fp, stmt, defaultName, target, defaultName.text, doc(), "$");
         }
         const bakeNamed = (element: ts.ImportSpecifier | ts.ExportSpecifier): void => {
           if (element.isTypeOnly) return;

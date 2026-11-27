@@ -988,13 +988,33 @@ export function lowerPromiseStaticCall(
       const made = lowered?.[i] ?? lowerer.lowerExpr(el);
       // An entry whose static type has a thenable part joins as the promise
       // PromiseResolve makes of it.
-      const entry = promiseResolveThenable(lowerer, el, made, locOf(el)) ?? made;
-      if (entry.type.kind !== "promise") {
-        lowerer.noLowering(
-          "Promise.race over non-promise entries",
-          el,
-          "JS would resolve plain values — wrap them: new Promise((r) => r(v))",
-        );
+      const resolvedEntry = promiseResolveThenable(lowerer, el, made, locOf(el)) ?? made;
+      let entry: IrExpr & { type: IrType & { kind: "promise" } };
+      if (resolvedEntry.type.kind === "promise") {
+        entry = resolvedEntry as IrExpr & { type: IrType & { kind: "promise" } };
+      } else {
+        // JS resolves a plain value: PromiseResolve fulfills a fresh promise
+        // with it at once, and the race joins that promise like any other
+        // entry (an already-settled entry wins over pending ones, and among
+        // settled entries the argument order decides, as in Node).
+        if (isUnitType(resolvedEntry.type)) {
+          lowerer.noLowering(
+            "Promise.race over a bare undefined or null entry",
+            el,
+            "a unit payload has no fulfill adapter — wrap it: new Promise((r) => r(undefined))",
+          );
+        }
+        const promiseType: IrType & { kind: "promise" } = {
+          kind: "promise",
+          inner: resolvedEntry.type,
+        };
+        entry = {
+          kind: "intrinsic",
+          name: "promise.resolve",
+          args: [resolvedEntry],
+          type: promiseType,
+          loc: locOf(el),
+        };
       }
       if (!compatible(entry.type.inner) && !(entry.type.inner.kind === "void" && neverEntry(el))) {
         // A payload that widens into the result's (into 'unknown', or a

@@ -2562,8 +2562,40 @@ export function collectClassShapeInner(
             decl.members.nodes.find((member): member is ts.ConstructorDeclaration =>
               ts.isConstructorDeclaration(member),
             );
-          if (constructor !== undefined)
-            legacyCtorParameters.push(...parameterDecoratorsOf(constructor));
+          if (constructor !== undefined) {
+            const entries = parameterDecoratorsOf(constructor);
+            // A parameter decorator can install a validating setter on the
+            // prototype for its parameter property. With constructor-assigned
+            // fields Node's `this.x = x` goes through that setter, but
+            // compiled parameter-property initialization writes the field
+            // directly, so the pattern is refused there.
+            if (
+              entries.length > 0 &&
+              lowerer.parameterPropertiesFirst?.has(
+                ts.getSourceFileOfNode(constructor).fileName,
+              ) === true
+            )
+              for (const entry of entries) {
+                const parameter = constructor.parameters.nodes[entry.index]!;
+                const isParameterProperty = (
+                  (parameter as { modifiers?: ts.NodeArray<ts.Node> }).modifiers?.nodes ?? []
+                ).some((modifier) =>
+                  [
+                    ts.SyntaxKind.PublicKeyword,
+                    ts.SyntaxKind.PrivateKeyword,
+                    ts.SyntaxKind.ProtectedKeyword,
+                    ts.SyntaxKind.ReadonlyKeyword,
+                  ].includes(modifier.kind),
+                );
+                if (isParameterProperty)
+                  lowerer.unsupported(
+                    "SC1090",
+                    entry.decorators[0]!,
+                    "constructor parameter decorators on a parameter property in a project whose fields are assigned in the constructor (useDefineForClassFields: false or a target below ES2022; a decorator-installed prototype accessor would be bypassed by the compiled field write)",
+                  );
+              }
+            legacyCtorParameters.push(...entries);
+          }
         }
         const legacyDecoratedMembers = legacyDecorators
           ? decl.members.nodes.filter(
@@ -7163,8 +7195,8 @@ export function validateLegacyMemberDispatch(lowerer: Lowerer): void {
       const first = members[0]!;
       lowerer.unsupported(
         "SC1090",
-        first.decorators[0]!,
-        `legacy method decorators on '${info.def.jsName ?? info.def.name}' with a generic subclass ('${candidate.def.jsName ?? candidate.def.name}' instances would run the declared method and bypass the decorated one)`,
+        first.decorators[0] ?? first.parameters[0]!.decorators[0]!,
+        `legacy ${first.kind} decorators on '${info.def.jsName ?? info.def.name}' with a generic subclass ('${candidate.def.jsName ?? candidate.def.name}' instances would run the declared member and bypass the decorated one)`,
       );
     }
   }

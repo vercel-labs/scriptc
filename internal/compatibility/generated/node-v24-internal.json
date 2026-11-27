@@ -64161,6 +64161,9 @@
           "tests/corpus/http2-send-trailers-shapes.ts",
           "tests/corpus/http2-server-close-late-stream.ts",
           "tests/corpus/http2-server-close.ts",
+          "tests/corpus/http2-server-timeout-capture.ts",
+          "tests/corpus/http2-server-timeout-once.ts",
+          "tests/corpus/http2-server-timeout-settle.ts",
           "tests/corpus/http2-session-controls.ts",
           "tests/corpus/http2-session-error.ts",
           "tests/corpus/http2-session-local-window.ts",
@@ -66684,8 +66687,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "supported",
+        "evidence": "compiler-feature:http2.server.setTimeout",
+        "tests": [
+          "tests/corpus/http2-server-timeout-once.ts",
+          "tests/corpus/http2-server-timeout-capture.ts",
+          "tests/corpus/http2-server-timeout-settle.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -66730,8 +66738,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:http2.timeout"
+        "status": "supported",
+        "evidence": "compiler-feature:http2.timeout",
+        "tests": [
+          "tests/corpus/http2-server-timeout-once.ts",
+          "tests/corpus/http2-server-timeout-capture.ts",
+          "tests/corpus/http2-server-timeout-settle.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -66910,8 +66923,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "supported",
+        "evidence": "compiler-feature:http2.'timeout'",
+        "tests": [
+          "tests/corpus/http2-server-timeout-once.ts",
+          "tests/corpus/http2-server-timeout-capture.ts",
+          "tests/corpus/http2-server-timeout-settle.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -66982,8 +67000,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "supported",
+        "evidence": "compiler-feature:http2.server.setTimeout",
+        "tests": [
+          "tests/corpus/http2-server-timeout-once.ts",
+          "tests/corpus/http2-server-timeout-capture.ts",
+          "tests/corpus/http2-server-timeout-settle.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -67028,8 +67051,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:http2.timeout"
+        "status": "supported",
+        "evidence": "compiler-feature:http2.timeout",
+        "tests": [
+          "tests/corpus/http2-server-timeout-once.ts",
+          "tests/corpus/http2-server-timeout-capture.ts",
+          "tests/corpus/http2-server-timeout-settle.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -67208,8 +67236,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "supported",
+        "evidence": "compiler-feature:http2.'timeout'",
+        "tests": [
+          "tests/corpus/http2-server-timeout-once.ts",
+          "tests/corpus/http2-server-timeout-capture.ts",
+          "tests/corpus/http2-server-timeout-settle.ts"
+        ]
       },
       "anchorSource": "exact"
     },

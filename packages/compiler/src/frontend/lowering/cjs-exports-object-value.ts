@@ -397,6 +397,23 @@ export function cjsExportsObjectWrites(
  * `exports.a = exports.b = v` chain sets each member, innermost first,
  * reading back what the statement stored. Empty when the module has no
  * object. */
+/** Whether a whole-export assignment statement precedes `stmt` in the file:
+ * after `module.exports = …`, a member write targets the replacement, and the
+ * original top-level `this` object is a separate object Node never writes it
+ * to. */
+function wholeExportReplacedBefore(
+  lowerer: Lowerer,
+  sf: ts.SourceFile,
+  stmt: ts.Statement,
+): boolean {
+  for (const sibling of sf.statements.nodes) {
+    if (sibling === stmt) return false;
+    const assignment = cjsExportAssignmentOf(sibling);
+    if (assignment !== null && assignment.kind !== "member") return true;
+  }
+  return false;
+}
+
 export function cjsExportStatementObjectWrites(lowerer: Lowerer, stmt: ts.Statement): IrStmt[] {
   const sf = ts.getSourceFileOfNode(stmt);
   const cjs = cjsExportAssignmentOf(stmt);
@@ -412,7 +429,11 @@ export function cjsExportStatementObjectWrites(lowerer: Lowerer, stmt: ts.Statem
   // exports object when it has one, never onto top-level `this`, which Node
   // keeps as the original exports object for the module's life (the
   // replacement does not rebind it).
-  const g = cjsExportsObjectOf(lowerer, sf) ?? (cjs.kind === "table" ? null : (thisObject ?? null));
+  const g =
+    cjsExportsObjectOf(lowerer, sf) ??
+    (cjs.kind === "table" || wholeExportReplacedBefore(lowerer, sf, stmt)
+      ? null
+      : (thisObject ?? null));
   if (g === null) return [];
   // A statement Node discards writes onto the exports object a
   // `module.exports =` assignment replaced: the module's object no longer

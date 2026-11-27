@@ -9932,6 +9932,32 @@ static void scr_ipc_remove_message_once(ScrIpc *ipc, ScrClosure *cb) {
   }
 }
 
+/* process.off / removeListener on the channel's message listeners. Node
+ * removes the most recently added listener that is the same function, so the
+ * scan runs from the end. The argument closure is borrowed: the caller keeps
+ * its reference, and only a matching registered entry is released. */
+static void scr_ipc_remove_message(ScrIpc *ipc, ScrClosure *cb) {
+  for (size_t i = ipc->n_message; i-- > 0;) {
+    if (!scr_closure_identity_equal(ipc->message_ls[i].cb, cb)) continue;
+    scr_closure_release(ipc->message_ls[i].cb);
+    memmove(ipc->message_ls + i, ipc->message_ls + i + 1,
+            (ipc->n_message - i - 1) * sizeof(*ipc->message_ls));
+    ipc->n_message--;
+    return;
+  }
+}
+
+static void scr_ipc_remove_disconnect(ScrIpc *ipc, ScrClosure *cb) {
+  for (size_t i = ipc->n_disconnect; i-- > 0;) {
+    if (!scr_closure_identity_equal(ipc->disconnect_ls[i].cb, cb)) continue;
+    scr_closure_release(ipc->disconnect_ls[i].cb);
+    memmove(ipc->disconnect_ls + i, ipc->disconnect_ls + i + 1,
+            (ipc->n_disconnect - i - 1) * sizeof(*ipc->disconnect_ls));
+    ipc->n_disconnect--;
+    return;
+  }
+}
+
 static void scr_ipc_fire_messages_in(ScrIpc *ipc);
 
 /* 'message' runs in the channel's creation context. */
@@ -10330,6 +10356,19 @@ void scr_process_ipc_on_message(ScrClosure *cb, ScrIpcMessageFn fn,
 }
 void scr_process_ipc_on_disconnect(ScrClosure *cb, bool once) {
   scr_ipc_add_disconnect(scr_process_ipc, cb, once);
+}
+
+/* process.off(event, listener) / removeListener: the listener is borrowed,
+ * and a process without a channel has no registry to remove from (Node
+ * answers the same: nothing was registered, so nothing is removed). */
+void scr_process_ipc_off_message(ScrClosure *cb) {
+  if (scr_process_ipc == NULL) return;
+  scr_ipc_remove_message(scr_process_ipc, cb);
+}
+
+void scr_process_ipc_off_disconnect(ScrClosure *cb) {
+  if (scr_process_ipc == NULL) return;
+  scr_ipc_remove_disconnect(scr_process_ipc, cb);
 }
 
 /* process.channel — Node's Control in a forked child: the cached object

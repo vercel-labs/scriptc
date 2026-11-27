@@ -1202,6 +1202,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   // Process event removals (borrowed callbacks: removal is by pointer
   // identity); registration is special-cased above (ownership moves).
   "process.offSignal": "scr_signal_off",
+  "process.offMessage": "scr_process_ipc_off_message",
+  "process.offDisconnect": "scr_process_ipc_off_disconnect",
   "process.offExit": "scr_process_off_exit",
   "process.offBeforeExit": "scr_process_off_before_exit",
   // Front-of-list registrations (process.prependListener): the signal and

@@ -898,6 +898,96 @@ function modulePropertyReceiver(lowerer: Lowerer, node: ts.Expression): boolean 
   return isNodeModuleValue(lowerer, node);
 }
 
+/** Files that assign the module object's own `require` member — by name, a
+ * literal computed key, or `delete`. Node's require function delegates to
+ * `module.require`, so such a file calls the replacement, not the loader. */
+const moduleRequireWrites = new WeakMap<ts.SourceFile, boolean>();
+
+function isModuleRequireTarget(lowerer: Lowerer, node: ts.Expression): boolean {
+  const e = withoutParenthesesTypeWrappers(node);
+  if (ts.isPropertyAccessExpression(e) && !e.questionDotToken && e.name.text === "require")
+    return isCjsModuleGlobal(lowerer, e.expression);
+  if (
+    ts.isElementAccessExpression(e) &&
+    !e.questionDotToken &&
+    isCjsModuleGlobal(lowerer, e.expression)
+  ) {
+    const key = withoutParenthesesTypeWrappers(e.argumentExpression);
+    return ts.isStringLiteralLike(key) && key.text === "require";
+  }
+  return false;
+}
+
+export function writesModuleRequire(lowerer: Lowerer, node: ts.Node): boolean {
+  const sf = ts.getSourceFileOfNode(node);
+  const cached = moduleRequireWrites.get(sf);
+  if (cached !== undefined) return cached;
+  let found = false;
+  ts.walkPreorder(sf, (n) => {
+    if (found) return "stop";
+    if (
+      ts.isBinaryExpression(n) &&
+      n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+      n.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
+      isModuleRequireTarget(lowerer, n.left)
+    ) {
+      found = true;
+      return "stop";
+    }
+    if (ts.isDeleteExpression(n) && isModuleRequireTarget(lowerer, n.expression)) {
+      found = true;
+      return "stop";
+    }
+    return undefined;
+  });
+  moduleRequireWrites.set(sf, found);
+  return found;
+}
+
+/** `module.require` read in a file that writes that member: the value the
+ * program stored (Node's require function delegates to it). Null when the
+ * file never writes it — the canonical loader lowerings keep that shape. */
+export function lowerModuleRequireMember(
+  lowerer: Lowerer,
+  expr: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (expr.questionDotToken || expr.name.text !== "require") return null;
+  if (!isCjsModuleGlobal(lowerer, expr.expression)) return null;
+  if (!writesModuleRequire(lowerer, expr)) return null;
+  const ref = cjsModuleRef(lowerer, expr);
+  if (ref === null) return null;
+  const loc = locOf(expr);
+  return {
+    kind: "dynKeyGet",
+    value: { kind: "libCall", fn: "module.dynObject", args: [ref], type: DYN, loc },
+    key: strLit("require", loc),
+    type: DYN,
+    loc,
+  };
+}
+
+/** `module.require(...)` in a file that writes that member: a call of the
+ * value the program stored (Node's require function delegates to it), not of
+ * the loader. Null off that shape. */
+export function lowerModuleRequireCall(lowerer: Lowerer, call: ts.CallExpression): IrExpr | null {
+  const callee = call.expression;
+  if (!ts.isPropertyAccessExpression(callee) || callee.questionDotToken) return null;
+  if (callee.name.text !== "require" || !isCjsModuleGlobal(lowerer, callee.expression)) return null;
+  if (!writesModuleRequire(lowerer, call)) return null;
+  if (call.arguments.nodes.some((arg) => ts.isSpreadElement(arg))) return null;
+  const calleeValue = lowerModuleRequireMember(lowerer, callee);
+  if (calleeValue === null) return null;
+  const loc = locOf(call);
+  return {
+    kind: "dynCall",
+    callee: calleeValue,
+    calleeName: ts.getTextOfNode(callee),
+    args: call.arguments.nodes.map((arg) => lowerer.coerceInto(arg, lowerer.lowerExpr(arg), DYN)),
+    type: DYN,
+    loc,
+  };
+}
+
 export function fenceNodeModuleMutation(
   lowerer: Lowerer,
   target: ts.PropertyAccessExpression | ts.ElementAccessExpression,

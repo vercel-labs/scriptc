@@ -191,6 +191,7 @@ import {
 } from "./optional-chains.js";
 import {
   isCjsModuleGlobal,
+  lowerModuleRequireMember,
   lowerNodeModuleProperty,
   lowerRequireMainProperty,
 } from "../lower-node-module.js";
@@ -946,6 +947,9 @@ export function lowerPropertyAccessExpr(
   }
   const requireMain = lowerRequireMainProperty(lowerer, expr);
   if (requireMain) return requireMain;
+  // `module.require` in a file that writes that member reads the replacement.
+  const moduleRequire = lowerModuleRequireMember(lowerer, expr);
+  if (moduleRequire) return moduleRequire;
   const moduleProperty = lowerNodeModuleProperty(lowerer, expr);
   if (moduleProperty) return moduleProperty;
   if (

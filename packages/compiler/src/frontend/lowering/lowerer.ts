@@ -3489,6 +3489,70 @@ export interface CjsConditionalExportMirror {
 /** The program module a createRequire binding requires. */
 type CreateRequireTarget = NonNullable<ReturnType<typeof createRequireProgramModuleOf>>;
 
+/** Files that assign the `module` object's own `require` member (by name, a
+ * literal computed key, or `delete`): Node's require function delegates to
+ * `module.require`, so such a file calls the replacement, not the loader. */
+const moduleRequireWrites = new WeakMap<ts.SourceFile, boolean>();
+
+/** `require` or `module.require` as a call's callee shape. */
+function requireShapedCallee(callee: ts.Expression): boolean {
+  let e: ts.Expression = callee;
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  if (ts.isIdentifier(e)) return e.text === "require";
+  return (
+    ts.isPropertyAccessExpression(e) &&
+    !e.questionDotToken &&
+    e.name.text === "require" &&
+    ts.isIdentifier(e.expression) &&
+    e.expression.text === "module"
+  );
+}
+
+/** `module.require` as an assignment target or a `delete` operand. */
+function isModuleRequireTarget(node: ts.Expression): boolean {
+  let e: ts.Expression = node;
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  if (ts.isPropertyAccessExpression(e) && !e.questionDotToken && e.name.text === "require")
+    return ts.isIdentifier(e.expression) && e.expression.text === "module";
+  if (
+    ts.isElementAccessExpression(e) &&
+    !e.questionDotToken &&
+    ts.isIdentifier(e.expression) &&
+    e.expression.text === "module"
+  ) {
+    let key: ts.Expression = e.argumentExpression;
+    while (ts.isParenthesizedExpression(key)) key = key.expression;
+    return ts.isStringLiteralLike(key) && key.text === "require";
+  }
+  return false;
+}
+
+/** Whether `sf` assigns the module object's own `require`. */
+function writesModuleRequireFile(sf: ts.SourceFile): boolean {
+  const cached = moduleRequireWrites.get(sf);
+  if (cached !== undefined) return cached;
+  let found = false;
+  ts.walkPreorder(sf, (n) => {
+    if (found) return "stop";
+    if (
+      ts.isBinaryExpression(n) &&
+      n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+      n.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
+      isModuleRequireTarget(n.left)
+    ) {
+      found = true;
+      return "stop";
+    }
+    if (ts.isDeleteExpression(n) && isModuleRequireTarget(n.expression)) {
+      found = true;
+      return "stop";
+    }
+    return undefined;
+  });
+  moduleRequireWrites.set(sf, found);
+  return found;
+}
+
 export class Lowerer {
   readonly frontendServices: FrontendServices | undefined;
   readonly checker: ts.TypeChecker;
@@ -25236,6 +25300,14 @@ export class Lowerer {
    * member access that IS a module in its own right (`fs.promises` — the
    * same object as node:fs/promises, Node's rule). Null otherwise. */
   builtinNamespaceModuleOf(expr: ts.Expression): string | null {
+    // A require call in a file that writes the module object's own `require`
+    // calls the replacement: it is not a namespace require.
+    if (
+      ts.isCallExpression(expr) &&
+      requireShapedCallee(expr.expression) &&
+      writesModuleRequireFile(ts.getSourceFileOfNode(expr))
+    )
+      return null;
     // A require binding the file reassigns owns checked-dynamic storage
     // (rebindable-requires.ts): its member reads and calls read that storage,
     // never the builtin's static surface.

@@ -369,7 +369,11 @@ import {
   isGlobalObjectRead,
 } from "./host-globals.js";
 import { fenceExpandoRead } from "./lower-expando.js";
-import { fenceNodeModuleMutationCall, lowerRequireCacheKeys } from "./lower-node-module.js";
+import {
+  fenceNodeModuleMutationCall,
+  lowerModuleRequireCall,
+  lowerRequireCacheKeys,
+} from "./lower-node-module.js";
 import { builtinConstantsObject, pathModuleValue } from "./lower-builtin-values.js";
 import {
   defaultAfterUndefined,
@@ -2484,6 +2488,11 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     // (m.keys(), p.then(f), Object.keys(o)) or an unlowered call FORM of
     // a lowered one (Math.min with three arguments, s.padStart(8),
     // x.toFixed()).
+    // A file that writes the module object's own `require` calls the
+    // replacement (Node's require function delegates to it), so the callee is
+    // an ordinary member read rather than the loader.
+    const writtenRequire = lowerModuleRequireCall(lowerer, expr);
+    if (writtenRequire !== null) return writtenRequire;
     lowerer.stdlibMemberFence(expr.expression);
     // The npm METHOD-CALL chokepoint: a call on a package-typed receiver
     // in a static build — attributed to the package.

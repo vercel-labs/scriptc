@@ -5,7 +5,7 @@
  * called and its result is used. */
 import * as ts from "../ts7/adapter.js";
 import { isRequireCallee } from "../require-callee.js";
-import { isCjsModuleGlobal, isCjsRequireGlobal } from "./lower-node-module.js";
+import { isCjsModuleGlobal, isCjsRequireGlobal, writesModuleRequire } from "./lower-node-module.js";
 import type { Lowerer } from "./lowerer.js";
 
 export function isCjsRequireCallee(lowerer: Lowerer, callee: ts.Expression): boolean {
@@ -14,6 +14,8 @@ export function isCjsRequireCallee(lowerer: Lowerer, callee: ts.Expression): boo
   return (
     isRequireCallee(callee) &&
     ts.isPropertyAccessExpression(callee) &&
-    isCjsModuleGlobal(lowerer, callee.expression)
+    isCjsModuleGlobal(lowerer, callee.expression) &&
+    // A file that writes module.require calls its replacement, as Node does.
+    !writesModuleRequire(lowerer, callee)
   );
 }

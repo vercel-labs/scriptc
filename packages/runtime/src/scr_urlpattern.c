@@ -1634,7 +1634,12 @@ static ScrStr *ws_canonicalize_pattern_path(ScrStr *value, ScrUrl *base) {
   if (out == NULL || out_literal == NULL) scr_trap("scriptc: out of memory\n");
   size_t out_n = 0;
   for (size_t b = 0; b < base_n; b++) {
-    out[out_n] = base_segs[b];
+    /* The base's directory is literal text, never pattern syntax: its
+     * metacharacters are escaped, or an inherited "(" would read as a group
+     * and the pattern would admit URLs outside the directory (and "a+b" or
+     * "a{b}" would not even construct). */
+    out[out_n] = ws_escape_pattern(base_segs[b]);
+    scr_str_release(base_segs[b]);
     out_literal[out_n++] = true;
   }
   for (size_t i = 0; i < n; i++) {

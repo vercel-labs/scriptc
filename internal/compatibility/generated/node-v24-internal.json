@@ -94402,6 +94402,7 @@
           "tests/corpus/compat-stream-state.mjs",
           "tests/corpus/compat-stream-state.ts",
           "tests/corpus/fs-stream-erased-open-listener.ts",
+          "tests/corpus/stream-async-disposal.mjs",
           "tests/corpus/stream-duplex-from-web.ts",
           "tests/corpus/stream-duplex-pair.ts",
           "tests/corpus/stream-duplex-to-web.ts",
@@ -96193,9 +96194,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.writable",
         "tests": [
+          "tests/corpus/stream-async-disposal.mjs",
           "tests/corpus/compat-stream-getters.mjs",
           "tests/corpus/compat-stream-getters.ts",
           "tests/corpus/compat-stream-async-dispose.mjs",
@@ -96339,9 +96341,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.writableAborted",
         "tests": [
+          "tests/corpus/stream-async-disposal.mjs",
           "tests/corpus/compat-stream-getters.mjs",
           "tests/corpus/compat-stream-getters.ts",
           "tests/corpus/compat-stream-async-dispose.mjs",
@@ -97242,9 +97245,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.readable",
         "tests": [
+          "tests/corpus/stream-async-disposal.mjs",
           "tests/corpus/compat-stream-getters.mjs",
           "tests/corpus/compat-stream-getters.ts",
           "tests/corpus/compat-stream-async-dispose.mjs",
@@ -97733,9 +97737,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.readableAborted",
         "tests": [
+          "tests/corpus/stream-async-disposal.mjs",
           "tests/corpus/compat-stream-getters.mjs",
           "tests/corpus/compat-stream-getters.ts",
           "tests/corpus/compat-stream-async-dispose.mjs",
@@ -97762,9 +97767,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.readableDidRead",
         "tests": [
+          "tests/corpus/stream-async-disposal.mjs",
           "tests/corpus/compat-stream-getters.mjs",
           "tests/corpus/compat-stream-getters.ts",
           "tests/corpus/compat-stream-async-dispose.mjs",
@@ -97791,9 +97797,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.readableEncoding",
         "tests": [
+          "tests/corpus/stream-async-disposal.mjs",
           "tests/corpus/compat-stream-getters.mjs",
           "tests/corpus/compat-stream-getters.ts",
           "tests/corpus/compat-stream-async-dispose.mjs",

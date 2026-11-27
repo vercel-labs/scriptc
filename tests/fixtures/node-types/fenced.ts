@@ -103,8 +103,6 @@ async function encapsulatedWithWebCrypto(key: import("node:crypto").webcrypto.Cr
   await crypto.subtle.encapsulateBits("ML-KEM-768", key);
 }
 void encapsulatedWithWebCrypto;
-/* Node's navigator global: navigator.locks (the Web Locks API) fences
- * by name. */
-const locks = navigator.locks;
-void locks;
+/* Node's navigator global: navigator.locks (the Web Locks API) lowers now,
+ * together with the LockManager type its answer declares. */
 // End of the declared-but-not-lowered surface.

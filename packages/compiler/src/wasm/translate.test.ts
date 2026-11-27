@@ -479,8 +479,8 @@ describe("SIMD translation", () => {
           0x20,
           0x00,
           0xfd,
-          0x80,
-          0x02, // i8x16.relaxed_swizzle: relaxed SIMD is not translated yet
+          0x94,
+          0x02, // 0xfd 276: outside the instruction table
         ]),
       ),
     );
@@ -561,10 +561,10 @@ describe("SIMD translation", () => {
     const unsupported = simdModule(
       simdTypes(simdType([], [])),
       simdFuncs(0),
-      simdCode(simdBody([0xfd, 0x80, 0x02])), // i8x16.relaxed_swizzle
+      simdCode(simdBody([0xfd, 0x94, 0x02])), // 0xfd 276: outside the table
     );
     expect(() => translateWasmModule(unsupported, SHA, { boundsChecks: false })).toThrow(
-      /SIMD instruction 0xfd 256 is not supported yet/,
+      /opcode 0xfd 276 is not supported/,
     );
   });
 });
@@ -616,6 +616,33 @@ describe("later SIMD instruction families", () => {
     const out = translateWasmModule(oneOpModule(sub), SHA, { boundsChecks: false });
     const text = [...out.decls, ...out.text].join("\n");
     expect(text).toContain(fragment);
+  });
+
+  test("every relaxed SIMD instruction translates", () => {
+    const failures: string[] = [];
+    for (let sub = 0x100; sub <= 0x113; sub++) {
+      if (simdOp(sub) === undefined) continue;
+      try {
+        translateWasmModule(oneOpModule(sub), SHA, { boundsChecks: false });
+      } catch (error) {
+        failures.push(`0x${sub.toString(16)}: ${(error as Error).message}`);
+      }
+    }
+    expect(failures).toEqual([]);
+  });
+
+  test.each([
+    [256, "select <16 x i1>"], // relaxed_swizzle
+    [261, "fmul <4 x float>"], // relaxed_madd
+    [262, "fsub <4 x float>"], // relaxed_nmadd
+    [265, "xor <4 x i32>"], // relaxed_laneselect as bitselect
+    [269, "fcmp olt <4 x float>"], // relaxed_min as pmin
+    [273, "ashr <8 x i32>"], // relaxed_q15mulr
+    [274, "add <8 x i16>"], // relaxed dot
+    [275, "add <4 x i32>"], // relaxed dot-add
+  ])("lowers relaxed 0xfd %i to %s", (sub, fragment) => {
+    const out = translateWasmModule(oneOpModule(sub), SHA, { boundsChecks: false });
+    expect([...out.decls, ...out.text].join("\n")).toContain(fragment);
   });
 
   test("every standard SIMD instruction translates", () => {

@@ -11,6 +11,7 @@ import { lowerStaticPrivateAssignment } from "../private-statics.js";
 import { keyedHelperName } from "../stable-names.js";
 import * as ts from "../../ts7/adapter.js";
 import { withoutParentheses } from "../../outer-expressions.js";
+import { stdlibGlobalNameOf } from "../surfaces.js";
 import {
   lowerOptionalIndex,
   splitUndefinedIndex,
@@ -2456,12 +2457,44 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
   // `Object.getPrototypeOf(value) === Object.prototype`: the plain-object
   // test, answered from the value's kind (a primitive, a Date, an array or a
   // class instance is not one), intercepted BEFORE the call lowers.
+  // `x.constructor === Event` for an instance of a DOM class the program
+  // never extends: its static class is the instance's own, and both sides
+  // name compile-time class values, so the answer folds. (The runtime's
+  // interned constructor the instance answers with is the same value the
+  // global name reads.)
   if (
     op === ts.SyntaxKind.EqualsEqualsEqualsToken ||
     op === ts.SyntaxKind.ExclamationEqualsEqualsToken
   ) {
     const plain = plainObjectPrototypeComparison(lowerer, expr, loc);
     if (plain !== null) return plain;
+    const negated = op === ts.SyntaxKind.ExclamationEqualsEqualsToken;
+    for (const [side, other] of [
+      [expr.left, expr.right],
+      [expr.right, expr.left],
+    ] as const) {
+      const instance = domInstanceConstructorClass(lowerer, side);
+      const globalClass = domGlobalClassName(lowerer, other);
+      if (instance !== null && globalClass !== null) {
+        // Both operands are evaluated before the comparison. The class value
+        // has no effects; the instance side may (a factory that validates
+        // and throws), so it lowers for them and the comparison folds.
+        const evaluated = tryLowerExpression(lowerer, instance.receiver);
+        if (evaluated === null) continue;
+        return {
+          kind: "seqExpr",
+          stmts: [{ kind: "exprStmt", expr: evaluated, loc }],
+          result: {
+            kind: "boolLit",
+            value: (instance.className === globalClass) !== negated,
+            type: BOOL,
+            loc,
+          },
+          type: BOOL,
+          loc,
+        };
+      }
+    }
   }
   // `x.constructor === Readable` for an instance of EventEmitter or a
   // stream class: the instance's own class, compared without a class value.
@@ -4634,4 +4667,51 @@ function lowerUnionTypeofTest(
     return acc;
   }
   return null;
+}
+
+/** The DOM classes whose instances answer `.constructor` with the runtime's
+ * interned constructor value: the value the global name reads, so identity
+ * against the class is exact. */
+const DOM_CONSTRUCTOR_CLASSES: ReadonlySet<string> = new Set([
+  "Event",
+  "CustomEvent",
+  "EventTarget",
+  "AbortController",
+  "DOMException",
+  "MessageChannel",
+]);
+
+/** The class name of `x.constructor` where `x` is typed by a DOM class the
+ * program never extends (so the static class is the instance's own class)
+ * and the receiver is not an array or a program class. Null otherwise. */
+function domInstanceConstructorClass(
+  lowerer: Lowerer,
+  node: ts.Expression,
+): { className: string; receiver: ts.Expression } | null {
+  const access = withoutParentheses(node);
+  if (!ts.isPropertyAccessExpression(access) || access.questionDotToken) return null;
+  if (access.name.text !== "constructor") return null;
+  const receiverType = lowerer.typeOf(access.expression);
+  const symbol = receiverType.getSymbol();
+  // Only the STANDARD LIBRARY's own class: an application class that happens
+  // to be named Event (or CustomEvent, ...) has a different symbol, and its
+  // `.constructor` read is a real comparison whose receiver may validate and
+  // throw (security review 741).
+  if (symbol === undefined || !lowerer.isStdlibSymbol(symbol)) return null;
+  const mapped = lowerer.mapTypeOf(receiverType);
+  if (mapped?.kind !== "object" || !DOM_CONSTRUCTOR_CLASSES.has(mapped.className)) return null;
+  const info = lowerer.classes.get(mapped.className);
+  if (info !== undefined && (info.subclasses?.length ?? 0) > 0) return null;
+  return { className: mapped.className, receiver: access.expression };
+}
+
+/** The DOM class name `node` reads as the standard library's global class
+ * value. */
+function domGlobalClassName(lowerer: Lowerer, node: ts.Expression): string | null {
+  const value = withoutParentheses(node);
+  const canonical = stdlibGlobalNameOf(lowerer, value);
+  if (canonical === null || !DOM_CONSTRUCTOR_CLASSES.has(canonical)) return null;
+  const symbol = lowerer.typeOf(value).getSymbol();
+  if (symbol === undefined || !lowerer.isStdlibSymbol(symbol)) return null;
+  return canonical;
 }

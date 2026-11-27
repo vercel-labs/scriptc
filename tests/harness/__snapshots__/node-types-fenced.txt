@@ -132,30 +132,3 @@ fenced.ts:98:1 - error SC2020: 'DiffieHellman.toString' is part of the standard 
   99 | /* WebCrypto beyond the native slice: @types/node declares the whole
 
   hint: generateKeys(), computeSecret(), getPrime(), getGenerator(), getPublicKey(), getPrivateKey(), setPublicKey(), setPrivateKey() and verifyError are supported
-
-fenced.ts:108:7 - error SC2020: 'LockManager' is typed by @types/node but has no scriptc lowering yet
-
-  107 |  * by name. */
-  108 | const locks = navigator.locks;
-      |       ^~~~~
-  109 | void locks;
-
-  hint: the type checker sees everything @types/node declares, but only the supported surface compiles (https://scriptc.dev/limitations)
-
-fenced.ts:108:15 - error SC2020: 'navigator.locks' is typed by @types/node but has no scriptc lowering yet
-
-  107 |  * by name. */
-  108 | const locks = navigator.locks;
-      |               ^~~~~~~~~~~~~~~
-  109 | void locks;
-
-  hint: navigator.locks (the Web Locks API) has no lowering
-
-fenced.ts:109:6 - error SC2004: uses of 'locks' inherit the blocker on its declaration
-
-  108 | const locks = navigator.locks;
-  109 | void locks;
-      |      ^~~~~
-  110 | // End of the declared-but-not-lowered surface.
-
-  hint: the declaration of 'locks' did not compile — fix the diagnostic reported there and these sites clear with it

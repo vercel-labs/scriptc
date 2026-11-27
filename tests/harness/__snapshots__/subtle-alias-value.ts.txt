@@ -1,0 +1,17 @@
+subtle-alias-value.ts:4:7 - error SC2020: the stdlib-global snapshot 's' ('crypto.subtle') cannot be used as a value: the declaration lowers to alias plumbing (no storage, no code), and a 'SubtleCrypto' is not a value scriptc can hold
+
+  3 | 
+  4 | const s = crypto.subtle;
+    |       ^
+  5 | console.log(typeof s);
+
+  hint: read the members through the global directly ('crypto.subtle.member') instead of passing 's' around as a value
+
+subtle-alias-value.ts:5:20 - error SC2004: uses of 's' inherit the blocker on its declaration
+
+  4 | const s = crypto.subtle;
+  5 | console.log(typeof s);
+    |                    ^
+  6 | 
+
+  hint: the declaration of 's' did not compile — fix the diagnostic reported there and these sites clear with it

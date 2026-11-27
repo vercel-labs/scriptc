@@ -557,6 +557,7 @@ import {
   widenCjsExportsOfWidenedBindings,
 } from "./lower-modules.js";
 import {
+  isCjsRequireGlobal,
   isNodeModuleHandle,
   prepareCjsModuleGraph,
   untypedModuleValueFence,
@@ -18431,6 +18432,15 @@ export class Lowerer {
   }
 
   private typeOfNode(node: ts.Node): ts.Type {
+    // require.cache is the live cache object, not the Dict record the checker
+    // types it as: every use of it is checked-dynamic.
+    if (
+      ts.isPropertyAccessExpression(node) &&
+      !node.questionDotToken &&
+      node.name.text === "cache" &&
+      isCjsRequireGlobal(this, node.expression)
+    )
+      return this.checker.getAnyType();
     if (ts.isIdentifier(node)) {
       const inferred = inferredCollectionType(this, node);
       if (inferred) return inferred;

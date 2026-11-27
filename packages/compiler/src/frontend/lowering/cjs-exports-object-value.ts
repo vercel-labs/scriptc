@@ -399,10 +399,18 @@ export function cjsExportsObjectWrites(
  * object. */
 export function cjsExportStatementObjectWrites(lowerer: Lowerer, stmt: ts.Statement): IrStmt[] {
   const sf = ts.getSourceFileOfNode(stmt);
-  const g = cjsExportsObjectOf(lowerer, sf);
-  if (g === null) return [];
   const cjs = cjsExportAssignmentOf(stmt);
   if (cjs === null) return [];
+  // A module that observes its exports object's identity keeps the object:
+  // a write through `module.exports.<name>` therefore lands on the object a
+  // view reads (`require.cache[file].exports`, another module's handle), not
+  // only in the static member slots. A whole-table replacement is not
+  // mirrored onto it — that would replace the registered object instead of
+  // filling it.
+  const g =
+    cjsExportsObjectOf(lowerer, sf) ??
+    (cjs.kind === "table" ? null : (lowerer.cjsExportsThis.get(sf) ?? null));
+  if (g === null) return [];
   // A statement Node discards writes onto the exports object a
   // `module.exports =` assignment replaced: the module's object no longer
   // names that one, so there is nothing to mirror.

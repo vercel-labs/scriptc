@@ -449,6 +449,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "module.ctorPrototype": "scr_module_class_prototype",
   "module.cacheHas": "scr_module_cache_has",
   "module.cacheKeys": "scr_module_cache_keys",
+  "module.cacheObject": "scr_module_cache_object",
   "perf.now": "scr_perf_now",
   "perf.mark": "scr_perf_mark",
   "perf.measure": "scr_perf_measure",

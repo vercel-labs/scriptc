@@ -538,11 +538,16 @@ void scr_module_define(double module_id, ScrStr *filename, ScrStr *id,
   m->is_main = is_main;
 }
 
+/* The live require.cache object (below): a program that holds it sees the
+ * modules a require enters and drops. */
+static void scr_module_cache_obj_sync(void);
+
 void scr_module_enter(double module_id) {
   ScrModuleRecord *m = scr_module_record(module_id);
   if (!m->in_cache) {
     m->in_cache = true;
     m->cache_order = scr_module_next_cache_order++;
+    scr_module_cache_obj_sync();
   }
   m->loaded = false;
 }
@@ -588,6 +593,7 @@ void scr_module_fail(double module_id) {
   m->in_cache = false;
   m->loaded = false;
   scr_module_dyn_refresh(m);
+  scr_module_cache_obj_sync();
 }
 
 /* process.config: the build configuration Node reports. A compiled binary
@@ -693,6 +699,13 @@ void scr_module_set_exports_dyn(double module_id, ScrDyn *value) {
   ScrDyn *previous = m->exports_dyn;
   m->exports_dyn = value ? scr_dyn_retain(value) : NULL;
   scr_dyn_release(previous);
+  /* A view built before the module's exports object existed (a parent's
+   * children array does that) answers the object too: Node's view reads the
+   * module's own exports, one object for the module's life. */
+  if (m->dyn_self != NULL)
+    scr_dyn_obj_set(m->dyn_self, "exports", 7,
+                    m->exports_dyn ? scr_dyn_retain(m->exports_dyn)
+                                   : scr_dyn_retain(scr_dyn_undefined()));
 }
 
 /* Node's Module keeps `children` live and `loaded` current on the object a
@@ -897,6 +910,65 @@ ScrArr *scr_module_cache_keys(void) {
     }
   }
   return keys;
+}
+
+/* require.cache as a VALUE: Node's cache object, one per process and the
+ * same object Module._cache answers. Its keys are the loaded modules'
+ * filenames and its values their Module views — the records
+ * scr_module_cache_get and scr_module_cache_keys walk. The contents are
+ * re-synced on every read, so a module a require added (or a failed require
+ * dropped) is what the program sees at that read, while the object keeps
+ * Node's identity for the process. +1. */
+static SCR_TL ScrDyn *scr_module_cache_obj = NULL;
+static SCR_TL bool scr_module_cache_obj_cleanup_registered = false;
+
+static void scr_module_cache_obj_cleanup(void) {
+  scr_dyn_release(scr_module_cache_obj);
+  scr_module_cache_obj = NULL;
+}
+
+static void scr_module_cache_obj_sync(void) {
+  if (scr_module_cache_obj == NULL) return;
+  /* A module that left the cache (a require that threw) leaves its entry:
+   * Node deletes it. */
+  ScrDyn *keys = scr_dyn_obj_own_keys(scr_module_cache_obj); /* +1 */
+  double count = scr_dyn_arr_len(keys);
+  for (double i = 0; i < count; i++) {
+    ScrDyn *key = scr_dyn_arr_at(keys, i); /* +1 */
+    if (key != NULL && key->kind == SCR_DYN_STR) {
+      bool live = false;
+      for (size_t r = 0; r < scr_module_record_count && !live; r++) {
+        const ScrModuleRecord *m = &scr_module_records[r];
+        if (m->in_cache && m->filename && scr_module_filename_equal(m, key->v.str)) live = true;
+      }
+      if (!live) scr_dyn_obj_delete_field(scr_module_cache_obj, key->v.str);
+    }
+    scr_dyn_release(key);
+  }
+  scr_dyn_release(keys);
+  /* Every cached module, in the order its require entered it. */
+  for (size_t order = 1; order < scr_module_next_cache_order; order++) {
+    for (size_t r = 0; r < scr_module_record_count; r++) {
+      ScrModuleRecord *m = &scr_module_records[r];
+      if (m->in_cache && m->cache_order == order && m->filename) {
+        scr_dyn_obj_set(scr_module_cache_obj, m->filename->data, m->filename->len,
+                        scr_module_dyn_object((double)r));
+        break;
+      }
+    }
+  }
+}
+
+ScrDyn *scr_module_cache_object(void) {
+  if (scr_module_cache_obj == NULL) {
+    if (!scr_module_cache_obj_cleanup_registered) {
+      scr_atexit(scr_module_cache_obj_cleanup);
+      scr_module_cache_obj_cleanup_registered = true;
+    }
+    scr_module_cache_obj = scr_dyn_new_obj();
+  }
+  scr_module_cache_obj_sync();
+  return scr_dyn_retain(scr_module_cache_obj);
 }
 
 int scr_lib_arg_count(void) {

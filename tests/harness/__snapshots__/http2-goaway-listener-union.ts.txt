@@ -1,0 +1,6 @@
+http2-goaway-listener-union.ts:9:3 - error SC1090: goaway listeners whose parameters are not (errorCode: number, lastStreamID: number, opaqueData?: Buffer) is not supported yet
+
+   8 |   "goaway",
+   9 |   (code: number, lastStreamID: number, opaque: Uint8Array | string | undefined) => {
+     |   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  10 |     void code;

@@ -1858,6 +1858,13 @@ function loadProgram7(
       : null,
   );
   const nodeTypes = config.configFile ? resolveNodeTypes7(entryPath) : null;
+  /** Whether the program type-checks against the bundled Node fallback
+   * declarations. A config-less project plans them, but a dependency can
+   * still pull the project's installed `@types/node` in (a
+   * `/// <reference types="node" />` directive resolves from the referring
+   * file regardless of the program roots), and the fallback then stands
+   * down. */
+  let nodeFallback = nodeTypes === null;
   // skipLibCheck is FORCED for every program: checking a third-party lib's
   // internals against OUR lib choice (es2025, no dyn, and the bundled Node
   // declarations when the project has no @types/node) is not scriptc's
@@ -1970,6 +1977,41 @@ function loadProgram7(
       program = host.createProgram([...programRoots, overridesDtsPath()], options, false, lineage);
       previous.dispose();
       if (pass === 31) throw new Error("static program-root discovery did not converge");
+    }
+    // The fallback stands down when the constructed program already holds
+    // the project's installed @types/node: a dependency's `/// <reference
+    // types="node" />` resolves it from the referring file, so both
+    // declaration sets would load and every global they share would be
+    // redeclared. `undici-types` alone is not Node's declarations (a
+    // dependency can reference it without installing @types/node), and the
+    // fallback stays for that program. Rebuild on the pulled types, and keep
+    // the bundled declarations only for a project that pulls nothing in.
+    const pulledNodeTypes = program
+      .getSourceFileNames()
+      .some((name) => npmPackageNameOf(name) === "@types/node");
+    if (nodeFallback && pulledNodeTypes) {
+      nodeFallback = false;
+      for (let index = programRoots.length - 1; index >= 0; index--)
+        if (isFallbackDtsPath(programRoots[index]!)) programRoots.splice(index, 1);
+      const previous = program;
+      program = host.createProgram([...programRoots, overridesDtsPath()], options, false, lineage);
+      previous.dispose();
+      // The adopted path adds the declarations an older @types/node lacks
+      // (DOMException for an imported package implementation's undici
+      // fetch); the fallback file carried them itself, so the stand-down
+      // must add them too.
+      const supplements = nodeTypesSupplementRoots7(program, host);
+      if (supplements.length > 0) {
+        for (const root of supplements) if (!programRoots.includes(root)) programRoots.push(root);
+        const withSupplements = program;
+        program = host.createProgram(
+          [...programRoots, overridesDtsPath()],
+          options,
+          false,
+          lineage,
+        );
+        withSupplements.dispose();
+      }
     }
     // Node 24 ships no temporal global, but TS 7 types it in an ESNext
     // lib slice. Programs that name it (feature probes such as smol-toml's
@@ -2292,7 +2334,7 @@ function loadProgram7(
       ...(parameterPropertiesFirst.size > 0 ? { parameterPropertiesFirst } : {}),
       dependencyJs: dependencyJsPredicate(entry.fileName, projectSources),
       typeWorld: {
-        nodeFallback: nodeTypes === null,
+        nodeFallback,
         projectLib: config.projectLib ?? null,
         forcedStrictNullChecks: config.forcedStrictNullChecks ?? false,
         projectCheckJs: config.checkJs ?? false,
@@ -8526,19 +8568,42 @@ export function blockCommentSpansOf(sf: ts.SourceFile): readonly (readonly [numb
     // one admitted setter and a large comment-free body gives every node a
     // trivia span with no opener in it, so the walk would be quadratic in the
     // file's length.
-    const trivia = text.slice(from, to);
-    let offset = trivia.indexOf("/*");
-    while (offset >= 0) {
-      const open = from + offset;
-      const close = text.indexOf("*/", open + 2);
-      const end = close < 0 ? text.length : close + 2;
-      // A block-comment opener in the leading trivia of several nodes (a
-      // statement and its first token share a full start) is one comment.
-      if (!scanned.has(open)) {
-        scanned.add(open);
-        found.push([open, end]);
+    //
+    // Walk the trivia by comment, not by raw `indexOf("/*")`: an opener
+    // spelled inside a line comment (`// /*`) or a shebang opens nothing,
+    // and treating it as a block comment would let it swallow the code that
+    // follows up to the next `*/`. Line terminators are every ECMAScript
+    // one, including CRLF and the Unicode separators.
+    const lineEnd = (at: number): number => {
+      let i = at;
+      while (i < text.length) {
+        const ch = text.charCodeAt(i);
+        if (ch === 10 || ch === 13 || ch === 0x2028 || ch === 0x2029) return i;
+        i++;
       }
-      offset = trivia.indexOf("/*", end - from);
+      return text.length;
+    };
+    let i = from;
+    if (i === 0 && text.startsWith("#!")) i = lineEnd(2);
+    while (i < to) {
+      if (text[i] === "/" && text[i + 1] === "/") {
+        i = Math.max(lineEnd(i + 2), i + 2);
+        continue;
+      }
+      if (text[i] === "/" && text[i + 1] === "*") {
+        const open = i;
+        const close = text.indexOf("*/", open + 2);
+        const end = close < 0 ? text.length : close + 2;
+        // A block-comment opener in the leading trivia of several nodes (a
+        // statement and its first token share a full start) is one comment.
+        if (!scanned.has(open)) {
+          scanned.add(open);
+          found.push([open, end]);
+        }
+        i = Math.min(end, to);
+        continue;
+      }
+      i++;
     }
   };
   let triviaFrom = -1;

@@ -7145,6 +7145,31 @@ function lowerLegacyMemberDecorations(lowerer: Lowerer, info: ClassInfo): IrStmt
   }
 }
 
+/** Legacy member decorations on a class with a GENERIC subclass cannot stay
+ * exact: a generic subclass compiles per instantiation, and an instantiated
+ * family has no reflected prototype of its own, so calls on its instances
+ * would run the declared member and silently bypass a decorator-installed
+ * replacement (a security wrapper, for example). Refuse the combination with
+ * a named diagnostic instead of diverging. */
+export function validateLegacyMemberDispatch(lowerer: Lowerer): void {
+  for (const info of lowerer.classes.values()) {
+    const members = info.legacyMemberDecorations;
+    if (members === undefined || members.length === 0) continue;
+    for (const candidate of lowerer.classes.values()) {
+      if (candidate === info) continue;
+      if (candidate.generic === undefined && candidate.genericInstance === undefined) continue;
+      if (candidate.def.name === info.def.name) continue;
+      if (!lowerer.isSubclassOf(candidate.def.name, info.def.name)) continue;
+      const first = members[0]!;
+      lowerer.unsupported(
+        "SC1090",
+        first.decorators[0]!,
+        `legacy method decorators on '${info.def.jsName ?? info.def.name}' with a generic subclass ('${candidate.def.jsName ?? candidate.def.name}' instances would run the declared method and bypass the decorated one)`,
+      );
+    }
+  }
+}
+
 /** Post-collection analysis of a decorated class (all shapes registered —
  * a decorator's return type may name a subclass declared BELOW the
  * class). Classifies every class-level decorator by its checker type:

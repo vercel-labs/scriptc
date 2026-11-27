@@ -68,12 +68,20 @@ declare module "net" {
     /* false when the bytes this write left unsent reach the 65536-byte
      * high-water mark, as in Node; 'drain' fires when they are all sent. */
     write(data: string | Uint8Array, callback?: (err?: Error | null) => void): boolean;
+    /* write(data, encoding): the string goes through Buffer.from's
+     * encoding ladder (an unknown name throws ERR_UNKNOWN_ENCODING, and
+     * "buffer" is not a string encoding); a Buffer chunk has the encoding
+     * validated like Writable (Buffer.isEncoding plus "buffer") and then
+     * ignored. */
+    write(data: string | Uint8Array, encoding: BufferEncoding): boolean;
     /* the bytes written and not yet sent */
     readonly writableLength: number;
     /* a write answered false and 'drain' has not fired yet */
     readonly writableNeedDrain: boolean;
     end(callback?: () => void): Socket;
     end(data: string | Uint8Array, callback?: () => void): Socket;
+    /* end(data, encoding): the same encoding rules as write(data, encoding) */
+    end(data: string | Uint8Array, encoding: BufferEncoding): Socket;
     /* An explicit destroy only; the error payload form is not lowered. */
     destroy(): Socket;
     /* Flow control: pause holds reads off (kernel/TCP backpressure is

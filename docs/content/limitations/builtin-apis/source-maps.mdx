@@ -1,0 +1,2 @@
+- **Source maps:** `module.getSourceMapsSupport()` answers the frozen `{ enabled, nodeModules, generatedCode }` record a program set, and `module.setSourceMapsSupport()` and `process.setSourceMapsEnabled()` change that same record with Node.js's validation.
+  A compiled program registers no source map, because it loads no JavaScript and no module carries a `sourceMappingURL` footer, so `module.findSourceMap()` answers `undefined` for every path.

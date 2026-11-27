@@ -20735,6 +20735,7 @@
           "tests/corpus/crypto-kem-crypto-key.ts",
           "tests/corpus/crypto-kem-dhkem.ts",
           "tests/corpus/crypto-kem-rsa.ts",
+          "tests/corpus/crypto-key-object-matrix.mjs",
           "tests/corpus/crypto-key-object-properties.ts",
           "tests/corpus/crypto-key-sources.cjs",
           "tests/corpus/crypto-ml-kem-callback-errors.ts",
@@ -21519,7 +21520,8 @@
           "tests/corpus/crypto-dh-key-parse.mjs",
           "tests/fixtures/node-types/keys.ts",
           "tests/corpus/crypto-key-sources.cjs",
-          "tests/harness/crypto-unsupported-audit.test.ts"
+          "tests/harness/crypto-unsupported-audit.test.ts",
+          "tests/corpus/crypto-key-object-matrix.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -21575,7 +21577,8 @@
           "tests/corpus/crypto-dh-key-parse.mjs",
           "tests/fixtures/node-types/keys.ts",
           "tests/corpus/crypto-key-sources.cjs",
-          "tests/harness/crypto-unsupported-audit.test.ts"
+          "tests/harness/crypto-unsupported-audit.test.ts",
+          "tests/corpus/crypto-key-object-matrix.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -21843,7 +21846,8 @@
           "tests/corpus/crypto-dh-key-parse.mjs",
           "tests/fixtures/node-types/keys.ts",
           "tests/corpus/crypto-key-sources.cjs",
-          "tests/harness/crypto-unsupported-audit.test.ts"
+          "tests/harness/crypto-unsupported-audit.test.ts",
+          "tests/corpus/crypto-key-object-matrix.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -21876,7 +21880,8 @@
           "tests/corpus/crypto-dh-key-parse.mjs",
           "tests/fixtures/node-types/keys.ts",
           "tests/corpus/crypto-key-sources.cjs",
-          "tests/harness/crypto-unsupported-audit.test.ts"
+          "tests/harness/crypto-unsupported-audit.test.ts",
+          "tests/corpus/crypto-key-object-matrix.mjs"
         ]
       },
       "anchorSource": "exact"

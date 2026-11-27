@@ -9903,7 +9903,7 @@ function lowerHttpClientCall(
         // carries the record (lowerShorthandValue resolves it).
         const v =
           initializer !== null
-            ? lowerClientHeadersOption(lowerer, initializer)
+            ? lowerClientHeadersOption(lowerer, initializer, true)
             : lowerClientHeadersValue(
                 lowerer,
                 lowerer.lowerShorthandValue(prop as ts.ShorthandPropertyAssignment),
@@ -10343,7 +10343,11 @@ function lowerHttpClientCall(
  * array directly; any other expression must be a Record whose values are
  * strings (or `string | undefined` — absent entries drop, the env-option
  * rule), flattened by the interned env.pairs helper. */
-function lowerClientHeadersOption(lowerer: Lowerer, node: ts.Expression): IrExpr {
+function lowerClientHeadersOption(
+  lowerer: Lowerer,
+  node: ts.Expression,
+  markArrays = false,
+): IrExpr {
   const loc = locOf(node);
   if (ts.isObjectLiteralExpression(node)) {
     const elems: IrExpr[] = [];
@@ -10369,8 +10373,13 @@ function lowerClientHeadersOption(lowerer: Lowerer, node: ts.Expression): IrExpr
             "write an array value as a literal of strings or numbers",
           );
         }
+        /* A request header must stay known as an ARRAY even with one element
+         * (getHeader(s) answer the array, though the wire has one line); the
+         * runtime reads a leading NUL, which no header name may contain, as
+         * that marker. Trailers and h2 header records need none. */
+        const pairName = markArrays ? "\u0000" + key : key;
         for (const item of raw.elems) {
-          elems.push({ kind: "strLit", value: key, type: STRING, loc });
+          elems.push({ kind: "strLit", value: pairName, type: STRING, loc });
           elems.push(
             item.type.kind === "f64"
               ? { kind: "toString", operand: item, type: STRING, loc }

@@ -8891,6 +8891,16 @@ static bool scr_http_request_path_valid(const ScrStr *path /*borrowed*/) {
  * validates its own header list, whose values are byte strings; `host` is
  * NULL when no Host header derives from an option. False with the
  * exception pending. */
+/* A pair name carrying the array marker — a leading NUL, which no header
+ * name may contain — is Node's array-valued request header (the lowering's
+ * convention, needed even for a one-element array: the wire is one line, but
+ * getHeader(s) must answer the array). Answers the name without the marker
+ * (+1), or NULL when unmarked. */
+static ScrStr *scr_http_pairs_array_name(const ScrStr *raw) {
+  if (raw->len == 0 || raw->data[0] != '\0') return NULL;
+  return scr_str_new(raw->data + 1, raw->len - 1);
+}
+
 static bool scr_http_request_checks(const ScrStr *host /*borrowed, nullable*/,
                                     const ScrStr *path /*borrowed*/, const ScrStr *method /*borrowed*/,
                                     ScrArr *header_pairs /*borrowed, nullable*/) {
@@ -8918,6 +8928,11 @@ static bool scr_http_request_checks(const ScrStr *host /*borrowed, nullable*/,
   for (size_t i = 0; i + 1 < npairs; i += 2) {
     ScrStr *name = (ScrStr *)scr_arr_get_ref(header_pairs, (double)i);
     ScrStr *value = (ScrStr *)scr_arr_get_ref(header_pairs, (double)(i + 1));
+    ScrStr *array_name = scr_http_pairs_array_name(name);
+    if (array_name != NULL) {
+      scr_str_release(name);
+      name = array_name;
+    }
     bool valid = scr_http_header_name_valid(name);
     if (valid && !scr_http_header_text_valid(value)) {
       scr_http_throw_invalid_header_char(name);
@@ -9566,6 +9581,13 @@ static ScrHttpClientReq *scr_http_request_impl(ScrStr *host /*borrowed*/, double
     for (size_t i = 0; i + 1 < npairs; i += 2) {
       ScrStr *name = (ScrStr *)scr_arr_get_ref(header_pairs, (double)i);
       ScrStr *value = (ScrStr *)scr_arr_get_ref(header_pairs, (double)(i + 1));
+      bool array_valued = false;
+      ScrStr *array_name = scr_http_pairs_array_name(name);
+      if (array_name != NULL) {
+        scr_str_release(name);
+        name = array_name;
+        array_valued = true;
+      }
       size_t pos = SIZE_MAX;
       for (size_t k = 0; k < c->nheaders; k++)
         if (scr_http_name_eq(c->hnames[k], name)) {
@@ -9576,7 +9598,13 @@ static ScrHttpClientReq *scr_http_request_impl(ScrStr *host /*borrowed*/, double
         c->hnames[c->nheaders] = name;
         c->hvalues[c->nheaders] = value;
         c->hraw[c->nheaders] = NULL;
-        c->nheaders++;
+        pos = c->nheaders++;
+        if (array_valued) {
+          /* a marked pair is an array even when it is the only element */
+          ScrDyn *arr = scr_dyn_new_arr();
+          scr_dyn_arr_push(arr, scr_dyn_new_str(c->hvalues[pos]));
+          c->hraw[pos] = arr;
+        }
         continue;
       }
       /* A repeated name is Node's array-valued header (the lowering expands

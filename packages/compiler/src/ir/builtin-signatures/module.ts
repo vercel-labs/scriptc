@@ -73,6 +73,14 @@ export const moduleSignatures = defineLibFnSignatures({
    * shared null-prototype object whose three handlers refuse when called.
    * Never throws. */
   "module.extensions": { argTypes: [], result: DYN },
+  /** node:module's source-map support (scr_lib.c). A compiled program
+   * registers no source map, so the record answers the flags the program
+   * set (Node's frozen { enabled, nodeModules, generatedCode }) and
+   * findSourceMap answers undefined, as Node does for a file whose map was
+   * never parsed. */
+  "module.sourceMapsSupport": { argTypes: [], result: DYN },
+  "module.setSourceMapsSupport": { argTypes: [DYN, DYN], result: VOID },
+  "module.findSourceMap": { argTypes: [DYN], result: DYN },
   /** Node's `Module` class value and its prototype (scr_module_class.c):
    * module views inherit the prototype, so instanceof and getPrototypeOf
    * answer as Node's do. Never throws. */

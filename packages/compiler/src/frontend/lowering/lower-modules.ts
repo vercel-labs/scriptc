@@ -3730,14 +3730,29 @@ export function collectGlobals(
           // copying its entries must not extract nested callable records.
           // A literal shape inference typed (hasShapeOverlayType) is a
           // record global: the analysis proved its object never reaches
-          // untyped code.
+          // untyped code. When that inferred record cannot map (an
+          // unmappable member type), the literal keeps the checked-dynamic
+          // registration instead of losing its binding.
+          const overlayType = lowerer.mapTypeOf(lowerer.typeOf(nameNode));
+          // A property spelled `undefined` (or `void 0`) has the VOID type,
+          // which is not a dyn conversion domain: the property's VALUE is
+          // the undefined dyn unit, so the literal can still be built as a
+          // checked-dynamic object.
+          const undefinedValue = (type: IrType | null, node: ts.Expression): boolean => {
+            if (type?.kind !== "void") return false;
+            let value = node;
+            while (ts.isParenthesizedExpression(value)) value = value.expression;
+            return (
+              (ts.isIdentifier(value) && value.text === "undefined") || ts.isVoidExpression(value)
+            );
+          };
           if (
             isJsSourceFile(sf) &&
             ts.isIdentifier(decl.name) &&
             nameNode === decl.name &&
             decl.initializer !== undefined &&
             ts.isObjectLiteralExpression(decl.initializer) &&
-            !hasShapeOverlayType(decl) &&
+            (!hasShapeOverlayType(decl) || overlayType === null) &&
             decl.initializer.properties.nodes.every((p) => {
               if (ts.isSpreadAssignment(p)) {
                 return (
@@ -3750,6 +3765,7 @@ export function collectGlobals(
               return (
                 mt === null ||
                 mt.kind === "dyn" ||
+                undefinedValue(mt, p.initializer) ||
                 canConvertToDyn(
                   mt,
                   (id) => lowerer.shapes.get(id),
@@ -5004,7 +5020,10 @@ export function lowerFileInit(
       c.runtimeStatics !== undefined ||
       c.staticFields.length > 0 ||
       (c.staticBlocks?.length ?? 0) > 0 ||
-      c.classDecorators !== undefined;
+      c.classDecorators !== undefined ||
+      // A legacy class with only MEMBER decorators still runs their
+      // applications at its statement.
+      c.legacyMemberDecorations !== undefined;
     const statics: {
       pos: number;
       info: ClassInfo | null;

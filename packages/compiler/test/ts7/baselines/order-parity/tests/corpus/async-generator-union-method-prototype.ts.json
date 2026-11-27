@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/async-generator-union-method-prototype.ts"
+ ],
+ "diags": []
+}

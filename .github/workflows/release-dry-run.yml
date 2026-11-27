@@ -6,16 +6,23 @@ name: Release dry run
 # the packages the way the publish job does, checks their versions, packs
 # each one, and packages the standalone compilers the GitHub release
 # attaches. A package that no longer builds or packs on one platform then
-# fails here, nightly or on the pull request that caused it, and not in the
-# release run.
+# fails here, on the newest green main commit (the post-merge lanes,
+# postmerge.yml, call this workflow) or on the pull request that caused it,
+# and not in the release run.
 #
 # The native CLIs build with the committed profile and layout (release.yml's
 # cli-profile job collects a fresh one for about two hours; the dry run does
 # not need it), which is what a release falls back to when that job fails.
 
 on:
-  schedule:
-    - cron: "41 5 * * *"
+  # The post-merge lanes call it with the commit to rehearse; every checkout
+  # reads ref, so the run builds that commit and not the caller's.
+  workflow_call:
+    inputs:
+      ref:
+        description: The commit to rehearse. Empty rehearses the caller's commit.
+        type: string
+        default: ""
   workflow_dispatch:
   pull_request:
     # A release-prep pull request bumps packages/cli/package.json; the other
@@ -42,7 +49,9 @@ on:
       - "scripts/smoke-native-install.mjs"
 
 concurrency:
-  group: release-dry-run-${{ github.event.pull_request.number || github.ref }}
+  # A post-merge call runs in a group of its own run, so a manual dry run on
+  # main does not cancel it.
+  group: release-dry-run-${{ inputs.ref && format('postmerge-{0}', github.run_id) || github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -52,10 +61,14 @@ jobs:
   build:
     name: Build
     uses: ./.github/workflows/release-build.yml
+    with:
+      ref: ${{ inputs.ref }}
 
   libnode:
     name: libnode
     uses: ./.github/workflows/libnode-packs.yml
+    with:
+      ref: ${{ inputs.ref }}
 
   # The publish job's preparation, up to the upload: the same assembly,
   # build and version check, then a pack of every package it publishes.
@@ -66,6 +79,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: native-*

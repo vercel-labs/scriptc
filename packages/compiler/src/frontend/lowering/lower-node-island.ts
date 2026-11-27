@@ -2096,11 +2096,35 @@ function classMethodsBuilderOf(
       if (!names.includes(m) && (islandMethodName(m) || islandAccessorName(m))) names.push(m);
   }
   if (names.length === 0) return null;
+  // A decorated accessor's replacement lives on the reflected prototype,
+  // while this island table can only hold the declared accessor halves: an
+  // island read or write would bypass the decorator's wrapper. Refuse the
+  // crossing instead of compiling it with the guard silently skipped.
+  const decoratedAccessorOn = (owner: typeof info, property: string): boolean => {
+    for (
+      let c = owner as typeof info | undefined;
+      c !== undefined;
+      c = c.def.base ? lowerer.classes.get(c.def.base) : undefined
+    ) {
+      const entry = c.legacyMemberDecorations?.find(
+        (m) => m.kind === "accessor" && m.name === property,
+      );
+      if (entry !== undefined) return true;
+    }
+    return false;
+  };
   const builder = `%island.methods:${className}`;
   if (!lowerer.classMethodValueHelpers.has(builder)) {
     lowerer.classMethodValueHelpers.add(builder);
     const fields: { key: IrExpr; value: IrExpr }[] = [];
     for (const m of names) {
+      const accessorHalf = /^(?:get|set):(.+)$/.exec(m);
+      if (accessorHalf !== null && decoratedAccessorOn(info, accessorHalf[1]!))
+        lowerer.unsupported(
+          "SC1090",
+          blame,
+          `accessor decorators on '${className}' with Node islands (an instance crossing into an island reads the island accessor table, which holds the declared accessor, so a decorator-installed replacement would be bypassed)`,
+        );
       // A generic method a subclass overrides has no value this table can
       // hold — the island dispatches by static class, so the overriding
       // class decides — and the lowering refuses the value: the table leaves

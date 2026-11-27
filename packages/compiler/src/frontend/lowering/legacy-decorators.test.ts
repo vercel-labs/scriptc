@@ -391,3 +391,32 @@ test("a constructor parameter decorator on a parameter property is refused with 
   };
   expect(await refusalCodes(source, assignTsconfig)).toContain("SC1090");
 });
+
+test("setter parameter decorators without a member decorator emit no decoration", async () => {
+  const source = [
+    "function p(): (t: object, k: string | symbol | undefined, i: number) => void {",
+    "  return (t: object, k: string | symbol | undefined, i: number): void => { console.log(i); };",
+    "}",
+    "class C {",
+    "  private v = 0;",
+    "  set x(@p() value: number) { this.v = value; }",
+    "  get x(): number { return this.v; }",
+    "}",
+    "const c = new C();",
+    "c.x = 1;",
+    "console.log(c.x);",
+    "",
+  ].join("\n");
+  const mod = await lower(source, legacyTsconfig);
+  const init = mod.functions.find((fn) => fn.name === "%init.0");
+  const calls: string[] = [];
+  if (init !== undefined)
+    everyStmtList(init.body, {
+      stmt: () => true,
+      expr: (e) => {
+        if (e.kind === "dynCall") calls.push(e.calleeName);
+        return true;
+      },
+    });
+  expect(calls.filter((name) => name === "decorator")).toHaveLength(0);
+});

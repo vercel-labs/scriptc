@@ -2749,6 +2749,10 @@ export function collectClassShapeInner(
               // half only contributes its decorators/parameters to the group.
               if (group === undefined || (group.memberDecorated ?? group.first) !== member)
                 continue;
+              // tsc emits the accessor pair's single decoration only when a
+              // member decorator exists; setter parameter decorators alone
+              // produce no decoration at all.
+              if (group.decorators.length === 0) continue;
               legacyInstanceMembers.push({
                 kind: "accessor",
                 member: group.memberDecorated ?? group.first,

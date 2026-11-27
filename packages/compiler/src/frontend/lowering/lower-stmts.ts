@@ -16601,7 +16601,7 @@ function lowerForOfClassIterator(
 /** A checked IteratorRecord stays live throughout the loop. Cache next once,
  * read done before value, and close only after a yielded value has arrived.
  * Abrupt body throws retain precedence over errors raised by return(). */
-function lowerForOfDyn(
+export function lowerForOfDyn(
   lowerer: Lowerer,
   stmt: ts.ForOfStatement,
   iterable: IrExpr,

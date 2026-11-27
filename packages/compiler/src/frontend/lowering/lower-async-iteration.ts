@@ -23,11 +23,12 @@ import {
 } from "../../ir/ir.js";
 import { locOf } from "../program.js";
 import { extractIteratorValue, type GenType } from "./lower-generators.js";
-import { streamSidesOf } from "./lower-stream.js";
+import { streamSidesOf, streamSymbolMethodOverriders } from "./lower-stream.js";
 import { staticReadableStreamElementType } from "./lower-stdlib.js";
 import { genResultRecord } from "../type-mapper.js";
 import { sideEffectFreeOptionValue } from "./surfaces.js";
 import { isReadlineTyped } from "./builtins/readline.js";
+import { lowerForOfDyn } from "./lower-stmts.js";
 
 interface NodeReadablePlan {
   source: ts.Expression;
@@ -1312,6 +1313,73 @@ function lowerWatchEvents(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
   }
 }
 
+/** A for-await over a stream value whose static class has subclasses that
+ * override [Symbol.asyncIterator]: Node opens the member on the instance, so
+ * the loop must run the override (a filtering or permission-checking
+ * iterator) and fall back to the stream's own iterator only for the exact
+ * class. The value is bound once and each concrete overrider below the
+ * static type is tested, as the explicit member call dispatches. Null when
+ * no subclass overrides it, where the native stream loop serves. */
+function lowerNodeReadableOverrides(
+  lowerer: Lowerer,
+  stmt: ts.ForOfStatement,
+  plan: NodeReadablePlan,
+): IrStmt | null {
+  const info = lowerer.classes.get(plan.type.className);
+  if (info === undefined) return null;
+  const overriders = streamSymbolMethodOverriders(info, "sym:asyncIterator");
+  if (overriders.length === 0) return null;
+  const loc = locOf(stmt);
+  lowerer.scopes.push(new Map());
+  try {
+    const source = lowerer.declareHiddenLocal("%faSource", plan.type);
+    const recv = (): IrExpr => ({ kind: "varRef", localId: source.id, type: plan.type, loc });
+    let iterable: IrExpr = {
+      kind: "libCall",
+      fn: "readable.iterator",
+      args: [recv(), { kind: "boolLit", value: true, type: BOOL, loc }],
+      type: DYN,
+      loc,
+    };
+    for (let i = overriders.length - 1; i >= 0; i--) {
+      const child = overriders[i]!;
+      const sig = child.methods.get("sym:asyncIterator")!;
+      const overridden = lowerer.accessorCall(
+        child.def.name,
+        "sym:asyncIterator",
+        {
+          kind: "downcast",
+          value: recv(),
+          type: { kind: "object", className: child.def.name },
+          loc,
+        },
+        lowerer.completeArgs([], sig.params, loc, stmt),
+        sig.ret,
+        loc,
+      );
+      iterable = {
+        kind: "ternary",
+        cond: { kind: "instanceOf", value: recv(), className: child.def.name, type: BOOL, loc },
+        then: lowerer.coerceToExpected(overridden, DYN),
+        else_: iterable,
+        type: DYN,
+        loc,
+      };
+    }
+    const loop = lowerForOfDyn(lowerer, stmt, iterable, undefined, true);
+    return {
+      kind: "block",
+      body: [
+        { kind: "varDecl", localId: source.id, init: streamSource(lowerer, plan, loc), loc },
+        loop,
+      ],
+      loc,
+    };
+  } finally {
+    lowerer.scopes.pop();
+  }
+}
+
 export function lowerForAwaitBuiltin(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt | null {
   const watching = watchEventsCall(lowerer, stmt.expression);
   if (watching) return lowerWatchEvents(lowerer, stmt);
@@ -1320,7 +1388,11 @@ export function lowerForAwaitBuiltin(lowerer: Lowerer, stmt: ts.ForOfStatement):
   const readline = readlinePlan(lowerer, stmt.expression);
   if (readline) return lowerReadlineLines(lowerer, stmt, readline);
   const node = nodeReadablePlan(lowerer, stmt.expression);
-  if (node) return lowerNodeReadable(lowerer, stmt, node);
+  if (node) {
+    const overrides = lowerNodeReadableOverrides(lowerer, stmt, node);
+    if (overrides) return overrides;
+    return lowerNodeReadable(lowerer, stmt, node);
+  }
   const web = webReadablePlan(lowerer, stmt.expression);
   if (web) return lowerWebReadable(lowerer, stmt, web);
   const classIterator = classAsyncIteratorPlan(lowerer, stmt.expression);

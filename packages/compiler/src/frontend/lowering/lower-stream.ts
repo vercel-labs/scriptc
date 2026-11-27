@@ -8894,7 +8894,7 @@ function streamAsyncDisposeOverriders(info: ClassInfo): ClassInfo[] {
 
 /** The stream subclasses below `info` that declare their own concrete
  * `name` method (`sym:asyncDispose`), most-derived first. */
-function streamSymbolMethodOverriders(info: ClassInfo, name: string): ClassInfo[] {
+export function streamSymbolMethodOverriders(info: ClassInfo, name: string): ClassInfo[] {
   const out: ClassInfo[] = [];
   const visit = (parent: ClassInfo): void => {
     for (const child of parent.subclasses) {

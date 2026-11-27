@@ -30,11 +30,24 @@ typedef enum {
   SW_OAEP,
   SW_X25519,
   SW_X448,
+  SW_MLKEM,
 } SwKind;
 
 static const char *const sw_names[] = {"ECDSA",          "RSASSA-PKCS1-v1_5", "RSA-PSS",
                                        "Ed25519",        "ECDH",              "RSA-OAEP",
-                                       "X25519",         "X448"};
+                                       "X25519",         "X448",              "ML-KEM"};
+
+/* The ML-KEM parameter set a canonical algorithm name names, or 0. */
+static int sw_kem_level(const char *name) {
+  if (strcmp(name, "ML-KEM-512") == 0) return 512;
+  if (strcmp(name, "ML-KEM-768") == 0) return 768;
+  if (strcmp(name, "ML-KEM-1024") == 0) return 1024;
+  return 0;
+}
+
+/* The usages ML-KEM's public and private halves carry. */
+#define SW_KEM_ENCAP (SCR_WC_USAGE_ENCAPSULATE_KEY | SCR_WC_USAGE_ENCAPSULATE_BITS)
+#define SW_KEM_DECAP (SCR_WC_USAGE_DECAPSULATE_KEY | SCR_WC_USAGE_DECAPSULATE_BITS)
 
 static const char *const sw_curves[] = {"P-256", "P-384", "P-521"};
 
@@ -72,6 +85,15 @@ static SwKey *sw_key_of(const ScrDyn *value) {
 
 static bool sw_is_key(const ScrDyn *value) { return sw_key_of(value) != NULL; }
 
+/* An ML-KEM key's canonical algorithm name. */
+static const char *sw_key_name(const SwKey *k) {
+  if (k && k->kind == SW_MLKEM) {
+    int level = scr_pki_mlkem_level(k->key);
+    return level == 512 ? "ML-KEM-512" : level == 1024 ? "ML-KEM-1024" : "ML-KEM-768";
+  }
+  return k ? sw_names[k->kind] : sw_names[SW_MLKEM];
+}
+
 static bool sw_key_is_private(const ScrDyn *value) {
   SwKey *key = sw_key_of(value);
   return key && scr_pki_key_is_private(key->key);
@@ -80,8 +102,9 @@ static bool sw_key_is_private(const ScrDyn *value) {
 static ScrDyn *sw_key_algorithm(SwKey *k) {
   if (!k->algorithm) {
     ScrDyn *algorithm = scr_dyn_new_obj();
-    scr_dyn_obj_set(algorithm, "name", 4, scr_wc_cstr(sw_names[k->kind]));
-    if (k->kind == SW_ED25519 || k->kind == SW_X25519 || k->kind == SW_X448) {
+    scr_dyn_obj_set(algorithm, "name", 4, scr_wc_cstr(sw_key_name(k)));
+    if (k->kind == SW_ED25519 || k->kind == SW_X25519 || k->kind == SW_X448 ||
+        k->kind == SW_MLKEM) {
       /* { name } only */
     } else if (k->kind == SW_ECDSA || k->kind == SW_ECDH) {
       const char *curve = scr_pki_key_curve(k->key);
@@ -194,6 +217,7 @@ static ScrDyn *sw_key_new(ScrPkiKey *key, SwKind kind, const char *hash, unsigne
 /* ── algorithm parameters ─────────────────────────────────────────────── */
 
 static SwKind sw_kind_of(const char *name) {
+  if (sw_kem_level(name) != 0) return SW_MLKEM;
   if (strcmp(name, "ECDSA") == 0) return SW_ECDSA;
   if (strcmp(name, "Ed25519") == 0) return SW_ED25519;
   if (strcmp(name, "ECDH") == 0) return SW_ECDH;
@@ -230,7 +254,9 @@ static bool sw_export_raw_kind(SwKind kind) {
 static const char *sw_algorithm_name(ScrDyn *identifier) {
   ScrStr *name = scr_wc_algorithm_name(identifier, "Algorithm");
   if (!name) return NULL;
-  const char *found = scr_wc_lookup(sw_names, SCR_WC_COUNT(sw_names), name);
+  static const char *const kem_names[] = {"ML-KEM-512", "ML-KEM-768", "ML-KEM-1024"};
+  const char *found = scr_wc_lookup(kem_names, SCR_WC_COUNT(kem_names), name);
+  if (!found) found = scr_wc_lookup(sw_names, SCR_WC_COUNT(sw_names), name);
   scr_str_release(name);
   if (!found) scr_throw_domex("NotSupportedError", "Unrecognized algorithm name");
   return found;
@@ -320,9 +346,10 @@ static bool sw_unsigned_long(ScrDyn *value, const char *member, double *out) {
   return true;
 }
 
-static void sw_unsupported_usage(SwKind kind) {
+static void sw_unsupported_usage(SwKind kind, const char *name) {
   char message[96];
-  snprintf(message, sizeof message, "Unsupported key usage for %s key", sw_names[kind]);
+  snprintf(message, sizeof message, "Unsupported key usage for %s key",
+           name ? name : sw_names[kind]);
   scr_throw_domex("SyntaxError", message);
 }
 
@@ -331,6 +358,7 @@ static void sw_unsupported_usage(SwKind kind) {
  * peer), RSA-OAEP's decrypting usages on the private key and its
  * encrypting ones on the public key, and sign/verify likewise. */
 static unsigned sw_pair_usages(SwKind kind) {
+  if (kind == SW_MLKEM) return SW_KEM_ENCAP | SW_KEM_DECAP;
   if (sw_is_derive_kind(kind)) return SCR_WC_USAGE_DERIVE_KEY | SCR_WC_USAGE_DERIVE_BITS;
   if (kind == SW_OAEP)
     return SCR_WC_USAGE_ENCRYPT | SCR_WC_USAGE_DECRYPT | SCR_WC_USAGE_WRAP_KEY |
@@ -339,6 +367,7 @@ static unsigned sw_pair_usages(SwKind kind) {
 }
 
 static unsigned sw_private_usages(SwKind kind, unsigned usages) {
+  if (kind == SW_MLKEM) return usages & SW_KEM_DECAP;
   if (sw_is_derive_kind(kind))
     return usages & (SCR_WC_USAGE_DERIVE_KEY | SCR_WC_USAGE_DERIVE_BITS);
   if (kind == SW_OAEP) return usages & (SCR_WC_USAGE_DECRYPT | SCR_WC_USAGE_UNWRAP_KEY);
@@ -346,6 +375,7 @@ static unsigned sw_private_usages(SwKind kind, unsigned usages) {
 }
 
 static unsigned sw_public_usages(SwKind kind, unsigned usages) {
+  if (kind == SW_MLKEM) return usages & SW_KEM_ENCAP;
   if (sw_is_derive_kind(kind)) return 0;
   if (kind == SW_OAEP) return usages & (SCR_WC_USAGE_ENCRYPT | SCR_WC_USAGE_WRAP_KEY);
   return usages & SCR_WC_USAGE_VERIFY;
@@ -354,6 +384,7 @@ static unsigned sw_public_usages(SwKind kind, unsigned usages) {
 /* The usages a key being imported accepts, by algorithm and half. A
  * key-agreement public key carries none: it is only a peer. */
 static unsigned sw_import_allowed(SwKind kind, bool private_key) {
+  if (kind == SW_MLKEM) return private_key ? SW_KEM_DECAP : SW_KEM_ENCAP;
   if (sw_is_derive_kind(kind))
     return private_key ? SCR_WC_USAGE_DERIVE_KEY | SCR_WC_USAGE_DERIVE_BITS : 0;
   if (kind == SW_OAEP)
@@ -384,6 +415,35 @@ static ScrPromise *sw_generate_key(const ScrDyn *args) {
   SwKind kind = sw_kind_of(name);
   plain = scr_wc_plain(a.v[0]);
   if (!plain) goto done;
+  if (kind == SW_MLKEM) {
+    /* ML-KEM takes no parameters beyond the name; its public half carries
+     * the encapsulating usages and the private half the decapsulating ones,
+     * and Node requires at least one of the latter. */
+    scr_wc_warn_experimental_algorithm(name);
+    if ((unsigned)usages & ~(unsigned)sw_pair_usages(kind)) {
+      sw_unsupported_usage(kind, name);
+      goto done;
+    }
+    unsigned kem_private = (unsigned)usages & SW_KEM_DECAP;
+    unsigned kem_public = (unsigned)usages & SW_KEM_ENCAP;
+    if (kem_private == 0) {
+      scr_throw_domex("SyntaxError", "Usages cannot be empty when creating a key.");
+      goto done;
+    }
+    ScrPkiKey *kem_key = scr_pki_mlkem_generate(sw_kem_level(name));
+    ScrPkiKey *kem_public_key = kem_key ? scr_pki_key_public_of(kem_key) : NULL;
+    if (!kem_public_key) {
+      if (kem_key) scr_pki_key_release(kem_key);
+      scr_throw_domex("OperationError", "Key generation failed");
+      goto done;
+    }
+    pair = scr_dyn_new_obj();
+    scr_dyn_obj_set(pair, "publicKey", 9,
+                    sw_key_new(kem_public_key, kind, NULL, kem_public, true));
+    scr_dyn_obj_set(pair, "privateKey", 10,
+                    sw_key_new(kem_key, kind, NULL, kem_private, extractable));
+    goto done;
+  }
   const char *curve = NULL;
   const char *hash = NULL;
   double bits = 0;
@@ -424,7 +484,7 @@ static ScrPromise *sw_generate_key(const ScrDyn *args) {
     scr_dyn_release(e);
   }
   if (usages & ~(long)sw_pair_usages(kind)) {
-    sw_unsupported_usage(kind);
+    sw_unsupported_usage(kind, name);
     if (exponent) scr_bytes_release(exponent);
     goto done;
   }
@@ -605,6 +665,64 @@ static ScrDyn *sw_import(const ScrDyn *args) {
   SwKind kind = sw_kind_of(name);
   plain = scr_wc_plain(a.v[2]);
   if (!plain) goto done;
+  if (kind == SW_MLKEM) {
+    int level = sw_kem_level(name);
+    scr_wc_warn_experimental_algorithm(name);
+    bool kem_private;
+    if (strcmp(format, "raw-seed") == 0 || strcmp(format, "pkcs8") == 0) kem_private = true;
+    else if (strcmp(format, "raw-public") == 0 || strcmp(format, "spki") == 0) kem_private = false;
+    else if (is_jwk) kem_private = sw_jwk_member(jwk, "priv") != NULL;
+    else {
+      char message[128];
+      snprintf(message, sizeof message, "Unable to import %s using %s format", name, format);
+      scr_throw_domex("NotSupportedError", message);
+      goto done;
+    }
+    unsigned allowed = sw_import_allowed(kind, kem_private);
+    if ((unsigned)usages & ~allowed) {
+      sw_unsupported_usage(kind, name);
+      goto done;
+    }
+    if (kem_private && usages == 0) {
+      scr_throw_domex("SyntaxError", "Usages cannot be empty when importing a private key.");
+      goto done;
+    }
+    ScrPkiKey *kem = NULL;
+    if (is_jwk) {
+      const ScrDyn *kty = sw_jwk_member(jwk, "kty");
+      if (!kty) {
+        scr_throw_domex("DataError", "Invalid keyData");
+        goto done;
+      }
+      if (!sw_jwk_is(kty, "AKP")) {
+        scr_throw_domex("DataError", "Invalid JWK \"kty\" Parameter");
+        goto done;
+      }
+      const ScrDyn *alg = sw_jwk_member(jwk, "alg");
+      if (alg && !sw_jwk_is(alg, name)) {
+        scr_throw_domex("DataError", "JWK \"alg\" Parameter and algorithm name mismatch");
+        goto done;
+      }
+      if (!sw_jwk_checks(jwk, (unsigned)usages, extractable, "enc")) goto done;
+      kem = scr_pki_key_from_jwk(jwk, kem_private);
+    } else if (strcmp(format, "raw-public") == 0 || strcmp(format, "raw-seed") == 0) {
+      ScrBytes *view = data;
+      SCR_BYTES_SNAPSHOT(view);
+      kem = scr_pki_mlkem_from_raw(level, strcmp(format, "raw-public") == 0, view->data,
+                                   (size_t)scr_bytes_byte_len(view));
+    } else {
+      ScrBytes *view = data;
+      SCR_BYTES_SNAPSHOT(view);
+      kem = scr_pki_key_parse_der(view->data, (size_t)scr_bytes_byte_len(view), kem_private);
+    }
+    if (!kem || scr_pki_mlkem_level(kem) != level) {
+      if (kem) scr_pki_key_release(kem);
+      scr_throw_domex("DataError", "Invalid keyData");
+      goto done;
+    }
+    result = sw_key_new(kem, kind, NULL, (unsigned)usages, extractable);
+    goto done;
+  }
   const char *curve = NULL;
   const char *hash = NULL;
   if (kind == SW_ED25519 || kind == SW_X25519 || kind == SW_X448) {
@@ -645,6 +763,13 @@ static ScrDyn *sw_import(const ScrDyn *args) {
   /* An Ed25519 private key derives its public key in the Ed25519 unit. */
   if (kind == SW_ED25519 && private_key && !scr_pki_ed25519_ready()) goto done;
   if (is_jwk) {
+    /* Node validates the usages against the key's kind and public/private
+     * shape before it reads the JWK, so a malformed JWK whose usages the
+     * key type cannot take answers the usage error first. */
+    if ((unsigned)usages & ~allowed) {
+      sw_unsupported_usage(kind, name);
+      goto done;
+    }
     const ScrDyn *kty = sw_jwk_member(jwk, "kty");
     if (!kty) {
       scr_throw_domex("DataError", "Invalid keyData");
@@ -666,10 +791,6 @@ static ScrDyn *sw_import(const ScrDyn *args) {
       scr_throw_domex("DataError", "JWK \"crv\" Parameter and algorithm name mismatch");
       goto done;
     }
-    if ((unsigned)usages & ~allowed) {
-      sw_unsupported_usage(kind);
-      goto done;
-    }
     if (!sw_jwk_checks(jwk, (unsigned)usages, extractable,
                        kind == SW_OAEP || sw_is_derive_kind(kind) ? "enc" : "sig"))
       goto done;
@@ -688,7 +809,7 @@ static ScrDyn *sw_import(const ScrDyn *args) {
     key = scr_pki_key_from_jwk(jwk, private_key);
   } else {
     if ((unsigned)usages & ~allowed) {
-      sw_unsupported_usage(kind);
+      sw_unsupported_usage(kind, name);
       goto done;
     }
     ScrBytes *view = data;
@@ -761,11 +882,48 @@ static ScrDyn *sw_export(const ScrDyn *args) {
   SwKey *k = sw_key_of(a.v[1]);
   bool private_key = scr_pki_key_is_private(k->key);
   if (!format) goto done;
+  if (k->kind == SW_MLKEM) scr_wc_warn_experimental_algorithm(sw_key_name(k));
   if (!k->extractable) {
     scr_throw_domex("InvalidAccessError", "key is not extractable");
     goto done;
   }
-  if (strcmp(format, "spki") == 0 || strcmp(format, "pkcs8") == 0) {
+  if ((strcmp(format, "raw-public") == 0 || strcmp(format, "raw-seed") == 0) &&
+      k->kind != SW_MLKEM) {
+    char message[128];
+    snprintf(message, sizeof message, "Unable to export %s %s key using %s format",
+             sw_key_name(k), private_key ? "private" : "public", format);
+    scr_throw_domex("NotSupportedError", message);
+    goto done;
+  }
+  if (strcmp(format, "raw-public") == 0 && k->kind == SW_MLKEM) {
+    if (private_key) {
+      char message[128];
+      snprintf(message, sizeof message, "Unable to export %s private key using raw-public format",
+               sw_key_name(k));
+      scr_throw_domex("NotSupportedError", message);
+      goto done;
+    }
+    ScrBytes *raw = scr_pki_mlkem_raw_public(k->key);
+    if (!raw) {
+      scr_throw_domex("OperationError", "Failed to export key");
+      goto done;
+    }
+    result = sw_array_buffer(raw);
+  } else if (strcmp(format, "raw-seed") == 0 && k->kind == SW_MLKEM) {
+    if (!private_key) {
+      char message[128];
+      snprintf(message, sizeof message, "Unable to export %s public key using raw-seed format",
+               sw_key_name(k));
+      scr_throw_domex("NotSupportedError", message);
+      goto done;
+    }
+    ScrBytes *raw = scr_pki_mlkem_raw_seed(k->key);
+    if (!raw) {
+      scr_throw_domex("OperationError", "Failed to export key");
+      goto done;
+    }
+    result = sw_array_buffer(raw);
+  } else if (strcmp(format, "spki") == 0 || strcmp(format, "pkcs8") == 0) {
     bool want_private = strcmp(format, "pkcs8") == 0;
     if (want_private != private_key) {
       scr_throw_domex("InvalidAccessError", want_private ? "Key must be a private key" : "Key must be a public key");
@@ -798,16 +956,21 @@ static ScrDyn *sw_export(const ScrDyn *args) {
         scr_dyn_obj_set(jwk, "alg", 3, scr_wc_cstr(alg));
     } else if (k->kind == SW_ED25519) {
       scr_dyn_obj_set(jwk, "alg", 3, scr_wc_cstr("Ed25519"));
+    } else if (k->kind == SW_MLKEM) {
+      scr_dyn_obj_set(jwk, "alg", 3, scr_wc_cstr(sw_key_name(k)));
     }
     /* The key members in Node's order for each key type. */
     static const char *const rsa_names[] = {"kty", "n", "e", "d", "p", "q", "dp", "dq", "qi"};
     static const char *const ec_names[] = {"kty", "x", "y", "crv", "d"};
     static const char *const okp_names[] = {"kty", "crv", "x", "d"};
+    static const char *const akp_names[] = {"kty", "pub", "priv"};
     bool okp = k->kind == SW_ED25519 || k->kind == SW_X25519 || k->kind == SW_X448;
+    bool akp = k->kind == SW_MLKEM;
     const char *const *names =
-        sw_is_rsa_kind(k->kind) ? rsa_names : okp ? okp_names : ec_names;
+        sw_is_rsa_kind(k->kind) ? rsa_names : okp ? okp_names : akp ? akp_names : ec_names;
     size_t count = sw_is_rsa_kind(k->kind) ? SCR_WC_COUNT(rsa_names)
                    : okp                   ? SCR_WC_COUNT(okp_names)
+                   : akp                   ? SCR_WC_COUNT(akp_names)
                                            : SCR_WC_COUNT(ec_names);
     for (size_t i = 0; i < count; i++) {
       const ScrDyn *v = scr_dyn_obj_get(members, names[i], strlen(names[i]));
@@ -817,7 +980,7 @@ static ScrDyn *sw_export(const ScrDyn *args) {
     result = jwk;
   } else {
     char message[128];
-    snprintf(message, sizeof message, "Unable to export %s %s key using %s format", sw_names[k->kind],
+    snprintf(message, sizeof message, "Unable to export %s %s key using %s format", sw_key_name(k),
              private_key ? "private" : "public", format);
     scr_throw_domex("NotSupportedError", message);
   }
@@ -985,6 +1148,79 @@ static ScrBytes *sw_oaep_wrap(const ScrDyn *algorithm, const ScrDyn *key, ScrByt
 
 /* ── ECDH and X25519 deriveBits ───────────────────────────────────────── */
 
+/* ── ML-KEM encapsulate and decapsulate ───────────────────────────────── */
+
+/* The algorithm names the KEM methods take, and the level one names. */
+static const char *sw_kem_algorithm_name(const ScrDyn *algorithm) {
+  ScrStr *name = scr_wc_algorithm_name((ScrDyn *)algorithm, "Algorithm");
+  if (!name) return NULL;
+  static const char *const kem_names[] = {"ML-KEM-512", "ML-KEM-768", "ML-KEM-1024"};
+  const char *found = scr_wc_lookup(kem_names, SCR_WC_COUNT(kem_names), name);
+  scr_str_release(name);
+  if (!found) scr_throw_domex("NotSupportedError", "Unrecognized algorithm name");
+  return found;
+}
+
+/* Node's usage check first (naming the method), then the algorithm-versus-key
+ * check; both answer InvalidAccessError. */
+static bool sw_kem_usage(const ScrDyn *algorithm, const ScrDyn *key, const char *method,
+                         bool decrypt, unsigned want) {
+  SwKey *k = sw_key_of(key);
+  char message[96];
+  if (!k || k->kind != SW_MLKEM || !(k->usages & want)) {
+    snprintf(message, sizeof message, "%s does not have %s usage",
+             decrypt ? "decapsulationKey" : "encapsulationKey", method);
+    scr_throw_domex("InvalidAccessError", message);
+    return false;
+  }
+  const char *name = sw_kem_algorithm_name(algorithm);
+  if (!name) return false;
+  if (scr_pki_mlkem_level(k->key) != sw_kem_level(name)) {
+    scr_throw_domex("InvalidAccessError", "key algorithm mismatch");
+    return false;
+  }
+  return true;
+}
+
+static ScrBytes *sw_kem_encapsulate(const ScrDyn *algorithm, const ScrDyn *key, const char *method,
+                                    ScrBytes **ciphertext) {
+  unsigned want = strcmp(method, "encapsulateKey") == 0 ? SCR_WC_USAGE_ENCAPSULATE_KEY
+                                                        : SCR_WC_USAGE_ENCAPSULATE_BITS;
+  if (!sw_kem_usage(algorithm, key, method, false, want)) return NULL;
+  SwKey *k = sw_key_of(key);
+  ScrDyn *out = scr_pki_mlkem_encapsulate(k->key);
+  ScrBytes *shared = NULL;
+  ScrBytes *ct = NULL;
+  if (out) {
+    shared = scr_bytes_buffer_source(scr_dyn_obj_get(out, "sharedKey", 9));
+    ct = scr_bytes_buffer_source(scr_dyn_obj_get(out, "ciphertext", 10));
+    scr_dyn_release(out);
+  }
+  if (!shared || !ct) {
+    if (shared) scr_bytes_release(shared);
+    if (ct) scr_bytes_release(ct);
+    scr_throw_domex("OperationError", "The operation failed for an operation-specific reason");
+    return NULL;
+  }
+  *ciphertext = ct;
+  return shared;
+}
+
+static ScrBytes *sw_kem_decapsulate(const ScrDyn *algorithm, const ScrDyn *key, const char *method,
+                                    ScrBytes *ciphertext) {
+  unsigned want = strcmp(method, "decapsulateKey") == 0 ? SCR_WC_USAGE_DECAPSULATE_KEY
+                                                        : SCR_WC_USAGE_DECAPSULATE_BITS;
+  if (!sw_kem_usage(algorithm, key, method, true, want)) return NULL;
+  SwKey *k = sw_key_of(key);
+  ScrBytes *view = ciphertext;
+  SCR_BYTES_SNAPSHOT(view);
+  ScrBytes *shared =
+      scr_pki_mlkem_decapsulate(k->key, view->data, (size_t)scr_bytes_byte_len(view));
+  if (!shared)
+    scr_throw_domex("OperationError", "The operation failed for an operation-specific reason");
+  return shared;
+}
+
 /* The shared secret's size in bits: the field's byte width times eight,
  * which for P-521 is 528 rather than the curve's 521, as Node derives it
  * (an omitted length takes all of it). */
@@ -1146,7 +1382,10 @@ static ScrPromise *sw_sign_verify(const ScrDyn *args, bool verify) {
       scr_wc_missing_member("EcdsaParams", "hash");
       goto done;
     }
-    hash = sw_hash(plain, "EcdsaParams", false, method);
+    /* Node runs its SHA-only check for EcdsaParams before normalizing, so
+     * any name that does not start with "SHA" answers that message (a
+     * non-SHA hash such as MD5 and an unrecognized name alike). */
+    hash = sw_hash(plain, "EcdsaParams", true, method);
     if (!hash) goto done;
   } else if (kind == SW_PSS) {
     if (!scr_wc_is_object(plain)) {
@@ -1259,7 +1498,7 @@ static ScrDyn *sw_to_crypto_key(const ScrDyn *key_value, const ScrDyn *const *ar
    * key, so a usage the algorithm never takes is that error even when the
    * key itself has the wrong type. */
   if ((unsigned)usages & ~sw_pair_usages(kind)) {
-    sw_unsupported_usage(kind);
+    sw_unsupported_usage(kind, name);
     goto done;
   }
   bool matches = (kind == SW_ED25519 && ed) || (kind == SW_X25519 && x) ||
@@ -1278,7 +1517,7 @@ static ScrDyn *sw_to_crypto_key(const ScrDyn *key_value, const ScrDyn *const *ar
   }
   unsigned allowed = sw_import_allowed(kind, private_key);
   if ((unsigned)usages & ~allowed) {
-    sw_unsupported_usage(kind);
+    sw_unsupported_usage(kind, name);
     goto done;
   }
   if (private_key && usages == 0) {
@@ -1318,11 +1557,13 @@ static ScrDyn *sw_get_public_key(ScrDyn *key_value, long usages) {
    * wrapping for RSA-OAEP, and none for a key-agreement key (its public
    * key is only a peer). */
   unsigned allowed = sw_is_derive_kind(k->kind) ? 0
-                     : k->kind == SW_OAEP
-                         ? (SCR_WC_USAGE_ENCRYPT | SCR_WC_USAGE_WRAP_KEY)
-                         : SCR_WC_USAGE_VERIFY;
+                     : k->kind == SW_MLKEM
+                         ? SW_KEM_ENCAP
+                         : k->kind == SW_OAEP
+                             ? (SCR_WC_USAGE_ENCRYPT | SCR_WC_USAGE_WRAP_KEY)
+                             : SCR_WC_USAGE_VERIFY;
   if ((unsigned)usages & ~allowed) {
-    sw_unsupported_usage(k->kind);
+    sw_unsupported_usage(k->kind, sw_key_name(k));
     return NULL;
   }
   ScrPkiKey *public_key = scr_pki_key_public_of(k->key);
@@ -1345,6 +1586,8 @@ static const ScrWcAsymmetric sw_table = {
     .decrypt = sw_decrypt,
     .oaep_wrap_usable = sw_oaep_wrap_usable,
     .oaep_wrap = sw_oaep_wrap,
+    .kem_encapsulate = sw_kem_encapsulate,
+    .kem_decapsulate = sw_kem_decapsulate,
     .derive_bits = sw_derive_bits,
     .get_public_key = sw_get_public_key,
     .to_crypto_key = sw_to_crypto_key,

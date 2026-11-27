@@ -60,6 +60,7 @@ import { lowerCryptoKeyInstanceof } from "../builtins/webcrypto.js";
 import { lowerNetAddressInstanceof } from "../builtins/net-address.js";
 import { lowerMimeInstanceof } from "../builtins/mime.js";
 import { lowerSqliteInstanceof } from "../builtins/sqlite.js";
+import { lowerSourceMapInstanceof } from "../builtins/source-map.js";
 import { lowerPerfInstanceof } from "../builtins/performance.js";
 import { typedArrayHasMember } from "../builtins/typed-array-members.js";
 import { fenceEarlyNsMemberRef, nsMemberIdentOf } from "../lower-namespaces.js";
@@ -681,6 +682,8 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
     if (mime) return mime;
     const sqlite = lowerSqliteInstanceof(lowerer, expr);
     if (sqlite) return sqlite;
+    const sourceMap = lowerSourceMapInstanceof(lowerer, expr);
+    if (sourceMap) return sourceMap;
     const perfClass = lowerPerfInstanceof(lowerer, expr);
     if (perfClass) return perfClass;
     const readlineInterface = lowerReadlineInstanceof(lowerer, expr);
@@ -1465,6 +1468,11 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
         (arm) =>
           arm.kind === "object" ||
           arm.kind === "promise" ||
+          // No program class can extend Map or Set (lower-classes.ts
+          // refuses the built-in base), so such an arm never holds an
+          // instance of the tested class: the helper answers false for it.
+          arm.kind === "map" ||
+          arm.kind === "set" ||
           arm.kind === "record" ||
           arm.kind === "array" ||
           arm.kind === "f64" ||

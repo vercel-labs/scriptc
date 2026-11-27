@@ -4968,6 +4968,20 @@ function validateFunction(
       }
       return true;
     }
+    if (e.fn === "http2.reqUrl") {
+      // Result is the interned `string | undefined` union (the :path-less
+      // CONNECT arm).
+      const def = e.type.kind === "union" ? unions.get(e.type.unionId) : undefined;
+      const ok =
+        def &&
+        def.arms.length === 2 &&
+        def.arms[0]!.kind === "string" &&
+        def.arms[1]!.kind === "undefinedT";
+      if (!ok) {
+        err(`libCall http2.reqUrl must return the 'string | undefined' union`, e.loc);
+      }
+      return true;
+    }
     if (e.fn === "net.sockRemoteAddress") {
       // Result is the interned `string | undefined` union (envGet's).
       const def = e.type.kind === "union" ? unions.get(e.type.unionId) : undefined;
@@ -6195,7 +6209,10 @@ function validateFunction(
       e.fn === "stream.decodeStrings" ||
       e.fn === "stream.optionValues" ||
       e.fn === "stream.duplexFromGen" ||
+      e.fn === "stream.duplexFromGenNoSource" ||
       e.fn === "stream.duplexFromDyn" ||
+      e.fn === "stream.composeStageDyn" ||
+      e.fn === "stream.composeTailDyn" ||
       e.fn === "stream.duplexifyReadable" ||
       e.fn === "stream.duplexifyWritable" ||
       e.fn === "stream.duplexifyPair" ||
@@ -6204,6 +6221,7 @@ function validateFunction(
       e.fn === "stream.duplexFromAsyncFn" ||
       e.fn === "stream.duplexFromGenSignal" ||
       e.fn === "stream.duplexFromAsyncFnSignal" ||
+      e.fn === "stream.duplexFromAsyncFnNoSource" ||
       e.fn === "stream.setConstruct" ||
       e.fn === "stream.replaceConstruct" ||
       e.fn === "stream.setWritev" ||
@@ -6294,8 +6312,12 @@ function validateFunction(
       }
       if (
         e.fn === "stream.duplexFromGen" ||
+        e.fn === "stream.duplexFromGenNoSource" ||
         e.fn === "stream.duplexFromDyn" ||
+        e.fn === "stream.composeStageDyn" ||
+        e.fn === "stream.composeTailDyn" ||
         e.fn === "stream.duplexFromAsyncFn" ||
+        e.fn === "stream.duplexFromAsyncFnNoSource" ||
         e.fn === "stream.duplexFromGenSignal" ||
         e.fn === "stream.duplexFromAsyncFnSignal"
       ) {
@@ -6819,6 +6841,8 @@ function validateFunction(
           err(`dynCheck origin ${e.origin} is not an index of declOrigins`, e.loc);
         if (e.pathIndex !== undefined && (!Number.isInteger(e.pathIndex) || e.pathIndex < 0))
           err(`dynCheck pathIndex ${e.pathIndex} is not an array position`, e.loc);
+        if (e.pathKey !== undefined && (typeof e.pathKey !== "string" || e.pathKey === ""))
+          err("dynCheck pathKey is not a member name", e.loc);
         // The target drives the emitted validator/builder: non-dyn,
         // non-void, JSON-representable (closures/class instances can never
         // be found inside a JSON dyn — the frontend rejects those casts).

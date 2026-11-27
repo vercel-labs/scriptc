@@ -178,6 +178,8 @@ ScrStr *scr_process_exec_path(void);
 /* process.arch: the binary's OWN architecture ("arm64", "x64") — Node's
  * answer for its own build on the same machine. +1 interned. */
 ScrStr *scr_process_arch(void);
+/* process.config (frozen, one per process; +1). */
+ScrDyn *scr_process_config(void);
 /* process.versions.node: the runtime's Node COMPATIBILITY TARGET — no
  * Node exists under a compiled binary, so this reports the version whose
  * semantics the runtime implements (SEMANTICS.md divergence 60). +1
@@ -506,6 +508,13 @@ void scr_process_set_debug_port(ScrDyn *port);
  * ERR_INVALID_ARG_TYPE). */
 bool scr_process_source_maps_enabled(void);
 void scr_process_set_source_maps_enabled(ScrDyn *enabled);
+/* node:module's source-map support (getSourceMapsSupport, setSourceMapsSupport,
+ * findSourceMap): the thread's frozen { enabled, nodeModules, generatedCode }
+ * record (+1), the setter it shares with process.setSourceMapsEnabled, and
+ * findSourceMap's undefined answer. */
+ScrDyn *scr_module_source_maps_support(void);
+void scr_module_set_source_maps_support(ScrDyn *enabled, ScrDyn *options);
+ScrDyn *scr_module_find_source_map(const ScrDyn *path);
 ScrArr *scr_active_resources(void);
 /* chdir(2) — throws Node's fs-shaped error on failure (syscall "chdir"). */
 void scr_process_chdir(ScrStr *dir);

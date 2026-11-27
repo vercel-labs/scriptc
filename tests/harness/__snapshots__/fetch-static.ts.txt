@@ -5,4 +5,4 @@ fetch-static.ts:27:23 - error SC2020: 'Response.arrayBuffer in a static build' i
      |                       ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   28 | }
 
-  hint: the native static Response surface is status/ok/statusText/url/redirected/headers/body/bodyUsed plus json(), text(), bytes(), and arrayBuffer(); other forms are unsupported
+  hint: the native static Response surface is status/ok/statusText/type/url/redirected/headers/body/bodyUsed plus json(), text(), bytes(), and arrayBuffer(), and the static error() and redirect(); other forms are unsupported

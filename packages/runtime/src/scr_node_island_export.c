@@ -923,6 +923,7 @@ int scr_ni_host_export_construct(uint32_t id, const ScrNodeValue *args, size_t a
     size_t reading = ni_read_begin();
     ScrDyn **in = ni_args_in(args, argc, small, 8);
     ni_read_end(reading);
+    scr_ni_called_in();
     result = scr_dyn_call(helper, in, argc, "constructor");
     ni_args_free(in, argc, small);
   } else {
@@ -933,6 +934,7 @@ int scr_ni_host_export_construct(uint32_t id, const ScrNodeValue *args, size_t a
       scr_dyn_arr_push(list, repeated != NULL ? repeated : scr_ni_value_in(&args[i]));
     }
     ni_read_end(reading);
+    scr_ni_called_in();
     ScrStr *what = scr_str_new("constructor", 11);
     result = scr_dyn_construct(ctor, list, what);
     scr_str_release(what);
@@ -1120,8 +1122,13 @@ static bool ni_class_has_accessor(const ScrDyn *target, const ScrDyn *key, char 
 /* Runs accessor half `fn` with the capsule as `this` (+1 result, NULL with
  * the exception pending), and refreshes the shared bindings: an accessor can
  * write a shared module's state, and island code reads the new value as soon
- * as the call returns. */
+ * as the call returns. The arguments are runtime values already, so the
+ * bridge's housekeeping runs before the accessor, as it does for every other
+ * island-driven entry: a getter that returns a fresh Buffer or typed array
+ * would otherwise leave its young view rooted through the bridge's list
+ * until some later operation ended it. */
 static ScrDyn *ni_run_accessor(ScrDyn *fn, ScrDyn *target, ScrDyn *const *args, size_t argc) {
+  scr_ni_called_in();
   scr_dyn_this_push_dyn(target);
   ScrDyn *result = scr_dyn_call(fn, args, argc, "accessor");
   scr_dyn_this_pop();

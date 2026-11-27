@@ -56,6 +56,10 @@ typedef struct ScrHttpH2Ops {
    * headers, no END_STREAM. Throws catchably on an invalid status. */
   void (*write_info)(void *stream, double status, ScrStr *const *names,
                      ScrStr *const *values, size_t nheaders);
+  /* Body bytes the compat request handed to the program (or discarded):
+   * the h2 receive window's credit for them returns to the peer. Borrows
+   * the stream. */
+  void (*consumed)(void *stream, size_t n);
 } ScrHttpH2Ops;
 
 void scr_http_set_h2_ops(const ScrHttpH2Ops *ops);
@@ -156,6 +160,12 @@ enum {
 void scr_http_server_off(ScrNetServer *s, ScrClosure *cb /*borrowed*/, double kind);
 ScrArr *scr_http_server_listeners(ScrNetServer *s, double kind);
 ScrStr *scr_http_req_url(ScrHttpReq *r);      /* +1 */
+/* Http2ServerRequest.url: the frame's :path (+1), or NULL for Node's
+ * undefined (a CONNECT block carries no :path). */
+ScrStr *scr_http_req_url_opt(ScrHttpReq *r);
+/* Drop the compat request's seeded "/" when the header block carried no
+ * :path (the CONNECT shape), Node's undefined url. */
+void scr_http_req_clear_url(ScrHttpReq *r);
 ScrStr *scr_http_req_method(ScrHttpReq *r);   /* +1 */
 ScrStr *scr_http_req_header(ScrHttpReq *r, ScrStr *name /*borrowed*/); /* +1 or NULL (undefined arm) */
 ScrStr *scr_http_req_trailer(ScrHttpReq *r, ScrStr *name /*borrowed*/); /* +1 or NULL */

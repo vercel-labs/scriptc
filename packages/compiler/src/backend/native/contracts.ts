@@ -136,6 +136,8 @@ export interface CcOptions {
    * reactions, AsyncLocalStorage, the unhandledRejection/warning
    * process events. */
   dynAsync?: boolean;
+  /** fs.openAsBlob: scr_fs_blob.c, the Blob unit reading a file on demand. */
+  fsOpenAsBlob?: boolean;
   /** The program has dynamic-tier jsval operations (moduleUsesDynTier on
    * the IR): compiles the scr_js_* units (two-tier design I3). Programs
    * without them link no scr_js_ symbol. */
@@ -291,6 +293,8 @@ export interface CcOptions {
   /** node:module's enableCompileCache, getCompileCacheDir, flushCompileCache
    * and constants: compiles scr_module_cache.c. */
   moduleCompileCache?: boolean;
+  /** node:module's SourceMap class: compiles scr_source_map.c. */
+  sourceMap?: boolean;
   /** SCR_FN_MEMBER_PROPS: a function's inherited member shadowed by an own
    * data property (`fn.call = f`; that build of scr_json.c and
    * scr_dyn_invoke.c). */
@@ -337,6 +341,9 @@ export interface CcOptions {
   /** A module namespace boxed for typed code: compiles
    * scr_module_namespace_dyn.c. */
   moduleNamespaceDyn?: boolean;
+  /** node:module's Module class object: compiles scr_module_class.c, which
+   * installs the class through scr_dyn_handle_class.c. */
+  moduleClass?: boolean;
   /** Primitive wrapper objects: compiles scr_js_wrapper.c. */
   primitiveWrapper?: boolean;
   /** %Iterator% and %Iterator.prototype%: compiles scr_js_iterator.c. */

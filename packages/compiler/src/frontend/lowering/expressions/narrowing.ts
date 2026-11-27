@@ -36,7 +36,12 @@ import { hasRuntimeStatics } from "../class-runtime-statics.js";
 import { jsBindingHasOpenWrites } from "../lower-stmts.js";
 import { conditionRunsNothing, constantCondition } from "../constant-conditions.js";
 import { documentedParameter, prototypeAssignedFunction } from "../call-signatures.js";
-import { narrowClassUnion, narrowStoredClassValue, structuralNarrowing } from "../class-unions.js";
+import {
+  narrowClassUnion,
+  narrowStoredClassValue,
+  narrowUnionToClassUnion,
+  structuralNarrowing,
+} from "../class-unions.js";
 import { checkedClassAssertion, checkedClassUnionAssertion } from "../class-assertions.js";
 import {
   isOptionalProcessStreamProperty,
@@ -979,6 +984,37 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
       guessedOverloadValue(lowerer, node)
     )
       return expr;
+    // A dynamic read names the member it validated, so a failing check
+    // reports `$.projectId` (or `$[0]`) instead of the bare `$`. The path
+    // spelling is a dot for a name and a decimal index for a position, so a
+    // key it cannot spell unambiguously (`d[""]`, `d["a-b"]`, `d[1.5]`)
+    // keeps the bare root path.
+    const readPath: { pathKey?: string; pathIndex?: number } = {};
+    if (ts.isPropertyAccessExpression(node)) readPath.pathKey = node.name.text;
+    else if (ts.isElementAccessExpression(node)) {
+      const key = node.argumentExpression;
+      if (ts.isStringLiteral(key) || ts.isNoSubstitutionTemplateLiteral(key)) {
+        if (/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(key.text)) readPath.pathKey = key.text;
+      } else if (ts.isNumericLiteral(key)) {
+        const index = Number(key.text);
+        if (Number.isSafeInteger(index) && index >= 0) readPath.pathIndex = index;
+      }
+    }
+    // A property read through the receiver's index signature answers
+    // undefined for a key the value does not hold, exactly as the same read
+    // of a record does. The checker types it as the index value alone, so
+    // validating the read as that value would throw on a missing key where
+    // Node answers undefined; keep the undefined arm instead.
+    if (
+      narrowed !== null &&
+      (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node))
+    ) {
+      const indexValue = lowerer.dynIndexSignatureValueRead(node);
+      if (indexValue !== null && typeEquals(indexValue, narrowed)) {
+        const armed = lowerer.coerceToExpected(expr, lowerer.withUndefinedArm(narrowed));
+        return armed.kind === "dynCheck" ? { ...armed, ...readPath } : armed;
+      }
+    }
     if (
       narrowed &&
       (narrowed.kind === "f64" ||
@@ -986,12 +1022,12 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
         narrowed.kind === "string" ||
         narrowed.kind === "bigint")
     ) {
-      return { kind: "dynCheck", value: expr, type: narrowed, loc: expr.loc };
+      return { kind: "dynCheck", value: expr, type: narrowed, loc: expr.loc, ...readPath };
     }
     // An instanceof narrow retains the native view after validating its
     // exact element kind. Buffer also matches Uint8Array.
     if (narrowed?.kind === "bytes" || narrowed?.kind === "url") {
-      return { kind: "dynCheck", value: expr, type: narrowed, loc: expr.loc };
+      return { kind: "dynCheck", value: expr, type: narrowed, loc: expr.loc, ...readPath };
     }
     // The same for a URLSearchParams. The operand of an assertion is left
     // to the assertion, which makes the same check.
@@ -1003,14 +1039,14 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
         node.parent.expression === node
       )
     ) {
-      return { kind: "dynCheck", value: expr, type: narrowed, loc: expr.loc };
+      return { kind: "dynCheck", value: expr, type: narrowed, loc: expr.loc, ...readPath };
     }
     // An `instanceof Error` narrow: the checked-dynamic tree's error encoding rebuilds a
     // fresh %Error (name/message/code from the marker object — a COPY,
     // the unknown boundary's stance; SEMANTICS.md 67), validated like
     // every dyn extraction.
     if (narrowed?.kind === "object" && narrowed.className === "%Error") {
-      return { kind: "dynCheck", value: expr, type: narrowed, loc: expr.loc };
+      return { kind: "dynCheck", value: expr, type: narrowed, loc: expr.loc, ...readPath };
     }
     return expr;
   }
@@ -1131,6 +1167,17 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
         loc: expr.loc,
       };
     }
+  }
+  // A union holding non-class arms (a Map beside node classes) narrowed to
+  // the class arms it kept: re-tag the stored value into the narrowed
+  // union so it converts as that union (a stranded arm traps).
+  if (
+    narrowed?.kind === "union" &&
+    expr.type.kind === "union" &&
+    narrowed.unionId !== expr.type.unionId
+  ) {
+    const retagged = narrowUnionToClassUnion(lowerer, expr, narrowed);
+    if (retagged) return retagged;
   }
   // A narrowing that refines record arms with an intersection keeps the
   // stored layout: view the value as the stored arms that can hold it.
@@ -2187,7 +2234,7 @@ export function lowerAsExpression(
   if (caughtLocal) {
     const loc = locOf(expr);
     const targetTs = lowerer.checker.getTypeFromTypeNode(expr.type);
-    const target = lowerer.mapTypeOf(targetTs);
+    const target = lowerer.mapAssertionTargetType(targetTs);
     if (target?.kind === "object") {
       const info = lowerer.classes.get(target.className);
       if (info && lowerer.inHierarchy(info)) {
@@ -2234,7 +2281,8 @@ export function lowerAsExpression(
     // by a type the checker keeps symbolic: the record the function built
     // takes the instance's result type (built-record-results.ts).
     const target =
-      lowerer.mapTypeOf(targetTs0) ?? builtRecordResultType(lowerer, expr, inner, targetTs0);
+      lowerer.mapAssertionTargetType(targetTs0) ??
+      builtRecordResultType(lowerer, expr, inner, targetTs0);
     // A static assertion ERASES in Node, but the claim it makes still
     // answers to the program: a slot this value reaches that no ordinary
     // conversion covers (SC2002/SC2003) converts it CHECKED instead of
@@ -2515,7 +2563,7 @@ export function lowerAsExpression(
   // extraction an unknown value gets wherever the checker admits it.
   if (expr.type.kind === ts.SyntaxKind.NeverKeyword) return inner;
   const targetTs = lowerer.checker.getTypeFromTypeNode(expr.type);
-  const mappedTarget = lowerer.mapTypeOf(targetTs);
+  const mappedTarget = lowerer.mapAssertionTargetType(targetTs);
   // A generic body's `return built as Result<T>` over a dictionary that
   // keeps checked identity: the object nothing else holds converts into the
   // instance's result type (built-record-results.ts), keys and order kept.

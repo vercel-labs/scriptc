@@ -5792,7 +5792,7 @@ export class Lowerer {
    * `start:end:file`: refused when the lowered program gives a function its
    * own `call` or `apply` (refuseForwardsToOwnCall). */
   readonly receiverForwardSites = new Set<string>();
-  readonly sharedInitFlags = new Map<ts.Statement, string[]>();
+  readonly sharedInitFlags = new Map<ts.VariableDeclaration, string[]>();
   /** Per-directory answers of experimental-import.ts's declaration-file test. */
   readonly experimentalFiles = new Map<string, boolean>();
   /** Interned LifetimeRegion.run helpers, by callback type key. */

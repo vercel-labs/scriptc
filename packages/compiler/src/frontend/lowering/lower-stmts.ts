@@ -440,6 +440,7 @@ import { fenceX509KeyWalk } from "./builtins/x509.js";
 import { classGeneratorIterable } from "./class-iterables.js";
 import { iterableUnionOf, lowerForOfIterable } from "./iterable-values.js";
 import { refuseDefinedEnvWrite } from "./builtins/environment.js";
+import { sharedInitFlagStores } from "./lower-shared-modules.js";
 
 interface UsingRegistration {
   acquire: IrStmt[];
@@ -3033,7 +3034,8 @@ export function lowerVarStatement(lowerer: Lowerer, stmt: ts.VariableStatement):
     // A require binding earlier code can read is initialized from here on
     // (require-initialization.ts).
     const initialized = requireInitFlagStmt(lowerer, decl);
-    return initialized ? [...lowered, initialized] : lowered;
+    const sharedFlags = sharedInitFlagStores(lowerer, decl);
+    return [...lowered, ...(initialized ? [initialized] : []), ...sharedFlags];
   });
 }
 

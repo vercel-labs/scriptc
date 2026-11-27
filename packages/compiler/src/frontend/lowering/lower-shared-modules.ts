@@ -548,12 +548,15 @@ export function sharedModulePlans(lowerer: Lowerer): SharedModulePlan[] {
       const flag = `%g.shared.${plans.length}.${e.name}%initialized`;
       lowerer.globalsList.push({ id: flag, name: "%initialized", type: BOOL, mutable: true });
       e.flag = flag;
-      let stmt: ts.Node | undefined = e.ident.parent;
-      while (stmt !== undefined && !ts.isVariableStatement(stmt)) stmt = stmt.parent;
-      if (stmt !== undefined) {
-        const list = lowerer.sharedInitFlags.get(stmt as ts.Statement) ?? [];
+      // The flag publishes with the declarator that initializes the binding:
+      // a later declarator of the same statement can call island code, which
+      // must then read the earlier binding's value. Export aliases of one
+      // declaration share its ident, so they publish together.
+      const decl = e.ident.parent;
+      if (decl !== undefined && ts.isVariableDeclaration(decl)) {
+        const list = lowerer.sharedInitFlags.get(decl) ?? [];
         list.push(flag);
-        lowerer.sharedInitFlags.set(stmt as ts.Statement, list);
+        lowerer.sharedInitFlags.set(decl, list);
       }
     }
     plans.push({ sf, path, exports });
@@ -572,11 +575,14 @@ export function sharedModulePlans(lowerer: Lowerer): SharedModulePlan[] {
   return plans;
 }
 
-/** The flag stores after a shared module's declaration statement. */
-export function sharedInitFlagStores(lowerer: Lowerer, stmt: ts.Statement): IrStmt[] {
-  const flags = lowerer.sharedInitFlags.get(stmt);
+/** The flag stores after a shared module's variable declarator ran. */
+export function sharedInitFlagStores(
+  lowerer: Lowerer,
+  decl: ts.VariableDeclaration,
+): IrStmt[] {
+  const flags = lowerer.sharedInitFlags.get(decl);
   if (flags === undefined) return [];
-  const loc = locOf(stmt);
+  const loc = locOf(decl);
   return flags.map((flag) => ({
     kind: "assign",
     localId: flag,

@@ -711,7 +711,7 @@ function propMutatedSymbols(lowerer: Lowerer): Set<ts.Symbol> {
  * (propMutatedSymbols). Returns the argument unchanged when the chain
  * breaks; `undefined`/null arguments answer null (Node's `if (options)`
  * guard — all defaults). */
-function followOptionsArg(
+export function followOptionsArg(
   lowerer: Lowerer,
   arg: ts.Expression | undefined,
 ): ts.Expression | null | undefined {

@@ -14,6 +14,7 @@ import { InternalCompilerError } from "../../../errors.js";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
 import { conditionalSpreadOf } from "../expressions/object-literals.js";
+import { followOptionsArg } from "../lower-stream.js";
 import { isSafeToDiscard } from "../expressions/evaluation-safety.js";
 import {
   BOOL,
@@ -128,6 +129,14 @@ export function lowerExecSyncCall(
   };
 
   if (optsNode) {
+    // A const bound to an object literal (`const opts = { encoding: "utf-8",
+    // stdio: "pipe" }`) lowers as that literal: followOptionsArg follows the
+    // chain and refuses to when the program writes one of the binding's
+    // properties somewhere.
+    const followed = followOptionsArg(lowerer, optsNode);
+    if (followed !== undefined && followed !== null && ts.isObjectLiteralExpression(followed)) {
+      optsNode = followed;
+    }
     if (!ts.isObjectLiteralExpression(optsNode)) {
       // A TYPED options VALUE (the interned exec-options record —
       // ExecFileSyncOptionsWithStringEncoding consts and runner params,

@@ -15,10 +15,13 @@ import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
 import { conditionalSpreadOf } from "../expressions/object-literals.js";
 import { isSafeToDiscard } from "../expressions/evaluation-safety.js";
+import { ensureBool } from "../lower-exprs.js";
 import {
   BOOL,
   BYTES_U8,
+  DYN,
   F64,
+  isUnitType,
   type IrExpr,
   type IrStmt,
   type IrType,
@@ -43,6 +46,15 @@ import { isPureReadShape, optionMember } from "./arguments.js";
  * SIGTERM default), `windowsHide`/`shell:false` on execFileSync (Node
  * no-ops here). Every other member (a non-default killSignal, shell:true
  * on execFileSync, ...) fences by name. */
+/** Whether a runtime `shell` value can only be a flag: a boolean, or a
+ * union whose every arm is boolean, null or undefined. */
+function isBooleanShellType(lowerer: Lowerer, type: IrType): boolean {
+  if (type.kind === "bool") return true;
+  if (type.kind !== "union") return false;
+  const def = lowerer.unions.get(type.unionId);
+  return def !== undefined && def.arms.every((arm) => arm.kind === "bool" || isUnitType(arm));
+}
+
 export function lowerExecSyncCall(
   lowerer: Lowerer,
   expr: ts.CallExpression,
@@ -89,6 +101,13 @@ export function lowerExecSyncCall(
   // and hands the string to /bin/sh, and reports DEP0190 once when there
   // are arguments to concatenate.
   let shellEnabled = false;
+  // A `shell` member whose value is read at the call: the launch branches
+  // between the direct spawn and the `/bin/sh -c` join at run time. The
+  // value evaluates with the other launch arguments, after the file and
+  // the args, so it must be the FIRST member.
+  let shellRuntime: { value: IrExpr; dyn: boolean; node: ts.Expression } | null = null;
+  let shellBool: IrExpr | null = null;
+  let memberBeforeShell = false;
 
   const emptyStr: IrExpr = { kind: "strLit", value: "", type: STRING, loc };
   const emptyPairs: IrExpr = { kind: "arrayLit", elems: [], type: arrayOf(STRING), loc };
@@ -274,6 +293,7 @@ export function lowerExecSyncCall(
         );
       }
       const member = m.name;
+      if (member !== "shell") memberBeforeShell = true;
       switch (member) {
         case "encoding": {
           // Node's normalizeExecArgs: null/undefined and "buffer" select
@@ -426,12 +446,26 @@ export function lowerExecSyncCall(
               // ordered with the other launch arguments.
               evaluated(lowerer.lowerExpr(m.value));
               if (literal === "true") shellEnabled = true; // false is the default
-            } else {
+            } else if (memberBeforeShell) {
               lowerer.noLowering(
-                "execFileSync with a runtime shell option",
+                "execFileSync with a runtime shell option after another option",
                 m.value,
-                "the supported form is shell: true or shell: false",
+                "write shell first in the options object so the launch arguments keep Node's order",
               );
+            } else {
+              const raw = lowerer.lowerExpr(m.value);
+              // A boolean (or boolean | undefined) value reads as a flag. A
+              // value the checker leaves untyped may also hold a shell
+              // PATH at run time, which Node uses as the shell executable.
+              const dyn = raw.type.kind === "dyn";
+              if (!dyn && !isBooleanShellType(lowerer, raw.type)) {
+                lowerer.noLowering(
+                  "execFileSync with a runtime shell option of this type",
+                  m.value,
+                  "a boolean, boolean | undefined, or untyped runtime shell value is supported",
+                );
+              }
+              shellRuntime = { value: raw, dyn, node: m.value };
             }
           }
           break;
@@ -508,6 +542,100 @@ export function lowerExecSyncCall(
     };
   }
 
+  if (shellRuntime !== null) {
+    // file() and args() evaluate once, then the shell value: Node's order.
+    // The launch's first argument carries all three, and its result is the
+    // command the chosen form runs (/bin/sh or the file itself).
+    const heldFile = lowerer.declareHiddenLocal("%cpShellFile", cmd.type);
+    const fileRef = varRef(heldFile.id, cmd.type, loc);
+    const heldArgs = lowerer.declareHiddenLocal("%cpShellArgs", argvExpr.type);
+    const argsRef = varRef(heldArgs.id, argvExpr.type, loc);
+    const heldShell = lowerer.declareHiddenLocal("%cpShellFlag", BOOL);
+    const shellRef = varRef(heldShell.id, BOOL, loc);
+    // A dynamic value may BE the shell path; bind it once so the flag and
+    // the typeof test read the same evaluation.
+    const dynValue = shellRuntime.dyn
+      ? lowerer.declareHiddenLocal("%cpShellValue", DYN)
+      : null;
+    const dynRef = dynValue === null ? null : varRef(dynValue.id, DYN, loc);
+    const shellBoolInit = ensureBool(
+      lowerer,
+      dynRef ?? shellRuntime.value,
+      expr.arguments.nodes[0]!,
+    );
+    const shellPath: IrExpr =
+      dynRef === null
+        ? { kind: "strLit", value: "/bin/sh", type: STRING, loc }
+        : {
+            kind: "ternary",
+            cond: { kind: "dynTest", test: "string", value: dynRef, type: BOOL, loc },
+            then: lowerer.coerceInto(shellRuntime.node, dynRef, STRING),
+            else_: { kind: "strLit", value: "/bin/sh", type: STRING, loc },
+            type: STRING,
+            loc,
+          };
+    const joined: IrExpr = {
+      kind: "libCall",
+      fn: "child.shellCommand",
+      args: [fileRef, argsRef],
+      type: STRING,
+      loc,
+    };
+    const fileArgsCheck: IrStmt = {
+      kind: "exprStmt",
+      expr: {
+        kind: "libCall",
+        fn: "cp.checkArgs",
+        args: [
+          numLit(0, loc),
+          fileRef,
+          argsRef,
+          { kind: "arrayLit", elems: [], type: arrayOf(STRING), loc },
+          { kind: "strLit", value: "", type: STRING, loc },
+        ],
+        type: VOID,
+        loc,
+      },
+      loc,
+    };
+    cmdArg = {
+      kind: "seqExpr",
+      stmts: [
+        { kind: "varDecl", localId: heldFile.id, init: cmd, loc },
+        { kind: "varDecl", localId: heldArgs.id, init: argvExpr, loc },
+        ...(dynValue === null
+          ? []
+          : [{ kind: "varDecl" as const, localId: dynValue.id, init: shellRuntime.value, loc }]),
+        { kind: "varDecl", localId: heldShell.id, init: shellBoolInit, loc },
+        fileArgsCheck,
+      ],
+      result: {
+        kind: "ternary",
+        cond: shellRef,
+        then: shellPath,
+        else_: fileRef,
+        type: STRING,
+        loc,
+      },
+      type: STRING,
+      loc,
+    };
+    argvExpr = {
+      kind: "ternary",
+      cond: shellRef,
+      then: {
+        kind: "arrayLit",
+        elems: [{ kind: "strLit", value: "-c", type: STRING, loc }, joined],
+        type: arrayOf(STRING),
+        loc,
+      },
+      else_: argsRef,
+      type: arrayOf(STRING),
+      loc,
+    };
+    shellBool = shellRef;
+  }
+
   // The STRING form (an encoding option names a Buffer encoding) decodes
   // the capture with it and answers a string; the unencoded form answers
   // Node's Buffer and carries Buffers on a failure.
@@ -522,7 +650,7 @@ export function lowerExecSyncCall(
         args: [
           cmdArg,
           argvExpr,
-          boolLit(shell || shellEnabled, loc),
+          shellBool ?? boolLit(shell || shellEnabled, loc),
           input,
           hasInput,
           cwd,
@@ -536,7 +664,7 @@ export function lowerExecSyncCall(
         type: resultType,
         loc,
       },
-      shell ? 1 : 0,
+      shellBool !== null ? 0 : shell ? 1 : 0,
       (a) => ({ cwd: a[5], envPairs: a[7], maxBuffer: armedMaxBuffer(maxBuffer, true) }),
       loc,
       [0, 1, ...optionSteps],

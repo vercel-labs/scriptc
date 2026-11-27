@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/child-process-exec-file-sync-runtime-shell.ts"
+ ],
+ "diags": []
+}

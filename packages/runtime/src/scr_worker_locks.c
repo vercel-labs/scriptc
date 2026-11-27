@@ -269,6 +269,14 @@ static ScrDyn *scr_locks_start_job(ScrClosure *clo, ScrDyn *const *args, size_t 
   scr_dyn_release(lock);
   scr_dyn_release(req->callback);
   req->callback = NULL;
+  if (scr_exc_pending()) {
+    /* Node rejects the request with the callback's error and leaves the lock
+     * held, so a later same-name request stays pending. */
+    scr_dyn_release(result);
+    scr_promise_reject_pending(req->promise);
+    scr_locks_req_release(req);
+    return scr_dyn_retain(scr_dyn_undefined());
+  }
   if (result != NULL && result->kind == SCR_DYN_PROMISE) {
     /* The lock waits for the callback's promise, and the request settles
      * with its outcome. */

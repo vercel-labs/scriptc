@@ -1,4 +1,5 @@
 #include "scr_worker.h"
+#include "scr_symbol.h"
 
 #ifdef SCR_WORKERS
 #include <limits.h>
@@ -128,9 +129,9 @@ static bool scr_worker_batch_next(void) {
 static const char *const scr_worker_method_names[] = {
   "ref", "unref", "hasRef", "terminate", "postMessage", "on", "once", "addListener",
   "prependListener", "prependOnceListener", "off", "removeListener", "removeAllListeners",
-  "listenerCount", "close", "start", "cpuUsage", "addEventListener", "removeEventListener",
-  "dispatchEvent", "emit", "eventNames", "getMaxListeners", "setMaxListeners", "listeners",
-  "rawListeners",
+  "listenerCount", "close", "start", "cpuUsage", "getHeapStatistics", "addEventListener",
+  "removeEventListener", "dispatchEvent", "emit", "eventNames", "getMaxListeners",
+  "setMaxListeners", "listeners", "rawListeners",
 };
 static SCR_TL ScrDyn *scr_worker_methods[sizeof scr_worker_method_names / sizeof scr_worker_method_names[0]];
 static const char *const scr_broadcast_method_names[] = {
@@ -731,6 +732,45 @@ static bool scr_worker_cpu_settle(ScrWorkerView *view, int seq, double user, dou
 
 /* worker.cpuUsage([prev]): the worker's thread measures its own CPU usage,
  * which Node reads from the worker's isolate. */
+/* worker.getHeapStatistics(): the runtime's heap figures in V8's field
+ * names and order. A compiled program has one heap for every thread, so the
+ * numbers describe the process's runtime heap (the same sample
+ * v8.getHeapStatistics() takes) rather than a per-thread V8 isolate. */
+ScrPromise *scr_worker_heap_statistics(ScrDyn *value) {
+  ScrPromise *promise = scr_promise_new();
+  ScrWorkerView *view = NULL;
+  if (value != NULL && value->kind == SCR_DYN_HANDLE && value->v.handle.tag == SCR_DYNH_WORKER)
+    view = value->v.handle.ptr;
+  if (view == NULL || !view->online || view->closed) {
+    static const char message[] = "Worker instance not running";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "ERR_WORKER_NOT_RUNNING");
+    scr_promise_reject_pending(promise);
+    return promise;
+  }
+  double heap_total = 0, heap_used = 0;
+  scr_heap_stats(&heap_total, &heap_used);
+  double limit = scr_available_memory() + heap_used;
+  ScrDyn *stats = scr_dyn_new_obj();
+  scr_dyn_obj_set(stats, "total_heap_size", 15, scr_dyn_new_num(heap_total));
+  scr_dyn_obj_set(stats, "total_heap_size_executable", 26, scr_dyn_new_num(0));
+  scr_dyn_obj_set(stats, "total_physical_size", 19, scr_dyn_new_num(heap_total));
+  scr_dyn_obj_set(stats, "total_available_size", 20,
+                  scr_dyn_new_num(limit > heap_used ? limit - heap_used : 0));
+  scr_dyn_obj_set(stats, "used_heap_size", 14, scr_dyn_new_num(heap_used));
+  scr_dyn_obj_set(stats, "heap_size_limit", 15, scr_dyn_new_num(limit));
+  scr_dyn_obj_set(stats, "malloced_memory", 15, scr_dyn_new_num(0));
+  scr_dyn_obj_set(stats, "peak_malloced_memory", 20, scr_dyn_new_num(0));
+  scr_dyn_obj_set(stats, "does_zap_garbage", 16, scr_dyn_new_bool(false));
+  scr_dyn_obj_set(stats, "number_of_native_contexts", 25, scr_dyn_new_num(1));
+  scr_dyn_obj_set(stats, "number_of_detached_contexts", 27, scr_dyn_new_num(0));
+  scr_dyn_obj_set(stats, "total_global_handles_size", 25, scr_dyn_new_num(0));
+  scr_dyn_obj_set(stats, "used_global_handles_size", 24, scr_dyn_new_num(0));
+  scr_dyn_obj_set(stats, "external_memory", 15, scr_dyn_new_num(0));
+  /* The promise keeps the sample's reference (the cpuUsage pattern). */
+  scr_promise_fulfill_ref(promise, stats, scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
+  return promise;
+}
+
 static ScrDyn *scr_worker_cpu_usage(ScrWorkerView *view, ScrDyn *prev) {
   double prev_user = 0;
   double prev_system = 0;
@@ -757,6 +797,31 @@ static ScrDyn *scr_worker_cpu_usage(ScrWorkerView *view, ScrDyn *prev) {
   return result;
 }
 
+/* An event key. A Worker's emitter follows property-key conversion: a symbol
+ * stays a symbol key and every other value converts with String(). A
+ * MessagePort's on/once/off names are DOM strings, which a symbol has no
+ * conversion for — Node reports that as ERR_INVALID_ARG_TYPE rather than the
+ * language's TypeError. */
+static ScrStr *scr_worker_event_name(const ScrWorkerView *view, const ScrDyn *value) {
+  if (view->port && value->kind == SCR_DYN_SYMBOL) {
+    static const char message[] = "Value is a Symbol and cannot be converted to a string.";
+    scr_throw_error_msg_code(SCR_ERR_TYPE, message, sizeof message - 1, "ERR_INVALID_ARG_TYPE");
+    return NULL;
+  }
+  return scr_emitter_name_dyn(value);
+}
+
+/* A name for the key-table walks. Node's NodeEventTarget converts a symbol
+ * with String() in listenerCount() and removeAllListeners(), so Symbol("s")
+ * names the string key "Symbol(s)" — a port cannot register a listener under
+ * a symbol (its on, once and off convert with the DOM string conversion and
+ * throw), so that string key is the only one it can match. A Worker is an
+ * EventEmitter: a symbol there stays its own key, as in Node. */
+static ScrStr *scr_worker_key_table_name(const ScrWorkerView *view, const ScrDyn *value) {
+  if (view->port && value->kind == SCR_DYN_SYMBOL) return scr_sym_to_string(value->v.symbol.value);
+  return scr_emitter_name_dyn(value);
+}
+
 static ScrDyn *scr_worker_view_invoke(void *ptr, ScrDyn *self, const char *method,
                                      ScrDyn *const *args, size_t argc, const char *what) {
   (void)what;
@@ -772,6 +837,13 @@ static ScrDyn *scr_worker_view_invoke(void *ptr, ScrDyn *self, const char *metho
     return scr_dyn_new_bool(view->referenced && (!view->closed || (view->channel && view->closing)));
   if (!view->port && method_is(method, "cpuUsage"))
     return scr_worker_cpu_usage(view, argc ? args[0] : scr_dyn_undefined());
+  if (!view->port && method_is(method, "getHeapStatistics")) {
+    /* The dyn view retains the promise; the sample's reference is dropped. */
+    ScrPromise *promise = scr_worker_heap_statistics(self);
+    ScrDyn *result = scr_dyn_new_promise(promise);
+    scr_promise_release(promise);
+    return result;
+  }
   if (!view->port && method_is(method, "terminate")) {
     /* Node's terminate() returns a fresh promise per call. It refs the worker
      * before stopping the thread, so the loop stays up until the exit event
@@ -839,39 +911,48 @@ static ScrDyn *scr_worker_view_invoke(void *ptr, ScrDyn *self, const char *metho
     ScrDyn *listener = argc > 1 ? args[1] : scr_dyn_undefined();
     scr_dyn_check_listener(listener, "listener");
     if (scr_exc_pending()) return NULL;
-    if (!argc || args[0]->kind != SCR_DYN_STR)
-      return scr_worker_refusal("Worker event names must be strings");
+    ScrStr *name = scr_worker_event_name(view, argc ? args[0] : scr_dyn_undefined());
+    if (!name) return NULL;
     /* NodeEventTarget keeps one entry per listener (Node's Set holds the
      * original function, once() included): any second registration of the
      * same function is a no-op. A Worker is an EventEmitter and adds the
      * same function again. */
-    if (view->port && scr_emitter_has_listener_fn(view->events, args[0]->v.str, listener))
+    if (view->port && scr_emitter_has_listener_fn(view->events, name, listener)) {
+      scr_str_release(name);
       return scr_dyn_retain(self);
-    scr_emitter_release(scr_emitter_on_flex(view->events, args[0]->v.str, listener, once, prepend));
+    }
+    scr_emitter_release(scr_emitter_on_flex(view->events, name, listener, once, prepend));
+    scr_str_release(name);
     return scr_exc_pending() ? NULL : scr_dyn_retain(self);
   }
   if (method_is(method, "off") || method_is(method, "removeListener")) {
     ScrDyn *listener = argc > 1 ? args[1] : scr_dyn_undefined();
     scr_dyn_check_listener(listener, "listener");
     if (scr_exc_pending()) return NULL;
-    if (!argc || args[0]->kind != SCR_DYN_STR)
-      return scr_worker_refusal("Worker event names must be strings");
-    scr_emitter_release(scr_emitter_off_dyn(view->events, args[0]->v.str, listener));
+    ScrStr *name = scr_worker_event_name(view, argc ? args[0] : scr_dyn_undefined());
+    if (!name) return NULL;
+    scr_emitter_release(scr_emitter_off_dyn(view->events, name, listener));
+    scr_str_release(name);
     return scr_exc_pending() ? NULL : scr_dyn_retain(self);
   }
   if (method_is(method, "removeAllListeners")) {
     bool all = !argc || args[0]->kind == SCR_DYN_UNDEF;
-    if (!all && args[0]->kind != SCR_DYN_STR)
-      return scr_worker_refusal("Worker event names must be strings");
-    scr_emitter_release(scr_emitter_remove_all(view->events, all ? NULL : args[0]->v.str, all));
+    /* No DOMString here: Node's removeAllListeners walks the key table, so a
+     * symbol name is its String() form instead of throwing. */
+    ScrStr *name = all ? NULL : scr_worker_key_table_name(view, args[0]);
+    if (!all && !name) return NULL;
+    scr_emitter_release(scr_emitter_remove_all(view->events, name, all));
+    scr_str_release(name);
     return scr_exc_pending() ? NULL : scr_dyn_retain(self);
   }
   if (method_is(method, "listenerCount")) {
-    if (!argc || args[0]->kind != SCR_DYN_STR)
-      return scr_worker_refusal("Worker event names must be strings");
-    return scr_dyn_new_num(argc > 1 && args[1]->kind != SCR_DYN_UNDEF
-      ? scr_emitter_listener_count_dyn(view->events, args[0]->v.str, args[1])
-      : scr_emitter_listener_count(view->events, args[0]->v.str));
+    ScrStr *name = scr_worker_key_table_name(view, argc ? args[0] : scr_dyn_undefined());
+    if (!name) return NULL;
+    double count = argc > 1 && args[1]->kind != SCR_DYN_UNDEF
+      ? scr_emitter_listener_count_dyn(view->events, name, args[1])
+      : scr_emitter_listener_count(view->events, name);
+    scr_str_release(name);
+    return scr_dyn_new_num(count);
   }
   /* NodeEventTarget's emit/eventNames/setMaxListeners/getMaxListeners —
    * the surface MessagePort and Worker share with EventEmitter. A port's
@@ -881,7 +962,9 @@ static ScrDyn *scr_worker_view_invoke(void *ptr, ScrDyn *self, const char *metho
    * registry. A Worker's emit is EventEmitter's: every argument reaches
    * the listeners, and an unhandled 'error' throws. */
   if (method_is(method, "emit")) {
-    if (!argc || args[0]->kind != SCR_DYN_STR) {
+    /* A port's raw dispatch takes a string type only (Node's error is
+     * reproduced below); a Worker's EventEmitter takes any key. */
+    if (view->port && (!argc || args[0]->kind != SCR_DYN_STR)) {
       char detail[64];
       const char *received =
         scr_dyn_specific_type(argc ? args[0] : scr_dyn_undefined(), detail, sizeof detail);
@@ -891,15 +974,17 @@ static ScrDyn *scr_worker_view_invoke(void *ptr, ScrDyn *self, const char *metho
       scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)n, "ERR_INVALID_ARG_TYPE");
       return NULL;
     }
+    ScrStr *name = scr_emitter_name_dyn(argc ? args[0] : scr_dyn_undefined());
+    if (!name) return NULL;
     bool had;
     if (view->port) {
       /* Node's kHybridDispatch always hands the listener exactly one value. */
       ScrDyn *arg = argc > 1 ? args[1] : scr_dyn_undefined();
-      had = scr_emitter_emit_flex(view->events, args[0]->v.str, &arg, 1);
+      had = scr_emitter_emit_flex(view->events, name, &arg, 1);
     } else {
-      had = scr_emitter_emit_any(view->events, args[0]->v.str, args + 1,
-                                 argc > 1 ? argc - 1 : 0);
+      had = scr_emitter_emit_any(view->events, name, args + 1, argc > 1 ? argc - 1 : 0);
     }
+    scr_str_release(name);
     return scr_exc_pending() ? NULL : scr_dyn_new_bool(had);
   }
   /* A Worker's listener lists: the registered functions in order, and for

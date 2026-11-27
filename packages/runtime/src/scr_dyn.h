@@ -121,7 +121,9 @@ typedef enum {
  * always-linked storage or code: a program that never boxes the new handle
  * links byte-identical objects. Raising the capacity is a program-wide
  * layout change; do it in a change of its own, measured as neutral, and
- * only when the tags outgrow it. */
+ * only when the tags outgrow it. The compression streams' two tags took the
+ * list past 128 to this 160. The tables are thread-local pointer rows, so the
+ * capacity changes no per-value representation. */
 #define SCR_DYNH_CAPACITY 160
 
 /* The handle-type tags the checked-dynamic tree can carry. The set is deliberately the
@@ -287,7 +289,9 @@ typedef enum {
   Y(SQLITE_STATEMENT) /* node:sqlite StatementSync (scr_sqlite.c) */ \
   Y(SQLITE_TAG_STORE) /* node:sqlite SQLTagStore (scr_sqlite.c) */ \
   Y(TRACING) /* trace_events.Tracing (scr_async_dyn.c) */ \
-  Y(WEAK_REF) /* WeakRef (scr_json.c) */
+  Y(WEAK_REF) /* WeakRef (scr_json.c) */ \
+  Y(WS_COMPRESSION) /* CompressionStream (scr_webstream_compress.c) */ \
+  Y(WS_DECOMPRESSION) /* DecompressionStream (scr_webstream_compress.c) */
 
 /* Values below the largest pinned one that no tag holds, each with the
  * reason. Never reuse one without removing it here. */

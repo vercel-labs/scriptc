@@ -20,6 +20,23 @@ declare module "worker_threads" {
   /* The env option value that makes a Worker read and write this process's
    * environment instead of a copy: env: SHARE_ENV. */
   export const SHARE_ENV: unique symbol;
+  /* v8.getHeapStatistics()'s fields, in Node's order. */
+  export interface HeapInfo {
+    total_heap_size: number;
+    total_heap_size_executable: number;
+    total_physical_size: number;
+    total_available_size: number;
+    used_heap_size: number;
+    heap_size_limit: number;
+    malloced_memory: number;
+    peak_malloced_memory: number;
+    does_zap_garbage: boolean;
+    number_of_native_contexts: number;
+    number_of_detached_contexts: number;
+    total_global_handles_size: number;
+    used_global_handles_size: number;
+    external_memory: number;
+  }
   export interface WorkerOptions {
     workerData?: unknown;
     transferList?: readonly unknown[];
@@ -80,6 +97,10 @@ declare module "worker_threads" {
     /* the worker thread's own CPU usage (process.threadCpuUsage's values),
      * a rejection with ERR_WORKER_NOT_RUNNING before 'online' or after exit */
     cpuUsage(prev?: { user: number; system: number }): Promise<{ user: number; system: number }>;
+    /* The worker thread's heap figures, in v8.getHeapStatistics()'s shape
+     * and order; rejects with ERR_WORKER_NOT_RUNNING before the worker's
+     * 'online' event and after it exits. */
+    getHeapStatistics(): Promise<HeapInfo>;
     ref(): void;
     unref(): void;
     terminate(): Promise<number>;

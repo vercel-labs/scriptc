@@ -334,8 +334,9 @@ export const CLI_OPTION_DOCS: Readonly<Record<string, CliOptionDoc>> = {
       {
         term: "--profile-generate <pattern>",
         help: [
-          "Linux: instrument the executable for profile-guided",
-          "optimization. Each run writes a raw profile to the",
+          "Linux and macOS: instrument the executable for",
+          "profile-guided optimization. Each run writes a raw",
+          "profile to the",
           "pattern (%p expands to the process id; the",
           "LLVM_PROFILE_FILE environment variable overrides it).",
           "Instrumented programs run slower (--emit=exe only)",

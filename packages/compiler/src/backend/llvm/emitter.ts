@@ -644,6 +644,10 @@ export interface LlvmTargetOptions {
   timing?: CompilationTiming;
   /** Exact frontend sources for dev-build locations and variable metadata. */
   debugSources?: ReadonlyMap<string, string>;
+  /** The name a source location EMITS as (a library profile's
+   * `file_prefix_map`): debug info, stack frames and conversion traces use
+   * it, while diagnostics keep the path scriptc read. */
+  sourcePathMap?: (file: string) => string;
   /** Exact frontend sources for release-build stack positions (line and
    * column constants): the sources stay in the compiler, only the numbers
    * reach the executable. */
@@ -2519,6 +2523,12 @@ export class LlEmitter {
    * reports the failure when the program is run with
    * SCRIPTC_CONVERSION_TRACE (conversionTraceAt). */
   readonly conversionTrace: boolean;
+  /** The profile's emitted-name mapping for source locations (sourcePathMap). */
+  private readonly sourcePathMap: ((file: string) => string) | undefined;
+  /** The name a source file EMITS as (sourcePathMap), or the path read. */
+  emittedSourceFile(file: string): string {
+    return this.sourcePathMap === undefined ? file : this.sourcePathMap(file);
+  }
   /** The frame name of the function being emitted (frameNameOf). */
   currentFrameName: string | undefined = undefined;
   /** The positions of the frame of the function being emitted, when it has
@@ -2601,6 +2611,7 @@ export class LlEmitter {
     // output is linked some other way must not call what the link lacks. A
     // sanitized build reports too: it is one call on a path that runs only
     // when a conversion fails. Library archives link a fixed runtime set.
+    this.sourcePathMap = options.sourcePathMap;
     this.conversionTrace =
       options.conversionTrace === true &&
       options.debugSources !== undefined &&
@@ -2624,6 +2635,7 @@ export class LlEmitter {
             options.pointerBits,
             mod.unions,
             this.nullableUnions.armTypes(),
+            options.sourcePathMap,
           );
     this.constantNumericTables = findConstantNumericTables(mod);
     this.staticArrayTables = findStaticArrayTables(mod);
@@ -4145,12 +4157,16 @@ export class LlEmitter {
     if (!this.conversionTrace || debug === null) return undefined;
     const name = this.currentFrameName;
     const pos = debug.position(loc);
+    const emitPath = this.sourcePathMap;
     const text =
       pos !== null
-        ? positionedFrameText(name, pos)
+        ? positionedFrameText(
+            name,
+            emitPath === undefined ? pos : { ...pos, file: emitPath(pos.file) },
+          )
         : name === undefined
-          ? `    at ${loc.file}`
-          : frameText(name, loc.file);
+          ? `    at ${emitPath === undefined ? loc.file : emitPath(loc.file)}`
+          : frameText(name, emitPath === undefined ? loc.file : emitPath(loc.file));
     return () => {
       this.declare("declare void @scr_conversion_trace(ptr)");
       this.B.line(`call void @scr_conversion_trace(ptr ${this.cstr(text)})`);
@@ -4172,9 +4188,13 @@ export class LlEmitter {
     if (this.frameCaptures.constructors.has(fn.name)) return null;
     const name = this.frameNameOf(fn);
     if (name === undefined && !fn.name.startsWith("%init.")) return null;
+    const emitPath = this.sourcePathMap;
     return new FramePositions(
       name,
-      (loc) => debug.position(loc),
+      (loc) => {
+        const pos = debug.position(loc);
+        return pos === null || emitPath === undefined ? pos : { ...pos, file: emitPath(pos.file) };
+      },
       (text) => {
         // The slot's address is computed at each store: unoptimized code
         // folds it into the store, and would keep a shared one on the stack.

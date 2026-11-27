@@ -16,6 +16,7 @@ Runtime paths, `eval`, loaders, and shared environments are unsupported.
 Worker argument strings containing null bytes are also unsupported.
 
 Workers support `online`, `message`, `error`, and `exit` events, `postMessage`, `terminate`, `ref`, `unref`, `cpuUsage`, whose promise the worker's thread answers with its own CPU time, and `performance.eventLoopUtilization`, whose values advance when the worker's loop turns, as in Node.
+`worker.getHeapStatistics()` answers V8's heap-statistics field names and order, and rejects with `ERR_WORKER_NOT_RUNNING` before the worker's `online` event and after it exited, as in Node; the figures are the runtime heap's own sample, which is the process's single heap, where Node reports the worker's own V8 isolate.
 `worker[Symbol.asyncDispose]()` terminates the worker and resolves with `undefined` after its `exit` event, so `await using` disposes a Worker at the end of its block.
 A worker's uncaught exception reaches its `error` listeners as Node's error serializer sends it: an Error keeps the nearest of `Error` and its six native subclasses (an `AggregateError` arrives as an `Error` named `AggregateError`) along with its name, message, cause, and other data properties and their enumerability, and other thrown values clone as messages do.
 An unhandled rejection whose reason is not error-like arrives as an `UnhandledPromiseRejection` Error with code `ERR_UNHANDLED_REJECTION` quoting the reason.

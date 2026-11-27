@@ -20,6 +20,9 @@ export const moduleNeverThrow: readonly IrLibFn[] = [
   // neither takes an argument, and running out of memory ends the process.
   "module.compileCacheDir",
   "module.compileCacheConstants",
+  // require.extensions: the shared table's first read builds it; reads after
+  // that are a retain.
+  "module.extensions",
   // scr_module_namespace_copy_value retains the module's namespace object,
   // marks it as one and records it: no program code runs, and allocation
   // failure ends the process.

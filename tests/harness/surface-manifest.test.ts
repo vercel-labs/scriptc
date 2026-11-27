@@ -460,9 +460,9 @@ test("unimplemented Response and ReadableStream calls stay fenced", () => {
     const coverage = analyze(file, {}).coverage;
     expect(coverage.preflightFailed).toBe(false);
     expect([...new Set(coverage.diagnostics.map((d) => d.code))]).toEqual(["SC2020"]);
-    // The explicit Symbol.asyncIterator access and the two Response members
-    // fence; values() itself lowers.
-    expect(coverage.diagnostics.filter((d) => d.code === "SC2020")).toHaveLength(3);
+    // The explicit Symbol.asyncIterator access and formData fence;
+    // values() and blob() itself lower.
+    expect(coverage.diagnostics.filter((d) => d.code === "SC2020")).toHaveLength(2);
     expect(coverage.diagnostics.some((d) => d.message.includes("ReadableStream.values"))).toBe(
       false,
     );

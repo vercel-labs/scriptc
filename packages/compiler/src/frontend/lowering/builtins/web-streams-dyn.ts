@@ -3,7 +3,7 @@ import {
   staticFetchMembers,
 } from "../../../compat/fetch-profile.js";
 import { dynUndefinedExpr, numLit } from "../../../ir/build.js";
-import { WEB_STREAM_CLASSES } from "../../../ir/webstream-classes.js";
+import { COMPRESSION_STREAM_CLASSES, WEB_STREAM_CLASSES } from "../../../ir/webstream-classes.js";
 import { everyStmt } from "../../../ir/traverse.js";
 import {
   BOOL,
@@ -97,6 +97,8 @@ const TYPED_CLASSES: ReadonlySet<string> = new Set([
   "TransformStreamDefaultController",
   "TextEncoderStream",
   "TextDecoderStream",
+  "CompressionStream",
+  "DecompressionStream",
 ]);
 const WEB_VIEW_CALLS: ReadonlySet<string> = new Set([...READABLE_STREAM_WEB_VIEW_CALLS, "values"]);
 
@@ -168,6 +170,8 @@ export function programUsesTypedWebStreams(lowerer: Lowerer): boolean {
           name === "ByteLengthQueuingStrategy" ||
           name === "TextEncoderStream" ||
           name === "TextDecoderStream" ||
+          name === "CompressionStream" ||
+          name === "DecompressionStream" ||
           name === "ReadableStreamDefaultReader" ||
           name === "ReadableStreamBYOBReader" ||
           name === "ReadableByteStreamController" ||
@@ -225,7 +229,11 @@ function typedStreamInstanceClassKindOf(
 }
 
 export function webStreamClassValue(kind: number, loc: SrcLoc): IrExpr {
-  return { kind: "libCall", fn: "webstream.class", args: [numLit(kind, loc)], type: DYN, loc };
+  /* The compression streams' class and brand live with the zlib work
+   * (scr_webstream_compress.c), whose unit links only for a program that
+   * uses them. */
+  const fn = kind >= COMPRESSION_STREAM_CLASSES ? "webstream.compressClass" : "webstream.class";
+  return { kind: "libCall", fn, args: [numLit(kind, loc)], type: DYN, loc };
 }
 
 /** A JavaScript read of one of the classes as a value; null otherwise. */
@@ -341,7 +349,8 @@ export function lowerWebStreamInstanceof(
   const loc = locOf(expr);
   return {
     kind: "libCall",
-    fn: "webstream.instanceOf",
+    fn:
+      kind >= COMPRESSION_STREAM_CLASSES ? "webstream.compressInstanceOf" : "webstream.instanceOf",
     args: [left, numLit(kind, loc)],
     type: BOOL,
     loc,
@@ -524,6 +533,42 @@ function programUsesWebStreamOnlyMembers(lowerer: Lowerer, functions: IrFunction
  * handle stands for a web ReadableStream once such a member is used
  * (scr_fetch.c, sf_stream_web_view). %main installs the classes first. A
  * program that names one of the classes links them already. */
+/* Whether the program names CompressionStream or DecompressionStream: their
+ * constructor and brand test run in the unit that owns the zlib engine, and
+ * a program that uses them links it (zlib.compressionStream turns the zlib
+ * feature on, which links scr_zlib.c and its archive). */
+export function programUsesCompressionStreams(lowerer: Lowerer): boolean {
+  const cached = lowerer.compressionStreams;
+  if (cached !== undefined) return cached;
+  let found = false;
+  for (const file of lowerer.program.getSourceFiles()) {
+    if (file.isDeclarationFile) continue;
+    ts.walkPreorder(file, (node) => {
+      if (!ts.isIdentifier(node)) return undefined;
+      const name = stdlibGlobalNameOf(lowerer, node);
+      if (name === "CompressionStream" || name === "DecompressionStream") found = true;
+      return found ? "stop" : undefined;
+    });
+    if (found) break;
+  }
+  lowerer.compressionStreams = found;
+  return found;
+}
+
+/** Links the compression streams' zlib engine into a program that uses the
+ * classes. */
+export function installCompressionStreamZlib(lowerer: Lowerer, functions: IrFunction[]): void {
+  if (!programUsesCompressionStreams(lowerer)) return;
+  const main = functions.find((fn) => fn.name === ENTRY_NAME);
+  if (!main) return;
+  const loc = main.loc;
+  main.body.unshift({
+    kind: "exprStmt",
+    expr: { kind: "libCall", fn: "zlib.compressionStream", args: [], type: VOID, loc },
+    loc,
+  });
+}
+
 export function installFetchBodyWebStreams(lowerer: Lowerer, functions: IrFunction[]): void {
   if (programNamesWebStreamClass(lowerer) || !programUsesWebStreamOnlyMembers(lowerer, functions))
     return;

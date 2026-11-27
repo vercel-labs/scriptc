@@ -34,6 +34,10 @@ interface NodeReadablePlan {
   source: ts.Expression;
   type: IrType & { kind: "object" };
   destroyOnReturn: boolean;
+  /** The member the loop opens: the stream value itself (Symbol.asyncIterator),
+   * an explicit `s[Symbol.asyncIterator]()`, or `s.iterator(options)` — a
+   * method of its own that a Symbol.asyncIterator override does not change. */
+  shape: "value" | "symbol" | "iterator";
 }
 
 interface WebReadablePlan {
@@ -133,7 +137,7 @@ function nodeReadablePlan(lowerer: Lowerer, expression: ts.Expression): NodeRead
   if (direct?.kind === "object") {
     const sides = streamSidesOf(lowerer, lowerer.classes.get(direct.className));
     if (sides === "r" || sides === "rw") {
-      return { source: expression, type: direct, destroyOnReturn: true };
+      return { source: expression, type: direct, destroyOnReturn: true, shape: "value" };
     }
   }
   const call = withoutParenthesesAssertionsNonNull(expression);
@@ -156,6 +160,7 @@ function nodeReadablePlan(lowerer: Lowerer, expression: ts.Expression): NodeRead
     destroyOnReturn: iteratorCall
       ? literalBooleanOption(lowerer, call, "destroyOnReturn", true, "readable.iterator")
       : true,
+    shape: iteratorCall ? "iterator" : "symbol",
   };
 }
 
@@ -1325,6 +1330,10 @@ function lowerNodeReadableOverrides(
   stmt: ts.ForOfStatement,
   plan: NodeReadablePlan,
 ): IrStmt | null {
+  // `s.iterator(options)` is a different member from [Symbol.asyncIterator]:
+  // a subclass overriding the symbol does not change it, and the call's
+  // destroyOnReturn must still be honored by the native loop.
+  if (plan.shape === "iterator") return null;
   const info = lowerer.classes.get(plan.type.className);
   if (info === undefined) return null;
   const overriders = streamSymbolMethodOverriders(info, "sym:asyncIterator");

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/worker-locks-nested-requests.mjs"
+ ],
+ "diags": []
+}

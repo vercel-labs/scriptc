@@ -103,7 +103,7 @@ static const char *scr_locks_mode_name(bool shared) { return shared ? "shared" :
 
 /* Runs the granted request: the callback sees a Lock, then the promise
  * answers { name, mode }. Both are fresh objects, as Node's are. */
-static void scr_locks_run(ScrLockEntry *entry, ScrLockReq *req) {
+static void scr_locks_run_one(ScrLockEntry *entry, ScrLockReq *req) {
   req->granted = true;
   entry->holders++;
   entry->holder_shared = req->shared;
@@ -125,19 +125,25 @@ static void scr_locks_run(ScrLockEntry *entry, ScrLockReq *req) {
    * lets the queue advance in the same turn, which is Node's ordering for a
    * callback that returns at once. */
   if (entry->holders > 0) entry->holders--;
-  if (entry->holders > 0) return;
+  free(req);
+}
+
+/* Grants queued requests while the queue can advance: an entry with no
+ * holder takes its next request, a shared holder takes a queued shared one,
+ * and an exclusive holder takes nothing. One loop rather than a call per
+ * grant — a callback that queues same-name work grows this same queue, and
+ * the entry that may free itself when it empties has to stay valid until
+ * the loop is done with it. */
+static void scr_locks_drain(ScrLockEntry *entry) {
   while (entry->queue != NULL) {
+    if (entry->holders > 0 && (!entry->holder_shared || !entry->queue->shared)) break;
     ScrLockReq *next = entry->queue;
     entry->queue = next->next;
     if (entry->queue == NULL) entry->tail = NULL;
     next->next = NULL;
-    scr_locks_run(entry, next);
-    if (entry->holders > 0 && !entry->holder_shared) break;
-    if (entry->holders > 0 && entry->queue != NULL && entry->queue->shared) continue;
-    if (entry->holders > 0) break;
+    scr_locks_run_one(entry, next);
   }
   if (entry->holders == 0 && entry->queue == NULL) scr_locks_drop_empty(entry);
-  free(req);
 }
 
 /* Node's validateFunction message for the callback slot. */
@@ -305,11 +311,14 @@ ScrPromise *scr_worker_locks_request(ScrStr *name, const ScrDyn *options, const 
       scr_dyn_release(aborted->callback);
       free(aborted);
     }
-    scr_locks_run(entry, req);
+    scr_locks_run_one(entry, req);
+    scr_locks_drain(entry);
   } else if (entry->holders == 0 && entry->queue == NULL) {
-    scr_locks_run(entry, req);
+    scr_locks_run_one(entry, req);
+    scr_locks_drain(entry);
   } else if (entry->holders > 0 && entry->holder_shared && shared && entry->queue == NULL) {
-    scr_locks_run(entry, req);
+    scr_locks_run_one(entry, req);
+    scr_locks_drain(entry);
   } else {
     if (entry->tail == NULL)
       entry->queue = req;

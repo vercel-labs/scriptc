@@ -1534,7 +1534,8 @@ ScrDyn *scr_dyn_native_iterator_source(const ScrDyn *iterator);
  * untyped values registers the checked functions that read a generator
  * capsule's next and return methods (each takes the capsule). The
  * iterator helpers below then drive compiled generators. */
-void scr_dyn_set_generator_members(ScrDyn *next_getter, ScrDyn *return_getter);
+void scr_dyn_set_generator_members(ScrDyn *next_getter, ScrDyn *return_getter,
+                                   ScrDyn *throw_getter);
 /* An iterator helper method called on a synchronous generator capsule:
  * true with *out set (+1, or NULL with the exception pending) when
  * `method` is one. NULL until the program registers its generator

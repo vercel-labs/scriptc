@@ -12970,6 +12970,13 @@ ScrDyn *scr_dyn_iterator(const ScrDyn *source, const ScrStr *spell) {
 }
 
 static ScrDyn *scr_iterator_read(const ScrDyn *value, const char *key, size_t len) {
+  /* A compiled generator capsule keeps its next/return/throw methods in the
+   * program's getters, not in a materialized view; an async capsule answers
+   * the promise its method returns, which the caller awaits. */
+  if (scr_generator_member_hook && scr_dyn_generator(value)) {
+    ScrDyn *member = scr_generator_member_hook(value, key, len);
+    if (member) return member;
+  }
   if (value->kind == SCR_DYN_TYPED_REF) {
     ScrDyn *view = scr_dyn_typed_ref_materialize(value);
     if (!view) return NULL;
@@ -27601,6 +27608,7 @@ void scr_class_throw_not_extensible(ScrStr *field) {
 
 static SCR_TL ScrDyn *scr_generator_next_getter;
 static SCR_TL ScrDyn *scr_generator_return_getter;
+static SCR_TL ScrDyn *scr_generator_throw_getter;
 /* Set with the getters, so only programs that register them link the
  * iterator helpers through these paths. External, so the compiler keeps
  * the calls through them indirect. */
@@ -27614,18 +27622,23 @@ static bool scr_generator_helper_invoke(ScrDyn *recv, const char *method, ScrDyn
 static void scr_generator_members_cleanup(void) {
   scr_dyn_release(scr_generator_next_getter);
   scr_dyn_release(scr_generator_return_getter);
+  scr_dyn_release(scr_generator_throw_getter);
   scr_generator_next_getter = NULL;
   scr_generator_return_getter = NULL;
+  scr_generator_throw_getter = NULL;
   scr_generator_member_hook = NULL;
   scr_dyn_generator_helper_hook = NULL;
 }
 
-void scr_dyn_set_generator_members(ScrDyn *next_getter, ScrDyn *return_getter) {
+void scr_dyn_set_generator_members(ScrDyn *next_getter, ScrDyn *return_getter,
+                                   ScrDyn *throw_getter) {
   if (!scr_generator_next_getter) scr_atexit(scr_generator_members_cleanup);
   scr_dyn_release(scr_generator_next_getter);
   scr_dyn_release(scr_generator_return_getter);
+  scr_dyn_release(scr_generator_throw_getter);
   scr_generator_next_getter = scr_dyn_retain(next_getter);
   scr_generator_return_getter = scr_dyn_retain(return_getter);
+  scr_generator_throw_getter = scr_dyn_retain(throw_getter);
   scr_generator_member_hook = &scr_generator_member;
   scr_dyn_generator_helper_hook = &scr_generator_helper_invoke;
 }
@@ -27634,11 +27647,13 @@ static bool scr_dyn_sync_generator(const ScrDyn *value) {
   return scr_dyn_generator(value) && value->v.typed_ref.type_key[0] == 'g';
 }
 
-/* A synchronous generator capsule's next or return method (+1), read
- * through the program's registered getters. NULL for other keys. */
+/* A generator capsule's next, return or throw method (+1), read through the
+ * program's registered getters. NULL for other keys. */
 static ScrDyn *scr_generator_member(const ScrDyn *capsule, const char *key, size_t len) {
-  ScrDyn *getter = len == 4 && !memcmp(key, "next", 4) ? scr_generator_next_getter
-    : len == 6 && !memcmp(key, "return", 6) ? scr_generator_return_getter : NULL;
+  ScrDyn *getter = len == 4 && !memcmp(key, "next", 4)                  ? scr_generator_next_getter
+                   : len == 6 && !memcmp(key, "return", 6)              ? scr_generator_return_getter
+                   : len == 5 && !memcmp(key, "throw", 5)               ? scr_generator_throw_getter
+                                                                        : NULL;
   if (!getter) return NULL;
   ScrDyn *args[1] = { (ScrDyn *)capsule };
   return scr_dyn_call(getter, args, 1, "next");

@@ -1216,8 +1216,10 @@ typedef struct ScrTlsSock {
   bool handshake_started;
   /* the verification result that describes the standing handshake, captured
    * when it completes (a later ticket exchange replaces the engine's session
-   * object, whose own field is then 'not available') */
+   * object, whose own field is then 'not available'). Until then the
+   * snapshot does not exist and the engine's live result is the answer. */
   uint32_t standing_verify;
+  bool standing_verify_set;
   /* the connection's handshake presented a certificate: a resumed handshake
    * presents none, which is how a client knows its offered session was taken
    * (the engine keeps the resumed session's certificate). Set when the chain
@@ -2863,6 +2865,7 @@ static void scr_tls_after_established(void *tctx) {
   t->standing_verify = t->cli != NULL && t->cli->has_resume && !t->peer_cert_parsed
                            ? t->cli->resume_verify
                            : mbedtls_ssl_get_verify_result(&t->ssl);
+  t->standing_verify_set = true;
   /* The 1.2 session arrives after secureConnect and before 'secure', as
    * Node emits it. A 1.3 ticket comes after the handshake, so a listener
    * added during secureConnect still sees that session. */
@@ -5883,8 +5886,12 @@ static uint32_t scr_tls_read_verdict(const ScrTlsSock *t) {
 static uint32_t scr_tls_saved_verdict(const ScrTlsSock *t) {
   if (t->cli != NULL && t->cli->has_resume && !t->peer_cert_parsed)
     return t->cli->resume_verify;
-  if (!t->established) return mbedtls_ssl_get_verify_result(&t->ssl);
-  return t->standing_verify;
+  /* the connection's ACTUAL result: the snapshot once the handshake has
+   * completed, the engine's live result before that (getSession() inside
+   * secureConnect runs before the snapshot exists), and "not available"
+   * when neither has one — which the resumption filter counts as unverified */
+  if (t->standing_verify_set) return t->standing_verify;
+  return mbedtls_ssl_get_verify_result(&t->ssl);
 }
 
 /* Node's authorizationError: the verify-failure CODE string (null when

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/tls-session-verdict-at-secure-connect.ts"
+ ],
+ "diags": []
+}

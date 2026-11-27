@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
@@ -419,4 +419,51 @@ test("setter parameter decorators without a member decorator emit no decoration"
       },
     });
   expect(calls.filter((name) => name === "decorator")).toHaveLength(0);
+});
+
+test("accessor decorators on a class crossing into a Node island are refused", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-legacy-decorators-island-"));
+  try {
+    await writeFile(join(dir, "package.json"), JSON.stringify({ private: true, type: "module" }));
+    const dep = join(dir, "node_modules/islanddep");
+    await mkdir(dep, { recursive: true });
+    await writeFile(
+      join(dep, "package.json"),
+      JSON.stringify({ name: "islanddep", version: "1.0.0", type: "module", main: "index.js" }),
+    );
+    await writeFile(join(dep, "index.js"), "export function read(o) { return o.x; }\n");
+    await writeFile(
+      join(dir, "islanddep.d.ts"),
+      'declare module "islanddep" { export function read(o: unknown): unknown; }\n',
+    );
+    await writeFile(join(dir, "tsconfig.json"), JSON.stringify(legacyTsconfig));
+    const entry = join(dir, "main.ts");
+    await writeFile(
+      entry,
+      [
+        'import { read } from "islanddep";',
+        "function guard(t: object, k: string, d: PropertyDescriptor): void {",
+        "  d.get = function (this: unknown): number { return 1; };",
+        "}",
+        "class C {",
+        "  @guard",
+        "  get x(): number { return 1; }",
+        "}",
+        "console.log(read(new C()));",
+        "",
+      ].join("\n"),
+    );
+    const result = await compile(entry, {
+      outDir: dir,
+      outPath: join(dir, "main.ir.json"),
+      outputKind: "ir",
+      nodeIslands: { mode: "explicit", islands: ["islanddep"] },
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected a refusal");
+    const refusal = result.diagnostics.find((d) => d.code === "SC1090");
+    expect(refusal?.message).toContain("Node islands");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });

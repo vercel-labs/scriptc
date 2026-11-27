@@ -91,6 +91,10 @@ export const http2Signatures = defineLibFnSignatures({
   "http2.createServerReqOpts": { argTypes: [null, BOOL], result: NETSERVER_T },
   "http2.serverOnStream": { argTypes: [NETSERVER_T, null, BOOL], result: VOID },
   "http2.serverOnSession": { argTypes: [NETSERVER_T, null, BOOL], result: VOID },
+  /* The h2 server's own idle timeout: the listeners hear the session and
+   * setTimeout(ms, cb) adds one (Node's Http2Server). */
+  "http2.serverOnTimeout": { argTypes: [NETSERVER_T, null, BOOL], result: VOID },
+  "http2.serverSetTimeoutCb": { argTypes: [NETSERVER_T, F64, null], result: VOID },
   // connect(authority, reject, ca[, cb]): the TLS client knobs an https
   // authority reads (inert on http ones, exactly Node); ca is a PEM
   // string/Buffer ("" = the system anchors).

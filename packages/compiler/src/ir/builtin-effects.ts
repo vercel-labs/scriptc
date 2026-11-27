@@ -1673,6 +1673,11 @@ const MAY_THROW_LIB_FNS_PART_5: readonly IrLibFn[] = [
   "http.serverOnDropRequest",
   "http2.serverOnStream",
   "http2.serverOnSession",
+  /* goaway() on a destroyed session throws Node's invalid-session error. */
+  "http2.sessionGoaway",
+  "http2.sessionGoawayData",
+  "http2.serverOnTimeout",
+  "http2.serverSetTimeoutCb",
   "http2.serverOnSessionError",
   "tls.serverOnClientError",
   // resetAndDestroy on a TLS socket throws ERR_INVALID_HANDLE_TYPE.

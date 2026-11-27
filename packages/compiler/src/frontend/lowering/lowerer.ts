@@ -18766,6 +18766,34 @@ export class Lowerer {
     }
   }
 
+  /** mapTypeOf for the TARGET TYPE of a static assertion: a record
+   * intersection with a bound type parameter keeps the bound layout, because
+   * the assertion does not make the parameter's values carry the members it
+   * names (type-mapper.ts, TypeMapperCtx.assertionTarget). */
+  mapAssertionTargetType(t: ts.Type): IrType | null {
+    // Outside a generic instantiation no bound parameter can make the
+    // mapping differ, so the ordinary path (and its memo) answers.
+    if (this.typeParamBindings === null && this.typeParamTsBindings === null)
+      return this.mapTypeOf(t);
+    // A BINDING-SCOPED answer must not be stored under the key a
+    // non-assertion mapping of the same checker type uses: the asserted
+    // layout (the bound one) is right here and wrong there. Map with a
+    // throwaway memo for this call; shapes and unions intern globally, so
+    // type identity is unchanged.
+    const memo = new Map<number, IrType>();
+    return this.mapTypeWithContext(t, {
+      ...this.typeCtx,
+      assertionTarget: true as const,
+      typeMemo: memo,
+      typeMemoFor: () => memo,
+    });
+  }
+  private mapTypeWithContext(t: ts.Type, ctx: TypeMapperCtx): IrType | null {
+    const mapped = mapType(t, ctx);
+    return mapped === null || mapped.kind === "func"
+      ? (jsArgumentsFunctionType(this, t) ?? mapped)
+      : mapped;
+  }
   /** mapType with this Lowerer's registries and (while a generic instance
    * body lowers) type-parameter bindings threaded through. A supplied mapper
    * retains interface-view substitutions while sharing ABI normalization. */

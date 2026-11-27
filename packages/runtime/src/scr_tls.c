@@ -1237,6 +1237,11 @@ typedef struct ScrTlsSock {
   /* the last completed handshake requested a client certificate and the
    * peer sent none: authorized stays false, authorizationError answers */
   bool client_cert_missing;
+  /* the policy the last handshake ran under (taken when it starts): the
+   * authorization answers read this, not the live flag, so a renegotiate
+   * call that changes the socket's policy cannot change a verdict before
+   * a handshake actually completes under it */
+  bool verdict_req_cert;
   /* setKeyCert(context): the certificate pair the application installed
    * for this socket's server handshake (+1, NULL when none) */
   ScrSecureCtx *pending_cert_ctx;
@@ -2646,6 +2651,8 @@ static void scr_tls_hold_until_immediate(ScrTlsSock *t) {
 
 static int scr_tls_handshake(void *tctx) {
   ScrTlsSock *t = (ScrTlsSock *)tctx;
+  /* the policy this handshake runs under, for the authorization answers */
+  t->verdict_req_cert = t->req_cert;
   if (t->cli != NULL && t->cli->no_protocols) {
     /* OpenSSL's reason without its per-process prefix (SEMANTICS.md
      * divergence 55); scr_error_message_code gives Node's code. */
@@ -6072,7 +6079,7 @@ static void scr_tls_fire_session(ScrTlsSock *t) {
  * anchors, a server that requested a client certificate against its. */
 static bool scr_tls_sock_verifies(const ScrTlsSock *t) {
   return t->established && ((t->cli != NULL && t->cli->verify_recorded) ||
-                            (t->srv != NULL && t->req_cert && !t->srv->standalone));
+                            (t->srv != NULL && t->verdict_req_cert && !t->srv->standalone));
 }
 
 /* Whether a verification verdict exists at all. Node reads
@@ -6084,7 +6091,7 @@ static bool scr_tls_sock_verifies(const ScrTlsSock *t) {
  * missing-certificate failure for it, which Node does not report. */
 static bool scr_tls_sock_verdict(const ScrTlsSock *t) {
   if (t->cli != NULL) return t->established && t->cli->verify_recorded;
-  return t->srv != NULL && t->req_cert && !t->srv->standalone &&
+  return t->srv != NULL && t->verdict_req_cert && !t->srv->standalone &&
          (t->established || t->vrfy_seen);
 }
 
@@ -6406,11 +6413,28 @@ bool scr_tls_sock_renegotiate(ScrNetSocket *s, const ScrDyn *options,
     return false;
   }
   ScrTlsSock *t = scr_tls_sock_of(s);
-  /* Node's renegotiate reads the socket's policy, lets the options override
-   * it, and applies the result to the handshake (setVerifyMode): a server
-   * asks for a client certificate when requestCert is on, and rejects one
-   * that fails (or is missing) only with rejectUnauthorized */
-  if (t != NULL && t->srv != NULL && (o->kind == SCR_DYN_OBJ || o->kind == SCR_DYN_TYPED_REF)) {
+  if (t == NULL || !t->established) return true; /* Node answers true here */
+  const char *version = mbedtls_ssl_get_version(&t->ssl);
+  if (version != NULL && strcmp(version, "TLSv1.3") == 0) {
+    /* TLS 1.3 cannot renegotiate: the call is refused before anything about
+     * the socket changes, so its authorization answers stand */
+    if (cb->kind == SCR_DYN_FUNC) {
+      ScrClosure *c = scr_closure_new((void *)&scr_tls_reneg_refuse_tick, 1);
+      /* the box traces its dyn value like every other dyn box (the RC
+       * audit's cycle walk needs the trace function) */
+      c->caps[0] = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
+      scr_box_set_ref(c->caps[0], scr_dyn_retain((ScrDyn *)cb));
+      scr_next_tick(c);
+    }
+    return false;
+  }
+  /* The options' policy applies to the handshake that starts here (Node's
+   * setVerifyMode): a server asks for a client certificate when
+   * requestCert is on and rejects a failed or missing one only with
+   * rejectUnauthorized. It is merged for a renegotiation that starts, and
+   * a refused start restores it. */
+  bool old_cert = t->req_cert, old_reject = t->reject_unauth;
+  if (t->srv != NULL && (o->kind == SCR_DYN_OBJ || o->kind == SCR_DYN_TYPED_REF)) {
     ScrDyn *plain = o->kind == SCR_DYN_TYPED_REF ? scr_dyn_typed_ref_materialize(o) : NULL;
     if (o->kind == SCR_DYN_TYPED_REF && plain == NULL) return false;
     const ScrDyn *want_cert = scr_dyn_obj_get(plain != NULL ? plain : o, "requestCert",
@@ -6423,21 +6447,13 @@ bool scr_tls_sock_renegotiate(ScrNetSocket *s, const ScrDyn *options,
       t->reject_unauth = scr_tls_dyn_truthy(want_reject);
     scr_dyn_release(plain);
   }
-  if (t == NULL || !t->established) return true; /* Node answers true here */
-  const char *version = mbedtls_ssl_get_version(&t->ssl);
-  if (version != NULL && strcmp(version, "TLSv1.3") == 0) {
-    if (cb->kind == SCR_DYN_FUNC) {
-      ScrClosure *c = scr_closure_new((void *)&scr_tls_reneg_refuse_tick, 1);
-      /* the box traces its dyn value like every other dyn box (the RC
-       * audit's cycle walk needs the trace function) */
-      c->caps[0] = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
-      scr_box_set_ref(c->caps[0], scr_dyn_retain((ScrDyn *)cb));
-      scr_next_tick(c);
-    }
-    return false;
-  }
-  return scr_net_sock_renegotiate(
+  bool started = scr_net_sock_renegotiate(
       s, cb->kind == SCR_DYN_FUNC ? scr_dyn_retain((ScrDyn *)cb) : NULL);
+  if (!started) {
+    t->req_cert = old_cert;
+    t->reject_unauth = old_reject;
+  }
+  return started;
 }
 
 /* One completed renegotiation, whichever side started it: Node fires
@@ -6450,6 +6466,9 @@ static void scr_tls_renegotiation_completed(ScrTlsSock *t) {
   if (t->renego_reported) return;
   t->renego_reported = true;
   t->renego_phase = t->ssl.MBEDTLS_PRIVATE(renego_status);
+  /* the policy this completed handshake ran under: the answers the
+   * 'secure' listeners and the callback read below are its verdicts */
+  t->verdict_req_cert = t->req_cert;
   if (t->reneg_disabled) {
     scr_net_sock_transport_error(t->sock, NULL);
     t->hang_up_pending = true;
@@ -6568,8 +6587,12 @@ ScrDyn *scr_tls_sock_dyn_member(ScrNetSocket *s, double which) {
 
 bool scr_tls_sock_authorized(ScrNetSocket *s) {
   ScrTlsSock *t = scr_tls_sock_of(s);
-  return t != NULL && scr_tls_sock_verifies(t) && !t->client_cert_missing &&
-         mbedtls_ssl_get_verify_result(&t->ssl) == 0;
+  if (t == NULL || !scr_tls_sock_verifies(t) || t->client_cert_missing) return false;
+  /* a server authorizes a client only on a certificate it actually
+   * examined: a handshake that asked for one and verified nothing (a
+   * resumed session, say) authorizes nobody */
+  if (t->srv != NULL && mbedtls_ssl_get_peer_cert(&t->ssl) == NULL) return false;
+  return mbedtls_ssl_get_verify_result(&t->ssl) == 0;
 }
 
 ScrStr *scr_tls_sock_auth_error(ScrNetSocket *s) {

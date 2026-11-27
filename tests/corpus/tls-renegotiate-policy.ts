@@ -11,6 +11,9 @@ import { readFileSync } from "node:fs";
 
 const cert = readFileSync("tests/fixtures/server/certs/localhost.pem");
 const key = readFileSync("tests/fixtures/server/certs/localhost-key.pem");
+const ca = readFileSync("tests/fixtures/server/certs/ca.pem");
+const untrustedCert = readFileSync("tests/fixtures/server/certs/other-server.pem");
+const untrustedKey = readFileSync("tests/fixtures/server/certs/other-server-key.pem");
 
 const out: string[] = [];
 const say = (...parts: unknown[]): void => {
@@ -32,7 +35,7 @@ const phases: readonly [string, { rejectUnauthorized?: boolean }, RenegOptions][
 
 const runPhase = (index: number): void => {
   if (index >= phases.length) {
-    console.log(out.join("\n"));
+    runUntrusted(() => console.log(out.join("\n")));
     return;
   }
   const [label, serverOptions, renegOptions] = phases[index]!;
@@ -92,6 +95,69 @@ const runPhase = (index: number): void => {
     // a peer that never closes would hang the program: end it plainly
     setTimeout(() => {
       if (!clientClosed) client?.destroy();
+    }, 300);
+  });
+};
+
+// A renegotiation that presents a certificate the server cannot verify:
+// the handshake completes on both sides, then the policy the server asked
+// for ends the connection quietly — no 'error' on either side.
+const runUntrusted = (next: () => void): void => {
+  const label = "untrusted-cert";
+  const serverLog: string[] = [];
+  const clientLog: string[] = [];
+  let serverClosed = false;
+  let clientClosed = false;
+  let finished = false;
+  const finish = (): void => {
+    if (finished || !serverClosed || !clientClosed) return;
+    finished = true;
+    say(label, "server", serverLog.join(", "));
+    say(label, "client", clientLog.join(", "));
+    server.close(() => setTimeout(next, 20));
+  };
+  const server = tls.createServer(
+    { key, cert, ca, requestCert: true, rejectUnauthorized: false, maxVersion: "TLSv1.2" },
+    (socket) => {
+      serverLog.push(`connection authorized ${socket.authorized} authError ${String(socket.authorizationError)}`);
+      socket.on("data", () => {});
+      socket.on("error", (err) => serverLog.push(`error ${codeOf(err)}`));
+      socket.on("secure", () => {
+        serverLog.push(`secure authorized ${socket.authorized} authError ${String(socket.authorizationError)}`);
+      });
+      socket.on("close", (hadError) => {
+        serverLog.push(`close had_error ${hadError}`);
+        serverClosed = true;
+        finish();
+      });
+      // asking for a certificate and rejecting it: the client re-sends the
+      // one it has, which the server's trust store does not chain
+      const ret = socket.renegotiate({ requestCert: true, rejectUnauthorized: true }, (err) => {
+        serverLog.push(`callback ${err === null ? "null" : codeOf(err)} ` +
+                       `authorized ${socket.authorized} authError ${String(socket.authorizationError)}`);
+      });
+      serverLog.push(`return ${ret}`);
+    },
+  );
+  server.on("error", () => {});
+  server.listen(0, "127.0.0.1", () => {
+    const port = (server.address() as { port: number }).port;
+    const client = tls.connect(
+      {
+        port, host: "127.0.0.1", rejectUnauthorized: false, maxVersion: "TLSv1.2",
+        cert: untrustedCert, key: untrustedKey,
+      },
+      () => clientLog.push("connect"),
+    );
+    client.on("secure", () => clientLog.push("secure"));
+    client.on("data", () => {});
+    client.on("error", (err) => clientLog.push(`error ${codeOf(err)}`));
+    client.on("close", () => {
+      clientClosed = true;
+      finish();
+    });
+    setTimeout(() => {
+      if (!clientClosed) client.destroy();
     }, 300);
   });
 };

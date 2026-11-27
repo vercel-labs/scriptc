@@ -2967,9 +2967,19 @@ function lowerFromSource(
   // A compiled generator: the runtime pulls it through interned helpers.
   const genRecv =
     srcNode && genT && opts && fromGenChunk(lowerer, genT.yieldT)
-      ? genMethod && srcT?.kind === "object"
-        ? sourceInstance(srcNode, srcT)
-        : lowerer.lowerExpr(srcNode)
+      ? (() => {
+          // An inline iterator expression (obj[Symbol.iterator]()) lowers
+          // through the checked-dynamic call path and answers a dyn value:
+          // from.js reads it as the generator the method returned, so it is
+          // coerced here rather than handed to the runtime as anything else.
+          const raw =
+            genMethod && srcT?.kind === "object"
+              ? sourceInstance(srcNode, srcT)
+              : lowerer.lowerExpr(srcNode);
+          if (raw === null) return null;
+          const coerced = raw.type.kind === "generator" ? raw : lowerer.coerceToExpected(raw, genT);
+          return coerced.type.kind === "generator" ? coerced : null;
+        })()
       : null;
   if (genRecv && genT && opts) {
     const helpers = fromGenHelpers(lowerer, genT, loc);

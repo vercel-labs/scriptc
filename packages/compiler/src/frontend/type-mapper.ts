@@ -6005,6 +6005,22 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   ) {
     return { kind: "dir" };
   }
+  // node:worker_threads' HeapInfo (worker.getHeapStatistics's sample): a
+  // checked-dynamic value, so its fields read as the sample holds them —
+  // does_zap_garbage is a boolean at run time even where the declaration
+  // says number.
+  if (
+    psym !== undefined &&
+    psymName === "HeapInfo" &&
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "worker_threads"),
+    )
+  ) {
+    return { kind: "dyn" };
+  }
   // child_process.SpawnSyncReturns: @types/node's generic interface (the
   // Buffer/string split is re-checked at the stdout/stderr READ — status
   // reads work either way) or the fallback declarations' plain interface.

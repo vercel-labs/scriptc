@@ -222,6 +222,12 @@ const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
   // (scr_module_cache.c), and reading the options object can run a getter.
   "module.compileCacheEnable",
   "module.compileCacheFlush",
+  // setSourceMapsSupport validates a boolean and an options object
+  // (scr_lib.c), and reading the options members can run a getter.
+  "module.setSourceMapsSupport",
+  // The SourceMap constructor validates its payload and reads its members,
+  // whose getters can throw.
+  "sourceMap.new",
   "bytes.construct",
   "arrayBuffer.new",
   "sharedArrayBuffer.new",
@@ -577,8 +583,19 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   // exportKeyingMaterial throws Node's validation ladder (ERR_OUT_OF_RANGE,
   // ERR_INVALID_ARG_TYPE) and the TLS state error.
   "tls.sockExportKeyingMaterial",
+  // setMaxSendFragment throws Node's ERR_OUT_OF_RANGE for NaN, an infinity
+  // or a fraction.
+  "tls.sockSetMaxFragment",
   "net.sockWriteDyn",
   "net.sockEndDyn",
+  // socket.write/end(data, encoding): Buffer.from's encoding ladder throws
+  // ERR_UNKNOWN_ENCODING for an unknown name.
+  "net.sockWriteEnc",
+  "net.sockEndEnc",
+  // write/end(data, encoding) with a Buffer chunk: the encoding is
+  // validated (Buffer.isEncoding, plus "buffer") before it is ignored.
+  "net.sockWriteBytesEnc",
+  "net.sockEndBytesEnc",
   "http.resWriteDyn",
   "http.resEndDyn",
   // setHeaders walks the argument (a Map's entries) and throws Node's
@@ -660,6 +677,10 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "http2.performServerHandshakeOpts",
   "http2.connectCb",
   "http2.sessionRequest",
+  // setTimeout validates its duration like getTimerDuration: a negative or
+  // non-finite msecs throws ERR_OUT_OF_RANGE from the call.
+  "http2.sessionSetTimeout",
+  "http2.sessionSetTimeoutCb",
   "http2.streamSetEncoding",
   // Settings are validated (ERR_HTTP2_INVALID_SETTING_VALUE), a ping's
   // payload and a destroyed session are refused, and a dynamic listener
@@ -755,6 +776,8 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "stream.duplexFromGen",
   "stream.duplexFromGenNoSource",
   "stream.duplexFromDyn",
+  "stream.composeStageDyn",
+  "stream.composeTailDyn",
   "stream.duplexFromPromise",
   "stream.duplexFromAsyncFn",
   "stream.duplexFromAsyncFnNoSource",
@@ -1172,6 +1195,9 @@ const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   "dyn.objCreateWithProperties",
   "dyn.getPrototype",
   "dyn.classTestPrototype",
+  // Object.getPrototypeOf(null or undefined) throws Node's TypeError, and a
+  // comparison the lowerer folds into this test can be inside a catch.
+  "dyn.isPlainObject",
 ];
 
 const MAY_THROW_LIB_FNS_PART_4: readonly IrLibFn[] = [

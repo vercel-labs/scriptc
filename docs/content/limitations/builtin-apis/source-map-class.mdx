@@ -1,0 +1,3 @@
+- **Source map class:** `new module.SourceMap(payload)` copies the payload the way Node.js does, and `payload`, `findEntry` and `findOrigin` answer Node.js's values for both the mappings and the sections forms.
+  `instanceof`, `Object.keys`, `JSON.stringify` and `util.inspect` see the instance Node.js sees, and a detached `findEntry` throws a `TypeError` in both.
+  `Object.getOwnPropertyNames` on an instance throws `SC2020` where Node.js answers an empty list.

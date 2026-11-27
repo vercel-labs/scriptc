@@ -76,6 +76,7 @@ import { rlSignatures } from "./builtin-signatures/rl.js";
 import { scSignatures } from "./builtin-signatures/sc.js";
 import { seaSignatures } from "./builtin-signatures/sea.js";
 import { sharedArrayBufferSignatures } from "./builtin-signatures/sharedArrayBuffer.js";
+import { sourceMapSignatures } from "./builtin-signatures/sourceMap.js";
 import { spSignatures } from "./builtin-signatures/sp.js";
 import { spawnResSignatures } from "./builtin-signatures/spawnRes.js";
 import { sqliteSignatures } from "./builtin-signatures/sqlite.js";
@@ -198,6 +199,7 @@ function buildLibFnSignatures() {
     ...scSignatures,
     ...seaSignatures,
     ...sharedArrayBufferSignatures,
+    ...sourceMapSignatures,
     ...spSignatures,
     ...spawnResSignatures,
     ...sqliteSignatures,

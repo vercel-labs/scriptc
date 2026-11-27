@@ -2263,9 +2263,9 @@ ScrStream *scr_stream_duplex_from_dyn(ScrDyn *body) {
   return sf_duplex_from_dyn_flags(body, 0);
 }
 
-/* `pair_flags` reaches the web pair adaptation: the pipeline runs a pair
- * stage with its web chunks untouched (object mode), where Duplex.from and
- * compose adapt it byte for byte. */
+/* `pair_flags` reaches the web pair adaptation: the pipeline, and compose's
+ * head and middle stages, run a pair with its web chunks untouched (object
+ * mode), where Duplex.from and compose's tail adapt it byte for byte. */
 static ScrStream *sf_duplex_from_dyn_flags(ScrDyn *body, double pair_flags) {
   ScrStream *native = scr_stream_of_handle(body); /* +1 */
   if (!native) native = scr_stream_boxed(body);   /* +1 */
@@ -2281,6 +2281,25 @@ static ScrStream *sf_duplex_from_dyn_flags(ScrDyn *body, double pair_flags) {
   if (scr_stream_web_pair_hook != NULL) {
     ScrStream *paired = scr_stream_web_pair_hook(body, pair_flags);
     if (paired) {
+      /* A lone web WritableStream answers its writer's adapter alone:
+       * duplexify.js reads it as the body's `writable` (Duplex.from's
+       * writable-only Duplex). */
+      if (!(paired->st->has_r && paired->st->has_w)) {
+        /* The adapter's writable mode and web chunks reach the duplexify the
+         * pipeline writes through, so a null a stage enqueued is a value
+         * written here too. */
+        bool web_chunks = paired->st->web_chunks;
+        bool writable_object_mode = paired->st->has_w && paired->st->w.object_mode;
+        ScrStream *d = paired->st->has_r ? scr_stream_duplexify(paired, NULL)
+                                         : scr_stream_duplexify(NULL, paired);
+        if (d != NULL) {
+          if (web_chunks) scr_stream_set_web_chunks(d, true);
+          if (writable_object_mode) scr_stream_set_object_mode(d, false, true);
+        }
+        scr_stream_release(paired);
+        if (!d) return NULL;
+        paired = d;
+      }
       paired->st->web_pair_body = true;
       return paired;
     }
@@ -5488,9 +5507,13 @@ static ScrStream *scr_stream_compose_impl(size_t n, ScrStream **streams, const S
   c->writable = c->head && scr_stream_prop(c->head, "writable") != 0;
   c->readable = scr_stream_prop(c->tail, "readable") != 0;
   /* readableObjectMode: !!tail?.readableObjectMode, writableObjectMode:
-   * !!head?.writableObjectMode */
-  bool object_mode = c->tail->st->has_r && c->tail->st->r.object_entries;
-  bool w_object = c->head && c->head->st->has_w && c->head->st->w.object_mode;
+   * !!head?.writableObjectMode. A web stream has neither member, so a pair
+   * adapted in object mode (its chunks are web values) still answers a
+   * byte-mode end for the composed Duplex. */
+  bool object_mode = c->tail->st->has_r && !c->tail->st->web_pair_body &&
+                     c->tail->st->r.object_entries;
+  bool w_object =
+      c->head && !c->head->st->web_pair_body && c->head->st->has_w && c->head->st->w.object_mode;
   ScrStream *d = scr_stream_new_duplex(
       object_mode ? scr_stream_get_default_hwm(true) : -1, w_object ? scr_stream_get_default_hwm(true) : -1,
       true, true, true, c->readable, c->writable,
@@ -10027,6 +10050,30 @@ static bool scr_stream_dyn_transform_like(const ScrDyn *value) {
   if (value->kind == SCR_DYN_HANDLE) return value->v.handle.tag == SCR_DYNH_WEB_TRANSFORM;
   return value->kind == SCR_DYN_OBJ && scr_stream_dyn_member_object(value, "readable") &&
          !scr_exc_pending() && scr_stream_dyn_member_object(value, "writable");
+}
+
+/* compose's head and middle stages (stream.composeStageDyn): a web stream
+ * pair keeps its chunks, as the pipeline's stages do; the composed Duplex's
+ * own ends still adapt byte for byte. The web unit's pair adaptation answers
+ * NULL for any other value, which takes Duplex.from's body adaptation. */
+ScrStream *scr_stream_duplex_stage_dyn(ScrDyn *body) {
+  if (scr_stream_web_pair_hook != NULL) {
+    ScrStream *paired = scr_stream_web_pair_hook(body, 2 /* object mode */ | 8 /* web chunks */);
+    if (paired) {
+      paired->st->web_pair_body = true;
+      return paired;
+    }
+    if (scr_exc_pending()) return NULL;
+  }
+  return sf_duplex_from_dyn_flags(body, 0);
+}
+
+/* compose's last stage (stream.composeTailDyn): a pair keeps duplexify's
+ * byte-for-byte sides (the composed Duplex reads them as Buffers), and a lone
+ * web WritableStream keeps the chunks the stage before it hands over, as the
+ * pipeline's stages do (bit 16). Any other value is Duplex.from's body. */
+ScrStream *scr_stream_duplex_tail_dyn(ScrDyn *body) {
+  return sf_duplex_from_dyn_flags(body, 16);
 }
 
 /* Whether a checked-dynamic object has a function member `key`. */

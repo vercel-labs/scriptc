@@ -361,6 +361,12 @@ void scr_net_sock_on_drain(ScrNetSocket *s, ScrClosure *cb /*moves*/, bool once)
 void scr_net_sock_end(ScrNetSocket *s);
 void scr_net_sock_end_str(ScrNetSocket *s, ScrStr *data /*borrowed*/);
 void scr_net_sock_end_bytes(ScrNetSocket *s, ScrBytes *data /*borrowed*/);
+bool scr_net_sock_write_encoded(ScrNetSocket *s, ScrStr *data /*borrowed*/, ScrStr *enc /*borrowed*/);
+void scr_net_sock_end_encoded(ScrNetSocket *s, ScrStr *data /*borrowed*/, ScrStr *enc /*borrowed*/);
+bool scr_net_sock_write_bytes_encoded(ScrNetSocket *s, ScrBytes *data /*borrowed*/,
+                                      ScrStr *enc /*borrowed*/);
+void scr_net_sock_end_bytes_encoded(ScrNetSocket *s, ScrBytes *data /*borrowed*/,
+                                    ScrStr *enc /*borrowed*/);
 /* Checked-dynamic chunk forms (an untyped JS payload into a typed
  * socket): STR/BYTES dispatch; end() takes undefined/null as no chunk;
  * anything else throws Node's ERR_INVALID_ARG_TYPE chunk TypeError. */

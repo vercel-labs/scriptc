@@ -319,6 +319,60 @@ void scr_signal_off(ScrStr *name, ScrDyn *cb) {
   }
 }
 
+/* process.emit('<signal>'): dispatch the signal's registered listeners
+ * synchronously, in registration order, as EventEmitter's emit does. A
+ * `once` listener leaves the registry before it runs. Answers whether any
+ * listener existed; the default disposition never runs here (Node's emit
+ * delivers the event, not the OS signal). */
+bool scr_process_emit_signal(ScrStr *name) {
+  if (name == NULL) return false;
+  int sig = scr_signal_from_name(name);
+  if (sig < 0) sig = 0;
+  ScrSigReg *reg = scr_sig_regs;
+  while (reg && reg->sig != sig) reg = reg->next;
+  if (!reg || reg->n == 0) return false;
+  size_t n = reg->n;
+  ScrSigListener *snap = calloc(n, sizeof *snap);
+  if (!snap) scr_events_oom();
+  for (size_t i = 0; i < n; i++) {
+    snap[i] = reg->ls[i];
+    scr_dyn_retain(snap[i].cb);
+    scr_str_retain(snap[i].name);
+  }
+  for (size_t i = 0; i < n; i++) {
+    if (!scr_exc_pending()) {
+      if (snap[i].once) {
+        for (ScrSigReg *r = scr_sig_regs; r; r = r->next) {
+          bool found = false;
+          for (size_t j = 0; j < r->n; j++) {
+            if (r->ls[j].id == snap[i].id) {
+              scr_sig_remove(r, j);
+              found = true;
+              break;
+            }
+          }
+          if (found) break;
+        }
+      }
+      if (snap[i].island != 0 && scr_island_emit != NULL) {
+        scr_island_emit(SCR_EVENTS_ISLAND_SIGNAL, snap[i].island, snap[i].name,
+                        scr_signal_from_name(snap[i].name));
+      } else {
+        ScrDyn *args[2] = {scr_dyn_new_str(snap[i].name),
+                           scr_dyn_new_num(scr_signal_from_name(snap[i].name))};
+        ScrDyn *result = scr_dyn_call(snap[i].cb, args, 2, "listener");
+        scr_dyn_release(result);
+        scr_dyn_release(args[0]);
+        scr_dyn_release(args[1]);
+      }
+    }
+    scr_dyn_release(snap[i].cb);
+    scr_str_release(snap[i].name);
+  }
+  free(snap);
+  return true;
+}
+
 /* Island code's signal listeners (scr_node_island.c forwards Node's
  * newListener/removeListener for signal events here): each takes its place
  * in the registry like a native listener, so scriptc owns every signal

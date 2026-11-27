@@ -379,6 +379,10 @@ export const processSignatures = defineLibFnSignatures({
    * event name and its argument vector arrive as checked values; the
    * result is whether any listener existed. */
   "process.emit": { argTypes: [DYN, DYN], result: BOOL },
+  /** process.emit('SIG…'): dispatch the signal's registered listeners
+   * synchronously, as Node's EventEmitter emit does, and answer whether any
+   * existed. */
+  "process.emitSignal": { argTypes: [STRING], result: BOOL },
   /** process.emit('error', ...): no listener can be registered for it, so
    * the runtime throws Node's unhandled-error contract. */
   "process.emitError": { argTypes: [DYN], result: VOID },

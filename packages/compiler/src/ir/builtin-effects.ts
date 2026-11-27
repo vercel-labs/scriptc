@@ -854,6 +854,7 @@ const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   "process.emitWarning",
   // A listener the emit reaches may throw; the exception is the call's.
   "process.emit",
+  "process.emitSignal",
   "process.emitError",
   // cpuUsage(prev)'s field validation: negative/non-finite prev fields
   // throw Node's ERR_INVALID_ARG_VALUE RangeError, catchably.

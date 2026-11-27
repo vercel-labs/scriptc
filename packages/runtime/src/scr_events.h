@@ -37,6 +37,10 @@ void scr_events_install(void);
 void scr_signal_on(ScrStr *name, ScrDyn *cb, bool once);
 void scr_signal_prepend(ScrStr *name, ScrDyn *cb);
 void scr_signal_off(ScrStr *name, ScrDyn *cb);
+/* process.emit('<signal>'): dispatch the signal's listeners synchronously
+ * (once listeners leave first) and answer whether any existed. The OS
+ * default disposition does not run. */
+bool scr_process_emit_signal(ScrStr *name);
 void scr_process_on_exit(ScrClosure *cb, void (*fn)(ScrClosure *, double), bool once);
 void scr_process_prepend_exit(ScrClosure *cb, void (*fn)(ScrClosure *, double));
 double scr_process_stdin_is_raw(void);

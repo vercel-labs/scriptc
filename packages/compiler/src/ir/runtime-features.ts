@@ -132,6 +132,7 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // unit's deferred warning queue.
   "process.finalization",
   "process.emit",
+  "process.emitSignal",
   "process.emitError",
   "process.emitWarning",
   "process.emitWarningText",
@@ -997,6 +998,7 @@ const PROCESS_EVENT_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.onBeforeExit",
   "process.onExit",
   "process.onSignal",
+  "process.emitSignal",
   "process.prependBeforeExit",
   "process.prependExit",
   "process.prependSignal",

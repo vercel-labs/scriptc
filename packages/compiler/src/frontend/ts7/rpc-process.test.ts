@@ -2,6 +2,7 @@ import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import { expect, test } from "vitest";
 import { Ts7FifoIo } from "./rpc-process.js";
+import { Ts7Wire } from "./rpc-wire.js";
 
 const execFileAsync = promisify(execFile);
 const posix = process.platform !== "win32";
@@ -28,6 +29,19 @@ test.skipIf(!posix)("a FIFO server echoes, and exits when its transport closes",
   const deadline = Date.now() + 5000;
   while (alive(io.pid) && Date.now() < deadline) execFileSync("sleep", ["0.01"]);
   expect(alive(io.pid)).toBe(false);
+});
+
+test.skipIf(!posix)("a FIFO server that exits names its process at end of stream", () => {
+  const io = new Ts7FifoIo("/bin/cat", []);
+  execFileSync("kill", ["-KILL", String(io.pid)]);
+  // init reaps the server, but not necessarily before the probe: wait for the
+  // reap rather than assume the timing.
+  const deadline = Date.now() + 5000;
+  while (alive(io.pid) && Date.now() < deadline) execFileSync("sleep", ["0.01"]);
+  expect(alive(io.pid)).toBe(false);
+  expect(() => new Ts7Wire(io).read()).toThrow(
+    `unexpected end of stream: the TypeScript server process (pid ${io.pid}) has exited`,
+  );
 });
 
 test.skipIf(!posix)("a missing FIFO server fails at construction and tracks nothing", () => {

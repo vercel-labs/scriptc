@@ -125,6 +125,20 @@ export class NativeTs7Process implements Ts7WireIo {
     return count;
   };
 
+  /** A dedicated server is this process's child, so a dead one can still
+   * probe as alive until close reaps it; a shared checker server is reaped by
+   * its own starter, and the probe is exact. An inconclusive probe costs only
+   * the hint, and a probe failure must never mask the end of stream itself. */
+  endOfStreamHint = (): string | undefined => {
+    try {
+      process.kill(this.pid, 0);
+      return undefined;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EPERM") return undefined;
+      return `the TypeScript server process (pid ${this.pid}) has exited`;
+    }
+  };
+
   close = (): void => {
     if (this.handle === 0) return;
     const handle = this.handle;

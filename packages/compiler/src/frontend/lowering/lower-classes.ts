@@ -14161,7 +14161,7 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   const intl = ts.isPropertyAccessExpression(intlConstructor)
     ? lowerer.stdlibGlobalMember(intlConstructor, "Intl")
     : null;
-  if (intl === "NumberFormat" || intl === "DateTimeFormat")
+  if (intl === "NumberFormat" || intl === "DateTimeFormat" || intl === "ListFormat")
     return lowerIntlFormatterNew(lowerer, expr, intl);
   if (intl && intl !== "Segmenter")
     lowerer.noLowering(

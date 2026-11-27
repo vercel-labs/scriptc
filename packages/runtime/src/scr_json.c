@@ -14330,6 +14330,88 @@ ScrStr *scr_dyn_object_tag(const ScrDyn *d) {
   return scr_str_new(tag, strlen(tag));
 }
 
+/* V8's side-effect-free string of a value: the text Node quotes in an
+ * unhandled-rejection message and in Intl.ListFormat's element TypeError.
+ * Primitives answer what String() gives them (a symbol as Symbol(desc)); an
+ * array is [object Array]; an object with its own toString is
+ * [object Object]; any other object is #<Constructor>; an Error answers
+ * Error.prototype.toString; and the builtins whose class V8 does not expose
+ * as a toString tag are #<Name>. Result +1. */
+ScrStr *scr_dyn_side_effect_free_string(const ScrDyn *value) {
+  static const struct {
+    ScrDynHandleTag tag;
+    const char *name;
+  } INTERNAL[] = {
+    {SCR_DYNH_MAP, "Map"},
+    {SCR_DYNH_SET, "Set"},
+    {SCR_DYNH_WEAK_MAP, "WeakMap"},
+    {SCR_DYNH_WEAK_SET, "WeakSet"},
+    {SCR_DYNH_ARRAY_BUFFER, "ArrayBuffer"},
+    {SCR_DYNH_SHARED_ARRAY_BUFFER, "SharedArrayBuffer"},
+    {SCR_DYNH_WEAK_REF, "WeakRef"},
+    {SCR_DYNH_FINALIZATION_REGISTRY, "FinalizationRegistry"},
+  };
+  switch (value->kind) {
+  case SCR_DYN_UNDEF:
+    return scr_str_new("undefined", 9);
+  case SCR_DYN_NULL:
+    return scr_str_new("null", 4);
+  case SCR_DYN_SYMBOL:
+    return value->v.symbol.render(value->v.symbol.value);
+  case SCR_DYN_ARR:
+    return scr_str_new("[object Array]", 14);
+  case SCR_DYN_BYTES:
+    return scr_dyn_object_tag(value);
+  case SCR_DYN_HANDLE:
+    for (size_t i = 0; i < sizeof INTERNAL / sizeof *INTERNAL; i++) {
+      if (value->v.handle.tag != INTERNAL[i].tag) continue;
+      ScrStr *parts[3] = {scr_str_new("#<", 2),
+                          scr_str_new(INTERNAL[i].name, strlen(INTERNAL[i].name)),
+                          scr_str_new(">", 1)};
+      ScrStr *text = scr_str_concat_parts(parts, 3);
+      for (size_t k = 0; k < 3; k++) scr_str_release(parts[k]);
+      return text;
+    }
+    return scr_dyn_object_tag(value);
+  case SCR_DYN_OBJ:
+  case SCR_DYN_TYPED_REF: {
+    if (scr_dyn_err_instanceof(value, 0)) return scr_dyn_to_string(value, NULL);
+    if (scr_dyn_ref_is_array(value)) return scr_str_new("[object Array]", 14);
+    bool custom = false;
+    if (value->kind == SCR_DYN_TYPED_REF) {
+      ScrStr *key = scr_str_new("toString", 8);
+      custom = scr_dyn_typed_ref_class_has(value, key);
+      scr_str_release(key);
+    } else {
+      for (const ScrDyn *p = value; p != NULL; p = p->prototype) {
+        if (p->kind != SCR_DYN_OBJ) continue;
+        ScrDyn *method = scr_dyn_obj_get(p, "toString", 8);
+        if (method != NULL) {
+          scr_dyn_release(method);
+          custom = true;
+          break;
+        }
+      }
+    }
+    if (custom) return scr_str_new("[object Object]", 15);
+    const ScrStr *typed =
+        value->kind == SCR_DYN_TYPED_REF ? scr_dyn_typed_ref_class_name(value) : NULL;
+    const char *name = value->kind == SCR_DYN_OBJ ? scr_dyn_class_name(value) : NULL;
+    const char *plain = name != NULL ? name : "Object";
+    ScrStr *parts[3] = {scr_str_new("#<", 2),
+                        typed != NULL ? scr_str_new(typed->data, typed->len)
+                                      : scr_str_new(plain, strlen(plain)),
+                        scr_str_new(">", 1)};
+    ScrStr *text = scr_str_concat_parts(parts, 3);
+    for (size_t k = 0; k < 3; k++) scr_str_release(parts[k]);
+    return text;
+  }
+  default:
+    return scr_dyn_to_string(value, NULL);
+  }
+}
+
+
 /* ── JSON.stringify over a dyn value (util.format's %j) ───────────────
  * The RUNTIME walk the type-directed serializers deliberately avoid for
  * static values — a dyn value has no static type, so the checked-dynamic tree's own kinds

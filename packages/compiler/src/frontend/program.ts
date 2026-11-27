@@ -191,6 +191,7 @@ import {
   type ImportElisionOptions,
   type ProgramImportElision,
 } from "./import-elision.js";
+import { droppedPackageModules } from "./module-tree-shake.js";
 import {
   planDeclProjection,
   resetDeclBoundaryOrigins,
@@ -8475,8 +8476,14 @@ function preflightStructure7(load: LoadResult): PreflightStructure {
     }
   }
 
+  // Module-level tree shaking: a package module no live module reads, whose
+  // top level has no side effect, leaves the compiled order. Not evaluating
+  // it is indistinguishable from evaluating it, and dead code cannot refuse
+  // the build for the whole package.
+  const dropped = droppedPackageModules(entry, order, edges);
+  const compiledOrder = dropped.size === 0 ? order : order.filter((sf) => !dropped.has(sf));
   return {
-    order,
+    order: compiledOrder,
     moduleEdges: edges,
     dynamicImportRejections,
     inlineRequireCycleCalls,

@@ -541,7 +541,14 @@ static bool scr_et_symbol_type_fail(const ScrDyn *type) {
   return true;
 }
 
-ScrDyn *scr_et_add_listener(ScrEventTargetCore *core, ScrDyn *const *args, size_t argc) {
+/* addEventListener's DOM steps. `type_out` (may be NULL) receives the
+ * converted type's name (+1) when the listener was registered, so an owner
+ * that keeps a listener order can record the exact name the registration
+ * used without converting it a second time; it stays NULL when nothing was
+ * registered (an aborted signal, a null listener, a refused argument). */
+static ScrDyn *scr_et_add_listener_core(ScrEventTargetCore *core, ScrDyn *const *args, size_t argc,
+                                        ScrStr **type_out) {
+  if (type_out) *type_out = NULL;
   if (argc < 2) {
     scr_et_type_error("The \"type\" and \"listener\" arguments must be specified", "ERR_MISSING_ARGS");
     return NULL;
@@ -594,8 +601,18 @@ ScrDyn *scr_et_add_listener(ScrEventTargetCore *core, ScrDyn *const *args, size_
   bool duplicate;
   ScrEtListener *l = scr_et_append(core, type, args[1], flags, &duplicate);
   if (l) scr_et_new_listener(core, l->root);
-  scr_str_release(type);
+  if (type_out) *type_out = type;
+  else scr_str_release(type);
   return scr_dyn_retain(scr_dyn_undefined());
+}
+
+ScrDyn *scr_et_add_listener(ScrEventTargetCore *core, ScrDyn *const *args, size_t argc) {
+  return scr_et_add_listener_core(core, args, argc, NULL);
+}
+
+ScrDyn *scr_et_add_listener_named(ScrEventTargetCore *core, ScrDyn *const *args, size_t argc,
+                                  ScrStr **type) {
+  return scr_et_add_listener_core(core, args, argc, type);
 }
 
 ScrDyn *scr_et_remove_listener(ScrEventTargetCore *core, ScrDyn *const *args, size_t argc) {
@@ -2282,6 +2299,7 @@ static const ScrEtBroadcastOps scr_et_broadcast_table = {
     &scr_et_target_method,       &scr_et_broadcast_method_value,
     &scr_et_handler_get,         &scr_et_handler_set,
     &scr_et_broadcast_remove_all, &scr_et_broadcast_has_type,
+    &scr_et_add_listener_named,
 };
 
 void scr_et_broadcast_install(void) {

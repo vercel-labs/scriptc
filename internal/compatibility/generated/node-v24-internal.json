@@ -125969,6 +125969,7 @@
           "tests/corpus/native-worker-terminate-loop.ts",
           "tests/corpus/native-worker-terminate-suspended.ts",
           "tests/corpus/native-worker-terminate-wait.ts",
+          "tests/corpus/port-add-listener-order.mjs",
           "tests/corpus/port-event-name-coercion.mjs",
           "tests/corpus/port-handler-attribute.mjs",
           "tests/corpus/port-listener-bookkeeping.mjs",
@@ -126316,7 +126317,8 @@
           "tests/corpus/port-handler-attribute.mjs",
           "tests/corpus/port-listeners-typed.ts",
           "tests/corpus/port-event-name-coercion.mjs",
-          "tests/corpus/port-listener-order-cycle.mjs"
+          "tests/corpus/port-listener-order-cycle.mjs",
+          "tests/corpus/port-add-listener-order.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -127090,7 +127092,8 @@
           "tests/corpus/port-handler-attribute.mjs",
           "tests/corpus/port-listeners-typed.ts",
           "tests/corpus/port-event-name-coercion.mjs",
-          "tests/corpus/port-listener-order-cycle.mjs"
+          "tests/corpus/port-listener-order-cycle.mjs",
+          "tests/corpus/port-add-listener-order.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -127540,7 +127543,8 @@
           "tests/corpus/port-handler-attribute.mjs",
           "tests/corpus/port-listeners-typed.ts",
           "tests/corpus/port-event-name-coercion.mjs",
-          "tests/corpus/port-listener-order-cycle.mjs"
+          "tests/corpus/port-listener-order-cycle.mjs",
+          "tests/corpus/port-add-listener-order.mjs"
         ]
       },
       "anchorSource": "chapter"
@@ -127573,7 +127577,8 @@
           "tests/corpus/port-handler-attribute.mjs",
           "tests/corpus/port-listeners-typed.ts",
           "tests/corpus/port-event-name-coercion.mjs",
-          "tests/corpus/port-listener-order-cycle.mjs"
+          "tests/corpus/port-listener-order-cycle.mjs",
+          "tests/corpus/port-add-listener-order.mjs"
         ]
       },
       "anchorSource": "chapter"
@@ -127660,7 +127665,8 @@
           "tests/corpus/port-handler-attribute.mjs",
           "tests/corpus/port-listeners-typed.ts",
           "tests/corpus/port-event-name-coercion.mjs",
-          "tests/corpus/port-listener-order-cycle.mjs"
+          "tests/corpus/port-listener-order-cycle.mjs",
+          "tests/corpus/port-add-listener-order.mjs"
         ]
       },
       "anchorSource": "chapter"
@@ -127720,7 +127726,8 @@
           "tests/corpus/port-handler-attribute.mjs",
           "tests/corpus/port-listeners-typed.ts",
           "tests/corpus/port-event-name-coercion.mjs",
-          "tests/corpus/port-listener-order-cycle.mjs"
+          "tests/corpus/port-listener-order-cycle.mjs",
+          "tests/corpus/port-add-listener-order.mjs"
         ]
       },
       "anchorSource": "exact"

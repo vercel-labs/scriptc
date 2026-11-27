@@ -67,6 +67,11 @@ void scr_et_core_drop(ScrEventTargetCore *core);
  * value (borrowed — `this` for listeners and the events' target), args
  * borrowed. +1 result, or NULL with the exception pending. */
 ScrDyn *scr_et_add_listener(ScrEventTargetCore *core, ScrDyn *const *args, size_t argc);
+/* The same, answering the converted type's name (+1) when the listener was
+ * registered, and NULL when nothing was (an aborted signal, a null listener,
+ * a refused argument). */
+ScrDyn *scr_et_add_listener_named(ScrEventTargetCore *core, ScrDyn *const *args, size_t argc,
+                                  ScrStr **type);
 ScrDyn *scr_et_remove_listener(ScrEventTargetCore *core, ScrDyn *const *args, size_t argc);
 ScrDyn *scr_et_dispatch_event(ScrEventTargetCore *core, ScrDyn *self, ScrDyn *const *args, size_t argc);
 /* EventTarget.prototype's method `key` (addEventListener,
@@ -163,6 +168,12 @@ typedef struct {
    * eventNames() keeps reporting it until an explicit removal deletes the
    * type, as Node's map does. */
   bool (*has_type)(ScrEventTargetCore *core, const char *type);
+  /* addEventListener's DOM steps with the registered type's name handed back
+   * (+1 in *type) for the owner's listener order: the options are read first,
+   * an aborted signal returns before the type is touched, and the conversion
+   * happens once. */
+  ScrDyn *(*add_listener)(ScrEventTargetCore *core, ScrDyn *const *args, size_t argc,
+                          ScrStr **type);
 } ScrEtBroadcastOps;
 extern SCR_TL const ScrEtBroadcastOps *scr_et_broadcast_ops;
 void scr_et_broadcast_install(void);

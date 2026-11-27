@@ -12954,6 +12954,12 @@ ScrDyn *scr_dyn_iterator(const ScrDyn *source, const ScrStr *spell) {
 }
 
 static ScrDyn *scr_iterator_read(const ScrDyn *value, const char *key, size_t len) {
+  /* A compiled generator capsule keeps its next/return methods in the
+   * program's getters, not in a materialized view. */
+  if (scr_generator_member_hook && scr_dyn_sync_generator(value)) {
+    ScrDyn *member = scr_generator_member_hook(value, key, len);
+    if (member) return member;
+  }
   if (value->kind == SCR_DYN_TYPED_REF) {
     ScrDyn *view = scr_dyn_typed_ref_materialize(value);
     if (!view) return NULL;

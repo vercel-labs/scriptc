@@ -2127,7 +2127,10 @@ static ScrStream *scr_from_dyn_ex(ScrDyn *src, ScrDyn *opts, bool duplex) {
     kind = scr_dyn_iterable_kind(src);
     if (kind < 0) return NULL;
   } else if (!single) {
-    iter = scr_dyn_from_iterator(src, &kind);
+    /* A compiled generator an object's iterator method returns is stepped
+     * through its checked-dynamic next/return members, as for await steps
+     * one: from.js opens the same iterator either way. */
+    iter = scr_dyn_open_iterator(src, &kind, true);
     if (kind < 0) return NULL;
   }
   if (!single && kind == 0) {

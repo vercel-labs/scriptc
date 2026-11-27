@@ -30,6 +30,9 @@ const RUNTIME_STEP_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // ReadableStream.from steps the iterable it is given, a compiled
   // generator among them.
   "webstream.from",
+  // Readable.from reads an untyped iterable in the runtime, a compiled
+  // generator among the values it steps.
+  "readable.fromDyn",
   // new URLSearchParams(init) reads the iterator of a checked-dynamic init,
   // a compiled generator among them.
   "sp.newChecked",

@@ -127,6 +127,17 @@ export class GeneratorDynamicDispatch {
         lowerer.shapes.get(type.shapeId)?.fields.forEach((field) => discover(field.type));
       else if (type.kind === "union") lowerer.unions.get(type.unionId)?.arms.forEach(discover);
     };
+    // Every signature counts: a generator a function returns can reach a
+    // runtime step (Readable.from over an untyped iterable, for instance)
+    // without appearing at a dynamic site of its own.
+    // Signatures count too: a generator a function returns can reach a
+    // runtime step (Readable.from over an untyped iterable, for instance)
+    // without appearing at a dynamic site of its own. The lowerer's own
+    // lifted helpers carry their type under `type`.
+    for (const fn of functions) {
+      const carried = (fn as IrFunction & { type?: IrType }).type;
+      if (carried !== undefined) discover(carried);
+    }
     for (const fn of functions) {
       const found = sites.of(fn);
       found.values.forEach(discover);

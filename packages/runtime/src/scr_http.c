@@ -1250,6 +1250,9 @@ struct ScrHttpRes {
    * close if the socket dies first. */
   bool close_after_finish;
   ScrBox *close_box;
+  ScrClosure *close_watch; /* the watch registration, +1: unregistered when the
+                            * deferral resolves so a keep-alive socket cannot
+                            * accumulate one closure per completed response */
   bool close_emitted;
 };
 
@@ -1289,6 +1292,10 @@ void scr_http_res_release(ScrHttpRes *r) {
     scr_net_ls_drop(&r->wcb_pre_ls);
     free(r->cork_buf);
     free(r->held_head);
+    if (r->close_watch != NULL) {
+      scr_closure_release(r->close_watch);
+      r->close_watch = NULL;
+    }
     if (r->max_requests_per_socket) scr_dyn_release(r->max_requests_per_socket);
     if (r->req_ref) scr_http_req_release(r->req_ref);
     if (r->sock) scr_net_sock_release(r->sock);
@@ -3754,12 +3761,23 @@ static void scr_http_res_drop_box(ScrBox **slot) {
  * keeps the response alive after the emit that deferred it, and its firing
  * means the socket died before the flush could run. */
 static void scr_http_res_clear_close_watch(ScrHttpRes *res) {
+  if (res->close_watch != NULL) {
+    scr_net_sock_off_close(res->sock, res->close_watch);
+    scr_closure_release(res->close_watch);
+    res->close_watch = NULL;
+  }
   scr_http_res_drop_box(&res->close_box);
 }
 
 static void scr_http_res_close_watch_fired(ScrClosure *cb) {
   ScrHttpRes *res = scr_box_get_ref(cb->caps[0]);
   if (res == NULL) return; /* the close ran: nothing waits on the socket */
+  /* this entry is firing: drop our handle without asking the closing socket
+   * to unregister it again */
+  if (res->close_watch != NULL) {
+    scr_closure_release(res->close_watch);
+    res->close_watch = NULL;
+  }
   /* the socket died with bytes still buffered: the finish can never fire, so
    * the deferred close runs now (mark_unflushed re-queues it) */
   if (res->close_after_finish) scr_http_res_mark_unflushed(res);
@@ -3824,6 +3842,7 @@ static void scr_http_proto_sweep(void) {
             res->close_box = box;
             ScrClosure *watch = scr_closure_new((void *)&scr_http_res_close_watch_fired, 1);
             watch->caps[0] = scr_box_retain(box);
+            res->close_watch = scr_closure_retain(watch);
             scr_net_sock_on_close(res->sock, watch, true);
           }
           break;

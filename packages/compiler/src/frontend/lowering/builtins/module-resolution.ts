@@ -51,11 +51,7 @@ import {
   funcOf,
 } from "../../../ir/ir.js";
 import { lowerFfiMemoryModule } from "../native-ffi.js";
-import {
-  STRIP_UNSUPPORTED_CODE,
-  StripUnsupportedSyntax,
-  stripTypeScriptTypesStrip,
-} from "../../strip-typescript-types.js";
+import { StripUnsupportedSyntax, stripTypeScriptTypesStrip } from "../../strip-typescript-types.js";
 import {
   createRequireSpecOf,
   createRequireProgramModuleOf,
@@ -405,9 +401,20 @@ export function lowerStripTypeScriptTypesCall(
     stripped = stripTypeScriptTypesStrip(code as string);
   } catch (err) {
     if (!(err instanceof StripUnsupportedSyntax)) throw err;
-    return nodeThrowExpr(3, STRIP_UNSUPPORTED_CODE, err.message, DYN, loc);
+    // The refusal carries Node's own code: the strip-only syntax errors are
+    // ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX, and pre-strip validation (an
+    // `override` with no base class) is ERR_INVALID_TYPESCRIPT_SYNTAX.
+    return nodeThrowExpr(3, err.code, err.message, DYN, loc);
   }
   const text = sourceUrl === null ? stripped : `${stripped}\n\n//# sourceURL=${sourceUrl}`;
+  // Node evaluates every argument before the call returns: an ignored option
+  // value, an extra argument, their side effects and their exceptions all
+  // happen where the call stands.
+  const evaluation: IrStmt[] = call.arguments.nodes.map((arg) => ({
+    kind: "exprStmt",
+    expr: lowerer.lowerExpr(arg),
+    loc: locOf(arg),
+  }));
   const warning: IrStmt = {
     kind: "exprStmt",
     expr: { kind: "libCall", fn: "module.stripTypesWarning", args: [], type: VOID, loc },
@@ -415,7 +422,7 @@ export function lowerStripTypeScriptTypesCall(
   };
   return {
     kind: "seqExpr",
-    stmts: [warning],
+    stmts: [...evaluation, warning],
     result: { kind: "strLit", value: text, type: STRING, loc },
     type: STRING,
     loc,

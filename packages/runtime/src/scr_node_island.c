@@ -62,9 +62,22 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if !defined(_WIN32) && !defined(__wasi__)
+#if !defined(__wasi__)
 #include "scr_node_island_host.h"
 
+#if defined(_WIN32)
+/* The Windows arm: fibers for Node's stack, a critical section and a
+ * condition variable for posted operations, Win32 for the module tree, and
+ * LoadLibraryExW for the bridge. The host's strings stay UTF-8 and are
+ * widened where Win32 takes a path. */
+#include <windows.h>
+#include <aclapi.h>
+#include <fcntl.h>
+#include <io.h>
+#include <process.h>
+#include <time.h>
+#define NI_BRIDGE_FILE "libscr_node_bridge.dll"
+#else
 #include <dirent.h>
 #include <dlfcn.h>
 #include <errno.h>
@@ -75,7 +88,6 @@
 #include <time.h>
 #include <ucontext.h>
 #include <pthread.h>
-#include <time.h>
 #include <unistd.h>
 #if defined(__linux__)
 #include <sys/auxv.h>
@@ -86,6 +98,7 @@
 #else
 #define NI_BRIDGE_FILE "libscr_node_bridge.so"
 #endif
+#endif /* _WIN32 */
 
 typedef struct {
   uint32_t id;
@@ -184,12 +197,57 @@ static bool ni_tracing(void) {
  * path recorded at build time, as the dynamic linker ignores
  * LD_LIBRARY_PATH and $ORIGIN for such processes. */
 static bool ni_secure(void) {
-#if defined(__APPLE__)
+#if defined(_WIN32)
+  /* Windows has no setuid bit or file capabilities; a token with more
+   * privilege than the user's own runs the program deliberately, and the
+   * pack and module tree live in that user's own directories. */
+  return false;
+#elif defined(__APPLE__)
   return issetugid() != 0;
 #elif defined(__linux__)
   return getauxval(AT_SECURE) != 0;
 #else
   return false;
+#endif
+}
+
+/* Whether `c` ends a path component. */
+static bool ni_sep(char c) {
+#if defined(_WIN32)
+  return c == '/' || c == '\\';
+#else
+  return c == '/';
+#endif
+}
+
+/* Whether `path` names an absolute location: `/…` on POSIX, a drive or
+ * UNC path on Windows. */
+static bool ni_abs_path(const char *path) {
+#if defined(_WIN32)
+  if (ni_sep(path[0]) && ni_sep(path[1])) return true;
+  return ((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z')) &&
+         path[1] == ':' && ni_sep(path[2]);
+#else
+  return path[0] == '/';
+#endif
+}
+
+/* The length of `path` up to and including the separator that ends its
+ * directory part, 0 when it has none. */
+static size_t ni_dir_part(const char *path) {
+  size_t cut = 0;
+  for (size_t i = 0; path[i] != '\0'; i++)
+    if (ni_sep(path[i])) cut = i + 1;
+  return cut;
+}
+
+/* A mutable path from the environment or the build with `/` separators. */
+static void ni_slashes(char *path) {
+#if defined(_WIN32)
+  for (; *path != '\0'; path++)
+    if (*path == '\\') *path = '/';
+#else
+  (void)path;
 #endif
 }
 
@@ -199,7 +257,7 @@ static bool ni_secure(void) {
 static const char *ni_pack_dir(void) {
   bool secure = ni_secure();
   const char *override = secure ? NULL : scr_getenv("SCRIPTC_LIBNODE");
-  if (override != NULL && override[0] != '\0' && override[0] != '/')
+  if (override != NULL && override[0] != '\0' && !ni_abs_path(override))
     ni_fatal("scriptc: SCRIPTC_LIBNODE must be an absolute path to a libnode pack directory\n");
   const char *dir = override != NULL && override[0] != '\0' ? override : ni_libnode;
   if (dir == NULL || dir[0] == '\0')
@@ -212,9 +270,8 @@ static const char *ni_pack_dir(void) {
       ni_fatal("scriptc: a program running with elevated privileges cannot load a libnode pack "
                "beside its executable; build it with an absolute SCRIPTC_LIBNODE\n");
     ScrStr *self = scr_process_exec_path();
-    size_t len = self->len;
-    while (len > 0 && self->data[len - 1] != '/') len--;
-    if (len == 0 || self->data[0] != '/') {
+    size_t len = ni_dir_part(self->data);
+    if (len == 0 || !ni_abs_path(self->data)) {
       scr_str_release(self);
       ni_fatal("scriptc: cannot locate this program's executable to find its libnode pack\n");
     }
@@ -226,6 +283,7 @@ static const char *ni_pack_dir(void) {
   }
   if (written < 0 || (size_t)written >= sizeof ni_dir)
     ni_fatal("scriptc: the libnode pack path is too long\n");
+  ni_slashes(ni_dir);
   return ni_dir;
 }
 
@@ -672,42 +730,835 @@ static void ni_manifest_ready(void) {
   scr_dyn_release(body);
 }
 
-/* The directory `name` in `dirfd`, never through a link; created 0700 when
- * `create` and absent. -1 when it cannot be opened. */
-static int ni_dir_at(int dirfd, const char *name, bool create) {
-  if (create && mkdirat(dirfd, name, 0700) != 0 && errno != EEXIST) return -1;
-  return openat(dirfd, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+/* ── the tree's directories and files ────────────────────────────────────
+ * Every operation on the tree works on an open directory and paths relative
+ * to it, and never follows a link: a link planted below the tree cannot
+ * redirect a write outside it. POSIX keeps the descriptor-relative calls
+ * (openat and friends) that make that so; Windows opens the equivalent
+ * paths with Win32 and refuses a directory or file that is a reparse point.
+ * The tree logic below is shared. */
+typedef struct NiDir NiDir;
+typedef struct NiOpenFile NiOpenFile;
+
+#ifdef _WIN32
+struct NiDir {
+  wchar_t *path;
+};
+struct NiOpenFile {
+  HANDLE handle;
+  bool writing;
+};
+#else
+struct NiDir {
+  int fd;
+};
+struct NiOpenFile {
+  int fd;
+  bool writing;
+};
+#endif
+
+enum { NI_ENTRY_DIR = 1, NI_ENTRY_FILE = 2, NI_ENTRY_LINK = 3 };
+
+/* Visits one entry of a directory; true stops the walk. */
+typedef bool (*NiVisit)(NiDir *dir, const char *name, int kind, void *arg);
+
+static NiDir *ni_dir_open_path(const char *path, bool follow);
+static NiDir *ni_dir_open(NiDir *dir, const char *name, bool create, bool follow);
+static void ni_dir_close(NiDir *dir);
+static bool ni_dir_private(NiDir *dir);
+static bool ni_dir_rename(NiDir *dir, const char *from, const char *to);
+static bool ni_dir_unlink(NiDir *dir, const char *name);
+static bool ni_dir_rmdir(NiDir *dir, const char *name);
+static bool ni_dir_symlink(NiDir *dir, const char *name, const char *target,
+                           const char *final_dir);
+static bool ni_dir_link_matches(NiDir *dir, const char *name, const char *target);
+static bool ni_dir_exists(NiDir *dir, const char *name);
+static void ni_dir_each(NiDir *dir, NiVisit visit, void *arg);
+static bool ni_dir_flush(NiDir *dir);
+static bool ni_dir_free(NiDir *dir);
+static void ni_dir_remove_tree(NiDir *dir);
+
+/* The same for a directory named by an absolute path. */
+static bool ni_path_mkdir(const char *path);
+static bool ni_path_rmdir(const char *path);
+static char *ni_path_real(const char *path);
+
+static NiOpenFile *ni_file_new(NiDir *dir, const char *name);
+static NiOpenFile *ni_file_read_open(NiDir *dir, const char *name);
+static bool ni_file_size(NiOpenFile *file, uint64_t *size);
+static long ni_file_read(NiOpenFile *file, void *buffer, size_t capacity);
+static bool ni_file_write(NiOpenFile *file, const void *data, size_t length);
+static bool ni_file_close(NiOpenFile *file);
+static void ni_file_abandon(NiOpenFile *file);
+
+/* The process id, for the names of files a start writes half-way. */
+static long ni_pid(void) {
+#ifdef _WIN32
+  return (long)_getpid();
+#else
+  return (long)getpid();
+#endif
 }
 
-/* The parent directory of the relative `path` below `rootfd` (its last
- * component is left in *base), opened component by component without
- * following links; created when `create`. -1 when it cannot be opened. */
-static int ni_parent_at(int rootfd, const char *path, bool create, const char **base) {
-  int fd = dup(rootfd);
-  const char *p = path;
-  for (const char *slash; fd >= 0 && (slash = strchr(p, '/')) != NULL; p = slash + 1) {
-    char component[256];
-    size_t n = (size_t)(slash - p);
-    if (n >= sizeof component) {
-      close(fd);
-      return -1;
-    }
-    memcpy(component, p, n);
-    component[n] = '\0';
-    int next = ni_dir_at(fd, component, create);
-    close(fd);
-    fd = next;
+#ifdef _WIN32
+/* UTF-8 as a NUL-terminated UTF-16 string, or NULL when it is not UTF-8. */
+static wchar_t *ni_wide(const char *text, size_t length) {
+  int n = length > 0 ? MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text, (int)length, NULL, 0)
+                     : 0;
+  if (length > 0 && n <= 0) return NULL;
+  wchar_t *wide = malloc(((size_t)n + 1) * sizeof *wide);
+  if (wide == NULL) ni_oom();
+  if (n > 0 &&
+      MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text, (int)length, wide, n) != n) {
+    free(wide);
+    return NULL;
   }
-  *base = p;
-  return fd;
+  wide[n] = L'\0';
+  return wide;
+}
+
+/* UTF-16 as a NUL-terminated UTF-8 copy, or NULL. */
+static char *ni_utf8(const wchar_t *text, size_t length) {
+  int n = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, text, (int)length, NULL, 0, NULL, NULL);
+  if (n <= 0) return NULL;
+  char *bytes = malloc((size_t)n + 1);
+  if (bytes == NULL) ni_oom();
+  if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, text, (int)length, bytes, n, NULL, NULL) !=
+      n) {
+    free(bytes);
+    return NULL;
+  }
+  bytes[n] = '\0';
+  return bytes;
+}
+
+/* The path of `name` below `dir`. */
+static wchar_t *ni_wjoin(const wchar_t *dir, const char *name) {
+  wchar_t *wide = ni_wide(name, strlen(name));
+  if (wide == NULL) return NULL;
+  size_t dir_len = wcslen(dir), name_len = wcslen(wide);
+  wchar_t *path = malloc((dir_len + name_len + 2) * sizeof *path);
+  if (path == NULL) ni_oom();
+  memcpy(path, dir, dir_len * sizeof *path);
+  path[dir_len] = L'\\';
+  memcpy(path + dir_len + 1, wide, (name_len + 1) * sizeof *path);
+  free(wide);
+  return path;
+}
+
+/* `target` read from the directory `dir`, as an absolute path. */
+static wchar_t *ni_wresolve(const wchar_t *dir, const char *target) {
+  wchar_t *relative = ni_wide(target, strlen(target));
+  if (relative == NULL) return NULL;
+  size_t dir_len = wcslen(dir), name_len = wcslen(relative);
+  wchar_t *joined = malloc((dir_len + name_len + 2) * sizeof *joined);
+  if (joined == NULL) ni_oom();
+  memcpy(joined, dir, dir_len * sizeof *joined);
+  joined[dir_len] = L'\\';
+  memcpy(joined + dir_len + 1, relative, (name_len + 1) * sizeof *joined);
+  free(relative);
+  DWORD size = GetFullPathNameW(joined, 0, NULL, NULL);
+  wchar_t *full = NULL;
+  if (size > 0) {
+    full = malloc(((size_t)size + 1) * sizeof *full);
+    if (full == NULL) ni_oom();
+    if (GetFullPathNameW(joined, size, full, NULL) == 0) {
+      free(full);
+      full = NULL;
+    }
+  }
+  free(joined);
+  return full;
+}
+
+static bool ni_reparse(DWORD attributes) {
+  return (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+}
+
+/* The directory at `path`, without following a link at its last component
+ * unless `follow`; NULL when it is not a directory. */
+static NiDir *ni_dir_open_path(const char *path, bool follow) {
+  wchar_t *wide = ni_wide(path, strlen(path));
+  if (wide == NULL) return NULL;
+  DWORD attributes = GetFileAttributesW(wide);
+  if (attributes == INVALID_FILE_ATTRIBUTES || !(attributes & FILE_ATTRIBUTE_DIRECTORY) ||
+      (!follow && ni_reparse(attributes))) {
+    free(wide);
+    return NULL;
+  }
+  NiDir *dir = malloc(sizeof *dir);
+  if (dir == NULL) ni_oom();
+  dir->path = wide;
+  return dir;
+}
+
+/* The directory `name` in `dir`, created when `create` and absent. */
+static NiDir *ni_dir_open(NiDir *dir, const char *name, bool create, bool follow) {
+  wchar_t *path = ni_wjoin(dir->path, name);
+  if (path == NULL) return NULL;
+  if (create && !CreateDirectoryW(path, NULL) && GetLastError() != ERROR_ALREADY_EXISTS) {
+    free(path);
+    return NULL;
+  }
+  DWORD attributes = GetFileAttributesW(path);
+  if (attributes == INVALID_FILE_ATTRIBUTES || !(attributes & FILE_ATTRIBUTE_DIRECTORY) ||
+      (!follow && ni_reparse(attributes))) {
+    free(path);
+    return NULL;
+  }
+  NiDir *child = malloc(sizeof *child);
+  if (child == NULL) ni_oom();
+  child->path = path;
+  return child;
+}
+
+static void ni_dir_close(NiDir *dir) {
+  if (dir == NULL) return;
+  free(dir->path);
+  free(dir);
+}
+
+static bool ni_sid_is(PSID sid, WELL_KNOWN_SID_TYPE type) {
+  unsigned char buffer[SECURITY_MAX_SID_SIZE];
+  DWORD size = sizeof buffer;
+  return CreateWellKnownSid(type, NULL, buffer, &size) != 0 && EqualSid(sid, buffer);
+}
+
+/* Whether the access control entries of `dacl` grant write access to
+ * another user: Everyone, Authenticated Users, Users or Guests. POSIX's
+ * "no one else can write it" (mode 022 clear) is this check, with the
+ * system's own groups (SYSTEM, Administrators, the creator owner) allowed
+ * as root is on POSIX. */
+static bool ni_dacl_private(PACL dacl) {
+  if (dacl == NULL) return false; /* a NULL DACL grants everyone everything */
+  static const ACCESS_MASK write =
+      FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES | DELETE | WRITE_DAC |
+      WRITE_OWNER;
+  for (DWORD i = 0; i < dacl->AceCount; i++) {
+    LPVOID raw = NULL;
+    if (!GetAce(dacl, i, &raw)) return false;
+    const ACE_HEADER *header = raw;
+    ACCESS_MASK mask;
+    PSID sid;
+    if (header->AceType == ACCESS_ALLOWED_ACE_TYPE) {
+      mask = ((const ACCESS_ALLOWED_ACE *)raw)->Mask;
+      sid = (PSID)&((const ACCESS_ALLOWED_ACE *)raw)->SidStart;
+    } else if (header->AceType == ACCESS_ALLOWED_OBJECT_ACE_TYPE) {
+      mask = ((const ACCESS_ALLOWED_OBJECT_ACE *)raw)->Mask;
+      sid = (PSID)&((const ACCESS_ALLOWED_OBJECT_ACE *)raw)->SidStart;
+    } else {
+      continue; /* a denial, or an audit entry */
+    }
+    if (header->AceFlags & INHERIT_ONLY_ACE) continue; /* granted below it, not on it */
+    if ((mask & write) == 0) continue;
+    if (ni_sid_is(sid, WinLocalSystemSid) || ni_sid_is(sid, WinBuiltinAdministratorsSid) ||
+        ni_sid_is(sid, WinCreatorOwnerSid))
+      continue;
+    if (ni_sid_is(sid, WinWorldSid) || ni_sid_is(sid, WinAuthenticatedUserSid) ||
+        ni_sid_is(sid, WinBuiltinUsersSid) || ni_sid_is(sid, WinBuiltinGuestsSid))
+      return false;
+  }
+  return true;
+}
+
+/* A directory this process may trust: a directory, not a link, writable by
+ * no one else. The tree lives in the user's own profile, whose access
+ * control entries the check above confirms. */
+static bool ni_dir_private(NiDir *dir) {
+  HANDLE handle = CreateFileW(dir->path, READ_CONTROL,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                              OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+                              NULL);
+  if (handle == INVALID_HANDLE_VALUE) return false;
+  BY_HANDLE_FILE_INFORMATION info;
+  bool ok = GetFileInformationByHandle(handle, &info) != 0 &&
+            (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && !ni_reparse(info.dwFileAttributes);
+  if (ok) {
+    PSECURITY_DESCRIPTOR descriptor = NULL;
+    PACL dacl = NULL;
+    ok = GetSecurityInfo(handle, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, NULL, NULL, &dacl, NULL,
+                         &descriptor) == ERROR_SUCCESS &&
+         ni_dacl_private(dacl);
+    LocalFree(descriptor);
+  }
+  CloseHandle(handle);
+  return ok;
+}
+
+static bool ni_dir_rename(NiDir *dir, const char *from, const char *to) {
+  wchar_t *a = ni_wjoin(dir->path, from), *b = ni_wjoin(dir->path, to);
+  bool ok = a != NULL && b != NULL &&
+            MoveFileExW(a, b, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+  free(a);
+  free(b);
+  return ok;
+}
+
+static bool ni_dir_unlink(NiDir *dir, const char *name) {
+  wchar_t *path = ni_wjoin(dir->path, name);
+  bool ok = path != NULL && DeleteFileW(path) != 0;
+  free(path);
+  return ok;
+}
+
+static bool ni_dir_rmdir(NiDir *dir, const char *name) {
+  wchar_t *path = ni_wjoin(dir->path, name);
+  bool ok = path != NULL && RemoveDirectoryW(path) != 0;
+  free(path);
+  return ok;
+}
+
+static bool ni_dir_exists(NiDir *dir, const char *name) {
+  wchar_t *path = ni_wjoin(dir->path, name);
+  bool exists = path != NULL && GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES;
+  free(path);
+  return exists;
+}
+
+/* A mount-point reparse record: the layout Win32 reads and writes for a
+ * directory junction (the system headers keep it to the driver kit). */
+typedef struct {
+  ULONG tag;
+  USHORT length; /* the data after this eight-byte header */
+  USHORT reserved;
+  USHORT substitute_offset, substitute_length;
+  USHORT print_offset, print_length;
+  WCHAR path[1];
+} NiMountReparse;
+
+/* A directory junction from `link` to the absolute `target`: Windows'
+ * unprivileged equivalent of a relative directory symlink, which needs
+ * Developer Mode. */
+static bool ni_junction(const wchar_t *link, const wchar_t *target) {
+  if (!CreateDirectoryW(link, NULL) && GetLastError() != ERROR_ALREADY_EXISTS) return false;
+  HANDLE handle =
+      CreateFileW(link, GENERIC_WRITE, 0, NULL, OPEN_EXISTING,
+                  FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+  if (handle == INVALID_HANDLE_VALUE) return false;
+  size_t length = wcslen(target);
+  /* \??\ + target + NUL, then the printed target + NUL: the names, whose
+   * sizes the record declares. */
+  size_t total = offsetof(NiMountReparse, path) + (4 + length + 1 + length + 1) * sizeof(wchar_t);
+  NiMountReparse *data = malloc(total);
+  if (data == NULL) ni_oom();
+  memset(data, 0, total);
+  data->tag = IO_REPARSE_TAG_MOUNT_POINT;
+  data->length = (USHORT)(total - 8); /* the data after the eight-byte header */
+  data->substitute_length = (USHORT)((4 + length) * sizeof(wchar_t));
+  data->print_offset = (USHORT)((4 + length + 1) * sizeof(wchar_t));
+  data->print_length = (USHORT)(length * sizeof(wchar_t));
+  wchar_t *path = data->path;
+  memcpy(path, L"\\??\\", 4 * sizeof(wchar_t));
+  memcpy(path + 4, target, length * sizeof(wchar_t));
+  path[4 + length] = L'\0';
+  memcpy(path + 4 + length + 1, target, length * sizeof(wchar_t));
+  path[4 + length + 1 + length] = L'\0';
+  DWORD used = 0;
+  bool ok = DeviceIoControl(handle, FSCTL_SET_REPARSE_POINT, data, (DWORD)total, NULL, 0, &used,
+                            NULL) != 0;
+  free(data);
+  CloseHandle(handle);
+  if (!ok) RemoveDirectoryW(link);
+  return ok;
+}
+
+/* The link `name` in `dir` to `target`. `final_dir` is the absolute path the
+ * link's directory has once it is in place, when that differs from
+ * `dir->path` (an install writes into a staging directory it renames): a
+ * junction stores its target absolutely and the target need not exist yet,
+ * so it names the directory that will exist rather than the staging one. */
+static bool ni_dir_symlink(NiDir *dir, const char *name, const char *target, const char *final_dir) {
+  wchar_t *path = ni_wjoin(dir->path, name);
+  wchar_t *relative = ni_wide(target, strlen(target));
+  wchar_t *final = final_dir != NULL ? ni_wide(final_dir, strlen(final_dir)) : NULL;
+  wchar_t *full = ni_wresolve(final != NULL ? final : dir->path, target);
+  /* SYMBOLIC_LINK_FLAG_DIRECTORY when the target is one, and the flag that
+   * lets a non-elevated process create it (Developer Mode); a junction,
+   * which needs no privilege at all, otherwise. The target is probed where
+   * it exists — beside the link while an install stages the tree, at its
+   * final path once the link is in place — and a tree's links name package
+   * directories, so one that cannot be probed is a directory link. */
+  DWORD attributes = INVALID_FILE_ATTRIBUTES;
+  wchar_t *staged = ni_wresolve(dir->path, target);
+  if (staged != NULL) attributes = GetFileAttributesW(staged);
+  if (attributes == INVALID_FILE_ATTRIBUTES && full != NULL) attributes = GetFileAttributesW(full);
+  free(staged);
+  DWORD directory =
+      attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_DIRECTORY) ? 0x1 : 0;
+  bool ok = path != NULL && relative != NULL &&
+            CreateSymbolicLinkW(path, relative, directory | 0x2) != 0;
+  if (!ok && path != NULL && full != NULL && directory != 0 && ni_junction(path, full)) ok = true;
+  free(full);
+  free(final);
+  free(relative);
+  free(path);
+  return ok;
+}
+
+/* The link `name` in `dir` answers with `target`: the same path, whichever
+ * of the two forms it was written in. */
+static const wchar_t *ni_wplain(const wchar_t *path) {
+  return wcsncmp(path, L"\\\\?\\", 4) == 0 ? path + 4 : path;
+}
+
+/* Whether a stored link target names another computer: a UNC path, or the
+ * UNC device form (`\??\UNC\server\share`) a link records one in. Nothing
+ * on this machine opens such a path. */
+static bool ni_win_remote_target(const wchar_t *target) {
+  const wchar_t *plain = target;
+  if (wcsncmp(plain, L"\\??\\", 4) == 0) plain += 4;
+  else if (wcsncmp(plain, L"\\\\?\\", 4) == 0) plain += 4;
+  if (plain[0] == L'\\' && plain[1] == L'\\') return true;
+  return wcsncmp(plain, L"UNC\\", 4) == 0;
+}
+
+/* The path a link stores, read from its reparse point, or NULL when the path
+ * is not a link this runtime writes. The link is opened with
+ * FILE_FLAG_OPEN_REPARSE_POINT, which opens the link itself: opening it as a
+ * path would open whatever it names, and a link naming a network path would
+ * offer the account's credentials to that server before anything could
+ * refuse the tree. The name read is the substitute name, the target the
+ * system follows; the print name is only what a person is shown, and a
+ * record can show one path while following another. */
+static wchar_t *ni_win_link_target(const wchar_t *path) {
+  HANDLE handle = CreateFileW(path, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                              OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+                              NULL);
+  if (handle == INVALID_HANDLE_VALUE) return NULL;
+  unsigned char storage[MAXIMUM_REPARSE_DATA_BUFFER_SIZE];
+  DWORD length = 0;
+  wchar_t *target = NULL;
+  if (DeviceIoControl(handle, FSCTL_GET_REPARSE_POINT, NULL, 0, storage, sizeof storage, &length,
+                      NULL)) {
+    const ULONG tag = *(const ULONG *)storage;
+    /* The names start after the record's fixed part: four offsets and
+     * lengths for a mount point, and the symlink flags too for a symlink. */
+    size_t names = tag == IO_REPARSE_TAG_SYMLINK ? 20 : 0;
+    if (tag == IO_REPARSE_TAG_MOUNT_POINT) names = 16;
+    if (names != 0 && length > names) {
+      const USHORT *fields = (const USHORT *)(storage + 8);
+      /* The substitute name is the target the system follows; the print name,
+       * the pair of fields after it, is display only and is not read here: a
+       * record that shows the expected path while following another one must
+       * be judged by the one it follows. */
+      size_t offset = fields[0], chars = fields[1];
+      if (chars > 0 && offset % sizeof(wchar_t) == 0 && chars % sizeof(wchar_t) == 0 &&
+          offset + chars <= length - names) {
+        chars /= sizeof(wchar_t);
+        target = malloc((chars + 1) * sizeof *target);
+        if (target == NULL) ni_oom();
+        memcpy(target, (const wchar_t *)(storage + names + offset), chars * sizeof *target);
+        target[chars] = L'\0';
+      }
+    }
+  }
+  CloseHandle(handle);
+  return target;
+}
+
+/* `stored`, read from a link in `dir`, as an absolute path resolved as text
+ * (GetFullPathNameW reads no directory: the target may not exist, and a
+ * remote one must never be opened). NULL for a target naming another
+ * computer or one that cannot be resolved. */
+static wchar_t *ni_win_link_absolute(const wchar_t *dir, const wchar_t *stored) {
+  if (ni_win_remote_target(stored)) return NULL;
+  const wchar_t *plain = stored;
+  if (wcsncmp(plain, L"\\??\\", 4) == 0 || wcsncmp(plain, L"\\\\?\\", 4) == 0) plain += 4;
+  wchar_t joined[8192];
+  size_t dir_len = wcslen(dir), name_len = wcslen(plain);
+  bool rooted = plain[0] == L'\\' || (plain[0] != L'\0' && plain[1] == L':');
+  if (rooted) {
+    if (name_len + 1 > sizeof joined / sizeof joined[0]) return NULL;
+    wcscpy(joined, plain);
+  } else {
+    if (dir_len + name_len + 2 > sizeof joined / sizeof joined[0]) return NULL;
+    memcpy(joined, dir, dir_len * sizeof *joined);
+    joined[dir_len] = L'\\';
+    memcpy(joined + dir_len + 1, plain, (name_len + 1) * sizeof *joined);
+  }
+  DWORD size = GetFullPathNameW(joined, 0, NULL, NULL);
+  if (size == 0) return NULL;
+  wchar_t *full = malloc(((size_t)size + 1) * sizeof *full);
+  if (full == NULL) ni_oom();
+  if (GetFullPathNameW(joined, size, full, NULL) == 0) {
+    free(full);
+    return NULL;
+  }
+  return full;
+}
+
+/* Whether the link `name` in `dir` names the path `target` (the manifest's
+ * relative target, resolved from the link's directory). The comparison is
+ * textual: the link is read, never opened as a path, so a link someone
+ * replaced with one naming a network share is refused by its text instead of
+ * being connected to. */
+static bool ni_dir_link_matches(NiDir *dir, const char *name, const char *target) {
+  wchar_t *path = ni_wjoin(dir->path, name);
+  wchar_t *want = ni_wresolve(dir->path, target);
+  bool ok = false;
+  if (path != NULL && want != NULL) {
+    wchar_t *stored = ni_win_link_target(path);
+    if (stored != NULL) {
+      wchar_t *actual = ni_win_link_absolute(dir->path, stored);
+      if (actual != NULL) ok = _wcsicmp(ni_wplain(actual), ni_wplain(want)) == 0;
+      free(actual);
+    }
+    free(stored);
+  }
+  free(path);
+  free(want);
+  return ok;
+}
+
+static void ni_dir_each(NiDir *dir, NiVisit visit, void *arg) {
+  wchar_t *pattern = ni_wjoin(dir->path, "*");
+  if (pattern == NULL) return;
+  WIN32_FIND_DATAW data;
+  HANDLE find = FindFirstFileW(pattern, &data);
+  free(pattern);
+  if (find == INVALID_HANDLE_VALUE) return;
+  do {
+    if (wcscmp(data.cFileName, L".") == 0 || wcscmp(data.cFileName, L"..") == 0) continue;
+    char *name = ni_utf8(data.cFileName, wcslen(data.cFileName));
+    if (name == NULL) continue;
+    int kind = ni_reparse(data.dwFileAttributes)
+                   ? NI_ENTRY_LINK
+                   : (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ? NI_ENTRY_DIR : NI_ENTRY_FILE;
+    bool stop = visit(dir, name, kind, arg);
+    free(name);
+    if (stop) break;
+  } while (FindNextFileW(find, &data));
+  FindClose(find);
+}
+
+/* Nothing is left unflushed: every file a start writes is flushed when it is
+ * closed (ni_file_close) and moved into place with MOVEFILE_WRITE_THROUGH. */
+static bool ni_dir_flush(NiDir *dir) {
+  (void)dir;
+  return true;
+}
+
+static bool ni_dir_free(NiDir *dir) {
+  ULARGE_INTEGER available;
+  return GetDiskFreeSpaceExW(dir->path, &available, NULL, NULL) != 0 && available.QuadPart > 0;
+}
+
+static bool ni_path_mkdir(const char *path) {
+  wchar_t *wide = ni_wide(path, strlen(path));
+  bool ok = wide != NULL && (CreateDirectoryW(wide, NULL) != 0 || GetLastError() == ERROR_ALREADY_EXISTS);
+  free(wide);
+  return ok;
+}
+
+static bool ni_path_rmdir(const char *path) {
+  wchar_t *wide = ni_wide(path, strlen(path));
+  bool ok = wide != NULL && RemoveDirectoryW(wide) != 0;
+  free(wide);
+  return ok;
+}
+
+/* The directory `path` as the file system names it, with the links on the
+ * way resolved: what Node's errors name when it resolves the tree itself. */
+static char *ni_path_real(const char *path) {
+  wchar_t *wide = ni_wide(path, strlen(path));
+  if (wide == NULL) return NULL;
+  HANDLE handle = CreateFileW(wide, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                              OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+  free(wide);
+  if (handle == INVALID_HANDLE_VALUE) return NULL;
+  DWORD size = GetFinalPathNameByHandleW(handle, NULL, 0, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+  wchar_t *real = size > 0 ? malloc(((size_t)size + 1) * sizeof *real) : NULL;
+  if (real == NULL) ni_oom();
+  char *text = NULL;
+  if (size > 0 && GetFinalPathNameByHandleW(handle, real, size + 1,
+                                            FILE_NAME_NORMALIZED | VOLUME_NAME_DOS) > 0) {
+    const wchar_t *plain = ni_wplain(real);
+    text = ni_utf8(plain, wcslen(plain));
+    if (text != NULL) ni_slashes(text);
+  }
+  free(real);
+  CloseHandle(handle);
+  return text;
+}
+
+static NiOpenFile *ni_file_wrap(HANDLE handle, bool writing) {
+  if (handle == INVALID_HANDLE_VALUE) return NULL;
+  NiOpenFile *file = malloc(sizeof *file);
+  if (file == NULL) ni_oom();
+  file->handle = handle;
+  file->writing = writing;
+  return file;
+}
+
+static NiOpenFile *ni_file_new(NiDir *dir, const char *name) {
+  wchar_t *path = ni_wjoin(dir->path, name);
+  HANDLE handle = INVALID_HANDLE_VALUE;
+  if (path != NULL)
+    handle = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_NEW,
+                         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+  free(path);
+  return ni_file_wrap(handle, true);
+}
+
+static NiOpenFile *ni_file_read_open(NiDir *dir, const char *name) {
+  wchar_t *path = ni_wjoin(dir->path, name);
+  if (path == NULL) return NULL;
+  DWORD attributes = GetFileAttributesW(path);
+  if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_DIRECTORY) ||
+      ni_reparse(attributes)) {
+    free(path);
+    return NULL;
+  }
+  HANDLE handle =
+      CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                  OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+  free(path);
+  return ni_file_wrap(handle, false);
+}
+
+static bool ni_file_size(NiOpenFile *file, uint64_t *size) {
+  BY_HANDLE_FILE_INFORMATION info;
+  if (!GetFileInformationByHandle(file->handle, &info) ||
+      (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+    return false;
+  *size = ((uint64_t)info.nFileSizeHigh << 32) | info.nFileSizeLow;
+  return true;
+}
+
+static long ni_file_read(NiOpenFile *file, void *buffer, size_t capacity) {
+  DWORD want = capacity > 0x40000000u ? 0x40000000u : (DWORD)capacity, got = 0;
+  if (!ReadFile(file->handle, buffer, want, &got, NULL)) return -1;
+  return (long)got;
+}
+
+static bool ni_file_write(NiOpenFile *file, const void *data, size_t length) {
+  const char *bytes = data;
+  while (length > 0) {
+    DWORD want = length > 0x40000000u ? 0x40000000u : (DWORD)length, wrote = 0;
+    if (!WriteFile(file->handle, bytes, want, &wrote, NULL) || wrote == 0) return false;
+    bytes += wrote;
+    length -= wrote;
+  }
+  return true;
+}
+
+static bool ni_file_close(NiOpenFile *file) {
+  bool ok = !file->writing || FlushFileBuffers(file->handle) != 0;
+  if (CloseHandle(file->handle) == 0) ok = false;
+  free(file);
+  return ok;
+}
+
+static void ni_file_abandon(NiOpenFile *file) {
+  if (file == NULL) return;
+  CloseHandle(file->handle);
+  free(file);
+}
+
+#else /* POSIX */
+
+static NiDir *ni_dir_wrap(int fd) {
+  if (fd < 0) return NULL;
+  NiDir *dir = malloc(sizeof *dir);
+  if (dir == NULL) ni_oom();
+  dir->fd = fd;
+  return dir;
+}
+
+static NiOpenFile *ni_file_wrap(int fd, bool writing) {
+  if (fd < 0) return NULL;
+  NiOpenFile *file = malloc(sizeof *file);
+  if (file == NULL) ni_oom();
+  file->fd = fd;
+  file->writing = writing;
+  return file;
+}
+
+/* The directory at `path`, following a link at its last component only
+ * when `follow`. errno survives a failure for the caller's checks. */
+static NiDir *ni_dir_open_path(const char *path, bool follow) {
+  return ni_dir_wrap(open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC | (follow ? 0 : O_NOFOLLOW)));
+}
+
+/* The directory `name` in `dir`, created 0700 when `create` and absent. */
+static NiDir *ni_dir_open(NiDir *dir, const char *name, bool create, bool follow) {
+  if (create && mkdirat(dir->fd, name, 0700) != 0 && errno != EEXIST) return NULL;
+  return ni_dir_wrap(
+      openat(dir->fd, name, O_RDONLY | O_DIRECTORY | O_CLOEXEC | (follow ? 0 : O_NOFOLLOW)));
+}
+
+static void ni_dir_close(NiDir *dir) {
+  if (dir == NULL) return;
+  close(dir->fd);
+  free(dir);
 }
 
 /* A directory this process may trust: owned by its user, writable by no
  * one else. */
-static bool ni_private_dir(int fd) {
+static bool ni_dir_private(NiDir *dir) {
   struct stat st;
-  return fd >= 0 && fstat(fd, &st) == 0 && S_ISDIR(st.st_mode) && st.st_uid == geteuid() &&
+  return fstat(dir->fd, &st) == 0 && S_ISDIR(st.st_mode) && st.st_uid == geteuid() &&
          (st.st_mode & 022) == 0;
+}
+
+static bool ni_dir_rename(NiDir *dir, const char *from, const char *to) {
+  return renameat(dir->fd, from, dir->fd, to) == 0;
+}
+
+static bool ni_dir_unlink(NiDir *dir, const char *name) {
+  return unlinkat(dir->fd, name, 0) == 0;
+}
+
+static bool ni_dir_rmdir(NiDir *dir, const char *name) {
+  return unlinkat(dir->fd, name, AT_REMOVEDIR) == 0;
+}
+
+/* `final_dir` is unread: a relative symlink names its target from wherever
+ * the link is, so moving the directory keeps it valid. */
+static bool ni_dir_symlink(NiDir *dir, const char *name, const char *target, const char *final_dir) {
+  (void)final_dir;
+  return symlinkat(target, dir->fd, name) == 0;
+}
+
+static bool ni_dir_link_matches(NiDir *dir, const char *name, const char *target) {
+  char found[4096];
+  ssize_t n = readlinkat(dir->fd, name, found, sizeof found - 1);
+  if (n < 0) return false;
+  found[n] = '\0';
+  return strcmp(found, target) == 0;
+}
+
+static bool ni_dir_exists(NiDir *dir, const char *name) {
+  struct stat st;
+  return fstatat(dir->fd, name, &st, AT_SYMLINK_NOFOLLOW) == 0;
+}
+
+static void ni_dir_each(NiDir *dir, NiVisit visit, void *arg) {
+  int copy = dup(dir->fd);
+  DIR *stream = copy < 0 ? NULL : fdopendir(copy);
+  if (stream == NULL) {
+    if (copy >= 0) close(copy);
+    return;
+  }
+  for (struct dirent *e; (e = readdir(stream)) != NULL;) {
+    if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
+    int kind = NI_ENTRY_FILE;
+    struct stat st;
+    if (fstatat(dir->fd, e->d_name, &st, AT_SYMLINK_NOFOLLOW) == 0) {
+      if (S_ISDIR(st.st_mode)) kind = NI_ENTRY_DIR;
+      else if (S_ISLNK(st.st_mode)) kind = NI_ENTRY_LINK;
+    }
+    if (visit(dir, e->d_name, kind, arg)) break;
+  }
+  closedir(stream);
+}
+
+/* Makes what was written below `dir` durable: the file system it is on where
+ * the platform can flush one (Linux), else every one. */
+#if defined(__linux__) && !defined(__ANDROID__)
+extern int syncfs(int fd);
+#endif
+static bool ni_dir_flush(NiDir *dir) {
+#if defined(__linux__) && !defined(__ANDROID__)
+  return syncfs(dir->fd) == 0;
+#else
+  (void)dir;
+  sync();
+  return true;
+#endif
+}
+
+static bool ni_dir_free(NiDir *dir) {
+  struct statvfs room;
+  return fstatvfs(dir->fd, &room) == 0 && room.f_bavail > 0;
+}
+
+static bool ni_path_mkdir(const char *path) { return mkdir(path, 0700) == 0 || errno == EEXIST; }
+
+static bool ni_path_rmdir(const char *path) { return rmdir(path) == 0; }
+
+static char *ni_path_real(const char *path) { return realpath(path, NULL); }
+
+static NiOpenFile *ni_file_new(NiDir *dir, const char *name) {
+  return ni_file_wrap(
+      openat(dir->fd, name, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600), true);
+}
+
+static NiOpenFile *ni_file_read_open(NiDir *dir, const char *name) {
+  return ni_file_wrap(openat(dir->fd, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC), false);
+}
+
+static bool ni_file_size(NiOpenFile *file, uint64_t *size) {
+  struct stat st;
+  if (fstat(file->fd, &st) != 0 || !S_ISREG(st.st_mode)) return false;
+  *size = (uint64_t)st.st_size;
+  return true;
+}
+
+static long ni_file_read(NiOpenFile *file, void *buffer, size_t capacity) {
+  for (;;) {
+    ssize_t n = read(file->fd, buffer, capacity);
+    if (n < 0 && errno == EINTR) continue;
+    return (long)n;
+  }
+}
+
+static bool ni_file_write(NiOpenFile *file, const void *data, size_t length) {
+  const char *bytes = data;
+  size_t done = 0;
+  while (done < length) {
+    ssize_t n = write(file->fd, bytes + done, length - done);
+    if (n < 0 && errno == EINTR) continue;
+    if (n <= 0) return false;
+    done += (size_t)n;
+  }
+  return true;
+}
+
+static bool ni_file_close(NiOpenFile *file) {
+  bool ok = close(file->fd) == 0;
+  free(file);
+  return ok;
+}
+
+static void ni_file_abandon(NiOpenFile *file) {
+  if (file == NULL) return;
+  close(file->fd);
+  free(file);
+}
+
+#endif /* _WIN32 */
+
+/* Writes `length` bytes of `data` as the new file `name` in `dir`; a file
+ * that could not be written in full is removed. */
+static bool ni_write_file(NiDir *dir, const char *name, const void *data, size_t length) {
+  NiOpenFile *file = ni_file_new(dir, name);
+  if (file == NULL) return false;
+  bool ok = ni_file_write(file, data, length);
+  if (!ni_file_close(file)) ok = false;
+  if (!ok) ni_dir_unlink(dir, name);
+  return ok;
+}
+
+static bool ni_remove_entry(NiDir *dir, const char *name, int kind, void *arg) {
+  (void)arg;
+  if (kind == NI_ENTRY_DIR) {
+    NiDir *sub = ni_dir_open(dir, name, false, false);
+    if (sub != NULL) ni_dir_remove_tree(sub);
+    ni_dir_rmdir(dir, name);
+  } else if (kind == NI_ENTRY_LINK) {
+    if (!ni_dir_unlink(dir, name)) ni_dir_rmdir(dir, name);
+  } else {
+    ni_dir_unlink(dir, name);
+  }
+  return false;
+}
+
+/* Removes everything below `dir` and closes it, never following links. */
+static void ni_dir_remove_tree(NiDir *dir) {
+  ni_dir_each(dir, ni_remove_entry, NULL);
+  ni_dir_close(dir);
 }
 
 /* The directories on the way to one file of the tree, kept open while the
@@ -716,83 +1567,80 @@ static bool ni_private_dir(int fd) {
  * it. No link is followed. */
 #define NI_WALK_DEPTH 64
 typedef struct {
-  int rootfd;
-  int fds[NI_WALK_DEPTH];
+  NiDir *root; /* borrowed */
+  NiDir *dirs[NI_WALK_DEPTH];
   size_t ends[NI_WALK_DEPTH]; /* in `path`: the offset of the `/` after each open directory */
   size_t depth;
   const char *path; /* the file whose directories are open */
 } NiWalk;
 
-static void ni_walk_begin(NiWalk *w, int rootfd) {
-  w->rootfd = rootfd;
+static void ni_walk_begin(NiWalk *w, NiDir *root) {
+  w->root = root;
   w->depth = 0;
   w->path = NULL;
 }
 
 static void ni_walk_end(NiWalk *w) {
-  while (w->depth > 0) close(w->fds[--w->depth]);
+  while (w->depth > 0) ni_dir_close(w->dirs[--w->depth]);
 }
 
 /* The open parent directory of the relative `path` (its last component is
- * left in *base), created when `create`; -1 when it cannot be opened. The
- * descriptor stays the walk's. */
-static int ni_walk_parent(NiWalk *w, const char *path, bool create, const char **base) {
+ * left in *base), created when `create`; NULL when it cannot be opened. The
+ * directory stays the walk's. */
+static NiDir *ni_walk_parent(NiWalk *w, const char *path, bool create, const char **base) {
   size_t keep = 0;
   while (keep < w->depth && strncmp(path, w->path, w->ends[keep]) == 0 &&
          path[w->ends[keep]] == '/')
     keep++;
-  while (w->depth > keep) close(w->fds[--w->depth]);
+  while (w->depth > keep) ni_dir_close(w->dirs[--w->depth]);
   w->path = path;
   const char *p = path + (keep > 0 ? w->ends[keep - 1] + 1 : 0);
   for (const char *slash; (slash = strchr(p, '/')) != NULL; p = slash + 1) {
     char component[256];
     size_t n = (size_t)(slash - p);
-    if (n >= sizeof component || w->depth == NI_WALK_DEPTH) return -1;
+    if (n >= sizeof component || w->depth == NI_WALK_DEPTH) return NULL;
     memcpy(component, p, n);
     component[n] = '\0';
-    int fd = ni_dir_at(w->depth > 0 ? w->fds[w->depth - 1] : w->rootfd, component, create);
-    if (fd < 0) return -1;
-    w->fds[w->depth] = fd;
+    NiDir *dir = ni_dir_open(w->depth > 0 ? w->dirs[w->depth - 1] : w->root, component, create, false);
+    if (dir == NULL) return NULL;
+    w->dirs[w->depth] = dir;
     w->ends[w->depth] = (size_t)(slash - path);
     w->depth++;
   }
   *base = p;
-  return w->depth > 0 ? w->fds[w->depth - 1] : w->rootfd;
+  return w->depth > 0 ? w->dirs[w->depth - 1] : w->root;
 }
 
-/* Whether the tree below `rootfd` has the manifest's links. */
-static bool ni_links_match(int rootfd) {
-  for (size_t i = 0; i < ni_nlinks; i++) {
+/* Whether the tree below `root` has the manifest's links. */
+static bool ni_links_match(NiDir *root) {
+  NiWalk walk;
+  ni_walk_begin(&walk, root);
+  bool ok = true;
+  for (size_t i = 0; i < ni_nlinks && ok; i++) {
     const char *base;
-    int dirfd = ni_parent_at(rootfd, ni_links[i].path, false, &base);
-    if (dirfd < 0) return false;
-    char target[4096];
-    ssize_t n = readlinkat(dirfd, base, target, sizeof target - 1);
-    close(dirfd);
-    if (n < 0) return false;
-    target[n] = '\0';
-    if (strcmp(target, ni_links[i].target) != 0) return false;
+    NiDir *dir = ni_walk_parent(&walk, ni_links[i].path, false, &base);
+    ok = dir != NULL && ni_dir_link_matches(dir, base, ni_links[i].target);
   }
-  return true;
+  ni_walk_end(&walk);
+  return ok;
 }
 
-/* Whether the tree below `rootfd` holds exactly the manifest's files (by
+/* Whether the tree below `root` holds exactly the manifest's files (by
  * size and digest) and links: the check of a tree the build placed beside
  * the executable, on every start. */
-static bool ni_tree_matches(int rootfd) {
+static bool ni_tree_matches(NiDir *root) {
   if (ni_tracing())
     fprintf(stderr, "[node-islands] hashing the module tree (%zu files)\n", ni_nfiles);
   NiWalk walk;
-  ni_walk_begin(&walk, rootfd);
+  ni_walk_begin(&walk, root);
   bool ok = true;
   for (size_t i = 0; i < ni_nfiles && ok; i++) {
     const char *base;
-    int dirfd = ni_walk_parent(&walk, ni_files[i].path, false, &base);
-    int fd = dirfd < 0 ? -1 : openat(dirfd, base, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
-    struct stat st;
-    if (fd < 0 || fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) ||
-        (size_t)st.st_size != ni_files[i].size) {
-      if (fd >= 0) close(fd);
+    NiDir *dir = ni_walk_parent(&walk, ni_files[i].path, false, &base);
+    NiOpenFile *file = dir == NULL ? NULL : ni_file_read_open(dir, base);
+    uint64_t size = 0;
+    if (file == NULL || !ni_file_size(file, &size) || size != ni_files[i].size) {
+      if (file != NULL) ni_file_abandon(file);
       ok = false;
       break;
     }
@@ -801,103 +1649,88 @@ static bool ni_tree_matches(int rootfd) {
     unsigned char buffer[65536];
     size_t total = 0;
     for (;;) {
-      ssize_t n = read(fd, buffer, sizeof buffer);
-      if (n < 0 && errno == EINTR) continue;
-      if (n <= 0) break;
+      long n = ni_file_read(file, buffer, sizeof buffer);
+      if (n < 0) {
+        total = (size_t)-1;
+        break;
+      }
+      if (n == 0) break;
       ni_sha256_update(&s, buffer, (size_t)n);
       total += (size_t)n;
     }
-    close(fd);
+    ni_file_abandon(file);
     unsigned char got[32];
     ni_sha256_final(&s, got);
     ok = total == ni_files[i].size && memcmp(got, ni_files[i].sha256, 32) == 0;
   }
   ni_walk_end(&walk);
-  return ok && ni_links_match(rootfd);
+  return ok && ni_links_match(root);
 }
 
-/* Makes what was written below `fd`'s directory durable: the file system
- * it is on where the platform can flush one (Linux), else every one. */
-#if defined(__linux__) && !defined(__ANDROID__)
-extern int syncfs(int fd);
-#endif
-static bool ni_flush(int fd) {
-#if defined(__linux__) && !defined(__ANDROID__)
-  return syncfs(fd) == 0;
-#else
-  (void)fd;
-  sync();
-  return true;
-#endif
-}
-
-/* Writes the executable's tree below `rootfd` (an empty directory); false
+/* Writes the executable's tree below `root` (an empty directory); false
  * when a directory, file or link could not be written in full. */
-static bool ni_extract(int rootfd) {
+/* Writes the executable's files below `root`. */
+static bool ni_extract_files(NiDir *root) {
   if (ni_modules == NULL && ni_nfiles > 0) ni_bad_manifest();
   NiWalk walk;
-  ni_walk_begin(&walk, rootfd);
+  ni_walk_begin(&walk, root);
   bool ok = true;
   for (size_t i = 0; i < ni_nfiles && ok; i++) {
-    const unsigned char *data = ni_modules + ni_files[i].offset;
     const char *base;
-    int dirfd = ni_walk_parent(&walk, ni_files[i].path, true, &base);
-    int fd = dirfd < 0
-                 ? -1
-                 : openat(dirfd, base, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
-    if (fd < 0) {
-      ok = false;
-      break;
-    }
-    size_t done = 0;
-    while (done < ni_files[i].size) {
-      ssize_t n = write(fd, data + done, ni_files[i].size - done);
-      if (n < 0 && errno == EINTR) continue;
-      if (n <= 0) break;
-      done += (size_t)n;
-    }
-    ok = close(fd) == 0 && done == ni_files[i].size;
+    NiDir *dir = ni_walk_parent(&walk, ni_files[i].path, true, &base);
+    ok = dir != NULL &&
+         ni_write_file(dir, base, ni_modules + ni_files[i].offset, ni_files[i].size);
   }
   ni_walk_end(&walk);
-  if (!ok) return false;
-  for (size_t i = 0; i < ni_nlinks; i++) {
-    const char *base;
-    int dirfd = ni_parent_at(rootfd, ni_links[i].path, true, &base);
-    if (dirfd < 0) return false;
-    int status = symlinkat(ni_links[i].target, dirfd, base);
-    close(dirfd);
-    if (status != 0) return false;
-  }
-  return true;
+  return ok;
 }
 
-/* Removes everything below `dirfd` and closes it, never following links. */
-static void ni_remove_below(int dirfd) {
-  DIR *dir = fdopendir(dirfd);
-  if (dir == NULL) {
-    close(dirfd);
-    return;
-  }
-  for (struct dirent *e; (e = readdir(dir)) != NULL;) {
-    if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
-    int sub = openat(dirfd, e->d_name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
-    if (sub >= 0) {
-      ni_remove_below(sub);
-      (void)unlinkat(dirfd, e->d_name, AT_REMOVEDIR);
-    } else {
-      (void)unlinkat(dirfd, e->d_name, 0);
+/* Writes the manifest's links below `root`. `final_root` is the tree's path
+ * once it is in place, when `root` is a staging directory an install
+ * renames (NULL when it already is the final tree): each link's directory
+ * is named from there, so a junction's absolute target survives the
+ * rename. The tree is complete before the rename publishes it, so a start
+ * that opens the installed tree never finds it without its links. */
+static bool ni_extract_links(NiDir *root, const char *final_root) {
+  NiWalk walk;
+  ni_walk_begin(&walk, root);
+  bool ok = true;
+  for (size_t i = 0; i < ni_nlinks && ok; i++) {
+    const char *base;
+    NiDir *dir = ni_walk_parent(&walk, ni_links[i].path, true, &base);
+    const char *final_dir = NULL;
+    char final[4352];
+    if (dir != NULL && final_root != NULL) {
+      const char *slash = strrchr(ni_links[i].path, '/');
+      size_t relative = slash != NULL ? (size_t)(slash - ni_links[i].path) : 0;
+      int n = relative > 0 ? snprintf(final, sizeof final, "%s/%.*s", final_root, (int)relative,
+                                      ni_links[i].path)
+                           : snprintf(final, sizeof final, "%s", final_root);
+      if (n <= 0 || (size_t)n >= sizeof final) {
+        ok = false;
+        break;
+      }
+      final_dir = final;
     }
+    ok = dir != NULL && ni_dir_symlink(dir, base, ni_links[i].target, final_dir);
   }
-  closedir(dir);
+  ni_walk_end(&walk);
+  return ok;
+}
+
+/* Writes the executable's tree below `root` (an empty directory): its files,
+ * then its links (see ni_extract_links for `final_root`). */
+static bool ni_extract(NiDir *root, const char *final_root) {
+  return ni_extract_files(root) && ni_extract_links(root, final_root);
 }
 
 
 static char ni_temp_root[4096] = "";
 
 static void ni_remove_temp_root(void) {
-  int fd = open(ni_temp_root, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
-  if (fd >= 0) ni_remove_below(fd);
-  (void)rmdir(ni_temp_root);
+  NiDir *dir = ni_dir_open_path(ni_temp_root, false);
+  if (dir != NULL) ni_dir_remove_tree(dir);
+  ni_path_rmdir(ni_temp_root);
 }
 
 static bool ni_set_root(const char *a, const char *b, const char *c) {
@@ -911,12 +1744,24 @@ static bool ni_root_installed = false;
 
 /* The per-user directory the trees are installed in,
  * $XDG_CACHE_HOME/scriptc/node-islands (or ~/.cache/scriptc/node-islands),
- * created 0700 when absent: its descriptor, with the cache home's path in
- * `base`. -1 when there is no home, or when `scriptc` or `node-islands` is
- * reached through a link, belongs to another user or can be written by
- * anyone else. Everything the runtime keeps for a program's island lives in
- * this one directory (the tree, and Node's compile cache for it). */
-static int ni_islands_dir(char base[4096]) {
+ * created 0700 when absent: it, with the cache home's path in `base`. NULL
+ * when there is no home, or when `scriptc` or `node-islands` is reached
+ * through a link, belongs to another user or can be written by anyone else.
+ * Everything the runtime keeps for a program's island lives in this one
+ * directory (the tree, and Node's compile cache for it). */
+static NiDir *ni_islands_dir(char base[4096]) {
+#if defined(_WIN32)
+  /* Windows keeps the cache below %LOCALAPPDATA%: the profile directory
+   * whose access control entries the platform sets to the user alone. */
+  wchar_t wide[4096];
+  DWORD length =
+      GetEnvironmentVariableW(L"LOCALAPPDATA", wide, (DWORD)(sizeof wide / sizeof wide[0]));
+  if (length == 0 || length >= sizeof wide / sizeof wide[0]) return NULL;
+  char *home = ni_utf8(wide, wcslen(wide));
+  if (home == NULL) return NULL;
+  int n = snprintf(base, 4096, "%s", home);
+  free(home);
+#else
   const char *xdg = scr_getenv("XDG_CACHE_HOME");
   const char *home = scr_getenv("HOME");
   int n;
@@ -925,57 +1770,67 @@ static int ni_islands_dir(char base[4096]) {
   else if (home != NULL && home[0] == '/')
     n = snprintf(base, 4096, "%s/.cache", home);
   else
-    return -1;
-  if (n <= 0 || (size_t)n >= 4096) return -1;
-  (void)mkdir(base, 0700);
-  int basefd = open(base, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-  if (basefd < 0) return -1;
-  int scriptc = ni_dir_at(basefd, "scriptc", true);
-  close(basefd);
-  int islands = ni_private_dir(scriptc) ? ni_dir_at(scriptc, "node-islands", true) : -1;
-  if (scriptc >= 0) close(scriptc);
-  if (!ni_private_dir(islands)) {
-    if (islands >= 0) close(islands);
-    return -1;
+    return NULL;
+#endif
+  if (n <= 0 || (size_t)n >= 4096) return NULL;
+  ni_slashes(base);
+  (void)ni_path_mkdir(base);
+  NiDir *cache = ni_dir_open_path(base, true);
+  if (cache == NULL) return NULL;
+  NiDir *scriptc = ni_dir_open(cache, "scriptc", true, false);
+  ni_dir_close(cache);
+  NiDir *islands =
+      scriptc != NULL && ni_dir_private(scriptc) ? ni_dir_open(scriptc, "node-islands", true, false) : NULL;
+  if (scriptc != NULL) ni_dir_close(scriptc);
+  if (islands == NULL || !ni_dir_private(islands)) {
+    ni_dir_close(islands);
+    return NULL;
   }
   return islands;
 }
 
-static void ni_compile_cache_open(int islands, const char *base);
+static void ni_compile_cache_open(NiDir *islands, const char *base);
 
 /* The tree in the cache directory, extracted there when absent. */
 static bool ni_cached_root(const char *digest) {
   char base[4096];
-  int islands = ni_islands_dir(base);
-  if (islands < 0) return false;
+  NiDir *islands = ni_islands_dir(base);
+  if (islands == NULL) return false;
   bool ok = false;
-  int tree = ni_dir_at(islands, digest, false);
-  if (tree < 0 && errno == ENOENT) {
+  NiDir *tree = ni_dir_open(islands, digest, false, false);
+  if (tree == NULL) {
     /* Install: extract into a fresh sibling, make it durable, then move it
      * into place. */
     if (ni_tracing()) fprintf(stderr, "[node-islands] installing the module tree\n");
     ni_manifest_ready();
     char staging[128];
-    snprintf(staging, sizeof staging, "%s.%ld.tmp", digest, (long)getpid());
-    int fd = ni_dir_at(islands, staging, true);
-    if (ni_private_dir(fd) && ni_extract(fd) && ni_flush(fd) &&
-        renameat(islands, staging, islands, digest) == 0) {
-      close(fd);
-      tree = ni_dir_at(islands, digest, false);
+    snprintf(staging, sizeof staging, "%s.%ld.tmp", digest, ni_pid());
+    /* The tree's path once it is in place: the links name their targets from
+     * there while the staging directory still holds them, so the rename
+     * publishes a complete tree in one step. */
+    char final_root[4352];
+    int named = snprintf(final_root, sizeof final_root, "%s/scriptc/node-islands/%s", base, digest);
+    NiDir *fresh = ni_dir_open(islands, staging, true, false);
+    bool placed = named > 0 && (size_t)named < sizeof final_root && fresh != NULL &&
+                  ni_dir_private(fresh) && ni_extract(fresh, final_root) && ni_dir_flush(fresh) &&
+                  ni_dir_rename(islands, staging, digest);
+    if (placed) {
+      ni_dir_close(fresh);
+      tree = ni_dir_open(islands, digest, false, false);
     } else {
-      if (fd >= 0) ni_remove_below(fd);
-      (void)unlinkat(islands, staging, AT_REMOVEDIR);
-      tree = ni_dir_at(islands, digest, false); /* another process may have placed it */
+      if (fresh != NULL) ni_dir_remove_tree(fresh);
+      ni_dir_rmdir(islands, staging);
+      tree = ni_dir_open(islands, digest, false, false); /* another process may have placed it */
     }
   }
   /* An installed tree is used as it is (see "What a start does" above). */
-  if (ni_private_dir(tree)) {
+  if (tree != NULL && ni_dir_private(tree)) {
     ok = ni_set_root(base, "/scriptc/node-islands/", digest);
     ni_root_installed = ok;
   }
-  if (tree >= 0) close(tree);
+  ni_dir_close(tree);
   if (ok) ni_compile_cache_open(islands, base);
-  close(islands);
+  ni_dir_close(islands);
   return ok;
 }
 
@@ -987,10 +1842,34 @@ static atomic_size_t ni_repaired = 0;
 
 size_t scr_ni_tree_repairs(void) { return ni_repaired; }
 
+/* Whether `text` (length-delimited) contains the path `part`. Windows
+ * names a path with either separator and in either case, so both are
+ * compared without regard to them there. */
 static bool ni_text_has(const char *text, size_t len, const char *part) {
   size_t n = strlen(part);
-  for (size_t i = 0; n > 0 && i + n <= len; i++)
-    if (text[i] == part[0] && memcmp(text + i, part, n) == 0) return true;
+  for (size_t i = 0; n > 0 && i + n <= len; i++) {
+    if (text[i] != part[0]) {
+#if defined(_WIN32)
+      char a = text[i] >= 'A' && text[i] <= 'Z' ? (char)(text[i] + ('a' - 'A')) : text[i];
+      char b = part[0] >= 'A' && part[0] <= 'Z' ? (char)(part[0] + ('a' - 'A')) : part[0];
+      if (a != b) continue;
+#else
+      continue;
+#endif
+    }
+    if (memcmp(text + i, part, n) == 0) return true;
+#if defined(_WIN32)
+    size_t j = 0;
+    for (; j < n; j++) {
+      char a = text[i + j] == '/' ? '\\' : text[i + j];
+      char b = part[j] == '/' ? '\\' : part[j];
+      if (a >= 'A' && a <= 'Z') a = (char)(a + ('a' - 'A'));
+      if (b >= 'A' && b <= 'Z') b = (char)(b + ('a' - 'A'));
+      if (a != b) break;
+    }
+    if (j == n) return true;
+#endif
+  }
   return false;
 }
 
@@ -1004,7 +1883,7 @@ bool scr_ni_tree_named(const char *text, size_t len) {
   if (ni_text_has(text, len, ni_root)) return true;
   if (!looked) {
     looked = true;
-    char *real = realpath(ni_root, NULL);
+    char *real = ni_path_real(ni_root);
     if (real != NULL && strlen(real) < sizeof resolved && strcmp(real, ni_root) != 0)
       strcpy(resolved, real);
     free(real);
@@ -1022,50 +1901,36 @@ void scr_ni_tree_repair(void) {
   if (done || !ni_root_installed || ni_modules == NULL) return;
   done = true;
   ni_manifest_ready();
-  int rootfd = open(ni_root, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
-  if (!ni_private_dir(rootfd)) {
-    if (rootfd >= 0) close(rootfd);
+  NiDir *root = ni_dir_open_path(ni_root, false);
+  if (root == NULL || !ni_dir_private(root)) {
+    ni_dir_close(root);
     return;
   }
   size_t restored = 0;
   NiWalk walk;
-  ni_walk_begin(&walk, rootfd);
+  ni_walk_begin(&walk, root);
   char temporary[64];
-  snprintf(temporary, sizeof temporary, ".scriptc-repair.%ld.tmp", (long)getpid());
+  snprintf(temporary, sizeof temporary, ".scriptc-repair.%ld.tmp", ni_pid());
   for (size_t i = 0; i < ni_nfiles; i++) {
     const char *base;
-    int dirfd = ni_walk_parent(&walk, ni_files[i].path, true, &base);
-    struct stat st;
-    if (dirfd < 0 || fstatat(dirfd, base, &st, AT_SYMLINK_NOFOLLOW) == 0 || errno != ENOENT)
-      continue;
-    int fd = openat(dirfd, temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
-    if (fd < 0) continue;
-    const unsigned char *data = ni_modules + ni_files[i].offset;
-    size_t written = 0;
-    while (written < ni_files[i].size) {
-      ssize_t n = write(fd, data + written, ni_files[i].size - written);
-      if (n < 0 && errno == EINTR) continue;
-      if (n <= 0) break;
-      written += (size_t)n;
-    }
-    if (close(fd) == 0 && written == ni_files[i].size &&
-        renameat(dirfd, temporary, dirfd, base) == 0)
+    NiDir *dir = ni_walk_parent(&walk, ni_files[i].path, true, &base);
+    if (dir == NULL || ni_dir_exists(dir, base)) continue;
+    if (ni_write_file(dir, temporary, ni_modules + ni_files[i].offset, ni_files[i].size) &&
+        ni_dir_rename(dir, temporary, base))
       restored++;
     else
-      (void)unlinkat(dirfd, temporary, 0);
+      ni_dir_unlink(dir, temporary);
   }
   ni_walk_end(&walk);
+  ni_walk_begin(&walk, root);
   for (size_t i = 0; i < ni_nlinks; i++) {
     const char *base;
-    int dirfd = ni_parent_at(rootfd, ni_links[i].path, true, &base);
-    if (dirfd < 0) continue;
-    struct stat st;
-    if (fstatat(dirfd, base, &st, AT_SYMLINK_NOFOLLOW) != 0 && errno == ENOENT &&
-        symlinkat(ni_links[i].target, dirfd, base) == 0)
+    NiDir *dir = ni_walk_parent(&walk, ni_links[i].path, true, &base);
+    if (dir != NULL && !ni_dir_exists(dir, base) && ni_dir_symlink(dir, base, ni_links[i].target, NULL))
       restored++;
-    close(dirfd);
   }
-  close(rootfd);
+  ni_walk_end(&walk);
+  ni_dir_close(root);
   if (restored == 0) return;
   ni_repaired += restored;
   scr_stdout_settle();
@@ -1105,15 +1970,36 @@ void scr_ni_tree_lost_file(const char *code, size_t code_len, const char *messag
 
 /* The tree in a private directory of this run, removed at exit. */
 static bool ni_temporary_root(void) {
+  bool made;
+#if defined(_WIN32)
+  /* %TEMP% below the user's profile; a name of this process's own. */
+  wchar_t temp[4096];
+  DWORD length = GetTempPathW((DWORD)(sizeof temp / sizeof temp[0]), temp);
+  char *base = length > 0 && length < sizeof temp / sizeof temp[0] ? ni_utf8(temp, wcslen(temp)) : NULL;
+  if (base == NULL) return false;
+  size_t len = strlen(base);
+  while (len > 0 && ni_sep(base[len - 1])) base[--len] = '\0';
+  ni_slashes(base);
+  made = false;
+  for (int attempt = 0; attempt < 100 && !made; attempt++) {
+    int n = snprintf(ni_temp_root, sizeof ni_temp_root, "%s/scriptc-node-islands-%ld-%d", base,
+                     ni_pid(), attempt);
+    if (n <= 0 || (size_t)n >= sizeof ni_temp_root) break;
+    made = ni_path_mkdir(ni_temp_root);
+  }
+  free(base);
+#else
   const char *tmp = scr_getenv("TMPDIR");
   if (tmp == NULL || tmp[0] != '/') tmp = "/tmp";
   int n = snprintf(ni_temp_root, sizeof ni_temp_root, "%s/scriptc-node-islands-XXXXXX", tmp);
-  if (n <= 0 || (size_t)n >= sizeof ni_temp_root || mkdtemp(ni_temp_root) == NULL) return false;
+  made = n > 0 && (size_t)n < sizeof ni_temp_root && mkdtemp(ni_temp_root) != NULL;
+#endif
+  if (!made) return false;
   scr_atexit(ni_remove_temp_root);
-  int fd = open(ni_temp_root, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+  NiDir *dir = ni_dir_open_path(ni_temp_root, false);
   ni_manifest_ready();
-  bool ok = ni_private_dir(fd) && ni_extract(fd);
-  if (fd >= 0) close(fd);
+  bool ok = dir != NULL && ni_dir_private(dir) && ni_extract(dir, NULL);
+  ni_dir_close(dir);
   return ok && ni_set_root(ni_temp_root, "", "");
 }
 
@@ -1183,47 +2069,48 @@ static void ni_compile_cache_none(const char *why) {
 }
 
 /* Decides the island's compile cache once its tree is in place. `islands`
- * is the open islands directory with the cache home's path in `base`, or -1
- * when the tree is not installed there (beside the executable): the
+ * is the open islands directory with the cache home's path in `base`, or
+ * NULL when the tree is not installed there (beside the executable): the
  * directory is then opened only if the runtime's own cache is wanted. */
-static void ni_compile_cache_open(int islands, const char *base) {
+static void ni_compile_cache_open(NiDir *islands, const char *base) {
   const char *user = scr_getenv("NODE_COMPILE_CACHE");
   if (scr_getenv("NODE_DISABLE_COMPILE_CACHE") != NULL) {
     ni_compile_cache_none("NODE_DISABLE_COMPILE_CACHE is set");
     return;
   }
+#if !defined(_WIN32)
   if (getuid() != geteuid() || getgid() != getegid()) {
     ni_compile_cache_none("the process's real and effective user or group differ");
     return;
   }
+#endif
   if (user != NULL && user[0] != '\0') {
     ni_compile_cache_on = true;
     if (ni_cache_tracing()) fprintf(stderr, "[node-islands] compile cache: NODE_COMPILE_CACHE's\n");
     return;
   }
   char home[4096];
-  int opened = islands < 0 ? ni_islands_dir(home) : -1;
-  if (islands < 0) {
+  NiDir *opened = islands == NULL ? ni_islands_dir(home) : NULL;
+  if (islands == NULL) {
     islands = opened;
     base = home;
   }
-  int n = islands < 0 ? 0
-                      : snprintf(ni_compile_cache, sizeof ni_compile_cache,
-                                 "%s/scriptc/node-islands/%s.compile-cache", base, ni_tree_name);
+  int n = islands == NULL ? 0
+                          : snprintf(ni_compile_cache, sizeof ni_compile_cache,
+                                     "%s/scriptc/node-islands/%s.compile-cache", base, ni_tree_name);
   if (n <= 0 || (size_t)n >= sizeof ni_compile_cache) {
-    if (opened >= 0) close(opened);
+    ni_dir_close(opened);
     ni_compile_cache[0] = '\0';
     ni_compile_cache_none("this user has no private cache directory");
     return;
   }
-  int fd = ni_dir_at(islands, strrchr(ni_compile_cache, '/') + 1, true);
-  bool mine = ni_private_dir(fd);
+  NiDir *cache = ni_dir_open(islands, strrchr(ni_compile_cache, '/') + 1, true, false);
+  bool mine = cache != NULL && ni_dir_private(cache);
   /* Node leaves an empty temporary file behind for every entry it fails to
    * write, at every launch: no cache while there is no room for one. */
-  struct statvfs room;
-  bool full = mine && fstatvfs(fd, &room) == 0 && room.f_bavail == 0;
-  if (fd >= 0) close(fd);
-  if (opened >= 0) close(opened);
+  bool full = mine && !ni_dir_free(cache);
+  ni_dir_close(cache);
+  ni_dir_close(opened);
   ni_compile_cache_on = mine && !full;
   if (ni_cache_tracing()) {
     if (ni_compile_cache_on)
@@ -1248,9 +2135,8 @@ static void ni_open_modules(void) {
     static const char origin[] = "$ORIGIN/";
     if (strncmp(ni_modules_location, origin, sizeof origin - 1) != 0) ni_bad_manifest();
     ScrStr *self = scr_process_exec_path();
-    size_t len = self->len;
-    while (len > 0 && self->data[len - 1] != '/') len--;
-    bool absolute = len > 0 && self->data[0] == '/';
+    size_t len = ni_dir_part(self->data);
+    bool absolute = len > 0 && ni_abs_path(self->data);
     char dir[4096];
     int n = snprintf(dir, sizeof dir, "%.*s", (int)len, self->data);
     scr_str_release(self);
@@ -1258,12 +2144,12 @@ static void ni_open_modules(void) {
         !ni_set_root(dir, ni_modules_location + sizeof origin - 1, ""))
       ni_fatal("scriptc: cannot locate this program's Node island modules\n");
     /* The content decides, on every start (see "What a start does"). */
-    int fd = open(ni_root, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    NiDir *tree = ni_dir_open_path(ni_root, true);
     bool ok = false;
-    if (fd >= 0) {
+    if (tree != NULL) {
       ni_manifest_ready();
-      ok = ni_tree_matches(fd);
-      close(fd);
+      ok = ni_tree_matches(tree);
+      ni_dir_close(tree);
     }
     if (!ok) {
       char message[8192];
@@ -1271,7 +2157,7 @@ static void ni_open_modules(void) {
                "scriptc: the Node island modules at %s do not match this program\n", ni_root);
       ni_fatal(message);
     }
-    ni_compile_cache_open(-1, NULL);
+    ni_compile_cache_open(NULL, NULL);
     return;
   }
   if (ni_cached_root(ni_tree_name)) return;
@@ -1504,7 +2390,16 @@ static uintptr_t ni_stack_start(void);
 static uintptr_t ni_main_lo = 0, ni_main_hi = 0;
 
 static void ni_main_stack(void) {
-#if defined(__APPLE__)
+#if defined(_WIN32)
+  /* The island thread's own stack: a thread converted to a fiber keeps it,
+   * and GetCurrentThreadStackLimits names the stack the caller runs on. */
+  ULONG_PTR lo = 0, hi = 0;
+  GetCurrentThreadStackLimits(&lo, &hi);
+  if (hi > lo) {
+    ni_main_lo = (uintptr_t)lo;
+    ni_main_hi = (uintptr_t)hi;
+  }
+#elif defined(__APPLE__)
   pthread_t self = pthread_self();
   ni_main_hi = (uintptr_t)pthread_get_stackaddr_np(self);
   ni_main_lo = ni_main_hi - pthread_get_stacksize_np(self);
@@ -1549,24 +2444,98 @@ typedef struct NiRoute {
   struct NiRoute *next;
   void (*job)(void *);
   void *arg;
-  pthread_cond_t cond;
   bool taken; /* the island's thread took it off the queue: it runs to its end */
   bool done;
+#ifdef _WIN32
+  CONDITION_VARIABLE cond;
+#else
+  pthread_cond_t cond;
+#endif
 } NiRoute;
 
 /* The operation this thread posted last did not run: the thread was asked
  * to stop before the island's thread took it (ni_route). */
 SCR_TL bool scr_ni_unserved = false;
 
-static pthread_mutex_t ni_route_lock = PTHREAD_MUTEX_INITIALIZER;
+/* The request lock: it guards the posted-operation queue. Windows spins a
+ * critical section up for the island's hot path and pairs it with a
+ * condition variable per operation; POSIX uses a mutex and a condition
+ * variable with a timed wait. */
+#ifdef _WIN32
+static CRITICAL_SECTION ni_route_lock_cs;
+static INIT_ONCE ni_route_lock_once = INIT_ONCE_STATIC_INIT;
+typedef CONDITION_VARIABLE NiRouteCondition;
+
+static BOOL CALLBACK ni_route_lock_new(PINIT_ONCE once, PVOID param, PVOID *context) {
+  (void)once;
+  (void)param;
+  (void)context;
+  InitializeCriticalSectionAndSpinCount(&ni_route_lock_cs, 4000);
+  return TRUE;
+}
+
+static void ni_route_lock(void) {
+  InitOnceExecuteOnce(&ni_route_lock_once, ni_route_lock_new, NULL, NULL);
+  EnterCriticalSection(&ni_route_lock_cs);
+}
+
+static void ni_route_unlock(void) { LeaveCriticalSection(&ni_route_lock_cs); }
+
+static void ni_route_cond_new(NiRouteCondition *cond) { InitializeConditionVariable(cond); }
+static void ni_route_cond_free(NiRouteCondition *cond) { (void)cond; }
+#if SCR_NI_THREADS
+static void ni_route_cond_signal(NiRouteCondition *cond) { WakeConditionVariable(cond); }
+#endif
+
+/* Waits up to `ms` milliseconds (under the lock); whether it was woken. */
+static bool ni_route_cond_wait(NiRouteCondition *cond, unsigned long ms) {
+  return SleepConditionVariableCS(cond, &ni_route_lock_cs, ms) != 0;
+}
+#else
+typedef pthread_cond_t NiRouteCondition;
+
+static pthread_mutex_t ni_route_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static void ni_route_lock(void) { pthread_mutex_lock(&ni_route_mutex); }
+static void ni_route_unlock(void) { pthread_mutex_unlock(&ni_route_mutex); }
+static void ni_route_cond_new(NiRouteCondition *cond) {
+  if (pthread_cond_init(cond, NULL) != 0) ni_oom();
+}
+static void ni_route_cond_free(NiRouteCondition *cond) { pthread_cond_destroy(cond); }
+#if SCR_NI_THREADS
+/* Signalled by the dispatch below; a program without worker threads has no
+ * other thread to wake. */
+static void ni_route_cond_signal(NiRouteCondition *cond) { pthread_cond_signal(cond); }
+#endif
+
+/* Waits up to `ms` milliseconds (under the lock); whether it was woken. */
+static bool ni_route_cond_wait(NiRouteCondition *cond, unsigned long ms) {
+  struct timespec until;
+  clock_gettime(CLOCK_REALTIME, &until);
+  until.tv_sec += (time_t)(ms / 1000);
+  until.tv_nsec += (long)(ms % 1000) * 1000000L;
+  if (until.tv_nsec >= 1000000000L) {
+    until.tv_sec++;
+    until.tv_nsec -= 1000000000L;
+  }
+  return pthread_cond_timedwait(cond, &ni_route_mutex, &until) != ETIMEDOUT;
+}
+#endif
+
 static NiRoute *ni_route_head = NULL, *ni_route_tail = NULL;
 static atomic_size_t ni_route_pending;
 static int ni_route_wake[2] = {-1, -1};
 
 static void ni_route_noop(void *p) { (void)p; }
 
-/* (under ni_route_lock) */
+/* The pipe that ends a sleep of the island's loop with no timer due. The
+ * Windows loop sleeps on a timer and dispatches at the top of each turn
+ * (scr_async.c), so it has no descriptor to wake. */
 static void ni_route_open(void) {
+#if defined(_WIN32)
+  (void)ni_route_wake;
+  return;
+#else
   if (ni_route_wake[0] >= 0) return;
   if (pipe(ni_route_wake) != 0) {
     ni_route_wake[0] = ni_route_wake[1] = -1;
@@ -1577,6 +2546,7 @@ static void ni_route_open(void) {
     int flags = fcntl(ni_route_wake[i], F_GETFL);
     if (flags >= 0) (void)fcntl(ni_route_wake[i], F_SETFL, flags | O_NONBLOCK);
   }
+#endif
 }
 
 /* Runs `job` on the island's thread and returns once it has.
@@ -1592,7 +2562,7 @@ static void ni_route_open(void) {
  * thread's termination is made pending as at any checkpoint, and the
  * caller gets no answer (scr_ni_unserved; its out-values keep what it
  * initialized them to). An operation already taken runs to its end. */
-#define NI_ROUTE_STOP_POLL_NS 5000000L /* 5 ms */
+#define NI_ROUTE_STOP_POLL_MS 5UL /* 5 ms */
 /* Only a worker thread posts, and only an executable with workers has one. */
 #if defined(SCR_WORKERS) && !defined(SCR_LIB)
 #define NI_STOP_ASKED() (!scr_context_quiet())
@@ -1609,30 +2579,28 @@ static void ni_route(void (*job)(void *), void *arg) {
     NI_STOP_PENDING();
     return;
   }
-  NiRoute request = {NULL, job, arg, {0}, false, false};
-  if (pthread_cond_init(&request.cond, NULL) != 0) ni_oom();
-  pthread_mutex_lock(&ni_route_lock);
+  NiRoute request;
+  memset(&request, 0, sizeof request);
+  request.job = job;
+  request.arg = arg;
+  ni_route_cond_new(&request.cond);
+  ni_route_lock();
   ni_route_open();
   if (ni_route_tail != NULL) ni_route_tail->next = &request;
   else ni_route_head = &request;
   ni_route_tail = &request;
   atomic_fetch_add_explicit(&ni_route_pending, 1, memory_order_release);
+#if !defined(_WIN32)
   if (ni_route_wake[1] >= 0) {
     char byte = 1;
     /* A full pipe already holds a wake for the operations queued before
      * this one. */
     (void)write(ni_route_wake[1], &byte, 1);
   }
+#endif
   while (!request.done) {
-    struct timespec until;
-    clock_gettime(CLOCK_REALTIME, &until);
-    until.tv_nsec += NI_ROUTE_STOP_POLL_NS;
-    if (until.tv_nsec >= 1000000000L) {
-      until.tv_sec++;
-      until.tv_nsec -= 1000000000L;
-    }
-    int waited = pthread_cond_timedwait(&request.cond, &ni_route_lock, &until);
-    if (waited != ETIMEDOUT || request.done || request.taken || !NI_STOP_ASKED()) continue;
+    bool woken = ni_route_cond_wait(&request.cond, NI_ROUTE_STOP_POLL_MS);
+    if (woken || request.done || request.taken || !NI_STOP_ASKED()) continue;
     /* Asked to stop, and still queued: withdrawn. */
     NiRoute *before = NULL;
     for (NiRoute *at = ni_route_head; at != NULL && at != &request; at = at->next) before = at;
@@ -1643,8 +2611,8 @@ static void ni_route(void (*job)(void *), void *arg) {
     scr_ni_unserved = true;
     break;
   }
-  pthread_mutex_unlock(&ni_route_lock);
-  pthread_cond_destroy(&request.cond);
+  ni_route_unlock();
+  ni_route_cond_free(&request.cond);
   if (scr_ni_unserved) NI_STOP_PENDING();
 }
 
@@ -1662,10 +2630,10 @@ int scr_ni_remote_pollfd(void) {
   /* The wake fd belongs to the island's thread: another thread's loop has
    * no posted work of its own to wake for. */
   if (!scr_ni_main_thread()) return -1;
-  pthread_mutex_lock(&ni_route_lock);
+  ni_route_lock();
   ni_route_open();
   int fd = ni_route_wake[0];
-  pthread_mutex_unlock(&ni_route_lock);
+  ni_route_unlock();
   return fd;
 }
 
@@ -1696,16 +2664,20 @@ void scr_ni_remote_dispatch(void) {
   if (!scr_ni_main_thread() || ni_route_serving) return;
   ni_route_serving = true;
   int fd = scr_ni_remote_pollfd();
+#if !defined(_WIN32)
   if (fd >= 0) {
     char bytes[64];
     while (read(fd, bytes, sizeof bytes) > 0) {
     }
   }
+#else
+  (void)fd;
+#endif
   uint64_t slice_end = 0, gap_end = 0;
   for (;;) {
     NiRoute *request = NULL;
     if (atomic_load_explicit(&ni_route_pending, memory_order_acquire) > 0) {
-      pthread_mutex_lock(&ni_route_lock);
+      ni_route_lock();
       request = ni_route_head;
       if (request != NULL) {
         ni_route_head = request->next;
@@ -1713,7 +2685,7 @@ void scr_ni_remote_dispatch(void) {
         request->taken = true;
         atomic_fetch_sub_explicit(&ni_route_pending, 1, memory_order_release);
       }
-      pthread_mutex_unlock(&ni_route_lock);
+      ni_route_unlock();
     }
     if (request == NULL) {
       if (slice_end == 0) break; /* nothing was posted */
@@ -1733,10 +2705,10 @@ void scr_ni_remote_dispatch(void) {
      * here, on the island's thread, before the operation runs. */
     ni_start();
     ni_on_node_stack(request->job, request->arg);
-    pthread_mutex_lock(&ni_route_lock);
+    ni_route_lock();
     request->done = true;
-    pthread_cond_signal(&request->cond);
-    pthread_mutex_unlock(&ni_route_lock);
+    ni_route_cond_signal(&request->cond);
+    ni_route_unlock();
     uint64_t now = scr_hrtime_ns();
     if (now >= slice_end) break; /* what is still posted waits for the next turn */
     gap_end = now + NI_ROUTE_GAP_NS;
@@ -1748,16 +2720,199 @@ void scr_ni_remote_dispatch(void) {
 
 /* ── Node's stack ─────────────────────────────────────────────────────── */
 
-static char *ni_stack = NULL; /* the mapping; usable above NI_GUARD */
-static ucontext_t ni_node_ctx, ni_caller_ctx;
+/* Node's stack is one stack the runtime provides: NI_STACK bytes with
+ * NI_GUARD unusable below them. POSIX maps it and runs Node's entries on a
+ * ucontext of it; Windows creates a fiber of the island's thread over it,
+ * whose stack the system commits as it is used and guards with its own
+ * guard page. */
+static char *ni_stack = NULL; /* the stack; usable above NI_GUARD */
+static size_t ni_stack_len = 0;
+/* The lowest address of Node's stack in use while runtime code Node's
+ * frames called runs (a host callback below), 0 outside them; see the
+ * comment at its use below. */
+static uintptr_t ni_mark = 0;
 static bool ni_on_stack = false;
 static void (*ni_job)(void *) = NULL;
 static void *ni_job_arg = NULL;
+
 #ifdef NI_ASAN
 static void *ni_node_fake = NULL;
 static const void *ni_caller_bottom = NULL;
 static size_t ni_caller_size = 0;
 #endif
+
+#ifdef _WIN32
+/* The island thread as a fiber (SwitchToFiber requires the caller to be
+ * one; scr_async.c converts the same thread for async bodies, and the check
+ * below answers for either), the fiber Node runs on, and the fiber or
+ * thread the current entry returns to. */
+static void *ni_node_fiber = NULL;
+static void *ni_return_fiber = NULL;
+
+static bool ni_stack_has(uintptr_t sp);
+
+static void *ni_self(void) {
+  if (IsThreadAFiber()) return GetCurrentFiber();
+  void *fiber = ConvertThreadToFiber(NULL);
+  if (fiber == NULL) ni_fatal("scriptc: ConvertThreadToFiber failed\n");
+  return fiber;
+}
+
+/* Node's stack's bounds, recorded on its first entry. The limits name the
+ * stack of the caller: Node's fiber, on whose stack every frame of Node
+ * runs. */
+static void ni_record_stack(void) {
+  if (ni_stack != NULL) return;
+  ULONG_PTR lo = 0, hi = 0;
+  GetCurrentThreadStackLimits(&lo, &hi);
+  if (hi <= lo) ni_fatal("scriptc: cannot size Node's stack\n");
+  ni_stack = (char *)lo;
+  ni_stack_len = (size_t)(hi - lo);
+  scr_node_stack_has = &ni_stack_has;
+}
+
+static void CALLBACK ni_trampoline(void *param) {
+  (void)param;
+  for (;;) {
+    ni_record_stack();
+    /* JavaScript may use Node's stack down to a reserve above its guard
+     * page; the caller's own guard is back when the job returns. */
+    uintptr_t guard = scr_stack_guard;
+    SCR_STACK_GUARD_SET(scr_stack_guard_for((uintptr_t)ni_stack + NI_GUARD, ni_stack_len - NI_GUARD));
+    ni_job(ni_job_arg);
+    SCR_STACK_GUARD_SET(guard);
+    SwitchToFiber(ni_return_fiber);
+  }
+}
+
+/* A context of the runtime's own on Node's stack, for a nested entry: the
+ * fiber's stack pointer moves below the live frames instead of a second
+ * fiber's stack, so every frame of Node stays on the stack V8 scans. The
+ * Windows ABI keeps XMM6-XMM15, MXCSR and the x87 control word across
+ * calls, and so does the switch. The moves are unaligned: the record is
+ * 8-byte aligned. */
+typedef struct {
+  void *rsp, *rbp, *rbx, *r12, *r13, *r14, *r15, *rip;
+  void *rdi, *rsi;
+  unsigned char xmm[10][16];
+  unsigned int mxcsr;
+  unsigned short fpcw;
+} NiCtx;
+
+extern void ni_ctx_swap(NiCtx *from, const NiCtx *to);
+
+__asm__(".text\n"
+        ".globl ni_ctx_swap\n"
+        ".p2align 4\n"
+        "ni_ctx_swap:\n"
+        "  movq (%rsp), %rax\n"
+        "  leaq 8(%rsp), %r8\n"
+        "  movq %r8, 0(%rcx)\n"
+        "  movq %rbp, 8(%rcx)\n"
+        "  movq %rbx, 16(%rcx)\n"
+        "  movq %r12, 24(%rcx)\n"
+        "  movq %r13, 32(%rcx)\n"
+        "  movq %r14, 40(%rcx)\n"
+        "  movq %r15, 48(%rcx)\n"
+        "  movq %rax, 56(%rcx)\n"
+        "  movq %rdi, 64(%rcx)\n"
+        "  movq %rsi, 72(%rcx)\n"
+        "  movups %xmm6, 80(%rcx)\n"
+        "  movups %xmm7, 96(%rcx)\n"
+        "  movups %xmm8, 112(%rcx)\n"
+        "  movups %xmm9, 128(%rcx)\n"
+        "  movups %xmm10, 144(%rcx)\n"
+        "  movups %xmm11, 160(%rcx)\n"
+        "  movups %xmm12, 176(%rcx)\n"
+        "  movups %xmm13, 192(%rcx)\n"
+        "  movups %xmm14, 208(%rcx)\n"
+        "  movups %xmm15, 224(%rcx)\n"
+        "  stmxcsr 240(%rcx)\n"
+        "  fnstcw 244(%rcx)\n"
+        "  movq 0(%rdx), %rsp\n"
+        "  movq 8(%rdx), %rbp\n"
+        "  movq 16(%rdx), %rbx\n"
+        "  movq 24(%rdx), %r12\n"
+        "  movq 32(%rdx), %r13\n"
+        "  movq 40(%rdx), %r14\n"
+        "  movq 48(%rdx), %r15\n"
+        "  movq 64(%rdx), %rdi\n"
+        "  movq 72(%rdx), %rsi\n"
+        "  movups 80(%rdx), %xmm6\n"
+        "  movups 96(%rdx), %xmm7\n"
+        "  movups 112(%rdx), %xmm8\n"
+        "  movups 128(%rdx), %xmm9\n"
+        "  movups 144(%rdx), %xmm10\n"
+        "  movups 160(%rdx), %xmm11\n"
+        "  movups 176(%rdx), %xmm12\n"
+        "  movups 192(%rdx), %xmm13\n"
+        "  movups 208(%rdx), %xmm14\n"
+        "  movups 224(%rdx), %xmm15\n"
+        "  ldmxcsr 240(%rdx)\n"
+        "  fldcw 244(%rdx)\n"
+        "  movq 56(%rdx), %rax\n"
+        "  jmp *%rax\n");
+
+/* A nested entry: job(arg) on Node's stack below the mark, from a fiber.
+ * Each entry keeps its context and its job in its own frame on Node's
+ * stack, so an entry made from inside another — Node code the outer entry
+ * runs resumes a fiber that calls back in — has state of its own; the
+ * entry being served is ni_nested_serving. */
+typedef struct NiNested {
+  NiCtx self; /* this entry's context, saved when it switches back */
+  NiCtx back; /* the context it returns to */
+  void (*job)(void *);
+  void *arg;
+} NiNested;
+
+static SCR_TL NiNested *ni_nested_serving = NULL;
+
+static void ni_nested_trampoline(void) {
+  NiNested *entry = ni_nested_serving;
+  entry->job(entry->arg);
+  ni_ctx_swap(&entry->self, &entry->back);
+  __builtin_unreachable();
+}
+
+static void ni_on_node_stack_below_mark(void (*job)(void *), void *arg) {
+  /* Below every live frame of Node's stack: the mark the host callback
+   * recorded, or lower where runtime code it ran went deeper before it
+   * switched to this fiber (an async call's eager start, a job: the
+   * spawner's frame and its saved context are still in use there). Below
+   * the red zone and the switch's own frame, 16-byte aligned. */
+  uintptr_t top = ni_mark;
+  if (scr_node_stack_low != 0 && scr_node_stack_low < top) top = scr_node_stack_low;
+  uintptr_t lo = (uintptr_t)ni_stack + NI_GUARD;
+  uintptr_t hi = (top - 1024) & ~(uintptr_t)15;
+  if (hi <= lo) {
+    job(arg);
+    return;
+  }
+  NiNested entry;
+  memset(&entry, 0, sizeof entry);
+  uintptr_t sp = (hi - 256) & ~(uintptr_t)15;
+  sp -= 8; /* as after a call: the trampoline's return address slot */
+  *(void **)sp = NULL;
+  entry.self.rsp = (void *)sp;
+  entry.self.rip = (void *)ni_nested_trampoline;
+  __asm__ volatile("stmxcsr %0" : "=m"(entry.self.mxcsr));
+  __asm__ volatile("fnstcw %0" : "=m"(entry.self.fpcw));
+  entry.job = job;
+  entry.arg = arg;
+  uintptr_t guard = scr_stack_guard;
+  SCR_STACK_GUARD_SET(scr_stack_guard_for(lo, hi - lo));
+  void *loop_save = scr_loop_nested_enter();
+  NiNested *outer = ni_nested_serving;
+  ni_nested_serving = &entry;
+  ni_ctx_swap(&entry.back, &entry.self);
+  ni_nested_serving = outer;
+  scr_loop_nested_leave(loop_save);
+  SCR_STACK_GUARD_SET(guard);
+}
+
+#else /* POSIX */
+
+static ucontext_t ni_node_ctx, ni_caller_ctx;
 
 /* A context that runs fn on the stack [lo, lo + size), from its top.
  * macOS's makecontext clears the whole stack it is given, which costs a
@@ -1802,38 +2957,6 @@ static void ni_trampoline(void) {
 #endif
     swapcontext(&ni_node_ctx, &ni_caller_ctx);
   }
-}
-
-/* Whether `sp` lies on Node's stack. */
-static bool ni_stack_has(uintptr_t sp) {
-  return ni_stack != NULL && sp > (uintptr_t)ni_stack && sp <= (uintptr_t)ni_stack + NI_STACK;
-}
-
-/* The lowest address of Node's stack in use while runtime code Node's
- * frames called runs (a host callback below), 0 outside them: the
- * callback's frame, or lower, where that code switched to a fiber's stack
- * (scr_node_island_leave_stack) and left its own frames live. Runtime code
- * may resume an async fiber there, and the fiber may call into Node again:
- * that entry runs on Node's stack below this mark, so every frame of Node
- * stays on the one stack V8 scans (heap::base::Stack, bounded by
- * ni_stack_start), never on a fiber's stack beyond its bound. */
-static uintptr_t ni_mark = 0;
-
-/* Host callbacks run runtime code from Node's frames: each records the
- * mark for its duration. */
-#define NI_MARK_BEGIN                                                    \
-  uintptr_t ni_saved_mark = ni_mark;                                     \
-  do {                                                                   \
-    uintptr_t ni_here = (uintptr_t)__builtin_frame_address(0);           \
-    if (ni_stack_has(ni_here)) ni_mark = ni_here;                        \
-  } while (0)
-#define NI_MARK_END (ni_mark = ni_saved_mark)
-
-void scr_node_island_leave_stack(uintptr_t sp) {
-  /* Node's stack is the island thread's: another thread's frames are never
-   * on it, and the mark is that thread's to read. */
-  if (!scr_ni_main_thread()) return;
-  if (ni_mark != 0 && ni_stack_has(sp) && sp < ni_mark) ni_mark = sp;
 }
 
 /* A nested entry: job(arg) on Node's stack below the mark, from a fiber. */
@@ -1906,6 +3029,39 @@ static void ni_on_node_stack_below_mark(void (*job)(void *), void *arg) {
   SCR_STACK_GUARD_SET(guard);
 }
 
+#endif /* _WIN32 */
+
+/* Whether `sp` lies on Node's stack. */
+static bool ni_stack_has(uintptr_t sp) {
+  return ni_stack != NULL && sp > (uintptr_t)ni_stack && sp <= (uintptr_t)ni_stack + ni_stack_len;
+}
+
+/* The lowest address of Node's stack in use while runtime code Node's
+ * frames called runs (a host callback below), 0 outside them: the
+ * callback's frame, or lower, where that code switched to a fiber's stack
+ * (scr_node_island_leave_stack) and left its own frames live. Runtime code
+ * may resume an async fiber there, and the fiber may call into Node again:
+ * that entry runs on Node's stack below this mark, so every frame of Node
+ * stays on the one stack V8 scans (heap::base::Stack, bounded by
+ * ni_stack_start), never on a fiber's stack beyond its bound. */
+
+/* Host callbacks run runtime code from Node's frames: each records the
+ * mark for its duration. */
+#define NI_MARK_BEGIN                                                    \
+  uintptr_t ni_saved_mark = ni_mark;                                     \
+  do {                                                                   \
+    uintptr_t ni_here = (uintptr_t)__builtin_frame_address(0);           \
+    if (ni_stack_has(ni_here)) ni_mark = ni_here;                        \
+  } while (0)
+#define NI_MARK_END (ni_mark = ni_saved_mark)
+
+void scr_node_island_leave_stack(uintptr_t sp) {
+  /* Node's stack is the island thread's: another thread's frames are never
+   * on it, and the mark is that thread's to read. */
+  if (!scr_ni_main_thread()) return;
+  if (ni_mark != 0 && ni_stack_has(sp) && sp < ni_mark) ni_mark = sp;
+}
+
 /* Runs job(arg) on Node's stack (directly when already there). On any
  * thread but the island's, the job runs on that thread instead, with this
  * one waiting for it (ni_route). */
@@ -1924,9 +3080,25 @@ static void ni_on_node_stack(void (*job)(void *), void *arg) {
   /* Island code is about to run: it sees the current native values of
    * shared exports (NI-6). */
   scr_ni_shared_refresh();
+#if defined(_WIN32)
+  if (ni_node_fiber == NULL) {
+    /* The island thread must be a fiber before anything switches away from
+     * it; Node's own stack is a fiber of NI_STACK bytes. */
+    (void)ni_self();
+    ni_node_fiber = CreateFiberEx(0, (SIZE_T)NI_STACK, 0, ni_trampoline, NULL);
+    if (ni_node_fiber == NULL) ni_fatal("scriptc: cannot create the stack Node runs on\n");
+  }
+  ni_return_fiber = ni_self();
+  ni_job = job;
+  ni_job_arg = arg;
+  ni_on_stack = true;
+  SwitchToFiber(ni_node_fiber);
+  ni_on_stack = false;
+#else
   if (ni_stack == NULL) {
     ni_stack = mmap(NULL, NI_STACK, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
     if (ni_stack == MAP_FAILED) ni_oom();
+    ni_stack_len = NI_STACK;
     (void)mprotect(ni_stack, NI_GUARD, PROT_NONE);
     scr_node_stack_has = &ni_stack_has;
 #ifdef NI_ASAN
@@ -1957,6 +3129,7 @@ static void ni_on_node_stack(void (*job)(void *), void *arg) {
 #endif
   SCR_STACK_GUARD_SET(guard);
   ni_on_stack = false;
+#endif /* _WIN32 */
 }
 
 typedef struct {
@@ -2029,7 +3202,7 @@ static void ni_start_job(void *p) {
   NiStart *a = p;
   /* JavaScript may use Node's stack down to a reserve above its guard page
    * (native frames below V8's limit, the runtime's stack guard). */
-  uintptr_t limit = (uintptr_t)(ni_stack + NI_GUARD) + NI_STACK / 8;
+  uintptr_t limit = (uintptr_t)(ni_stack + NI_GUARD) + ni_stack_len / 8;
   a->error = ni_bridge->start(&ni_host, a->bootstrap, a->argv0, limit);
 }
 
@@ -2056,7 +3229,7 @@ static uintptr_t ni_stack_limit(void) {
   /* The frame address, not a local's: under ASan's use-after-return
    * detection locals live on a fake stack elsewhere in memory. */
   uintptr_t sp = (uintptr_t)__builtin_frame_address(0);
-  if (ni_stack_has(sp)) return (uintptr_t)(ni_stack + NI_GUARD) + NI_STACK / 8;
+  if (ni_stack_has(sp)) return (uintptr_t)(ni_stack + NI_GUARD) + ni_stack_len / 8;
   if (sp > ni_main_lo && sp <= ni_main_hi) {
     uintptr_t limit = ni_main_hi > 984 * 1024 ? ni_main_hi - 984 * 1024 : 0;
     return limit > ni_main_lo ? limit : ni_main_lo + 64 * 1024;
@@ -2068,7 +3241,7 @@ static uintptr_t ni_stack_limit(void) {
 /* The start of Node's stack for callers on it (V8's stack-scan bound). */
 static uintptr_t ni_stack_start(void) {
   uintptr_t sp = (uintptr_t)__builtin_frame_address(0);
-  return ni_stack_has(sp) ? (uintptr_t)ni_stack + NI_STACK : 0;
+  return ni_stack_has(sp) ? (uintptr_t)ni_stack + ni_stack_len : 0;
 }
 
 /* The host callbacks that run runtime code, with the mark recorded. */
@@ -2355,6 +3528,82 @@ static void ni_process_exit(double code) {
 
 /* ── loading Node ─────────────────────────────────────────────────────── */
 
+/* Loads the pack's bridge and returns its entry point, or NULL with the
+ * reason in `error`. The bridge links libnode, so on Windows the pack
+ * directory joins the DLL search path for this process before the bridge
+ * loads: the system searches the executable's directory, not the bridge's,
+ * for the libraries it imports. */
+static const ScrNodeBridge *(*ni_bridge_entry(const char *dir, char *error, size_t cap))(void) {
+#if defined(_WIN32)
+  char file[4352];
+  int written = snprintf(file, sizeof file, "%s/%s", dir, NI_BRIDGE_FILE);
+  if (written < 0 || (size_t)written >= sizeof file) {
+    snprintf(error, cap, "the pack path is too long");
+    return NULL;
+  }
+  wchar_t *wide = ni_wide(file, strlen(file));
+  wchar_t *folder = ni_wide(dir, strlen(dir));
+  if (wide == NULL || folder == NULL) {
+    snprintf(error, cap, "the pack path is not UTF-8");
+    free(wide);
+    free(folder);
+    return NULL;
+  }
+  /* Kept for the process: a native addon the program loads later resolves
+   * libnode's exports from the same directory. The per-call search flags
+   * name the directories LoadLibraryExW searches: the bridge's own
+   * (DLL_LOAD_DIR, where libnode.dll sits beside it) and the ones
+   * AddDllDirectory added (USER_DIRS). LOAD_WITH_ALTERED_SEARCH_PATH cannot
+   * be combined with those flags — the system rejects the call — so it is
+   * only the fallback for a system without per-call search directories. */
+  (void)AddDllDirectory(folder);
+  HMODULE library =
+      LoadLibraryExW(wide, NULL, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS |
+                                     LOAD_LIBRARY_SEARCH_USER_DIRS);
+  if (library == NULL && GetLastError() == ERROR_INVALID_PARAMETER)
+    library = LoadLibraryExW(wide, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
+  free(wide);
+  free(folder);
+  if (library == NULL) {
+    DWORD code = GetLastError();
+    wchar_t text[1024];
+    DWORD length = FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, NULL,
+                                  code, 0, text, (DWORD)(sizeof text / sizeof text[0]), NULL);
+    for (; length > 0 && (text[length - 1] == L'\n' || text[length - 1] == L'\r' ||
+                          text[length - 1] == L'.' || text[length - 1] == L' ');
+         length--)
+      text[length - 1] = L'\0';
+    char *message = length > 0 ? ni_utf8(text, wcslen(text)) : NULL;
+    snprintf(error, cap, "%s (error %lu)", message != NULL ? message : "cannot load the library",
+             (unsigned long)code);
+    free(message);
+    return NULL;
+  }
+  FARPROC symbol = GetProcAddress(library, SCR_NODE_BRIDGE_ENTRY);
+  if (symbol == NULL) {
+    snprintf(error, cap, "the bridge exports no %s", SCR_NODE_BRIDGE_ENTRY);
+    return NULL;
+  }
+  return (const ScrNodeBridge *(*)(void))symbol;
+#else
+  char path[4352];
+  int written = snprintf(path, sizeof path, "%s/%s", dir, NI_BRIDGE_FILE);
+  if (written < 0 || (size_t)written >= sizeof path) {
+    snprintf(error, cap, "the pack path is too long");
+    return NULL;
+  }
+  /* RTLD_GLOBAL: native addons resolve napi_* and node::* from the global
+   * namespace. The executable exports no symbols libnode could bind to. */
+  void *library = dlopen(path, RTLD_NOW | RTLD_GLOBAL);
+  if (library == NULL) {
+    const char *reason = dlerror();
+    snprintf(error, cap, "%s", reason != NULL ? reason : "cannot load the library");
+    return NULL;
+  }
+  return (const ScrNodeBridge *(*)(void))dlsym(library, SCR_NODE_BRIDGE_ENTRY);
+#endif
+}
+
 void (*scr_ni_started_hook)(void) = NULL;
 
 static void ni_start(void) {
@@ -2378,22 +3627,15 @@ static void ni_start(void) {
   }
   const char *dir = ni_pack_dir();
   ni_open_modules();
-  char path[4352];
-  int written = snprintf(path, sizeof path, "%s/%s", dir, NI_BRIDGE_FILE);
-  if (written < 0 || (size_t)written >= sizeof path)
-    ni_fatal("scriptc: the libnode pack path is too long\n");
-  /* RTLD_GLOBAL: native addons resolve napi_* and node::* from the global
-   * namespace. The executable exports no symbols libnode could bind to. */
-  void *library = dlopen(path, RTLD_NOW | RTLD_GLOBAL);
-  if (library == NULL) {
+  char why[8192];
+  const ScrNodeBridge *(*entry)(void) = ni_bridge_entry(dir, why, sizeof why);
+  if (entry == NULL) {
     char message[8192];
     snprintf(message, sizeof message,
-             "scriptc: cannot load Node.js for this program's Node islands: %s\n", dlerror());
+             "scriptc: cannot load Node.js for this program's Node islands: %s\n", why);
     ni_fatal(message);
   }
-  const ScrNodeBridge *(*entry)(void) =
-      (const ScrNodeBridge *(*)(void))dlsym(library, SCR_NODE_BRIDGE_ENTRY);
-  const ScrNodeBridge *bridge = entry != NULL ? entry() : NULL;
+  const ScrNodeBridge *bridge = entry();
   if (bridge == NULL || bridge->abi != SCR_NODE_BRIDGE_ABI) {
     char message[8192];
     snprintf(message, sizeof message,
@@ -2606,7 +3848,7 @@ ScrPromise *scr_node_island_call(ScrStr *file, ScrStr *specifier, ScrStr *name, 
   return p;
 }
 
-#else /* _WIN32 || __wasi__ */
+#else /* __wasi__ */
 
 void scr_node_island_emit(uint32_t event, uint32_t listener, ScrStr *name, int arg) {
   (void)event;
@@ -2615,7 +3857,7 @@ void scr_node_island_emit(uint32_t event, uint32_t listener, ScrStr *name, int a
   (void)arg;
 }
 
-/* Node islands need a libnode pack, which these targets do not have: the
+/* Node islands need a libnode pack, which WASI does not have: the
  * compiler refuses them there, so these entry points only report that. */
 void scr_node_island_install(const char *libnode, const char *node_version) {
   (void)libnode;

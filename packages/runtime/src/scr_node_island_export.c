@@ -37,13 +37,12 @@
 #include "scr_node_bridge.h"
 #include "scr_node_island.h"
 
-#include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#if !defined(_WIN32) && !defined(__wasi__)
+#if !defined(__wasi__)
 
 const ScrDynHandleOps *scr_dyn_handle_ops_of(const ScrDyn *d); /* scr_json.c */
 
@@ -61,19 +60,19 @@ static NiExport *ni_exports = NULL; /* index = id; id 0 unused */
 static uint32_t ni_exports_len = 1, ni_exports_cap = 0;
 /* Worker threads read the table (a result that is a native value), while
  * the island's thread mints entries and the table grows. */
-static pthread_mutex_t ni_exports_lock = PTHREAD_MUTEX_INITIALIZER;
+static ScrNiLock ni_exports_lock = SCR_NI_LOCK_INITIALIZER;
 
 /* The lock is taken once another thread uses the island (the handle
  * unit's shared mode, which is set only between operations). */
 static inline bool ni_exports_take(void) {
   if (!SCR_NI_THREADS || !atomic_load_explicit(&scr_ni_threads_shared, memory_order_relaxed))
     return false;
-  pthread_mutex_lock(&ni_exports_lock);
+  scr_ni_lock_enter(&ni_exports_lock);
   return true;
 }
 
 static inline void ni_exports_give(bool held) {
-  if (held) pthread_mutex_unlock(&ni_exports_lock);
+  if (held) scr_ni_lock_leave(&ni_exports_lock);
 }
 
 static uint32_t *ni_free = NULL;
@@ -2076,7 +2075,7 @@ void scr_ni_exports_release_all(void) {
 
 #endif
 
-#if !defined(_WIN32) && !defined(__wasi__)
+#if !defined(__wasi__)
 /* ── native classes extending island classes (scope-B NI-5b) ───────────
  * The class is a JavaScript constructor made by the bootstrap's helpers
  * (scr_node_island_host.cjs, module "scriptc:island-helpers"); its

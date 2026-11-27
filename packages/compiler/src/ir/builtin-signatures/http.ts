@@ -450,6 +450,9 @@ export const httpSignatures = defineLibFnSignatures({
   "http.clientSetHeaderDyn": { argTypes: [HTTPCLIENTREQ_T, STRING, DYN], result: VOID },
   "http.clientAppendHeaderDyn": { argTypes: [HTTPCLIENTREQ_T, STRING, DYN], result: VOID },
   "http.clientGetHeader": { argTypes: [HTTPCLIENTREQ_T, STRING], result: VOID },
+  /** getHeader as Node answers it: the number, string or string[] that was
+   * set, or undefined, as a checked-dynamic value. */
+  "http.clientGetHeaderDyn": { argTypes: [HTTPCLIENTREQ_T, STRING], result: DYN },
   "http.clientHasHeader": { argTypes: [HTTPCLIENTREQ_T, STRING], result: BOOL },
   "http.clientRemoveHeader": { argTypes: [HTTPCLIENTREQ_T, STRING], result: VOID },
   "http.clientGetHeaderNames": { argTypes: [HTTPCLIENTREQ_T], result: arrayOf(STRING) },

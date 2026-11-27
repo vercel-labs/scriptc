@@ -10733,13 +10733,23 @@ function lowerHttpClientMethodCall(
       lowerer.noLowering(`request.${name} arguments`, call, `pass one header name`);
     const receiver = coerceToHandle(lowerer, access.expression, HTTPCLIENTREQ_T);
     const header = lowerer.lowerExprExpecting(args[0]!, STRING);
-    const fn: IrLibFn =
-      name === "getHeader"
-        ? "http.clientGetHeader"
-        : name === "hasHeader"
-          ? "http.clientHasHeader"
-          : "http.clientRemoveHeader";
-    const type = name === "getHeader" ? lowerer.envValueType() : name === "hasHeader" ? BOOL : VOID;
+    if (name === "getHeader") {
+      // The value as set: number, string or string[] (undefined when
+      // absent), checked against the declared result type.
+      const value: IrExpr = {
+        kind: "libCall",
+        fn: "http.clientGetHeaderDyn",
+        args: [receiver, header],
+        type: DYN,
+        loc,
+      };
+      const declared = lowerer.mapTypeOf(lowerer.typeOf(call));
+      return declared === null || declared.kind === "dyn"
+        ? value
+        : lowerer.coerceInto(call, value, declared);
+    }
+    const fn: IrLibFn = name === "hasHeader" ? "http.clientHasHeader" : "http.clientRemoveHeader";
+    const type = name === "hasHeader" ? BOOL : VOID;
     return { kind: "libCall", fn, args: [receiver, header], type, loc };
   }
   if (name === "getHeaderNames" || name === "getRawHeaderNames" || name === "getHeaders") {

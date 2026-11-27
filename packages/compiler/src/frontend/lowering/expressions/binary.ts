@@ -45,7 +45,7 @@ import {
   typeKey,
   unionContainerArmsOk,
 } from "../../../ir/ir.js";
-import { isSafeToDiscard, isSafeToRepeat } from "./evaluation-safety.js";
+import { isReadOnlyEvaluation, isSafeToDiscard, isSafeToRepeat } from "./evaluation-safety.js";
 import {
   bigintCompoundValue,
   compoundUnsupported,
@@ -135,6 +135,7 @@ import { lowerWebAssemblyTypeof } from "../builtins/webassembly.js";
 import { lowerEnvironmentIdentity } from "../builtins/environment.js";
 import { builtinConstructorText } from "../held-constructors.js";
 import { lowerArgumentsObjectInstanceOf } from "../arguments-object.js";
+import { plainObjectPrototypeComparison } from "../builtins/reflection.js";
 
 /** `v === undefined` / `v !== null` — the narrowing tests for unit-armed
  * unions. A union operand compared with a unit literal lowers to a
@@ -2453,6 +2454,9 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
     // before its declaration ran keeps its checked read.
     if (test) return withTypeofTestCycleRead(lowerer, expr, test, loc);
   }
+  // `Object.getPrototypeOf(value) === Object.prototype`: the plain-object
+  // test, answered from the value's kind (a primitive, a Date, an array or a
+  // class instance is not one), intercepted BEFORE the call lowers.
   // `x.constructor === Event` for an instance of a DOM class the program
   // never extends: its static class is the instance's own, and both sides
   // name compile-time class values, so the answer folds. (The runtime's
@@ -2462,6 +2466,8 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
     op === ts.SyntaxKind.EqualsEqualsEqualsToken ||
     op === ts.SyntaxKind.ExclamationEqualsEqualsToken
   ) {
+    const plain = plainObjectPrototypeComparison(lowerer, expr, loc);
+    if (plain !== null) return plain;
     const negated = op === ts.SyntaxKind.ExclamationEqualsEqualsToken;
     for (const [side, other] of [
       [expr.left, expr.right],
@@ -3046,13 +3052,21 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
     // operand values. This matters for `take()[0] + 1` and for two reads
     // with observable getters/calls.
     const prefix: IrStmt[] = [];
-    const stable = (operand: IrExpr): IrExpr => {
-      if (isSafeToRepeat(operand) || isSafeToDiscard(operand)) return operand;
+    const snapshot = (operand: IrExpr): IrExpr => {
       const tmp = lowerer.declareHiddenLocal("%plus", operand.type);
       prefix.push({ kind: "varDecl", localId: tmp.id, init: operand, loc });
       return varRef(tmp.id, operand.type, loc);
     };
-    const stableLeft = stable(left);
+    const stable = (operand: IrExpr): IrExpr => {
+      if (isSafeToRepeat(operand) || isSafeToDiscard(operand)) return operand;
+      return snapshot(operand);
+    };
+    // A left operand that is itself a read stays in place when the right
+    // operand only reads. When the right operand may write what the left
+    // one reads (`local + (local = "second")`), the left value is
+    // snapshotted first so the concatenation sees Node's order.
+    const stableLeft =
+      isSafeToRepeat(left) && !isReadOnlyEvaluation(right) ? snapshot(left) : stable(left);
     const stableRight = stable(right);
     const leftString = lowerer.ensureString(stableLeft, expr.left);
     const rightString = lowerer.ensureString(stableRight, expr.right);

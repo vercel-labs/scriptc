@@ -1,0 +1,4 @@
+{
+  "order": ["<repo>/tests/corpus/stream-reader-close-release-lock.mjs"],
+  "diags": []
+}

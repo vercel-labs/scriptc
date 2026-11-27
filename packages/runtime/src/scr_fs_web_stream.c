@@ -29,6 +29,9 @@ typedef struct ScrFsWebStream {
   /* What the next read may produce, when the pending read's view is
    * smaller than a whole chunk (0: the whole chunk). */
   size_t read_limit;
+  /* The handle's close hook: a close() ends an autoClose stream, so the
+   * reference it holds goes and the close can finish. NULL once unhooked. */
+  ScrFileHandleHook *close_hook;
 } ScrFsWebStream;
 
 /* The stream's end: an autoClose stream drops the handle's stream
@@ -39,6 +42,11 @@ typedef struct ScrFsWebStream {
 static void scr_fs_web_stream_drop_handle(ScrFsWebStream *st) {
   if (!st->handle_ref) return;
   st->handle_ref = false;
+  if (st->close_hook) {
+    ScrFileHandleHook *hook = st->close_hook;
+    st->close_hook = NULL;
+    scr_file_handle_off_close(st->handle, hook);
+  }
   /* autoClose ends the handle the way Node's close() does: the stream drops
    * its own reference and asks for the close, the attached streams are closed
    * through their hooks (a paused read stream included), and the descriptor
@@ -48,6 +56,16 @@ static void scr_fs_web_stream_drop_handle(ScrFsWebStream *st) {
     scr_fs_close((double)fd);
     if (scr_exc_pending()) scr_exc_clear();
   }
+}
+
+/* FileHandle.close() ends an autoClose stream: the stream stops reading (its
+ * next pull answers EOF) and gives up the handle's reference, so the close
+ * that waits for it finishes and the descriptor closes. */
+static void scr_fs_web_stream_handle_closed(void *ctx) {
+  ScrFsWebStream *st = ctx;
+  st->closed = true;
+  st->close_hook = NULL;
+  scr_fs_web_stream_drop_handle(st);
 }
 
 /* One read in flight: the chunk copied out of the handle (or the EOF / error
@@ -79,6 +97,12 @@ static ScrFsWebStream *scr_fs_web_stream_retain(ScrFsWebStream *st) {
 static void scr_fs_web_stream_release(ScrFsWebStream *st) {
   if (!st || st->rc == SIZE_MAX) return;
   if (--st->rc == 0) {
+    scr_fs_web_stream_drop_handle(st);
+    if (st->close_hook) {
+      ScrFileHandleHook *hook = st->close_hook;
+      st->close_hook = NULL;
+      scr_file_handle_off_close(st->handle, hook);
+    }
     scr_file_handle_release(st->handle);
     free(st);
   }
@@ -236,6 +260,7 @@ ScrDyn *scr_file_handle_readable_web_stream(ScrFileHandle *h, ScrDyn *options) {
   if (auto_close) {
     scr_file_handle_ref(h);
     st->handle_ref = true;
+    st->close_hook = scr_file_handle_on_close(h, &scr_fs_web_stream_handle_closed, st);
   }
   scr_file_handle_lock(h);
   ScrDyn *stream = scr_webstream_bytes_over(&scr_fs_web_stream_source, st);

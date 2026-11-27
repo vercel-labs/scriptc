@@ -2377,6 +2377,36 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
         valueParams: [{ mode: "optional", type: DYN, defaultValue: undefined }],
         valueLength: 0,
       },
+      // node:module's source-map support (lowerSourceMapsCall in
+      // builtins/module-resolution.ts completes a call; these rows carry the
+      // function values). A compiled program registers no source map: the
+      // record answers the flags the program set, exactly as Node's frozen
+      // { enabled, nodeModules, generatedCode } answers them, and
+      // findSourceMap answers undefined.
+      getSourceMapsSupport: {
+        fn: "module.sourceMapsSupport",
+        params: [],
+        result: DYN,
+        valueParams: [],
+      },
+      setSourceMapsSupport: {
+        fn: "module.setSourceMapsSupport",
+        params: [DYN, DYN],
+        result: VOID,
+        valueParams: [
+          { mode: "required", type: DYN },
+          { mode: "optional", type: DYN, defaultValue: undefined },
+        ],
+        // Node's options parameter is defaulted, so the function's length is
+        // one even though the adapter takes two.
+        valueLength: 1,
+      },
+      findSourceMap: {
+        fn: "module.findSourceMap",
+        params: [DYN],
+        result: DYN,
+        valueParams: [{ mode: "required", type: DYN }],
+      },
     },
     // node:stream/web re-exports the web stream globals (the same objects);
     // its members lower through the globals' own paths. ReadableStreamTee is
@@ -4301,12 +4331,13 @@ export function stdlibMemberFence(lowerer: Lowerer, access: ts.PropertyAccessExp
     member === "toLocaleUpperCase"
   ) {
     hint =
-      "collation and locale negotiation stay outside the static runtime (the localeCompare " +
-      "stance: code-unit order, no collation) — what lowers: Intl.NumberFormat and " +
-      "Intl.DateTimeFormat objects with format(), the toLocaleString(), toLocaleDateString() " +
-      'and toLocaleTimeString() forms with a locale and options (the default locale, "en-US" ' +
-      'or "en"), and Intl.Segmenter with grapheme or word granularity; sentence segmentation, ' +
-      "resolvedOptions, and the remaining Intl constructors remain unsupported";
+      "collation and the remaining Intl surfaces stay outside the static runtime (the " +
+      "localeCompare stance: code-unit order, no collation) — what lowers: Intl.NumberFormat " +
+      "and Intl.DateTimeFormat objects with format(), the toLocaleString(), " +
+      "toLocaleDateString() and toLocaleTimeString() forms with a locale and options (the " +
+      "default locale, or one string tag validated and negotiated as Node does), and " +
+      "Intl.Segmenter with grapheme or word granularity; sentence segmentation, " +
+      "resolvedOptions, locale lists, and the remaining Intl constructors remain unsupported";
   } else if (container === "Object" && member === "assign") {
     hint =
       "spread instead: { ...a, ...b } builds the merged record; what lowers: the empty-target " +

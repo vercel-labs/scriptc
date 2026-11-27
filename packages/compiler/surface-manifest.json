@@ -1894,6 +1894,12 @@
       "note": "the lowered call resolves a string-literal specifier against a static base (import.meta.url, __filename, or a path or file: URL literal) at build time and answers Node's nearest package.json; a runtime-computed specifier or base cannot exist in a compiled binary's fixed module graph"
     },
     {
+      "id": "node-builtin.module.findSourceMap",
+      "kind": "node-builtin",
+      "name": "module.findSourceMap",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.module.flushCompileCache",
       "kind": "node-builtin",
       "name": "module.flushCompileCache",
@@ -1906,12 +1912,24 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.module.getSourceMapsSupport",
+      "kind": "node-builtin",
+      "name": "module.getSourceMapsSupport",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.module.isBuiltin",
       "kind": "node-builtin",
       "name": "module.isBuiltin",
       "status": "unsupported",
       "code": "SC2020",
       "note": "the lowered call checks a string against the baked Node v24 list, including bare/node: aliases and prefix-only builtins"
+    },
+    {
+      "id": "node-builtin.module.setSourceMapsSupport",
+      "kind": "node-builtin",
+      "name": "module.setSourceMapsSupport",
+      "status": "static"
     },
     {
       "id": "node-builtin.module.syncBuiltinESMExports",
@@ -6241,9 +6259,8 @@
       "id": "stdlib.response.static.error",
       "kind": "stdlib",
       "name": "Response.error",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Node 24.22.1 / Undici 7.30.1; Response static constructor-object operations have no compiler lowering"
+      "status": "static",
+      "note": "Node 24.22.1 / Undici 7.30.1; facets: identity, state-machine; supported scope: the error response: type error, status 0, null body, immutable empty headers; differential evidence: fixture:static"
     },
     {
       "id": "stdlib.response.static.json",
@@ -6256,9 +6273,8 @@
       "id": "stdlib.response.static.redirect",
       "kind": "stdlib",
       "name": "Response.redirect",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Node 24.22.1 / Undici 7.30.1; Response static constructor-object operations have no compiler lowering"
+      "status": "static",
+      "note": "Node 24.22.1 / Undici 7.30.1; facets: webidl-conversion, error-shape, state-machine; supported scope: an absolute URL as the Location header and one of the redirect statuses 301, 302, 303, 307 or 308 (WebIDL truncation; any other code is Node's RangeError), immutable headers; differential evidence: fixture:static"
     },
     {
       "id": "stdlib.response.status",
@@ -6285,9 +6301,8 @@
       "id": "stdlib.response.type",
       "kind": "stdlib",
       "name": "Response.type",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Node 24.22.1 / Undici 7.30.1; the member is outside the native static handle projection"
+      "status": "static",
+      "note": "Node 24.22.1 / Undici 7.30.1; facets: property-read; differential evidence: fixture:static"
     },
     {
       "id": "stdlib.response.url",

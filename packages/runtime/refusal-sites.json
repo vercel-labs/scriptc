@@ -272,12 +272,6 @@
  {
   "file": "scr_console_native.c",
   "function": "scr_console_inst_get",
-  "message": "Stored Console instance methods have no lowering; call them on the instance",
-  "code": "SC2020"
- },
- {
-  "file": "scr_console_native.c",
-  "function": "scr_console_inst_get",
   "message": "This Console instance member has no lowering",
   "code": "SC2020"
  },
@@ -837,6 +831,12 @@
   "file": "scr_http.c",
   "function": "scr_http_agent_create_connection_check",
   "message": "https.Agent createConnection (a TLS dial from an options record) is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_http.c",
+  "function": "scr_http_agent_create_connection_check",
+  "message": "createConnection on an Agent this compiled program did not create is not supported yet",
   "code": "SC2020"
  },
  {
@@ -1449,6 +1449,12 @@
   "file": "scr_json.c",
   "function": "scr_error_capture_stack_trace",
   "message": "Error.captureStackTrace on this object is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_lib.c",
+  "function": "scr_module_extensions_refuse",
+  "message": "require.extensions handlers are part of the standard library types but have no scriptc lowering yet",
   "code": "SC2020"
  },
  {

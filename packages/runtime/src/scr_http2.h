@@ -94,6 +94,20 @@ void scr_http2_session_destroy(ScrH2Session *s);
 /* setLocalWindowSize(windowSize): validated, then a no-op (Node 24). */
 void scr_http2_session_set_local_window_size(ScrH2Session *s, double window_size);
 void scr_http2_session_on_close(ScrH2Session *s, ScrClosure *cb /*moves*/, bool once);
+/* The session's 'timeout' (the socket's idle timer, forwarded), and
+ * setTimeout(msecs[, callback]) — the callback a once listener. */
+void scr_http2_session_on_timeout(ScrH2Session *s, ScrClosure *cb /*moves*/, bool once);
+void scr_http2_session_set_timeout(ScrH2Session *s, double msecs);
+void scr_http2_session_set_timeout_cb(ScrH2Session *s, double msecs, ScrClosure *cb /*moves*/);
+/* session.ref()/unref(): the underlying socket's loop reference. */
+void scr_http2_session_set_ref(ScrH2Session *s, bool ref);
+void scr_http2_session_ref(ScrH2Session *s);
+void scr_http2_session_unref(ScrH2Session *s);
+/* session.goaway([code][, lastStreamID][, opaqueData]): an explicit GOAWAY
+ * frame; a zero or negative lastStreamID is the last processed peer
+ * stream (Node's default), opaqueData appends to the frame. */
+void scr_http2_session_goaway(ScrH2Session *s, double code, double last_stream_id,
+                              ScrBytes *opaque /*borrowed, nullable*/);
 void scr_http2_session_on_error(ScrH2Session *s, ScrClosure *cb /*moves*/, ScrChildErrFn fn, bool once);
 void scr_http2_server_on_session_error(ScrNetServer *s, ScrClosure *cb /*moves*/,
                                        ScrH2SessionErrorFn fn, bool once);
@@ -232,6 +246,7 @@ void scr_http2_session_thunk0(ScrClosure *cb, ScrH2Session *sess);
 void scr_http2_connect_thunk2(ScrClosure *cb, ScrH2Session *sess, ScrNetSocket *sock);
 void scr_http2_connect_thunk1(ScrClosure *cb, ScrH2Session *sess, ScrNetSocket *sock);
 void scr_http2_connect_thunk0(ScrClosure *cb, ScrH2Session *sess, ScrNetSocket *sock);
+void scr_http2_goaway_thunk3(ScrClosure *cb, double code, double last, ScrBytes *opaque);
 void scr_http2_goaway_thunk2(ScrClosure *cb, double code, double last, ScrBytes *opaque);
 void scr_http2_goaway_thunk1(ScrClosure *cb, double code, double last, ScrBytes *opaque);
 void scr_http2_goaway_thunk0(ScrClosure *cb, double code, double last, ScrBytes *opaque);
@@ -294,6 +309,10 @@ void scr_tls_fetch_client_wrap(ScrNetSocket *sock, void *ctx);
 void *scr_tls_fetch_tunnel_ctx(ScrStr *proxy_host /*borrowed*/, ScrStr *target_host /*borrowed, nullable*/,
                                const char *request, size_t len);
 void scr_tls_fetch_tunnel_wrap(ScrNetSocket *sock, void *ctx);
+/* Give back a transport context that never reached its socket: the fetch
+ * unit owns it until the wrap hook takes it. */
+void scr_tls_fetch_ctx_release(void *ctx);
+void scr_tls_fetch_tunnel_ctx_release(void *ctx);
 /* The loop-side registration (scr_async.c, always linked): `pending`
  * joins the exhaustion test (a live handle keeps the process alive, like
  * Node's active TCP handles), `dispatch` runs at every turn top like the

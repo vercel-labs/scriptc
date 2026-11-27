@@ -860,7 +860,11 @@ struct ScrH2Session {
    * in a later GOAWAY, so the shutdown notice repeats it (nghttp2). */
   uint32_t goaway_last_stream_id;
   ScrNetSocket *sock;   /* +1; dropped (NULLed) when the socket closes */
-  ScrH2SrvCtx *srv;     /* +1; NULL on client sessions */
+  ScrH2SrvCtx *srv;
+  /* Node captures the server's timeout policy when a session is accepted:
+   * whether the server-level timeout forwards to its listeners is fixed for
+   * this session, whatever server.timeout becomes later. */
+  bool srv_timeout_forward;     /* +1; NULL on client sessions */
   /* frame reassembly */
   char *rbuf;
   size_t rlen, rcap;
@@ -4734,6 +4738,10 @@ static void scr_h2_srv_ctx_free_v(void *p) { scr_h2_srv_ctx_release((ScrH2SrvCtx
 
 static void scr_h2_srv_ctx_settle(void *p) {
   ScrH2SrvCtx *ctx = (ScrH2SrvCtx *)p;
+  /* a settled server keeps no listeners: a timeout callback that captures
+   * its server would otherwise close a refcount cycle the collector cannot
+   * trace */
+  scr_net_ls_drop(&ctx->timeout_ls);
   scr_net_ls_drop(&ctx->stream_ls);
   scr_net_ls_drop(&ctx->session_ls);
   scr_net_ls_drop(&ctx->request_ls);
@@ -4775,8 +4783,7 @@ static bool scr_h2_srv_socket_timeout(void *ctx) {
    * the socket itself. A timer the SESSION armed (session.setTimeout) is not
    * the server's: its own listeners fire below and the server does nothing. */
   if (s == NULL || s->destroyed || s->srv == NULL) return true;
-  ScrNetServer *netsrv = s->sock != NULL ? scr_net_sock_server(s->sock) : NULL;
-  if (netsrv == NULL || !(scr_net_server_idle_ms(netsrv) > 0)) return true;
+  if (!s->srv_timeout_forward) return true;
   ScrH2SrvCtx *srv = s->srv;
   size_t n = srv->timeout_ls.n;
   if (n > 0) {
@@ -4791,7 +4798,10 @@ static bool scr_h2_srv_socket_timeout(void *ctx) {
     scr_dyn_this_pop();
     free(snap);
   }
-  if (!scr_exc_pending() && srv->timeout_ls.n == 0) scr_http2_session_destroy(s);
+  /* the count is the one taken before firing: a once listener that just ran
+   * was a listener, so the timeout was handled (Node destroys only when no
+   * listener exists) */
+  if (!scr_exc_pending() && n == 0) scr_http2_session_destroy(s);
   return true;
 }
 
@@ -4810,9 +4820,11 @@ static void scr_h2_on_connection(void *ctx, ScrNetSocket *sock) {
   scr_net_sock_set_native_events(sock, &scr_h2_on_timeout, &scr_h2_on_err);
   scr_net_sock_set_native_http_timeout(sock, &scr_h2_srv_socket_timeout);
   /* the server's own idle timeout (server.timeout / setTimeout) arms each
-   * accepted session's socket, as Node's Http2Server applies it per session */
+   * accepted session's socket, as Node's Http2Server applies it per session —
+   * and the forwarding decision is captured here, as Node captures it */
   ScrNetServer *netsrv = scr_net_sock_server(sock);
   double server_idle_ms = netsrv != NULL ? scr_net_server_idle_ms(netsrv) : 0;
+  sess->srv_timeout_forward = server_idle_ms > 0;
   if (server_idle_ms > 0) scr_net_sock_set_timeout(sock, server_idle_ms);
   scr_net_sock_set_h2_bound(sock);
   scr_h2_send_settings(sess);
@@ -5103,9 +5115,11 @@ ScrH2Session *scr_http2_perform_server_handshake(ScrNetSocket *sock /*borrowed*/
   scr_net_sock_set_native_events(sock, &scr_h2_on_timeout, &scr_h2_on_err);
   scr_net_sock_set_native_http_timeout(sock, &scr_h2_srv_socket_timeout);
   /* the server's own idle timeout (server.timeout / setTimeout) arms each
-   * accepted session's socket, as Node's Http2Server applies it per session */
+   * accepted session's socket, as Node's Http2Server applies it per session —
+   * and the forwarding decision is captured here, as Node captures it */
   ScrNetServer *netsrv = scr_net_sock_server(sock);
   double server_idle_ms = netsrv != NULL ? scr_net_server_idle_ms(netsrv) : 0;
+  sess->srv_timeout_forward = server_idle_ms > 0;
   if (server_idle_ms > 0) scr_net_sock_set_timeout(sock, server_idle_ms);
   scr_net_sock_set_h2_bound(sock);
   scr_h2_send_settings(sess);
@@ -5203,12 +5217,6 @@ ScrH2Session *scr_http2_connect(ScrStr *url /*borrowed*/, bool reject_unauthoriz
   scr_net_sock_set_native_reader(sock, &scr_h2_on_data, &scr_h2_on_eof, &scr_h2_on_closed,
                                   s, &scr_h2_session_ctx_free);
   scr_net_sock_set_native_events(sock, &scr_h2_on_timeout, &scr_h2_on_err);
-  scr_net_sock_set_native_http_timeout(sock, &scr_h2_srv_socket_timeout);
-  /* the server's own idle timeout (server.timeout / setTimeout) arms each
-   * accepted session's socket, as Node's Http2Server applies it per session */
-  ScrNetServer *netsrv = scr_net_sock_server(sock);
-  double server_idle_ms = netsrv != NULL ? scr_net_server_idle_ms(netsrv) : 0;
-  if (server_idle_ms > 0) scr_net_sock_set_timeout(sock, server_idle_ms);
   scr_net_sock_set_h2_bound(sock);
   scr_net_sock_set_native_established(sock, &scr_h2_on_established);
   scr_net_sock_write_native(sock, SCR_H2_PREFACE, 24);

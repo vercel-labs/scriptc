@@ -145,5 +145,96 @@ describe.skipIf(!sanitize || process.platform !== "linux")(
         }
       },
     );
+
+    test("every certificate shape links and runs", { timeout: 300_000 }, async () => {
+      const cases: { name: string; file: string; source: string[]; stdout: string }[] = [
+        {
+          name: "typed-without-publickey",
+          file: "main.ts",
+          source: [
+            'import { X509Certificate } from "node:crypto";',
+            "",
+            "const PEM = `" + PEM + "`;",
+            "const cert = new X509Certificate(PEM);",
+            'console.log("typed", cert.subject.length > 0, cert.checkHost("www.example.com"));',
+            "",
+          ],
+          stdout: "typed true *.example.com\n",
+        },
+        {
+          name: "typed-with-publickey",
+          file: "main.ts",
+          source: [
+            'import { X509Certificate } from "node:crypto";',
+            "",
+            "const PEM = `" + PEM + "`;",
+            "const cert = new X509Certificate(PEM);",
+            'console.log("typed pk", cert.publicKey.asymmetricKeyType);',
+            "",
+          ],
+          stdout: "typed pk ec\n",
+        },
+        {
+          name: "plain-dynamic",
+          file: "main.mjs",
+          source: [
+            'import { X509Certificate } from "node:crypto";',
+            "",
+            "const PEM = `" + PEM + "`;",
+            "const cert = new X509Certificate(PEM);",
+            "const held = cert;",
+            'console.log("dynamic", JSON.stringify(Object.keys(held)), String(held).length > 0);',
+            "",
+          ],
+          stdout: "dynamic [] true\n",
+        },
+        {
+          name: "props-using",
+          file: "main.mjs",
+          source: [
+            'import { X509Certificate } from "node:crypto";',
+            "",
+            "const PEM = `" + PEM + "`;",
+            'const res = new Response("x");',
+            "res.custom = 1;",
+            "const cert = new X509Certificate(PEM);",
+            "const held = cert;",
+            "Object.freeze(held);",
+            'console.log("props", res.custom, Object.isFrozen(held), held.subject.length > 0);',
+            "",
+          ],
+          stdout: "props 1 true true\n",
+        },
+      ];
+      for (const one of cases) {
+        const dir = mkdtempSync(join(tmpdir(), `scriptc-x509-link-${one.name}-`));
+        try {
+          const entry = join(dir, one.file);
+          writeFileSync(entry, one.source.join("\n"));
+          const outDir = join(cacheDir, `x509-shape-${one.name}`);
+          mkdirSync(outDir, { recursive: true });
+          const result = await compile(entry, {
+            outPath: join(outDir, "program"),
+            outDir,
+            sanitize: true,
+            backend: "llvm",
+          });
+          if (!result.ok) {
+            throw new Error(
+              `${one.name} failed to compile:\n` +
+                result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"),
+            );
+          }
+          const run = await execFileAsync(result.binaryPath, [], {
+            env: { ...process.env, ASAN_OPTIONS: "detect_leaks=1" },
+            maxBuffer: 16 * 1024 * 1024,
+          });
+          expect(run.stdout, one.name).toBe(one.stdout);
+          expect(run.stderr, one.name).toBe("");
+        } finally {
+          rmSync(dir, { recursive: true, force: true });
+        }
+      }
+    });
   },
 );

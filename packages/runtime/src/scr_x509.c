@@ -1920,6 +1920,19 @@ ScrDyn *scr_crypto_x509_legacy_object(ScrBytes *der) {
   return obj;
 }
 
+/* The handle-properties unit's hooks (scr_dyn.h): a program that links this
+ * unit without that one resolves the reference weakly to NULL and reports
+ * the release to no one, as the fetch unit does (scr_fetch.c). */
+extern SCR_TL const ScrDynHandlePropsHooks *scr_dyn_handle_props_hooks __attribute__((weak));
+
+/* The pki unit's certificate-key calls (scr_pki.c): a program that carries a
+ * certificate statically does not link it, so the dynamic handle's members
+ * answer a refusal there; a dynamic certificate links it through
+ * crypto.x509Dyn (runtime-features.ts). */
+extern ScrDyn *scr_crypto_x509_public_key(ScrBytes *der) __attribute__((weak));
+extern bool scr_crypto_x509_verify(ScrBytes *der, ScrDyn *key) __attribute__((weak));
+extern bool scr_crypto_x509_check_private_key(ScrBytes *der, ScrDyn *key) __attribute__((weak));
+
 /* ── the dynamic representation ───────────────────────────────────────── */
 
 /* An X509Certificate that crossed into a dynamic slot: the DER the record
@@ -1950,7 +1963,8 @@ static void scr_x509_dyn_gcfree(void *ptr) {
   ScrX509Dyn *h = ptr;
   /* The handle-property unit's slot for this handle goes with it (the table
    * is ours), as the fetch classes report. */
-  if (scr_dyn_handle_props_hooks && scr_dyn_handle_props_hooks->released)
+  if (&scr_dyn_handle_props_hooks != NULL && scr_dyn_handle_props_hooks != NULL &&
+      scr_dyn_handle_props_hooks->released)
     scr_dyn_handle_props_hooks->released(h);
   if (h->der) scr_bytes_release(h->der);
   h->der = NULL;
@@ -2009,6 +2023,15 @@ static ScrDyn *scr_x509_optional_text(ScrStr *text) {
 
 #define SCR_X509_IS(s) (key_len == sizeof(s) - 1 && memcmp(key, s, sizeof(s) - 1) == 0)
 
+/* A member whose pki unit a static-only program does not link. */
+static void scr_x509_unlinked(const char *what) {
+  char message[96];
+  int n = snprintf(message, sizeof message, "%s needs a dynamically carried certificate", what);
+  if (n < 0) n = 0;
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message,
+                           (size_t)n < sizeof message ? (size_t)n : sizeof message - 1, "SC2020");
+}
+
 static ScrDyn *scr_x509_dyn_get(void *p, const char *key, size_t key_len) {
   ScrX509Dyn *h = p;
   ScrBytes *der = h->der;
@@ -2046,7 +2069,13 @@ static ScrDyn *scr_x509_dyn_get(void *p, const char *key, size_t key_len) {
     scr_str_release(text);
     return scr_dyn_native_date_from_ms(ms);
   }
-  if (SCR_X509_IS("publicKey")) return scr_crypto_x509_public_key(der);
+  if (SCR_X509_IS("publicKey")) {
+    if (!scr_crypto_x509_public_key) {
+      scr_x509_unlinked("X509Certificate.publicKey");
+      return NULL;
+    }
+    return scr_crypto_x509_public_key(der);
+  }
   /* A certificate built from PEM or DER carries no issuer chain (Node
    * answers undefined for one too). */
   if (SCR_X509_IS("issuerCertificate")) return scr_dyn_undefined();
@@ -2080,9 +2109,20 @@ static ScrDyn *scr_x509_dyn_invoke(void *p, ScrDyn *self, const char *method, Sc
   if (SCR_X509_IS("checkEmail"))
     return scr_x509_optional_text(scr_crypto_x509_check_email(h->der, a0, a1));
   if (SCR_X509_IS("checkIP")) return scr_x509_optional_text(scr_crypto_x509_check_ip(h->der, a0, a1));
-  if (SCR_X509_IS("verify")) return scr_dyn_new_bool(scr_crypto_x509_verify(h->der, a0));
-  if (SCR_X509_IS("checkPrivateKey"))
+  if (SCR_X509_IS("verify")) {
+    if (!scr_crypto_x509_verify) {
+      scr_x509_unlinked("X509Certificate.verify");
+      return NULL;
+    }
+    return scr_dyn_new_bool(scr_crypto_x509_verify(h->der, a0));
+  }
+  if (SCR_X509_IS("checkPrivateKey")) {
+    if (!scr_crypto_x509_check_private_key) {
+      scr_x509_unlinked("X509Certificate.checkPrivateKey");
+      return NULL;
+    }
     return scr_dyn_new_bool(scr_crypto_x509_check_private_key(h->der, a0));
+  }
   if (SCR_X509_IS("checkIssued")) {
     ScrBytes *other = scr_x509_dyn_der_of(a0);
     if (!other) return NULL;

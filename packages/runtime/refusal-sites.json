@@ -2520,6 +2520,12 @@
   "code": "SC2020"
  },
  {
+  "file": "scr_x509.c",
+  "function": "scr_x509_unlinked",
+  "message": "%s needs a dynamically carried certificate",
+  "code": "SC2020"
+ },
+ {
   "file": "scr_zlib_stream.c",
   "function": "scr_zs_unsupported",
   "message": "",

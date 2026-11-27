@@ -284,6 +284,8 @@ export const FETCH_AMBIENT_TYPES = [
   "CountQueuingStrategy",
   "ByteLengthQueuingStrategy",
   "TextEncoderStream",
+  "CompressionStream",
+  "DecompressionStream",
   "TextDecoderStream",
   "QueuingStrategy",
   "Blob",

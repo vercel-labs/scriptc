@@ -532,6 +532,12 @@ export const LINK_FEATURE_REQUIREMENTS: readonly LinkFeatureRequirement[] = [
   // inspect unit's console entries, and colorMode 'auto' reads the
   // environment's color depth (scr_tty_colors.c).
   { feature: "consoleOptions", requires: ["inspect"] },
+  // scr_webstreams.c runs its stream algorithms through the checked-dynamic
+  // async unit (promise reactions, scratch streams) and calls the program's
+  // callbacks through the dyn-invoke unit; the compression streams'
+  // webstream.compressClass reaches the unit without any other call that
+  // would select them, so the requirement is stated here.
+  { feature: "webStreams", requires: ["dynAsync", "dynInvoke"] },
   { feature: "fsOpenAsBlob", requires: ["fileHandle", "dynAsync"] },
 ];
 

@@ -1803,6 +1803,14 @@ function functionShadowsMember(fn: IrFunction): boolean {
   return found;
 }
 
+/** The class-table entries for the compression streams: a program that can
+ * read the classes through the global object emits these without naming the
+ * classes, and the unit that answers them links the zlib and Brotli engines. */
+const COMPRESSION_CLASS_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
+  "webstream.compressClass",
+  "webstream.compressInstanceOf",
+]);
+
 /** One rule per runtime feature, sorted by name. A new feature is an
  * entry here and its line in noRuntimeFeatures; RuntimeFeatures, the scan
  * and its early exit derive from this table. The lists above keep one
@@ -2498,6 +2506,10 @@ const RUNTIME_FEATURE_RULES = {
       // ERR_ARG_NOT_ITERABLE renders the value as util.format's %s does.
       "webstream.class",
       "webstream.from",
+      // The compression streams' class and brand test link the web stream
+      // unit too.
+      "webstream.compressClass",
+      "webstream.compressInstanceOf",
       // Readable.toWeb links the web stream unit, which renders a
       // non-iterable source (and a thrown member) through inspect.
       "webstream.toWebReadable",
@@ -2988,10 +3000,10 @@ const RUNTIME_FEATURE_RULES = {
       "process.stdinIsRaw",
     ],
   }),
-  zlib: rule({ prefixes: ["zlib."] }),
+  zlib: rule({ prefixes: ["zlib."], fns: [...COMPRESSION_CLASS_FNS] }),
   /** node:zlib's Brotli forms: zlib.brotliInstall, which %main calls when
    * the program uses Brotli (scr_brotli.c). */
-  brotli: rule({ fns: ["zlib.brotliInstall"] }),
+  brotli: rule({ fns: ["zlib.brotliInstall", "zlib.compressionStream", ...COMPRESSION_CLASS_FNS] }),
   /** node:zlib's zstd forms: zlib.zstdInstall, which %main calls when the
    * program uses zstd (scr_zstd.c). */
   zstd: rule({ fns: ["zlib.zstdInstall"] }),

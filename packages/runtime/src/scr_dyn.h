@@ -1652,6 +1652,10 @@ ScrDyn *scr_dyn_new_typed_ref_traced(
     const char *type_key, size_t type_key_len,
     ScrDyn *(*materialize)(void *),
     void (*commit)(void *, const ScrDyn *));
+/* Intern a type key built at run time (a stack buffer): the typed reference
+ * stores the returned pointer, which lives as long as the process. */
+const char *scr_dyn_type_key_intern(const char *key, size_t len);
+
 ScrDyn *scr_dyn_new_typed_ref_observed(
     void *ptr, void *(*retain)(void *), void (*release)(void *),
     const char *type_key, size_t type_key_len,

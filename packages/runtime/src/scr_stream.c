@@ -792,8 +792,13 @@ static void scr_stream_emit_stream(ScrStream *s, const char *name, ScrStream *pa
     char key[64];
     int key_len =
         snprintf(key, sizeof key, "object:%%%s", payload->cls != NULL ? payload->cls : "Readable");
+    /* The capsule keeps the key pointer it is given, so the stack buffer is
+     * interned: a listener that keeps the stream value reads a key that
+     * outlives this frame (a later pipe of the same stream compares it). */
+    const char *interned =
+        key_len > 0 ? scr_dyn_type_key_intern(key, (size_t)key_len) : key;
     ScrDyn *arg = scr_dyn_new_typed_ref_traced(
-        payload, scr_stream_retain_v, scr_stream_release_v, key,
+        payload, scr_stream_retain_v, scr_stream_release_v, interned,
         key_len > 0 ? (size_t)key_len : 0, scr_stream_ref_view, NULL);
     bool had = scr_emitter_emit_mixed(em, n, &arg, 1, payload);
     scr_dyn_release(arg);

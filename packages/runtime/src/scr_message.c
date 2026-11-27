@@ -650,7 +650,8 @@ static size_t scr_message_value(ScrMessageEncoder *encoder, const ScrDyn *input)
   }
   default:
 unsupported:
-    scr_throw_domex("DataCloneError", "The value could not be cloned.");
+    /* Node renders the offending value, as the structured clone does. */
+    scr_clone_value_error(value);
     return SIZE_MAX;
   }
   return id;

@@ -294,7 +294,11 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // links no part of the unit.
   unit((u) => u.opts.mutableBuffers === true, "scr_js_buffers.c"),
   unit(
-    (u) => u.opts.eventTarget || u.nativeFetch || u.opts.abortSignal === true,
+    (u) =>
+      u.opts.eventTarget ||
+      u.nativeFetch ||
+      u.opts.webSocket === true ||
+      u.opts.abortSignal === true,
     "scr_event_target.c",
   ),
   unit((u) => u.opts.wasm, "scr_wasm.c"),
@@ -589,6 +593,7 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unitArgs((u) => (u.tlsCa && targetPlatform(u.driver) === "win32" ? ["-lcrypt32"] : [])),
   // Fetch uses the native network, TLS, and HTTP runtime.
   unit((u) => u.nativeFetch, "scr_fetch.c"),
+  unit((u) => u.opts.webSocket === true, "scr_websocket.c"),
   unit(
     (u) => u.opts.nodeIsland === true,
     "scr_node_island.c",

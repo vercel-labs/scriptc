@@ -941,6 +941,9 @@ const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   "perf.histoLinearView",
   "perf.histoLogView",
   "perf.histoPercentilesAtView",
+  // new WebSocket(url[, protocols]): Node's URL and protocol validation
+  // throw catchably (a SyntaxError for the URL, a TypeError for protocols).
+  "websocket.new",
   // Non-TTY stdin: Node's stdin has no setRawMode member, so the call is
   // the exact catchable TypeError.
   "process.stdinSetRawMode",

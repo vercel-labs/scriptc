@@ -121,9 +121,10 @@ typedef enum {
  * always-linked storage or code: a program that never boxes the new handle
  * links byte-identical objects. Raising the capacity is a program-wide
  * layout change; do it in a change of its own, measured as neutral, and
- * only when the tags outgrow it. The compression streams' two tags took the
- * list past 128 to this 160. The tables are thread-local pointer rows, so the
- * capacity changes no per-value representation. */
+ * only when the tags outgrow it. 160: the tags added since the last pin (the
+ * WebSocket client's and the compression streams' among them) took the list
+ * past 128. The tables are thread-local pointer rows, so the capacity
+ * changes no per-value representation. */
 #define SCR_DYNH_CAPACITY 160
 
 /* The handle-type tags the checked-dynamic tree can carry. The set is deliberately the
@@ -291,6 +292,7 @@ typedef enum {
   Y(TRACING) /* trace_events.Tracing (scr_async_dyn.c) */ \
   Y(UTF8_STREAM) /* fs.Utf8Stream (scr_fs_utf8_stream.c) */ \
   Y(WEAK_REF) /* WeakRef (scr_json.c) */ \
+  Y(WEBSOCKET) /* the global WebSocket client (scr_websocket.c) */ \
   Y(WS_COMPRESSION) /* CompressionStream (scr_webstream_compress.c) */ \
   Y(WS_DECOMPRESSION) /* DecompressionStream (scr_webstream_compress.c) */
 
@@ -1379,6 +1381,10 @@ ScrDyn *scr_dyn_negate(const ScrDyn *value);
 /* Internal constructor consumes a retained symbol with its native operations. */
 ScrDyn *scr_dyn_symbol_ref(ScrSym *value, void (*release)(ScrSym *), ScrStr *(*render)(ScrSym *), ScrStr *(*description)(ScrSym *));
 ScrDyn *scr_dyn_new_str(ScrStr *s);
+/* Throws Node's DataCloneError for a value the clone cannot carry:
+ * "<rendered> could not be cloned." with the structured clone's rendering
+ * (defined in scr_json.c). */
+void scr_clone_value_error(const ScrDyn *v);
 ScrDyn *scr_dyn_new_arr(void);
 ScrDyn *scr_dyn_array_constructor(void);
 /* Gives a builtin constructor value (Object, Array, Error) its builtin
@@ -1503,6 +1509,9 @@ ScrDyn *scr_dyn_async_iterator_symbol_value(void);
 /* True when key is Symbol.asyncDispose (registered by the symbol unit when
  * the program names it); handle symbol_get ops outside that unit use it. */
 bool scr_dyn_is_async_dispose_symbol(const ScrDyn *key);
+/* Symbol.asyncDispose as the symbol unit installed it (borrowed), or NULL
+ * before the program names it. */
+ScrDyn *scr_dyn_async_dispose_symbol_value(void);
 /* Whether key is Symbol.dispose (registered by the symbol unit when the
  * program names it). */
 bool scr_dyn_is_dispose_symbol(const ScrDyn *key);

@@ -56450,6 +56450,8 @@
           "tests/corpus/webassembly-typed.ts",
           "tests/corpus/webassembly-worker.ts",
           "tests/corpus/webassembly-wpt-jsapi.mjs",
+          "tests/corpus/websocket-echo.ts",
+          "tests/corpus/websocket-validation.mjs",
           "tests/corpus/webstream-byob-partial-elements-js.mjs",
           "tests/corpus/webstream-byob-reader-js.mjs",
           "tests/corpus/webstream-byob-reader.ts",
@@ -56878,10 +56880,7 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-feature:globals.CompressionStream",
-        "tests": [
-          "tests/diagnostics/compat-absent-web-globals.ts"
-        ]
+        "evidence": "compiler-unmatched:globals"
       },
       "anchorSource": "exact"
     },
@@ -57016,10 +57015,7 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-feature:globals.DecompressionStream",
-        "tests": [
-          "tests/diagnostics/compat-absent-web-globals.ts"
-        ]
+        "evidence": "compiler-unmatched:globals"
       },
       "anchorSource": "exact"
     },
@@ -58069,10 +58065,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:globals.WebSocket",
         "tests": [
-          "tests/diagnostics/compat-absent-web-globals.ts"
+          "tests/corpus/websocket-echo.ts",
+          "tests/corpus/websocket-validation.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -126032,6 +126029,7 @@
           "tests/corpus/native-worker-terminate-suspended.ts",
           "tests/corpus/native-worker-terminate-wait.ts",
           "tests/corpus/port-add-listener-order.mjs",
+          "tests/corpus/port-clone-error-text.mjs",
           "tests/corpus/port-event-name-coercion.mjs",
           "tests/corpus/port-handler-attribute.mjs",
           "tests/corpus/port-listener-bookkeeping.mjs",
@@ -126441,7 +126439,8 @@
           "tests/corpus/native-worker-delayed-messages.ts",
           "tests/corpus/port-post-message-return.mjs",
           "tests/corpus/port-transfer-detached.mjs",
-          "tests/corpus/port-post-self-warning.mjs"
+          "tests/corpus/port-post-self-warning.mjs",
+          "tests/corpus/port-clone-error-text.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -126814,7 +126813,8 @@
           "tests/corpus/native-worker-delayed-messages.ts",
           "tests/corpus/port-post-message-return.mjs",
           "tests/corpus/port-transfer-detached.mjs",
-          "tests/corpus/port-post-self-warning.mjs"
+          "tests/corpus/port-post-self-warning.mjs",
+          "tests/corpus/port-clone-error-text.mjs"
         ]
       },
       "anchorSource": "exact"

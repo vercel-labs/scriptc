@@ -264,6 +264,7 @@ export const FETCH_AMBIENT_TYPES = [
   "CustomEventInit",
   "AbortController",
   "AbortSignal",
+  "WebSocket",
   "PerformanceObserver",
   "PerformanceObserverEntryList",
   "Headers",

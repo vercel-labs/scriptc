@@ -4788,6 +4788,30 @@ export function lowerFileInit(
         loc: loc0,
       });
     }
+    // Node's Module object answers the module's exports object: a view another
+    // module reads (require.cache's entry, a parent's children) holds the one
+    // object the module materializes — the top-level `this` object, or the
+    // object a value use needs when the module has no `this` at all.
+    const materializedExports = exportsObject ?? exportsThis;
+    if (materializedExports !== undefined) {
+      const exportsModuleRef = cjsModuleRef(lowerer, sf);
+      if (exportsModuleRef !== null) {
+        header.push({
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            fn: "module.setExportsDyn",
+            args: [
+              exportsModuleRef,
+              { kind: "varRef", localId: materializedExports.id, type: DYN, loc: loc0 },
+            ],
+            type: VOID,
+            loc: loc0,
+          },
+          loc: loc0,
+        });
+      }
+    }
     // The module's initial `module.exports` IS that same object: Node starts
     // the wrapper with `this === module.exports === exports`, so an identity
     // test before a replacement answers true. A module that never observes

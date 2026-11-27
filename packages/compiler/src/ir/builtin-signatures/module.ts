@@ -37,6 +37,11 @@ export const moduleSignatures = defineLibFnSignatures({
   },
   "module.cacheHas": { argTypes: [STRING], result: BOOL },
   "module.cacheKeys": { argTypes: [], result: arrayOf(STRING) },
+  /** require.cache as a VALUE: the live cache object — one per process, keys
+   * are the loaded modules' filenames and values their Module objects, exactly
+   * the records module.cacheGet/cacheKeys walk (Module._cache answers the same
+   * object). */
+  "module.cacheObject": { argTypes: [], result: DYN },
   /** node:module's compile cache family (scr_module_cache.c). A compiled
    * program loads no JavaScript, so enableCompileCache validates its
    * argument as Node does and answers a fresh { status, message } with the

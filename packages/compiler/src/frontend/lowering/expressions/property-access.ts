@@ -192,7 +192,9 @@ import {
 import {
   isCjsModuleGlobal,
   lowerModuleClassStatic,
+  lowerModuleViewMember,
   lowerNodeModuleProperty,
+  lowerRequireCacheValue,
   lowerRequireExtensionsProperty,
   lowerRequireMainProperty,
 } from "../lower-node-module.js";
@@ -249,6 +251,7 @@ import { lowerProtocolPropertyRead } from "../class-protocol-dispatch.js";
 import { lowerReadlineProperty } from "../builtins/readline.js";
 import { lowerAsyncLocalStorageProperty } from "../builtins/async-context.js";
 import { lowerDOMExceptionStaticProperty, lowerEventStaticProperty } from "../builtins/numbers.js";
+import { lowerWebSocketStaticProperty } from "../builtins/websocket.js";
 import { lowerStreamProperty, lowerStreamStateProperty, streamSidesOf } from "../lower-stream.js";
 import { lowerValueStreamProperty } from "../builtins/hash-stream.js";
 import { lowerEventObjectProperty } from "../lower-event-target.js";
@@ -563,6 +566,11 @@ export function lowerPropertyAccessExpr(
   expr: ts.PropertyAccessExpression,
   loc: SrcLoc,
 ): IrExpr {
+  // `require.cache[file].member` (and the same read through a binding): the
+  // Module view's live member, from the registry — Node's view is the
+  // module's own object, so `exports` is the module's exports object.
+  const moduleViewMember = lowerModuleViewMember(lowerer, expr);
+  if (moduleViewMember) return moduleViewMember;
   // worker.performance: the Worker's event-loop utilization object. It is a
   // runtime call rather than a plain handle read so a program that reads it
   // links the loop metrics and marks the loop's start, which is what the
@@ -1002,6 +1010,10 @@ export function lowerPropertyAccessExpr(
   }
   const requireMain = lowerRequireMainProperty(lowerer, expr);
   if (requireMain) return requireMain;
+  // `require.cache` as a value: the live cache object (Module._cache is the
+  // same object in Node).
+  const requireCacheValue = lowerRequireCacheValue(lowerer, expr);
+  if (requireCacheValue) return requireCacheValue;
   const requireExtensions = lowerRequireExtensionsProperty(lowerer, expr);
   if (requireExtensions) return requireExtensions;
   const moduleProperty = lowerNodeModuleProperty(lowerer, expr);
@@ -1631,6 +1643,7 @@ export function lowerPropertyAccessExpr(
     lowerer.lowerNumberStaticProperty(expr) ??
     lowerEventStaticProperty(lowerer, expr) ??
     lowerDOMExceptionStaticProperty(lowerer, expr) ??
+    lowerWebSocketStaticProperty(lowerer, expr) ??
     lowerer.lowerMathProperty(expr) ??
     lowerer.lowerIntrinsicProperty(expr) ??
     // The _readableState/_writableState scalar READS (the suite's

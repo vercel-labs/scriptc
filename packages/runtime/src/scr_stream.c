@@ -52,6 +52,11 @@
  * no blob unit — the sanitized runtime has no section collection to drop
  * an unused strong reference. */
 ScrDyn *scr_sc_blob_value(ScrBytes *all) __attribute__((weak));
+/* [Symbol.asyncDispose]() hands back a promise, which the checked-dynamic
+ * promise unit boxes. That unit installs this hook at startup when it is
+ * linked, so a program that reads the member without calling it links
+ * without the unit. */
+ScrDyn *(*scr_stream_promise_box_hook)(ScrPromise *) = NULL;
 
 #include <math.h>
 #include <stdio.h>
@@ -9731,6 +9736,12 @@ static ScrDyn *scr_stream_dyn_call(ScrStream *stream, ScrDyn *self, const char *
     ScrError *error = scr_dyn_truthy(first) ? scr_error_from_dyn(first) : NULL;
     scr_stream_release(scr_stream_destroy(stream, error));
     scr_error_release(error);
+  } else if (!strcmp(method, "asyncDispose")) {
+    ScrPromise *p = scr_stream_async_dispose(stream);
+    if (p) {
+      if (scr_stream_promise_box_hook) result = scr_stream_promise_box_hook(p);
+      scr_promise_release(p);
+    }
   } else if (!strcmp(method, "cork")) scr_stream_cork(stream);
   else if (!strcmp(method, "uncork")) scr_stream_uncork(stream);
   if (!result && !scr_exc_pending()) result = self ? scr_dyn_retain(self) : scr_dyn_this_get();
@@ -9855,6 +9866,19 @@ ScrDyn *scr_stream_dyn_view(ScrStream *stream) {
     scr_dyn_obj_set(prototype, "close", 5,
         scr_dyn_new_func(cb, scr_stream_view_call, 0, "native stream method", "close"));
     stream->st->native_ops->view(stream, view);
+  }
+  {
+    ScrDyn *async_dispose_symbol = scr_dyn_async_dispose_symbol_value();
+    if (async_dispose_symbol) {
+      ScrClosure *cb = scr_closure_new((void *)scr_stream_view_call, 2);
+      cb->caps[0] = scr_box_new_obj(scr_stream_retain_v, scr_stream_release_v, scr_stream_trace);
+      cb->caps[1] = scr_box_new(SCR_BOX_STR);
+      scr_box_set_ref(cb->caps[0], scr_stream_retain(stream));
+      scr_box_set_ref(cb->caps[1], scr_str_new("asyncDispose", 12));
+      ScrDyn *fn = scr_dyn_new_func(cb, scr_stream_view_call, 0, "()", "[Symbol.asyncDispose]");
+      scr_dyn_symbol_key_set(prototype, async_dispose_symbol, fn);
+      scr_dyn_release(fn);
+    }
   }
   ScrDyn *attached = scr_dyn_set_prototype(view, prototype);
   scr_dyn_release(attached);

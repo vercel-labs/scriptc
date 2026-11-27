@@ -7695,13 +7695,16 @@ static bool sp_dh_params_equal(const SpKey *a, const SpKey *b) {
  * or a secret of 0, 1 or p - 1, fails as OpenSSL's derivation does. NULL
  * with the error pending. */
 /* The DH parameter sets OpenSSL recognizes by their p and g. The
- * safe-prime groups derive with the generator 2: a peer outside [2, p - 2]
- * (the only elements of their small counter-subgroup) fails with Node's
- * uncoded derivation error, and every value inside the range derives. The
- * RFC 5114 sets carry a q because their primes are not safe, and their
- * peers face OpenSSL's coded range and subgroup check-pubkey errors.
- * Parameters matching neither (an explicit prime) get the coded range
- * errors and no subgroup test, as OpenSSL without a q does. */
+ * safe-prime groups it recognizes at 1536 bits and above (modp5, modp14
+ * through modp18 and the ffdhe sets) derive with the generator 2: a peer
+ * outside [2, p - 2] (the only elements of their small counter-subgroup)
+ * fails with Node's uncoded derivation error, and every value inside the
+ * range derives. The RFC 5114 sets carry a q because their primes are not
+ * safe, and their peers face OpenSSL's coded range and subgroup
+ * check-pubkey errors. Parameters matching neither (modp1 and modp2,
+ * which OpenSSL keeps as explicit parameters, and an explicit prime) get
+ * the coded range errors and no subgroup test, as OpenSSL without a q
+ * does. */
 typedef struct {
   const unsigned char *p;
   size_t p_len;
@@ -7714,8 +7717,6 @@ typedef struct {
 static const unsigned char sp_dh_two[] = {2};
 
 static const SpDhKnownGroup sp_dh_known_groups[] = {
-  {scr_dh_modp1_p, sizeof scr_dh_modp1_p, sp_dh_two, sizeof sp_dh_two, NULL, 0},
-  {scr_dh_modp2_p, sizeof scr_dh_modp2_p, sp_dh_two, sizeof sp_dh_two, NULL, 0},
   {scr_dh_modp5_p, sizeof scr_dh_modp5_p, sp_dh_two, sizeof sp_dh_two, NULL, 0},
   {scr_dh_modp14_p, sizeof scr_dh_modp14_p, sp_dh_two, sizeof sp_dh_two, NULL, 0},
   {scr_dh_modp15_p, sizeof scr_dh_modp15_p, sp_dh_two, sizeof sp_dh_two, NULL, 0},

@@ -1,9 +1,11 @@
 // crypto.diffieHellman with DH KeyObjects checks the peer value the way
-// OpenSSL reports it for each parameter set: a named safe-prime group (the
-// modp groups here) answers a peer outside [2, p - 2] with the uncoded
-// "Deriving bits failed" error and derives any value inside it; the RFC
-// 5114 sets, whose primes are not safe, answer the coded too-small,
-// too-large and outside-the-subgroup errors.
+// OpenSSL reports it for each parameter set: the safe-prime groups OpenSSL
+// recognizes (modp5 and up, the ffdhe sets) answer a peer outside
+// [2, p - 2] with the uncoded "Deriving bits failed" error and derive any
+// value inside it; the RFC 5114 sets, whose primes are not safe, answer the
+// coded too-small, too-large and outside-the-subgroup errors; parameters
+// OpenSSL keeps as explicit (modp1 and modp2, an explicit prime) answer the
+// coded range errors.
 import * as crypto from "node:crypto";
 
 const A_PRIV = `-----BEGIN PRIVATE KEY-----
@@ -58,6 +60,14 @@ CXvY/hf68OGBSlYdERkLMSjpZiVeKZlK/pTBPEZ8BtP7huANJhP5gC7CSmpMpPeR
 x67B5ED9Mz1O3lV9Q1izUu8EEKVrRpE/OI7CSLNVZL2rzpcGoDYyNAc=
 -----END PUBLIC KEY-----
 `;
+const M1_PRIV = `-----BEGIN PRIVATE KEY-----
+MIHcAgEAMHMGCSqGSIb3DQEDATBmAmEA///////////JD9qiIWjCNMTGYouA3BzR
+KQJOCIpnzHQCC76mOxObIlFKCHmONATd75UZs806QxswKwpt8l8UN0/hNW1tUcJF
+5IW1dmJefsb0TELppjo2IP//////////AgECBGICYDzlDGGPAE2bXc9y5gzPMDed
+WZTBshkAqUJWJvOmELthagilp9+XH04qp7Rtcnlo6WU1TZYJ20OSUis4CCY5zHgu
+++yh3/i7F7fV8C+Jy8EA09K6AhU/Bt2L6pblPkHB9Q==
+-----END PRIVATE KEY-----
+`;
 const M14_PRIV = `-----BEGIN PRIVATE KEY-----
 MIIBPwIBADCCARcGCSqGSIb3DQEDATCCAQgCggEBAP//////////yQ/aoiFowjTE
 xmKLgNwc0SkCTgiKZ8x0Agu+pjsTmyJRSgh5jjQE3e+VGbPNOkMbMCsKbfJfFDdP
@@ -73,6 +83,7 @@ const aPriv = crypto.createPrivateKey(A_PRIV);
 const bPriv = crypto.createPrivateKey(B_PRIV);
 const bPub = crypto.createPublicKey(B_PUB);
 const m14Priv = crypto.createPrivateKey(M14_PRIV);
+const m1Priv = crypto.createPrivateKey(M1_PRIV);
 
 const ab = crypto.diffieHellman({ privateKey: aPriv, publicKey: bPub });
 const ba = crypto.diffieHellman({ privateKey: bPriv, publicKey: aPriv });
@@ -100,3 +111,7 @@ attempt("modp14 y=1", m14Priv, "MIIBITCCARcGCSqGSIb3DQEDATCCAQgCggEBAP//////////
 attempt("modp14 y=p-1", m14Priv, "MIICJTCCARcGCSqGSIb3DQEDATCCAQgCggEBAP//////////yQ/aoiFowjTExmKLgNwc0SkCTgiKZ8x0Agu+pjsTmyJRSgh5jjQE3e+VGbPNOkMbMCsKbfJfFDdP4TVtbVHCReSFtXZiXn7G9ExC6aY37WsL/1y29Aa37e44a/taiZ+lrp8kEXxLH+ZJKGZR7ORbPcIAfLihY78FmNpINhxV05ppFj+o/STPX4NlXSPco62WHGLzViCFUrue1SkHcJaWbWcMNU5KvJgE8XRsCMoYIXwykF5GLjbOO+OedywYDoYDmyeDouwHoo+1xV3wb0xSyd4ry/aVWBcYOZVJfOqVauUV0iYYmPoFEBVyjlqKrKpo//////////8CAQIDggEGAAKCAQEA///////////JD9qiIWjCNMTGYouA3BzRKQJOCIpnzHQCC76mOxObIlFKCHmONATd75UZs806QxswKwpt8l8UN0/hNW1tUcJF5IW1dmJefsb0TELppjftawv/XLb0Brft7jhr+1qJn6WunyQRfEsf5kkoZlHs5Fs9wgB8uKFjvwWY2kg2HFXTmmkWP6j9JM9fg2VdI9yjrZYcYvNWIIVSu57VKQdwlpZtZww1Tkq8mATxdGwIyhghfDKQXkYuNs474553LBgOhgObJ4Oi7Aeij7XFXfBvTFLJ3ivL9pVYFxg5lUl86pVq5RXSJhiY+gUQFXKOWoqsqmj//////////g==");
 attempt("modp14 y=p-2", m14Priv, "MIICJTCCARcGCSqGSIb3DQEDATCCAQgCggEBAP//////////yQ/aoiFowjTExmKLgNwc0SkCTgiKZ8x0Agu+pjsTmyJRSgh5jjQE3e+VGbPNOkMbMCsKbfJfFDdP4TVtbVHCReSFtXZiXn7G9ExC6aY37WsL/1y29Aa37e44a/taiZ+lrp8kEXxLH+ZJKGZR7ORbPcIAfLihY78FmNpINhxV05ppFj+o/STPX4NlXSPco62WHGLzViCFUrue1SkHcJaWbWcMNU5KvJgE8XRsCMoYIXwykF5GLjbOO+OedywYDoYDmyeDouwHoo+1xV3wb0xSyd4ry/aVWBcYOZVJfOqVauUV0iYYmPoFEBVyjlqKrKpo//////////8CAQIDggEGAAKCAQEA///////////JD9qiIWjCNMTGYouA3BzRKQJOCIpnzHQCC76mOxObIlFKCHmONATd75UZs806QxswKwpt8l8UN0/hNW1tUcJF5IW1dmJefsb0TELppjftawv/XLb0Brft7jhr+1qJn6WunyQRfEsf5kkoZlHs5Fs9wgB8uKFjvwWY2kg2HFXTmmkWP6j9JM9fg2VdI9yjrZYcYvNWIIVSu57VKQdwlpZtZww1Tkq8mATxdGwIyhghfDKQXkYuNs474553LBgOhgObJ4Oi7Aeij7XFXfBvTFLJ3ivL9pVYFxg5lUl86pVq5RXSJhiY+gUQFXKOWoqsqmj//////////Q==");
 attempt("modp14 y=2", m14Priv, "MIIBITCCARcGCSqGSIb3DQEDATCCAQgCggEBAP//////////yQ/aoiFowjTExmKLgNwc0SkCTgiKZ8x0Agu+pjsTmyJRSgh5jjQE3e+VGbPNOkMbMCsKbfJfFDdP4TVtbVHCReSFtXZiXn7G9ExC6aY37WsL/1y29Aa37e44a/taiZ+lrp8kEXxLH+ZJKGZR7ORbPcIAfLihY78FmNpINhxV05ppFj+o/STPX4NlXSPco62WHGLzViCFUrue1SkHcJaWbWcMNU5KvJgE8XRsCMoYIXwykF5GLjbOO+OedywYDoYDmyeDouwHoo+1xV3wb0xSyd4ry/aVWBcYOZVJfOqVauUV0iYYmPoFEBVyjlqKrKpo//////////8CAQIDBAACAQI=");
+attempt("modp1 y=1", m1Priv, "MHswcwYJKoZIhvcNAQMBMGYCYQD//////////8kP2qIhaMI0xMZii4DcHNEpAk4IimfMdAILvqY7E5siUUoIeY40BN3vlRmzzTpDGzArCm3yXxQ3T+E1bW1RwkXkhbV2Yl5+xvRMQummOjYg//////////8CAQIDBAACAQE=");
+attempt("modp1 y=p-1", m1Priv, "MIHbMHMGCSqGSIb3DQEDATBmAmEA///////////JD9qiIWjCNMTGYouA3BzRKQJOCIpnzHQCC76mOxObIlFKCHmONATd75UZs806QxswKwpt8l8UN0/hNW1tUcJF5IW1dmJefsb0TELppjo2IP//////////AgECA2QAAmEA///////////JD9qiIWjCNMTGYouA3BzRKQJOCIpnzHQCC76mOxObIlFKCHmONATd75UZs806QxswKwpt8l8UN0/hNW1tUcJF5IW1dmJefsb0TELppjo2IP/////////+");
+attempt("modp1 y=p-2", m1Priv, "MIHbMHMGCSqGSIb3DQEDATBmAmEA///////////JD9qiIWjCNMTGYouA3BzRKQJOCIpnzHQCC76mOxObIlFKCHmONATd75UZs806QxswKwpt8l8UN0/hNW1tUcJF5IW1dmJefsb0TELppjo2IP//////////AgECA2QAAmEA///////////JD9qiIWjCNMTGYouA3BzRKQJOCIpnzHQCC76mOxObIlFKCHmONATd75UZs806QxswKwpt8l8UN0/hNW1tUcJF5IW1dmJefsb0TELppjo2IP/////////9");
+attempt("modp1 y=2", m1Priv, "MHswcwYJKoZIhvcNAQMBMGYCYQD//////////8kP2qIhaMI0xMZii4DcHNEpAk4IimfMdAILvqY7E5siUUoIeY40BN3vlRmzzTpDGzArCm3yXxQ3T+E1bW1RwkXkhbV2Yl5+xvRMQummOjYg//////////8CAQIDBAACAQI=");

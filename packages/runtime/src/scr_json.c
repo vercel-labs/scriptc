@@ -21252,6 +21252,40 @@ static bool scr_sc_error_view(const ScrDyn *v, const ScrDyn *snapshot) {
          scr_error_is(v->v.typed_ref.ptr);
 }
 
+/* Node's DataCloneError for a value the clone cannot carry:
+ * "<rendered> could not be cloned.", rendering the value as the structured
+ * clone does — a symbol's description, "#<Object>" for a proxy, and the
+ * source text for anything else. The message encoder reports the same way,
+ * which is why this is an entry of the always-linked dynamic core. */
+void scr_clone_value_error(const ScrDyn *v) {
+  if (v->kind == SCR_DYN_SYMBOL) {
+    ScrStr *text = v->v.symbol.render(v->v.symbol.value);
+    static const char tail[] = " could not be cloned.";
+    ScrStr *suffix = scr_str_new(tail, sizeof tail - 1);
+    ScrStr *message = scr_str_concat(text, suffix);
+    scr_throw_domex("DataCloneError", message->data);
+    scr_str_release(message);
+    scr_str_release(suffix);
+    scr_str_release(text);
+    return;
+  }
+  if (v->kind == SCR_DYN_PROXY) {
+    scr_throw_domex("DataCloneError", "#<Object> could not be cloned.");
+    return;
+  }
+  ScrStr *what = scr_dyn_string_coerce(v);
+  static const char suffix[] = " could not be cloned.";
+  size_t len = what->len + sizeof suffix - 1;
+  char *msg = malloc(len + 1);
+  if (!msg) scr_trap("scriptc: out of memory\n");
+  memcpy(msg, what->data, what->len);
+  memcpy(msg + what->len, suffix, sizeof suffix);
+  scr_str_release(what);
+  ScrStr *m = scr_str_new(msg, len);
+  free(msg);
+  scr_throw_domex_str("DataCloneError", m); /* takes ownership of m */
+}
+
 /* The clone is a fresh tree (shared inputs are copied per path, cycles
  * throw), so it is tagged like a parse result (ScrDynRegion); a leaf the
  * region may not hold clears it. An error is the exception: it clones to
@@ -21262,7 +21296,7 @@ static ScrDyn *scr_sc_clone(const ScrDyn *v, const ScrScParent *up, ScrDynRegion
     return NULL;
   }
   if (v->kind == SCR_DYN_PROXY) {
-    scr_throw_domex("DataCloneError", "#<Object> could not be cloned.");
+    scr_clone_value_error(v);
     return NULL;
   }
   /* An error is the value its checked-dynamic node stands for. An object
@@ -21280,17 +21314,9 @@ static ScrDyn *scr_sc_clone(const ScrDyn *v, const ScrScParent *up, ScrDynRegion
     return out;
   }
   switch (v->kind) {
-  case SCR_DYN_SYMBOL: {
-    ScrStr *text = v->v.symbol.render(v->v.symbol.value);
-    static const char tail[] = " could not be cloned.";
-    ScrStr *suffix = scr_str_new(tail, sizeof tail - 1);
-    ScrStr *message = scr_str_concat(text, suffix);
-    scr_throw_domex("DataCloneError", message->data);
-    scr_str_release(message);
-    scr_str_release(suffix);
-    scr_str_release(text);
+  case SCR_DYN_SYMBOL:
+    scr_clone_value_error(v);
     return NULL;
-  }
   case SCR_DYN_UNDEF:
     return scr_dyn_retain(scr_dyn_undefined());
   case SCR_DYN_NULL:
@@ -21418,25 +21444,9 @@ static ScrDyn *scr_sc_clone(const ScrDyn *v, const ScrScParent *up, ScrDynRegion
     }
     /* fall through */
   case SCR_DYN_FUNC:
-  default: {
-    /* Node renders the value's source text; the checked-dynamic tree has none — the
-     * String() rendering stands in ("function () { [native code] } could
-     * not be cloned."). */
-    ScrStr *what = scr_dyn_string_coerce(v);
-    static const char suffix[] = " could not be cloned.";
-    size_t len = what->len + sizeof suffix - 1;
-    char *msg = malloc(len + 1);
-    if (!msg) {
-      scr_trap("scriptc: out of memory\n");
-    }
-    memcpy(msg, what->data, what->len);
-    memcpy(msg + what->len, suffix, sizeof suffix);
-    scr_str_release(what);
-    ScrStr *m = scr_str_new(msg, len);
-    free(msg);
-    scr_throw_domex_str("DataCloneError", m); /* takes ownership of m */
+  default:
+    scr_clone_value_error(v);
     return NULL;
-  }
   }
 }
 

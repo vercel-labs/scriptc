@@ -1379,6 +1379,10 @@ ScrDyn *scr_dyn_negate(const ScrDyn *value);
 /* Internal constructor consumes a retained symbol with its native operations. */
 ScrDyn *scr_dyn_symbol_ref(ScrSym *value, void (*release)(ScrSym *), ScrStr *(*render)(ScrSym *), ScrStr *(*description)(ScrSym *));
 ScrDyn *scr_dyn_new_str(ScrStr *s);
+/* Throws Node's DataCloneError for a value the clone cannot carry:
+ * "<rendered> could not be cloned." with the structured clone's rendering
+ * (defined in scr_json.c). */
+void scr_clone_value_error(const ScrDyn *v);
 ScrDyn *scr_dyn_new_arr(void);
 ScrDyn *scr_dyn_array_constructor(void);
 /* Gives a builtin constructor value (Object, Array, Error) its builtin

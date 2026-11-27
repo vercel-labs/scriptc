@@ -59,6 +59,43 @@ test("a named re-export from JSON is admitted through a consumer", () => {
   ).toEqual([]);
 });
 
+test("a named default import binds the whole document", () => {
+  expect(
+    diagnostics(
+      {
+        "main.ts": 'import { default as data } from "./data.json";\nconsole.log(data.name);\n',
+      },
+      "main.ts",
+    ),
+  ).toEqual([]);
+});
+
+test("a default re-export from JSON is admitted through a consumer", () => {
+  expect(
+    diagnostics(
+      {
+        "pkg.ts": 'export { default } from "./data.json";\n',
+        "main.ts": 'import { default as data } from "./pkg";\nconsole.log(data.version);\n',
+      },
+      "main.ts",
+    ),
+  ).toEqual([]);
+});
+
+test("a string-literal export name from JSON is admitted", () => {
+  // The exported name is arbitrary text; it must not reach the emitted
+  // global's name (the compiler derives a safe one).
+  expect(
+    diagnostics(
+      {
+        "pkg.ts": 'export { version as "weird\\"name" } from "./data.json";\n',
+        "main.ts": 'import { "weird\\"name" as v } from "./pkg";\nconsole.log(v);\n',
+      },
+      "main.ts",
+    ),
+  ).toEqual([]);
+});
+
 test("a namespace JSON import keeps its fence", () => {
   const result = diagnostics(
     {

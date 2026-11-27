@@ -1159,6 +1159,15 @@ function jsonMember(document: unknown, name: string): unknown {
     : undefined;
 }
 
+/** The diagnostic name of a JSON binding's module global. An import binds a
+ * local identifier; a re-export may spell its exported name as an arbitrary
+ * string literal (`export { x as "a\"b" }`), which never reaches the
+ * emitted global's name unsanitized. */
+function jsonBindingName(name: ts.Identifier | ts.StringLiteral): string {
+  const text = name.text;
+  return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(text) ? text : "jsonBinding";
+}
+
 export function collectJsonImports(lowerer: Lowerer, parts: FileParts[]): void {
   for (const fp of parts) {
     for (const stmt of fp.sf.statements.nodes) {
@@ -1214,40 +1223,28 @@ export function collectJsonImports(lowerer: Lowerer, parts: FileParts[]): void {
             "$",
           );
         }
-        for (const element of named) {
-          if (element.isTypeOnly) continue;
+        const bakeNamed = (element: ts.ImportSpecifier | ts.ExportSpecifier): void => {
+          if (element.isTypeOnly) return;
           const localSym = lowerer.checker.getSymbolAtLocation(element.name);
-          if (!localSym || !(localSym.flags & ts.SymbolFlags.Alias)) continue;
+          if (!localSym || !(localSym.flags & ts.SymbolFlags.Alias)) return;
           const target = lowerer.checker.getAliasedSymbol(localSym);
           const key = (element.propertyName ?? element.name).text;
+          // `default` from a JSON module is the whole document (Node's ESM
+          // default export), never the document's own "default" key.
+          const whole = key === "default";
           bakeJsonBinding(
             lowerer,
             fp,
             stmt,
             element.name,
             target,
-            element.name.text,
-            jsonMember(doc(), key),
-            `$.${key}`,
+            jsonBindingName(element.name),
+            whole ? doc() : jsonMember(doc(), key),
+            whole ? "$" : `$.${key}`,
           );
-        }
-        for (const element of exported) {
-          if (element.isTypeOnly) continue;
-          const localSym = lowerer.checker.getSymbolAtLocation(element.name);
-          if (!localSym || !(localSym.flags & ts.SymbolFlags.Alias)) continue;
-          const target = lowerer.checker.getAliasedSymbol(localSym);
-          const key = (element.propertyName ?? element.name).text;
-          bakeJsonBinding(
-            lowerer,
-            fp,
-            stmt,
-            element.name,
-            target,
-            element.name.text,
-            jsonMember(doc(), key),
-            `$.${key}`,
-          );
-        }
+        };
+        for (const element of named) bakeNamed(element);
+        for (const element of exported) bakeNamed(element);
       } catch (e) {
         if (!(e instanceof PoisonError)) throw e;
         // diagnostic already recorded; uses of the binding poison too

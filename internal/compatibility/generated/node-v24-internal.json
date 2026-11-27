@@ -125973,12 +125973,14 @@
           "tests/corpus/worker-cpu-usage.ts",
           "tests/corpus/worker-env-option.ts",
           "tests/corpus/worker-heap-statistics.ts",
+          "tests/corpus/worker-locks-async-callback.mjs",
           "tests/corpus/worker-locks-errors.ts",
           "tests/corpus/worker-locks-nested-requests.mjs",
           "tests/corpus/worker-locks-option-errors.ts",
           "tests/corpus/worker-locks-query.ts",
           "tests/corpus/worker-locks-request.ts",
           "tests/corpus/worker-locks-shared.ts",
+          "tests/corpus/worker-locks-signal-abort.mjs",
           "tests/corpus/worker-locks-signal-option.ts",
           "tests/corpus/worker-locks-steal-option.ts",
           "tests/corpus/worker-messageerror-events.ts",
@@ -127860,7 +127862,9 @@
           "tests/corpus/worker-locks-option-errors.ts",
           "tests/corpus/worker-locks-signal-option.ts",
           "tests/corpus/worker-locks-steal-option.ts",
-          "tests/corpus/worker-locks-nested-requests.mjs"
+          "tests/corpus/worker-locks-nested-requests.mjs",
+          "tests/corpus/worker-locks-async-callback.mjs",
+          "tests/corpus/worker-locks-signal-abort.mjs"
         ]
       },
       "anchorSource": "exact"

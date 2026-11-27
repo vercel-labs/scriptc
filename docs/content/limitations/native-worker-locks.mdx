@@ -3,4 +3,5 @@
 The trigger rules are Node's: a name starting with `-`, an unknown mode, `ifAvailable` with `steal`, `steal` with a shared mode, and `signal` with either of those are refused with the same `NotSupportedError` texts, an unknown mode is `ERR_INVALID_ARG_VALUE`, and a signal that is already aborted rejects with its reason or an `AbortError`.
 `locks.query()` answers `{ held, pending }` for the calling thread's own view, which is what Node reports, with `clientId` spelled `node-<pid>-<threadId>`.
 A request made on a worker thread is refused with `ERR_SCRIPTC_LOCKS_THREAD`: a grant granted there would have to wake that thread's loop, which this build does not do yet, so the lock manager is a main-thread facility for now.
-A callback that returns a promise settles before that promise settles in this build; the lock is no longer held when the promise resolves.
+A callback runs one microtask after its grant, as Node's wrapped callback does, and the lock stays held until the callback's returned promise settles: the request answers that promise's value, or rejects with its reason.
+An abort signal rejects the request with the signal's reason (or an `AbortError`) while the request waits in the queue or before its callback starts; once the callback has started, aborting changes nothing, as in Node.

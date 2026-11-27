@@ -242,6 +242,11 @@ typedef struct SpKey {
   bool dh;
   unsigned char *dh_p, *dh_g, *dh_x, *dh_y;
   size_t dh_p_len, dh_g_len, dh_x_len, dh_y_len, dh_priv_len;
+  /* A DSA key (FIPS 186-4): the parameters p, q and g, the private x and
+   * the public y = g^x mod p, all big-endian. */
+  bool dsa;
+  unsigned char *dsa_p, *dsa_q, *dsa_g, *dsa_x, *dsa_y;
+  size_t dsa_p_len, dsa_q_len, dsa_g_len, dsa_x_len, dsa_y_len;
   /* An RSA-PSS key (id-RSASSA-PSS): signatures only, with PSS padding.
    * With RSASSA-PSS-params it signs only with pss_md and MGF1 over
    * pss_mgf1, and salts of at least pss_salt bytes. */
@@ -268,6 +273,16 @@ static void sp_key_release(void *h) {
       free(k->dh_x);
     }
     if (k->dh_y) free(k->dh_y);
+  }
+  if (k->dsa) {
+    if (k->dsa_p) free(k->dsa_p);
+    if (k->dsa_q) free(k->dsa_q);
+    if (k->dsa_g) free(k->dsa_g);
+    if (k->dsa_x) {
+      mbedtls_platform_zeroize(k->dsa_x, k->dsa_x_len);
+      free(k->dsa_x);
+    }
+    if (k->dsa_y) free(k->dsa_y);
   }
   mbedtls_pk_free(&k->pk);
   mbedtls_platform_zeroize(k, sizeof *k);
@@ -318,6 +333,7 @@ static bool sp_is_x(const SpKey *k) { return k->x25519; }
 static bool sp_is_x448(const SpKey *k) { return k->x448; }
 static bool sp_is_mlkem(const SpKey *k) { return k->mlkem; }
 static bool sp_is_dh(const SpKey *k) { return k->dh; }
+static bool sp_is_dsa(const SpKey *k) { return k->dsa; }
 
 /* Node's getDiffieHellman groups, which generateKeyPair('dh') also takes as
  * `group`: the RFC 2409 and RFC 3526 primes, all with the generator 2, and
@@ -546,7 +562,7 @@ static const SpCurve *sp_curve_of(const SpKey *k) {
 /* A parsed key is usable when it is RSA or EC on a curve above. */
 static bool sp_key_supported(const SpKey *k) {
   return sp_is_okp(k) || sp_is_mlkem(k) || sp_is_rsa(k) ||
-         (sp_is_ec(k) && sp_curve_of(k) != NULL);
+         (sp_is_ec(k) && sp_curve_of(k) != NULL) || sp_is_dsa(k);
 }
 
 /* ── DER writing ──────────────────────────────────────────────────────── */
@@ -741,6 +757,177 @@ static int sp_write_dh_pkcs8(SpKey *k, unsigned char *buf, size_t size) {
   return len + r;
 }
 
+
+/* ── DSA key encodings ──────────────────────────────────────────────────
+ * OpenSSL's DSA shapes: Dss-Parms ::= SEQUENCE { INTEGER p, INTEGER q,
+ * INTEGER g }, the id-dsa AlgorithmIdentifier (1.2.840.10040.4.1) over
+ * those parameters, PKCS#8 with the private INTEGER x in its OCTET STRING
+ * and SubjectPublicKeyInfo with the public INTEGER y in its BIT STRING. */
+
+static unsigned char *sp_mpi_bytes(const mbedtls_mpi *x, size_t *len);
+
+/* The OID content of id-dsa (1.2.840.10040.4.1). */
+static const unsigned char sp_dsa_oid[7] = {0x2a, 0x86, 0x48, 0xce, 0x38, 0x04, 0x01};
+
+/* The id-dsa AlgorithmIdentifier with its Dss-Parms, written backwards;
+ * the written length or a negative error. */
+static int sp_write_dsa_alg(unsigned char **c, unsigned char *start, const SpKey *k) {
+  int r, len = 0, params = 0;
+  if ((r = sp_write_dh_mpi(c, start, k->dsa_g, k->dsa_g_len)) < 0) return r;
+  params += r;
+  if ((r = sp_write_dh_mpi(c, start, k->dsa_q, k->dsa_q_len)) < 0) return r;
+  params += r;
+  if ((r = sp_write_dh_mpi(c, start, k->dsa_p, k->dsa_p_len)) < 0) return r;
+  params += r;
+  if ((r = mbedtls_asn1_write_len(c, start, (size_t)params)) < 0) return r;
+  params += r;
+  if ((r = mbedtls_asn1_write_tag(c, start, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE)) < 0)
+    return r;
+  len += params + r;
+  if ((r = mbedtls_asn1_write_oid(c, start, (const char *)sp_dsa_oid, sizeof sp_dsa_oid)) < 0)
+    return r;
+  len += r;
+  if ((r = mbedtls_asn1_write_len(c, start, (size_t)len)) < 0) return r;
+  len += r;
+  if ((r = mbedtls_asn1_write_tag(c, start, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE)) < 0)
+    return r;
+  return len + r;
+}
+
+static int sp_write_dsa_spki(SpKey *k, unsigned char *buf, size_t size) {
+  unsigned char inner[SP_DER_MAX];
+  unsigned char *ic = inner + sizeof inner;
+  int n = sp_write_dh_mpi(&ic, inner, k->dsa_y, k->dsa_y_len);
+  if (n < 0) return n;
+  unsigned char *c = buf + size;
+  int r, len = 0;
+  if ((r = mbedtls_asn1_write_bitstring(&c, buf, inner + sizeof inner - n, (size_t)n * 8)) < 0)
+    return r;
+  len += r;
+  if ((r = sp_write_dsa_alg(&c, buf, k)) < 0) return r;
+  len += r;
+  if ((r = mbedtls_asn1_write_len(&c, buf, (size_t)len)) < 0) return r;
+  len += r;
+  if ((r = mbedtls_asn1_write_tag(&c, buf, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE)) < 0)
+    return r;
+  return len + r;
+}
+
+static int sp_write_dsa_pkcs8(SpKey *k, unsigned char *buf, size_t size) {
+  unsigned char inner[SP_DER_MAX];
+  unsigned char *ic = inner + sizeof inner;
+  int n = sp_write_dh_mpi(&ic, inner, k->dsa_x, k->dsa_x_len);
+  if (n < 0) return n;
+  size_t inner_len = (size_t)n;
+  memmove(inner, inner + sizeof inner - inner_len, inner_len);
+  unsigned char *c = buf + size;
+  int r, len = 0;
+  if ((r = mbedtls_asn1_write_raw_buffer(&c, buf, inner, inner_len)) < 0) return r;
+  len += r;
+  if ((r = mbedtls_asn1_write_len(&c, buf, inner_len)) < 0) return r;
+  len += r;
+  if ((r = mbedtls_asn1_write_tag(&c, buf, MBEDTLS_ASN1_OCTET_STRING)) < 0) return r;
+  len += r;
+  if ((r = sp_write_dsa_alg(&c, buf, k)) < 0) return r;
+  len += r;
+  if ((r = mbedtls_asn1_write_int(&c, buf, 0)) < 0) return r;
+  len += r;
+  if ((r = mbedtls_asn1_write_len(&c, buf, (size_t)len)) < 0) return r;
+  len += r;
+  if ((r = mbedtls_asn1_write_tag(&c, buf, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE)) < 0)
+    return r;
+  return len + r;
+}
+
+/* The DSA key encodings this unit writes, read back: PKCS#8 (version 0,
+ * the id-dsa AlgorithmIdentifier over Dss-Parms and the private INTEGER x
+ * in its OCTET STRING) and SubjectPublicKeyInfo (the public INTEGER y in
+ * its BIT STRING). NULL for anything else (the callers fall through to
+ * mbedTLS's decoders and report Node's decoder error). */
+static SpKey *sp_dsa_from_der(const uint8_t *der, size_t len, bool private_key) {
+  unsigned char *p = (unsigned char *)der;
+  const unsigned char *end = der + len;
+  size_t seq_len;
+  if (mbedtls_asn1_get_tag(&p, end, &seq_len, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0 ||
+      (size_t)(end - p) != seq_len)
+    return NULL;
+  mbedtls_mpi P, Q, G, X, Y;
+  mbedtls_mpi_init(&P);
+  mbedtls_mpi_init(&Q);
+  mbedtls_mpi_init(&G);
+  mbedtls_mpi_init(&X);
+  mbedtls_mpi_init(&Y);
+  SpKey *key = NULL;
+  if (private_key) {
+    int version;
+    if (mbedtls_asn1_get_int(&p, end, &version) != 0 || version != 0) goto done;
+  }
+  {
+    size_t alg_len, oid_len, params_len;
+    if (mbedtls_asn1_get_tag(&p, end, &alg_len, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0)
+      goto done;
+    const unsigned char *alg_end = p + alg_len;
+    if (mbedtls_asn1_get_tag(&p, alg_end, &oid_len, MBEDTLS_ASN1_OID) != 0 ||
+        oid_len != sizeof sp_dsa_oid || memcmp(p, sp_dsa_oid, oid_len) != 0)
+      goto done;
+    p += oid_len;
+    if (mbedtls_asn1_get_tag(&p, alg_end, &params_len, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0)
+      goto done;
+    const unsigned char *params_end = p + params_len;
+    if (mbedtls_asn1_get_mpi(&p, params_end, &P) != 0 || mbedtls_asn1_get_mpi(&p, params_end, &Q) != 0 ||
+        mbedtls_asn1_get_mpi(&p, params_end, &G) != 0 || p != params_end)
+      goto done;
+    p = alg_end;
+  }
+  if (!private_key) {
+    size_t bits_len;
+    if (mbedtls_asn1_get_tag(&p, end, &bits_len, MBEDTLS_ASN1_BIT_STRING) != 0 || bits_len == 0) goto done;
+    if (*p != 0) goto done; /* the unused-bits byte */
+    p++;
+    if (mbedtls_asn1_get_mpi(&p, end, &Y) != 0) goto done;
+  } else {
+    size_t oct_len;
+    if (mbedtls_asn1_get_tag(&p, end, &oct_len, MBEDTLS_ASN1_OCTET_STRING) != 0) goto done;
+    const unsigned char *oct_end = p + oct_len;
+    if (mbedtls_asn1_get_mpi(&p, oct_end, &X) != 0 || p != oct_end) goto done;
+  }
+  /* The positive values OpenSSL's decoder requires. */
+  if (mbedtls_mpi_cmp_int(&P, 0) <= 0 || mbedtls_mpi_cmp_int(&Q, 0) <= 0 ||
+      mbedtls_mpi_cmp_int(&G, 0) <= 0 || mbedtls_mpi_cmp_mpi(&G, &P) >= 0)
+    goto done;
+  if (private_key ? mbedtls_mpi_cmp_int(&X, 0) <= 0 : mbedtls_mpi_cmp_int(&Y, 0) <= 0) goto done;
+  key = sp_key_alloc(private_key);
+  key->dsa = true;
+  key->dsa_p = sp_mpi_bytes(&P, &key->dsa_p_len);
+  key->dsa_q = sp_mpi_bytes(&Q, &key->dsa_q_len);
+  key->dsa_g = sp_mpi_bytes(&G, &key->dsa_g_len);
+  if (private_key) {
+    key->dsa_x = sp_mpi_bytes(&X, &key->dsa_x_len);
+    if (!key->dsa_x) {
+      sp_key_release(key);
+      key = NULL;
+    }
+  } else {
+    key->dsa_y = sp_mpi_bytes(&Y, &key->dsa_y_len);
+    if (!key->dsa_y) {
+      sp_key_release(key);
+      key = NULL;
+    }
+  }
+  if (key && (!key->dsa_p || !key->dsa_q || !key->dsa_g)) {
+    sp_key_release(key);
+    key = NULL;
+  }
+done:
+  if (X.MBEDTLS_PRIVATE(p))
+    mbedtls_platform_zeroize(X.MBEDTLS_PRIVATE(p), X.MBEDTLS_PRIVATE(n) * sizeof(mbedtls_mpi_uint));
+  mbedtls_mpi_free(&P);
+  mbedtls_mpi_free(&Q);
+  mbedtls_mpi_free(&G);
+  mbedtls_mpi_free(&X);
+  mbedtls_mpi_free(&Y);
+  return key;
+}
 
 static unsigned char *sp_mpi_bytes(const mbedtls_mpi *x, size_t *len);
 
@@ -1003,6 +1190,7 @@ static int sp_write_pss_alg(unsigned char **c, unsigned char *start, const SpKey
 static int sp_write_pkcs1_public_der(SpKey *k, unsigned char *buf, size_t size);
 
 static int sp_write_spki_der(SpKey *k, unsigned char *buf, size_t size) {
+  if (sp_is_dsa(k)) return sp_write_dsa_spki(k, buf, size);
   if (sp_is_dh(k)) return sp_write_dh_spki(k, buf, size);
   if (sp_is_mlkem(k)) return sp_write_mlkem_spki(k, buf, size);
   if (sp_is_okp(k)) {
@@ -1038,6 +1226,7 @@ static int sp_write_pkcs1_public_der(SpKey *k, unsigned char *buf, size_t size) 
  * parameters, or id-ecPublicKey with the curve OID), and the inner key,
  * which for EC omits the parameters field. */
 static int sp_write_pkcs8_der(SpKey *k, unsigned char *buf, size_t size) {
+  if (sp_is_dsa(k)) return sp_write_dsa_pkcs8(k, buf, size);
   if (sp_is_dh(k)) return sp_write_dh_pkcs8(k, buf, size);
   if (sp_is_mlkem(k)) return sp_write_mlkem_pkcs8(k, buf, size);
   if (sp_is_okp(k)) {
@@ -2528,6 +2717,48 @@ static SpKey *sp_key_from_jwk_plain(const ScrDyn *jwk, bool want_private) {
 
 /* The private key of a public SpKey derived from `k`. */
 static SpKey *sp_public_of(SpKey *k) {
+  if (sp_is_dsa(k)) {
+    SpKey *pub = sp_key_alloc(false);
+    pub->dsa = true;
+    pub->dsa_p = malloc(k->dsa_p_len);
+    pub->dsa_q = malloc(k->dsa_q_len);
+    pub->dsa_g = malloc(k->dsa_g_len);
+    if (!pub->dsa_p || !pub->dsa_q || !pub->dsa_g) scr_trap("scriptc: out of memory\n");
+    memcpy(pub->dsa_p, k->dsa_p, k->dsa_p_len);
+    memcpy(pub->dsa_q, k->dsa_q, k->dsa_q_len);
+    memcpy(pub->dsa_g, k->dsa_g, k->dsa_g_len);
+    pub->dsa_p_len = k->dsa_p_len;
+    pub->dsa_q_len = k->dsa_q_len;
+    pub->dsa_g_len = k->dsa_g_len;
+    if (k->private_key && k->dsa_x) {
+      mbedtls_mpi P, G, X, Y;
+      mbedtls_mpi_init(&P);
+      mbedtls_mpi_init(&G);
+      mbedtls_mpi_init(&X);
+      mbedtls_mpi_init(&Y);
+      bool ok = mbedtls_mpi_read_binary(&P, k->dsa_p, k->dsa_p_len) == 0 &&
+                mbedtls_mpi_read_binary(&G, k->dsa_g, k->dsa_g_len) == 0 &&
+                mbedtls_mpi_read_binary(&X, k->dsa_x, k->dsa_x_len) == 0 &&
+                mbedtls_mpi_exp_mod(&Y, &G, &X, &P, NULL) == 0;
+      if (ok) pub->dsa_y = sp_mpi_bytes(&Y, &pub->dsa_y_len);
+      if (X.MBEDTLS_PRIVATE(p))
+        mbedtls_platform_zeroize(X.MBEDTLS_PRIVATE(p), X.MBEDTLS_PRIVATE(n) * sizeof(mbedtls_mpi_uint));
+      mbedtls_mpi_free(&P);
+      mbedtls_mpi_free(&G);
+      mbedtls_mpi_free(&X);
+      mbedtls_mpi_free(&Y);
+      if (!pub->dsa_y) {
+        sp_key_release(pub);
+        return NULL;
+      }
+    } else {
+      pub->dsa_y = malloc(k->dsa_y_len);
+      if (!pub->dsa_y) scr_trap("scriptc: out of memory\n");
+      memcpy(pub->dsa_y, k->dsa_y, k->dsa_y_len);
+      pub->dsa_y_len = k->dsa_y_len;
+    }
+    return pub;
+  }
   if (sp_is_dh(k)) {
     SpKey *pub = sp_key_alloc(false);
     pub->dh = true;
@@ -3158,6 +3389,15 @@ static SpKey *sp_parse_with(const unsigned char *data, size_t len, bool private_
       bool failed;
       SpKey *ed = sp_ed_from_der(der, der_len, private_key, &failed);
       if (!ed && !failed) ed = sp_pss_from_der(der, der_len, private_key, &failed);
+      if (!ed && !failed) ed = sp_dsa_from_der(der, der_len, private_key);
+      /* createPublicKey also reads a private key's encodings. */
+      if (!ed && !failed && !private_key) {
+        SpKey *priv = sp_dsa_from_der(der, der_len, true);
+        if (priv) {
+          ed = sp_public_of(priv);
+          sp_key_release(priv);
+        }
+      }
       /* A recognized ML-KEM SPKI whose key material the parse rejected (a
        * coefficient outside the field, say) answers Node's errors for the
        * input form. */
@@ -3735,7 +3975,7 @@ static ScrDyn *sp_export_plain(SpKey *k, const ScrDyn *options) {
     return NULL;
   }
   if (sp_is_str(format, "jwk")) {
-    if (k->rsa_pss || sp_is_dh(k)) {
+    if (k->rsa_pss || sp_is_dh(k) || sp_is_dsa(k)) {
       sp_throw(SCR_ERR_ERROR, "ERR_CRYPTO_JWK_UNSUPPORTED_KEY_TYPE", "Unsupported JWK Key Type.");
       return NULL;
     }
@@ -3840,6 +4080,11 @@ static ScrDyn *sp_export_plain(SpKey *k, const ScrDyn *options) {
 
 static ScrDyn *sp_key_details(SpKey *k) {
   ScrDyn *details = scr_dyn_new_obj();
+  if (sp_is_dsa(k)) {
+    sp_set(details, "modulusLength", scr_dyn_new_num((double)(k->dsa_p_len * 8)));
+    sp_set(details, "divisorLength", scr_dyn_new_num((double)(k->dsa_q_len * 8)));
+    return details;
+  }
   if (sp_is_okp(k) || sp_is_mlkem(k) || sp_is_dh(k)) return details;
   if (sp_is_rsa(k)) {
     mbedtls_rsa_context *rsa = mbedtls_pk_rsa(k->pk);
@@ -3872,7 +4117,7 @@ static ScrDyn *sp_key_details(SpKey *k) {
 /* The DER that identifies a key for equals(): its private encoding for a
  * private key, its SubjectPublicKeyInfo otherwise. */
 static int sp_identity_der(SpKey *k, unsigned char *buf, size_t size) {
-  if (sp_is_okp(k) || sp_is_mlkem(k) || sp_is_dh(k))
+  if (sp_is_okp(k) || sp_is_mlkem(k) || sp_is_dh(k) || sp_is_dsa(k))
     return k->private_key ? sp_write_pkcs8_der(k, buf, size) : sp_write_spki_der(k, buf, size);
   return k->private_key ? sp_write_private_der(k, buf, size) : sp_write_spki_der(k, buf, size);
 }
@@ -3929,6 +4174,7 @@ static ScrDyn *sp_key_get(void *h, const char *name, size_t len) {
            : sp_is_x(k)   ? sp_dyn_str(scr_str_new("x25519", 6))
            : k->rsa_pss   ? sp_dyn_str(scr_str_new("rsa-pss", 7))
            : sp_is_rsa(k) ? sp_dyn_str(scr_str_new("rsa", 3))
+           : sp_is_dsa(k) ? sp_dyn_str(scr_str_new("dsa", 3))
                           : sp_dyn_str(scr_str_new("ec", 2));
   if (len == 20 && memcmp(name, "asymmetricKeyDetails", 20) == 0) return sp_key_details(k);
   return NULL;
@@ -4027,6 +4273,26 @@ static bool sp_check_uint32(const ScrDyn *v, const char *name, double *out) {
     scr_pki_throw_fmt(SCR_ERR_RANGE, "ERR_OUT_OF_RANGE",
                       "The value of \"%s\" is out of range. It must be %s. Received %.*s", name,
                       integer ? ">= 0 && <= 4294967295" : "an integer", (int)received->len, received->data);
+    scr_str_release(received);
+    return false;
+  }
+  *out = x + 0.0;
+  return true;
+}
+
+/* Node's int32 range check (divisorLength): an integer in [0, 2147483647]. */
+static bool sp_check_int32(const ScrDyn *v, const char *name, double *out) {
+  if (v->kind != SCR_DYN_NUM) {
+    scr_dyn_prop_type_fail(name, "of type number", v);
+    return false;
+  }
+  double x = v->v.num;
+  bool integer = isfinite(x) && trunc(x) == x;
+  if (!integer || x < 0 || x > 2147483647.0) {
+    ScrStr *received = sp_received(v, true);
+    scr_pki_throw_fmt(SCR_ERR_RANGE, "ERR_OUT_OF_RANGE",
+                      "The value of \"%s\" is out of range. It must be %s. Received %.*s", name,
+                      integer ? ">= 0 && <= 2147483647" : "an integer", (int)received->len, received->data);
     scr_str_release(received);
     return false;
   }
@@ -4148,7 +4414,8 @@ typedef struct {
     SP_GEN_X25519,
     SP_GEN_X448,
     SP_GEN_MLKEM,
-    SP_GEN_DH
+    SP_GEN_DH,
+    SP_GEN_DSA
   } kind;
   int mlkem_level;
   double bits, exponent; /* RSA */
@@ -4165,6 +4432,7 @@ typedef struct {
   const ScrDyn *dh_prime;
   double dh_prime_len;
   double dh_generator;
+  double dsa_divisor; /* DSA: divisorLength, 224 by default */
 } SpKeyGen;
 
 
@@ -4397,7 +4665,20 @@ static bool sp_keygen_check(const ScrDyn *type, const ScrDyn *options, SpKeyGen 
     if (pss && !sp_pss_keygen_options(options, gen)) return false;
   } else if (sp_is_str(type, "dsa")) {
     if (!sp_check_object(options, "options")) return false;
-    if (!refusal) refusal = "generateKeyPairSync for this key type";
+    gen->kind = SP_GEN_DSA;
+    if (!sp_check_uint32(sp_opt(options, "modulusLength"), "options.modulusLength", &gen->bits)) return false;
+    gen->dsa_divisor = 224;
+    const ScrDyn *divisor = sp_opt(options, "divisorLength");
+    if (!sp_absent(divisor) && divisor->kind != SCR_DYN_NULL &&
+        !sp_check_int32(divisor, "options.divisorLength", &gen->dsa_divisor))
+      return false;
+    /* Node passes publicExponent through to OpenSSL, which ignores it for
+     * DSA; the value is still type-checked. */
+    double ignored = 0;
+    const ScrDyn *exponent = sp_opt(options, "publicExponent");
+    if (!sp_absent(exponent) && exponent->kind != SCR_DYN_NULL &&
+        !sp_check_uint32(exponent, "options.publicExponent", &ignored))
+      return false;
   } else if (sp_is_str(type, "dh")) {
     if (!sp_check_object(options, "options")) return false;
     gen->kind = SP_GEN_DH;
@@ -4702,8 +4983,160 @@ static SpKey *sp_dh_keygen(const SpKeyGen *gen) {
   return sp_key_from_dh(&material);
 }
 
+/* ── DSA key generation ───────────────────────────────────────────────── */
+
+/* OpenSSL's errors for the parameter sets its DSA key manager refuses: the
+ * divisor length must be one of the FIPS 186-4 sizes (160, 224, 256), and
+ * the FFC parameter generator needs a modulus of at least 1024 bits. */
+static void sp_dsa_provider_error(void) {
+  sp_throw_openssl("030000E9", "digital envelope routines", "provider keymgmt failure", NULL, false);
+}
+
+static void sp_dsa_ffc_error(void) {
+  sp_throw_openssl("05000072", "dsa routines", "bad ffc parameters", NULL, false);
+}
+
+/* Trial division by every prime below 1000: the candidates that reach the
+ * Miller-Rabin rounds are then almost all prime, which keeps the search at
+ * a handful of steps per generated prime instead of hundreds. */
+static bool sp_dsa_no_small_factor(const mbedtls_mpi *P) {
+  static const mbedtls_mpi_uint small_primes[] = {3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131, 137, 139, 149, 151, 157, 163, 167, 173, 179, 181, 191, 193, 197, 199, 211, 223, 227, 229, 233, 239, 241, 251, 257, 263, 269, 271, 277, 281, 283, 293, 307, 311, 313, 317, 331, 337, 347, 349, 353, 359, 367, 373, 379, 383, 389, 397, 401, 409, 419, 421, 431, 433, 439, 443, 449, 457, 461, 463, 467, 479, 487, 491, 499, 503, 509, 521, 523, 541, 547, 557, 563, 569, 571, 577, 587, 593, 599, 601, 607, 613, 617, 619, 631, 641, 643, 647, 653, 659, 661, 673, 677, 683, 691, 701, 709, 719, 727, 733, 739, 743, 751, 757, 761, 769, 773, 787, 797, 809, 811, 821, 823, 827, 829, 839, 853, 857, 859, 863, 877, 881, 883, 887, 907, 911, 919, 929, 937, 941, 947, 953, 967, 971, 977, 983, 991, 997};
+  for (size_t i = 0; i < sizeof small_primes / sizeof small_primes[0]; i++) {
+    mbedtls_mpi_uint r = 0;
+    if (mbedtls_mpi_mod_int(&r, P, small_primes[i]) != 0) return false;
+    if (r == 0) return false;
+  }
+  return true;
+}
+
+/* A DSA key over generated parameters (FIPS 186-4): q a prime of `divisor`
+ * bits, p = k q + 1 a prime of `bits` bits, g = h^((p-1)/q) mod p for the
+ * smallest h whose power is not 1, x random in [2, q - 2] and
+ * y = g^x mod p. NULL with Node's error pending. */
+static SpKey *sp_dsa_keygen(unsigned bits, unsigned divisor) {
+  if (divisor != 160 && divisor != 224 && divisor != 256) {
+    sp_dsa_provider_error();
+    return NULL;
+  }
+  if (bits < 1024) {
+    sp_dsa_ffc_error();
+    return NULL;
+  }
+  if (bits > 8192) {
+    sp_dsa_provider_error();
+    return NULL;
+  }
+  mbedtls_mpi P, Q, G, X, Y, K, E, bound;
+  mbedtls_mpi_init(&P);
+  mbedtls_mpi_init(&Q);
+  mbedtls_mpi_init(&G);
+  mbedtls_mpi_init(&X);
+  mbedtls_mpi_init(&Y);
+  mbedtls_mpi_init(&K);
+  mbedtls_mpi_init(&E);
+  mbedtls_mpi_init(&bound);
+  SpKey *key = NULL;
+  unsigned char *kbuf = NULL;
+  int ret = mbedtls_mpi_gen_prime(&Q, (size_t)divisor, 0, sp_random, NULL);
+  if (ret != 0) goto done;
+  /* p = k q + 1, with k of exactly (bits - divisor) bits so p has `bits`. */
+  {
+    size_t kbits = (size_t)bits - divisor;
+    size_t kbytes = (kbits + 7) / 8;
+    unsigned char *buf = malloc(kbytes);
+    if (!buf) scr_trap("scriptc: out of memory\n");
+    kbuf = buf;
+    bool found = false;
+    for (unsigned attempt = 0; attempt < 1000000 && !found; attempt++) {
+      sp_random(NULL, kbuf, kbytes);
+      unsigned extra = (unsigned)(kbytes * 8 - kbits);
+      kbuf[0] &= (unsigned char)(0xff >> extra);
+      kbuf[0] |= (unsigned char)(0x80 >> extra);
+      /* p = k q + 1 is odd when k is even. */
+      kbuf[kbytes - 1] &= 0xfe;
+      ret = mbedtls_mpi_read_binary(&K, kbuf, kbytes);
+      if (ret != 0) break;
+      ret = mbedtls_mpi_mul_mpi(&P, &K, &Q);
+      if (ret != 0) break;
+      ret = mbedtls_mpi_add_int(&P, &P, 1);
+      if (ret != 0) break;
+      if (mbedtls_mpi_bitlen(&P) != bits) continue;
+      /* A product can keep a zero top limb, and the primality test reads
+       * that limb as part of the number's width and rejects primes then:
+       * shrink P to the width `bits` needs. */
+      mbedtls_mpi_shrink(&P, (bits + (unsigned)(8 * sizeof(mbedtls_mpi_uint)) - 1) /
+                               (unsigned)(8 * sizeof(mbedtls_mpi_uint)));
+      if (!sp_dsa_no_small_factor(&P)) continue;
+      /* A few rounds screen the survivors; the winner takes the full set. */
+      ret = mbedtls_mpi_is_prime_ext(&P, 8, sp_random, NULL);
+      if (ret == MBEDTLS_ERR_MPI_NOT_ACCEPTABLE) continue;
+      if (ret != 0) break;
+      ret = mbedtls_mpi_is_prime_ext(&P, 40, sp_random, NULL);
+      if (ret == 0) {
+        found = true;
+        break;
+      }
+      if (ret != MBEDTLS_ERR_MPI_NOT_ACCEPTABLE) break;
+    }
+    if (!found) goto done;
+  }
+  /* g = h^((p - 1) / q) mod p, skipping the h whose power is 1. */
+  ret = mbedtls_mpi_sub_int(&bound, &P, 1);
+  if (ret != 0) goto done;
+  ret = mbedtls_mpi_div_mpi(&E, NULL, &bound, &Q);
+  if (ret != 0) goto done;
+  {
+    bool found = false;
+    for (unsigned h = 2; h < 1000 && !found; h++) {
+      ret = mbedtls_mpi_lset(&G, (mbedtls_mpi_sint)h);
+      if (ret != 0) break;
+      ret = mbedtls_mpi_exp_mod(&G, &G, &E, &P, NULL);
+      if (ret != 0) break;
+      if (mbedtls_mpi_cmp_int(&G, 1) != 0) found = true;
+    }
+    if (!found) goto done;
+  }
+  /* x in [2, q - 2], y = g^x mod p. */
+  ret = mbedtls_mpi_sub_int(&bound, &Q, 1);
+  if (ret != 0) goto done;
+  ret = mbedtls_mpi_random(&X, 2, &bound, sp_random, NULL);
+  if (ret != 0) goto done;
+  ret = mbedtls_mpi_exp_mod(&Y, &G, &X, &P, NULL);
+  if (ret != 0) goto done;
+  key = sp_key_alloc(true);
+  key->dsa = true;
+  key->dsa_p = sp_mpi_bytes(&P, &key->dsa_p_len);
+  key->dsa_q = sp_mpi_bytes(&Q, &key->dsa_q_len);
+  key->dsa_g = sp_mpi_bytes(&G, &key->dsa_g_len);
+  key->dsa_x = sp_mpi_bytes(&X, &key->dsa_x_len);
+  key->dsa_y = sp_mpi_bytes(&Y, &key->dsa_y_len);
+  if (!key->dsa_p || !key->dsa_q || !key->dsa_g || !key->dsa_x || !key->dsa_y) {
+    sp_key_release(key);
+    key = NULL;
+  }
+done:
+  if (X.MBEDTLS_PRIVATE(p))
+    mbedtls_platform_zeroize(X.MBEDTLS_PRIVATE(p), X.MBEDTLS_PRIVATE(n) * sizeof(mbedtls_mpi_uint));
+  free(kbuf);
+  mbedtls_mpi_free(&P);
+  mbedtls_mpi_free(&Q);
+  mbedtls_mpi_free(&G);
+  mbedtls_mpi_free(&X);
+  mbedtls_mpi_free(&Y);
+  mbedtls_mpi_free(&K);
+  mbedtls_mpi_free(&E);
+  mbedtls_mpi_free(&bound);
+  if (!key && !scr_exc_pending()) sp_unsupported_input();
+  return key;
+}
+
 static SpKey *sp_keygen_run(const SpKeyGen *gen, bool *job_error) {
   *job_error = false;
+  if (gen->kind == SP_GEN_DSA) {
+    SpKey *k = sp_dsa_keygen((unsigned)gen->bits, (unsigned)gen->dsa_divisor);
+    if (!k && scr_exc_pending()) *job_error = true;
+    return k;
+  }
   if (gen->kind == SP_GEN_DH) {
     SpKey *k = sp_dh_keygen(gen);
     /* A DH generation failure (modulus too small, bad generator) reaches
@@ -5460,6 +5893,186 @@ static bool sp_pss_verify_mgf1(mbedtls_rsa_context *rsa, mbedtls_md_type_t md, m
 }
 
 /* Signs a digest: +1 Buffer or NULL with the error pending. */
+/* ── DSA signatures (FIPS 186-4) ──────────────────────────────────────── */
+
+static bool sp_dsa_read(const SpKey *k, mbedtls_mpi *P, mbedtls_mpi *Q, mbedtls_mpi *G, mbedtls_mpi *X,
+                        mbedtls_mpi *Y) {
+  bool ok = mbedtls_mpi_read_binary(P, k->dsa_p, k->dsa_p_len) == 0 &&
+            mbedtls_mpi_read_binary(Q, k->dsa_q, k->dsa_q_len) == 0 &&
+            mbedtls_mpi_read_binary(G, k->dsa_g, k->dsa_g_len) == 0;
+  if (ok && X) ok = mbedtls_mpi_read_binary(X, k->dsa_x, k->dsa_x_len) == 0;
+  if (ok && Y) ok = mbedtls_mpi_read_binary(Y, k->dsa_y, k->dsa_y_len) == 0;
+  return ok;
+}
+
+/* The leftmost min(N, digest bits) of the digest as an integer. */
+static bool sp_dsa_e(const SpKey *k, const unsigned char *hash, size_t hash_len, const mbedtls_mpi *Q,
+                     mbedtls_mpi *E) {
+  size_t qbits = mbedtls_mpi_bitlen(Q);
+  size_t hash_bits = hash_len * 8;
+  size_t take = hash_bits > qbits ? qbits : hash_bits;
+  size_t drop = hash_bits - take;
+  if (mbedtls_mpi_read_binary(E, hash, hash_len) != 0) return false;
+  (void)k;
+  return drop == 0 || mbedtls_mpi_shift_r(E, drop) == 0;
+}
+
+/* The Dss-Sig-Value { INTEGER r, INTEGER s } in buf, at its end like the
+ * other writers; the length or a negative error. */
+static int sp_dsa_write_sig(const mbedtls_mpi *R, const mbedtls_mpi *S, unsigned char *buf, size_t size) {
+  unsigned char *c = buf + size;
+  int r, len = 0;
+  if ((r = mbedtls_asn1_write_mpi(&c, buf, S)) < 0) return r;
+  len += r;
+  if ((r = mbedtls_asn1_write_mpi(&c, buf, R)) < 0) return r;
+  len += r;
+  if ((r = mbedtls_asn1_write_len(&c, buf, (size_t)len)) < 0) return r;
+  len += r;
+  if ((r = mbedtls_asn1_write_tag(&c, buf, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE)) < 0)
+    return r;
+  return len + r;
+}
+
+static ScrDyn *sp_dsa_sign(SpSigKey *key, mbedtls_md_type_t md, const unsigned char *hash, size_t hash_len) {
+  (void)md;
+  SpKey *k = key->key;
+  mbedtls_mpi P, Q, G, X, KIND, R, S, E, T, W, bound;
+  mbedtls_mpi_init(&P);
+  mbedtls_mpi_init(&Q);
+  mbedtls_mpi_init(&G);
+  mbedtls_mpi_init(&X);
+  mbedtls_mpi_init(&KIND);
+  mbedtls_mpi_init(&R);
+  mbedtls_mpi_init(&S);
+  mbedtls_mpi_init(&E);
+  mbedtls_mpi_init(&T);
+  mbedtls_mpi_init(&W);
+  mbedtls_mpi_init(&bound);
+  ScrDyn *out = NULL;
+  bool ok = sp_dsa_read(k, &P, &Q, &G, &X, NULL) && sp_dsa_e(k, hash, hash_len, &Q, &E) &&
+            mbedtls_mpi_sub_int(&bound, &Q, 1) == 0;
+  for (unsigned attempt = 0; ok && attempt < 64; attempt++) {
+    /* k in [2, q - 2]; r = (g^k mod p) mod q must not be 0. */
+    if (mbedtls_mpi_random(&KIND, 2, &bound, sp_random, NULL) != 0) {
+      ok = false;
+      break;
+    }
+    if (mbedtls_mpi_exp_mod(&T, &G, &KIND, &P, NULL) != 0 || mbedtls_mpi_mod_mpi(&R, &T, &Q) != 0) {
+      ok = false;
+      break;
+    }
+    if (mbedtls_mpi_cmp_int(&R, 0) == 0) continue;
+    /* s = k^-1 (e + x r) mod q must not be 0. */
+    if (mbedtls_mpi_inv_mod(&W, &KIND, &Q) != 0 || mbedtls_mpi_mul_mpi(&S, &X, &R) != 0 ||
+        mbedtls_mpi_add_mpi(&S, &S, &E) != 0 || mbedtls_mpi_mod_mpi(&S, &S, &Q) != 0 ||
+        mbedtls_mpi_mul_mpi(&S, &W, &S) != 0 || mbedtls_mpi_mod_mpi(&S, &S, &Q) != 0) {
+      ok = false;
+      break;
+    }
+    if (mbedtls_mpi_cmp_int(&S, 0) == 0) continue;
+    if (key->p1363) {
+      size_t q_len = (mbedtls_mpi_bitlen(&Q) + 7) / 8;
+      unsigned char raw[2 * 66];
+      if (q_len > 66 || mbedtls_mpi_write_binary(&R, raw, q_len) != 0 ||
+          mbedtls_mpi_write_binary(&S, raw + q_len, q_len) != 0) {
+        ok = false;
+        break;
+      }
+      out = sp_dyn_buffer(raw, 2 * q_len);
+    } else {
+      unsigned char sig[SP_DER_MAX];
+      int n = sp_dsa_write_sig(&R, &S, sig, sizeof sig);
+      if (n < 0) {
+        ok = false;
+        break;
+      }
+      out = sp_dyn_buffer(sig + sizeof sig - n, (size_t)n);
+    }
+    break;
+  }
+  if (!out && ok) ok = false;
+  if (X.MBEDTLS_PRIVATE(p))
+    mbedtls_platform_zeroize(X.MBEDTLS_PRIVATE(p), X.MBEDTLS_PRIVATE(n) * sizeof(mbedtls_mpi_uint));
+  if (KIND.MBEDTLS_PRIVATE(p))
+    mbedtls_platform_zeroize(KIND.MBEDTLS_PRIVATE(p), KIND.MBEDTLS_PRIVATE(n) * sizeof(mbedtls_mpi_uint));
+  mbedtls_mpi_free(&P);
+  mbedtls_mpi_free(&Q);
+  mbedtls_mpi_free(&G);
+  mbedtls_mpi_free(&X);
+  mbedtls_mpi_free(&KIND);
+  mbedtls_mpi_free(&R);
+  mbedtls_mpi_free(&S);
+  mbedtls_mpi_free(&E);
+  mbedtls_mpi_free(&T);
+  mbedtls_mpi_free(&W);
+  mbedtls_mpi_free(&bound);
+  if (!out) sp_unsupported_input();
+  return out;
+}
+
+static bool sp_dsa_verify(SpSigKey *key, mbedtls_md_type_t md, const unsigned char *hash, size_t hash_len,
+                          const unsigned char *sig, size_t sig_len) {
+  (void)md;
+  SpKey *k = key->key;
+  mbedtls_mpi P, Q, G, Y, R, S, E, W, U1, U2, V, T;
+  mbedtls_mpi_init(&P);
+  mbedtls_mpi_init(&Q);
+  mbedtls_mpi_init(&G);
+  mbedtls_mpi_init(&Y);
+  mbedtls_mpi_init(&R);
+  mbedtls_mpi_init(&S);
+  mbedtls_mpi_init(&E);
+  mbedtls_mpi_init(&W);
+  mbedtls_mpi_init(&U1);
+  mbedtls_mpi_init(&U2);
+  mbedtls_mpi_init(&V);
+  mbedtls_mpi_init(&T);
+  bool result = false;
+  if (!sp_dsa_read(k, &P, &Q, &G, NULL, &Y) || !sp_dsa_e(k, hash, hash_len, &Q, &E)) goto done;
+  size_t q_len = (mbedtls_mpi_bitlen(&Q) + 7) / 8;
+  if (key->p1363) {
+    if (sig_len != 2 * q_len) goto done;
+    if (mbedtls_mpi_read_binary(&R, sig, q_len) != 0 ||
+        mbedtls_mpi_read_binary(&S, sig + q_len, q_len) != 0)
+      goto done;
+  } else {
+    unsigned char *p = (unsigned char *)sig;
+    const unsigned char *end = sig + sig_len;
+    size_t seq_len;
+    if (mbedtls_asn1_get_tag(&p, end, &seq_len, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0 ||
+        (size_t)(end - p) != seq_len || mbedtls_asn1_get_mpi(&p, end, &R) != 0 ||
+        mbedtls_asn1_get_mpi(&p, end, &S) != 0 || p != end)
+      goto done;
+  }
+  /* 0 < r, s < q, then v = ((g^u1 y^u2 mod p) mod q) == r. */
+  if (mbedtls_mpi_cmp_int(&R, 0) <= 0 || mbedtls_mpi_cmp_mpi(&R, &Q) >= 0 ||
+      mbedtls_mpi_cmp_int(&S, 0) <= 0 || mbedtls_mpi_cmp_mpi(&S, &Q) >= 0)
+    goto done;
+  if (mbedtls_mpi_inv_mod(&W, &S, &Q) != 0 || mbedtls_mpi_mul_mpi(&U1, &E, &W) != 0 ||
+      mbedtls_mpi_mod_mpi(&U1, &U1, &Q) != 0 || mbedtls_mpi_mul_mpi(&U2, &R, &W) != 0 ||
+      mbedtls_mpi_mod_mpi(&U2, &U2, &Q) != 0)
+    goto done;
+  if (mbedtls_mpi_exp_mod(&V, &G, &U1, &P, NULL) != 0 || mbedtls_mpi_exp_mod(&T, &Y, &U2, &P, NULL) != 0 ||
+      mbedtls_mpi_mul_mpi(&V, &V, &T) != 0 || mbedtls_mpi_mod_mpi(&V, &V, &P) != 0 ||
+      mbedtls_mpi_mod_mpi(&V, &V, &Q) != 0)
+    goto done;
+  result = mbedtls_mpi_cmp_mpi(&V, &R) == 0;
+done:
+  mbedtls_mpi_free(&P);
+  mbedtls_mpi_free(&Q);
+  mbedtls_mpi_free(&G);
+  mbedtls_mpi_free(&Y);
+  mbedtls_mpi_free(&R);
+  mbedtls_mpi_free(&S);
+  mbedtls_mpi_free(&E);
+  mbedtls_mpi_free(&W);
+  mbedtls_mpi_free(&U1);
+  mbedtls_mpi_free(&U2);
+  mbedtls_mpi_free(&V);
+  mbedtls_mpi_free(&T);
+  return result;
+}
+
 static ScrDyn *sp_sign_hash(SpSigKey *key, mbedtls_md_type_t md, const unsigned char *hash, size_t hash_len) {
   unsigned char sig[MBEDTLS_PK_SIGNATURE_MAX_SIZE];
   size_t sig_len = 0;
@@ -5477,6 +6090,7 @@ static ScrDyn *sp_sign_hash(SpSigKey *key, mbedtls_md_type_t md, const unsigned 
     sp_unsupported_input();
     return NULL;
   }
+  if (sp_is_dsa(key->key)) return sp_dsa_sign(key, md, hash, hash_len);
   if (sp_is_rsa(key->key) && key->padding == 6) {
     mbedtls_rsa_context *rsa = mbedtls_pk_rsa(key->key->pk);
     size_t bytes = mbedtls_rsa_get_len(rsa);
@@ -5545,6 +6159,7 @@ static bool sp_verify_hash(SpSigKey *key, mbedtls_md_type_t md, const unsigned c
   if (!sp_pss_key_digest(key, md)) return false;
   if (!sp_sig_padding(key)) return false;
   if (!sp_rsa_padding(key, md)) return false;
+  if (sp_is_dsa(key->key)) return sp_dsa_verify(key, md, hash, hash_len, sig, sig_len);
   if (sp_is_rsa(key->key) && key->padding == 6) {
     mbedtls_rsa_context *rsa = mbedtls_pk_rsa(key->key->pk);
     size_t bytes = mbedtls_rsa_get_len(rsa);
@@ -7651,6 +8266,7 @@ static const char *sp_type_name(const SpKey *k) {
          : k->rsa_pss   ? "rsa-pss"
          : sp_is_rsa(k) ? "rsa"
          : sp_is_dh(k)  ? "dh"
+         : sp_is_dsa(k) ? "dsa"
                         : "ec";
 }
 

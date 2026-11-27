@@ -32,3 +32,18 @@ const mark = (value) => {
 };
 const folded = stripTypeScriptTypes("const a: number = 1;", { ignored: mark("opt") }, mark("arg"));
 console.log(JSON.stringify(folded), order.join(","));
+console.log(JSON.stringify(stripTypeScriptTypes("namespace N { export type A = string; }\nconst ok = 1;")));
+console.log(JSON.stringify(stripTypeScriptTypes("class C { m?() {} x!: number; }")));
+console.log(JSON.stringify(stripTypeScriptTypes("function f(a: string): void;\nfunction f(a: any) {}\nf('x');")));
+console.log(JSON.stringify(stripTypeScriptTypes("// leading\nimport type { A } from './m';\nconst z = 1;")));
+console.log(JSON.stringify(stripTypeScriptTypes("import { type A /* c */, b } from './m';\nconsole.log(b);")));
+const errorOrder = [];
+const markError = (value) => {
+  errorOrder.push(value);
+  return value;
+};
+try {
+  stripTypeScriptTypes(42, markError("second"));
+} catch (error) {
+  console.log(error.code, errorOrder.join(","));
+}

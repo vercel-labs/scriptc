@@ -27,6 +27,34 @@ export class StripUnsupportedSyntax extends Error {
 const OVERRIDE_WITHOUT_BASE =
   "This member cannot have an 'override' modifier because its containing class does not extend another class.";
 
+/** Whether a statement inside a namespace declares only types. */
+function isTypeOnlyStatement(stmt: ts.Node): boolean {
+  const kind = stmt.kind;
+  if (kind === ts.SyntaxKind.InterfaceDeclaration || kind === ts.SyntaxKind.TypeAliasDeclaration)
+    return true;
+  if (hasModifier(stmt, ts.SyntaxKind.DeclareKeyword)) return true;
+  if (kind === ts.SyntaxKind.ModuleDeclaration) return namespaceIsTypeOnly(stmt);
+  if (kind === ts.SyntaxKind.ImportDeclaration) {
+    return (stmt as { importClause?: { isTypeOnly?: boolean } }).importClause?.isTypeOnly === true;
+  }
+  if (kind === ts.SyntaxKind.ExportDeclaration)
+    return (stmt as { isTypeOnly?: boolean }).isTypeOnly === true;
+  return false;
+}
+
+/** Whether a namespace body holds only type declarations (so the namespace
+ * itself is erasable, as it is in Node). A namespace chain (`namespace A.B`)
+ * defers to its inner declaration. */
+function namespaceIsTypeOnly(node: ts.Node): boolean {
+  const body = (node as { body?: ts.Node }).body;
+  if (body === undefined) return false;
+  if (body.kind === ts.SyntaxKind.ModuleBlock) {
+    const statements = (body as { statements?: { nodes?: readonly ts.Node[] } }).statements?.nodes;
+    return (statements ?? []).every(isTypeOnlyStatement);
+  }
+  return body.kind === ts.SyntaxKind.ModuleDeclaration ? namespaceIsTypeOnly(body) : false;
+}
+
 function modifiersOf(node: ts.Node): readonly ts.Node[] {
   return (node as { modifiers?: { nodes?: readonly ts.Node[] } }).modifiers?.nodes ?? [];
 }
@@ -99,19 +127,26 @@ export function stripTypeScriptTypesStrip(source: string): string {
   const visit = (node: ts.Node): void => {
     const kind = node.kind;
     switch (kind) {
-      case ts.SyntaxKind.EnumDeclaration:
       case ts.SyntaxKind.ModuleDeclaration: {
+        // A namespace that declares only types carries no runtime code: it
+        // erases whole. One with a runtime member is a construct strip mode
+        // cannot rewrite.
+        if (hasModifier(node, ts.SyntaxKind.DeclareKeyword) || namespaceIsTypeOnly(node)) {
+          spans.push([node.getStart(), node.end!]);
+          return;
+        }
+        throw new StripUnsupportedSyntax(
+          "TypeScript namespace declaration is not supported in strip-only mode",
+        );
+      }
+      case ts.SyntaxKind.EnumDeclaration: {
         // A `declare` declaration carries no runtime code and erases whole;
         // one without it is a runtime construct strip mode cannot rewrite.
         if (hasModifier(node, ts.SyntaxKind.DeclareKeyword)) {
           spans.push([node.getStart(), node.end!]);
           return;
         }
-        throw new StripUnsupportedSyntax(
-          kind === ts.SyntaxKind.EnumDeclaration
-            ? "TypeScript enum is not supported in strip-only mode"
-            : "TypeScript namespace declaration is not supported in strip-only mode",
-        );
+        throw new StripUnsupportedSyntax("TypeScript enum is not supported in strip-only mode");
       }
       case ts.SyntaxKind.InterfaceDeclaration:
       case ts.SyntaxKind.TypeAliasDeclaration:
@@ -131,18 +166,23 @@ export function stripTypeScriptTypesStrip(source: string): string {
         if ((node as { isTypeOnly?: boolean }).isTypeOnly !== true) break;
         const start = node.getStart();
         let end = node.end!;
-        while (source[end] === "," || source[end] === " ") end += 1;
+        // Blank through the following comma, whatever comments sit between.
+        while (end < source.length && source[end] !== "," && source[end] !== "}") end += 1;
+        if (source[end] === ",") {
+          end += 1;
+          while (source[end] === " ") end += 1;
+        }
         spans.push([start, end]);
         break;
       }
       case ts.SyntaxKind.ImportDeclaration: {
         const clause = (node as { importClause?: { isTypeOnly?: boolean } }).importClause;
-        if (clause?.isTypeOnly === true) spans.push([node.pos, node.end!]);
+        if (clause?.isTypeOnly === true) spans.push([node.getStart(), node.end!]);
         break;
       }
       case ts.SyntaxKind.ExportDeclaration:
         if ((node as { isTypeOnly?: boolean }).isTypeOnly === true)
-          spans.push([node.pos, node.end!]);
+          spans.push([node.getStart(), node.end!]);
         break;
       case ts.SyntaxKind.AsExpression:
       case ts.SyntaxKind.SatisfiesExpression: {
@@ -207,6 +247,19 @@ export function stripTypeScriptTypesStrip(source: string): string {
       if ((clause as { token?: number }).token === ts.SyntaxKind.ImplementsKeyword)
         spans.push([clause.getStart(), clause.end!]);
     }
+    // `m?() {}`, `x?: T`: the optional marker is type-surface only.
+    const questionToken = (node as { questionToken?: ts.Node }).questionToken;
+    if (questionToken !== undefined) spans.push([questionToken.getStart(), questionToken.end!]);
+    // A signature with no body (an overload, `declare function`, `abstract
+    // m()`): the whole declaration erases.
+    const body = (node as { body?: ts.Node }).body;
+    if (
+      (node.kind === ts.SyntaxKind.FunctionDeclaration ||
+        node.kind === ts.SyntaxKind.MethodDeclaration ||
+        node.kind === ts.SyntaxKind.MethodSignature) &&
+      (body === undefined || body.kind === ts.SyntaxKind.SemicolonClassElement)
+    )
+      spans.push([node.getStart(), node.end!]);
     const annotation = annotationSpan(node, source);
     if (annotation !== null) spans.push([annotation[0], annotation[1]]);
     for (const list of [

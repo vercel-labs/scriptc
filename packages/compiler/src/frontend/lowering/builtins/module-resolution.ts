@@ -310,6 +310,18 @@ export function lowerStripTypeScriptTypesCall(
   const args = call.arguments.nodes;
   const refuse = (what: string, hint: string): never =>
     lowerer.noLowering(`module.stripTypeScriptTypes ${what}`, call, hint);
+  // Node evaluates every argument before the call body runs, so an error the
+  // checks raise happens after them — an ignored option value or an extra
+  // argument keeps its side effects and its own exceptions on every path.
+  const evaluation: IrStmt[] = args.map((arg) => ({
+    kind: "exprStmt",
+    expr: lowerer.lowerExpr(arg),
+    loc: locOf(arg),
+  }));
+  const fail = (thrown: IrExpr): IrExpr =>
+    evaluation.length === 0
+      ? thrown
+      : { kind: "seqExpr", stmts: evaluation, result: thrown, type: thrown.type, loc };
   if (args.some(ts.isSpreadElement))
     refuse("with a spread argument", "stripTypeScriptTypes(code, options) takes written literals");
   const codeNode = args[0];
@@ -322,12 +334,14 @@ export function lowerStripTypeScriptTypesCall(
     const received =
       codeNode === undefined ? "undefined" : stripCodeReceivedText(lowerer, codeNode);
     if (received !== null)
-      return nodeThrowExpr(
-        1,
-        "ERR_INVALID_ARG_TYPE",
-        `The "code" argument must be of type string. Received ${received}`,
-        DYN,
-        loc,
+      return fail(
+        nodeThrowExpr(
+          1,
+          "ERR_INVALID_ARG_TYPE",
+          `The "code" argument must be of type string. Received ${received}`,
+          DYN,
+          loc,
+        ),
       );
     return refuse(
       "with runtime-computed code",
@@ -365,22 +379,26 @@ export function lowerStripTypeScriptTypesCall(
             "transform mode re-prints the program through SWC's code generator; only strip mode is implemented",
           );
         if (value.text !== "strip")
-          return nodeThrowExpr(
-            1,
-            "ERR_INVALID_ARG_VALUE",
-            "The property 'options.mode' must be one of: 'strip', 'transform'. " +
-              `Received '${value.text}'`,
-            DYN,
-            loc,
+          return fail(
+            nodeThrowExpr(
+              1,
+              "ERR_INVALID_ARG_VALUE",
+              "The property 'options.mode' must be one of: 'strip', 'transform'. " +
+                `Received '${value.text}'`,
+              DYN,
+              loc,
+            ),
           );
       } else if (name === "sourceMap") {
         if (value.kind === ts.SyntaxKind.TrueKeyword)
-          return nodeThrowExpr(
-            1,
-            "ERR_INVALID_ARG_VALUE",
-            "The property 'options.sourceMap' must be one of: false, undefined. Received true",
-            DYN,
-            loc,
+          return fail(
+            nodeThrowExpr(
+              1,
+              "ERR_INVALID_ARG_VALUE",
+              "The property 'options.sourceMap' must be one of: false, undefined. Received true",
+              DYN,
+              loc,
+            ),
           );
         if (
           value.kind !== ts.SyntaxKind.FalseKeyword &&
@@ -404,17 +422,12 @@ export function lowerStripTypeScriptTypesCall(
     // The refusal carries Node's own code: the strip-only syntax errors are
     // ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX, and pre-strip validation (an
     // `override` with no base class) is ERR_INVALID_TYPESCRIPT_SYNTAX.
-    return nodeThrowExpr(3, err.code, err.message, DYN, loc);
+    return fail(nodeThrowExpr(3, err.code, err.message, DYN, loc));
   }
   const text = sourceUrl === null ? stripped : `${stripped}\n\n//# sourceURL=${sourceUrl}`;
   // Node evaluates every argument before the call returns: an ignored option
   // value, an extra argument, their side effects and their exceptions all
   // happen where the call stands.
-  const evaluation: IrStmt[] = call.arguments.nodes.map((arg) => ({
-    kind: "exprStmt",
-    expr: lowerer.lowerExpr(arg),
-    loc: locOf(arg),
-  }));
   const warning: IrStmt = {
     kind: "exprStmt",
     expr: { kind: "libCall", fn: "module.stripTypesWarning", args: [], type: VOID, loc },

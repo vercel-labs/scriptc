@@ -36,6 +36,16 @@ const CASES: readonly string[] = [
   // Inline type-only specifiers erase; the value specifiers stay.
   "import { type A, b } from './m';\nconsole.log(b);",
   "export { type A, b };\nconst b = 1;",
+  // A namespace of only type declarations is erasable, as in Node.
+  "namespace N { export type A = string; }\nconst ok = 1;",
+  // Optional markers, definite assignment, overload signatures.
+  "interface I { m?(): void; }\nclass C { m?() {} }",
+  "class C { x!: number; }",
+  "function f(a: string): void;\nfunction f(a: any) {}\nf('x');",
+  // Leading comments survive a type-only statement, and a comment between a
+  // type-only specifier and its comma blanks with it.
+  "// leading\nimport type { A } from './m';\nconst z = 1;",
+  "import { type A /* c */, b } from './m';\nconsole.log(b);",
 ];
 
 const REFUSED: readonly string[] = [

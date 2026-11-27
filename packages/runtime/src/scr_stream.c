@@ -60,8 +60,18 @@ ScrDyn *(*scr_stream_promise_box_hook)(ScrPromise *) = NULL;
 /* Readable.from's `signal` option adds its abort listener through the events
  * unit. The program links that unit when the option is present (a feature
  * rule), and the weak reference keeps a stream program that never passes one
- * from needing it. */
-ScrDyn *scr_events_add_abort_listener(ScrDyn *signal, ScrDyn *listener) __attribute__((weak));
+ * from needing it. Mach-O refuses an undefined weak reference in an
+ * executable, so Apple gets a weak definition here; the events unit's strong
+ * definition replaces it whenever that unit is linked. */
+#if defined(__APPLE__)
+__attribute__((weak)) ScrDyn *scr_events_add_abort_listener(ScrDyn *signal, ScrDyn *listener) {
+  (void)signal;
+  (void)listener;
+  return NULL;
+}
+#else
+extern ScrDyn *scr_events_add_abort_listener(ScrDyn *signal, ScrDyn *listener) __attribute__((weak));
+#endif
 
 #include <math.h>
 #include <stdio.h>

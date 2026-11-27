@@ -2968,14 +2968,13 @@ function lowerFromSource(
   const genRecv =
     srcNode && genT && opts && fromGenChunk(lowerer, genT.yieldT)
       ? (() => {
+          if (genMethod && srcT?.kind === "object") return sourceInstance(srcNode, srcT);
           // An inline iterator expression (obj[Symbol.iterator]()) lowers
           // through the checked-dynamic call path and answers a dyn value:
-          // from.js reads it as the generator the method returned, so it is
-          // coerced here rather than handed to the runtime as anything else.
-          const raw =
-            genMethod && srcT?.kind === "object"
-              ? sourceInstance(srcNode, srcT)
-              : lowerer.lowerExpr(srcNode);
+          // from.js reads it as the generator the method returned, so that
+          // value is coerced — never the class instance a generator method is
+          // called on, which the accessor call below takes as its receiver.
+          const raw = lowerer.lowerExpr(srcNode);
           if (raw === null) return null;
           const coerced = raw.type.kind === "generator" ? raw : lowerer.coerceToExpected(raw, genT);
           return coerced.type.kind === "generator" ? coerced : null;

@@ -841,6 +841,52 @@ static int sp_write_dsa_pkcs8(SpKey *k, unsigned char *buf, size_t size) {
   return len + r;
 }
 
+/* The longest p, q or g encoding a DSA import reads: a 3072-bit modulus
+ * needs 385 bytes with its sign byte, so a longer padding run is abuse. */
+#define SP_DSA_MAX_PARAM_INT 4096
+
+/* A DSA parameter INTEGER (p, q or g). OpenSSL's decoder accepts leading
+ * zero padding, so it is trimmed — keeping the sign byte a positive value
+ * needs — before the MPI is sized: neither the allocation nor the
+ * validation and arithmetic that follow carry the padding's width, which
+ * is what made a padded private key cost the padding's width in the
+ * y = g^x mod p derivation. An encoding longer than SP_DSA_MAX_PARAM_INT
+ * is refused (absurd, when the caller reports it). */
+static int sp_dsa_read_param(unsigned char **p, const unsigned char *end, mbedtls_mpi *X,
+                             bool *absurd) {
+  size_t len;
+  if (mbedtls_asn1_get_tag(p, end, &len, MBEDTLS_ASN1_INTEGER) != 0) return -1;
+  const unsigned char *body = *p;
+  if ((size_t)(end - body) < len) return -1;
+  *p = body + len;
+  if (len == 0) return -1;
+  if (len > SP_DSA_MAX_PARAM_INT) {
+    if (absurd) *absurd = true;
+    return -1;
+  }
+  size_t k = 0;
+  while (k < len && body[k] == 0) k++;
+  if (k == len) return mbedtls_mpi_read_binary(X, body + len - 1, 1); /* zero */
+  if (k == 0 && (body[0] & 0x80)) return -1; /* a negative value */
+  size_t start = (body[k] & 0x80) ? k - 1 : k;
+  return mbedtls_mpi_read_binary(X, body + start, len - start);
+}
+
+/* A DER INTEGER read strictly, as the private scalar, the public value and
+ * the signature components: only the minimal encoding OpenSSL's decoder
+ * accepts — one optional zero byte before a value whose top bit is set — is
+ * read, so a padded value is refused where Node refuses it. */
+static int sp_dsa_read_strict(unsigned char **p, const unsigned char *end, mbedtls_mpi *X) {
+  size_t len;
+  if (mbedtls_asn1_get_tag(p, end, &len, MBEDTLS_ASN1_INTEGER) != 0) return -1;
+  const unsigned char *body = *p;
+  if ((size_t)(end - body) < len) return -1;
+  *p = body + len;
+  if (len == 0) return -1;
+  if (len >= 2 && body[0] == 0x00 && !(body[1] & 0x80)) return -1;
+  return mbedtls_mpi_read_binary(X, body, len);
+}
+
 /* The FFC parameter set DSA signing and verification are bounded by
  * (FIPS 186-4): p of 1024 to 3072 bits, q of 160, 224 or 256 bits, q
  * dividing p - 1, and the key's values inside the group (1 < g, y < p - 1
@@ -899,8 +945,9 @@ static SpKey *sp_dsa_from_der(const uint8_t *der, size_t len, bool private_key, 
     if (mbedtls_asn1_get_tag(&p, alg_end, &params_len, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0)
       goto done;
     const unsigned char *params_end = p + params_len;
-    if (mbedtls_asn1_get_mpi(&p, params_end, &P) != 0 || mbedtls_asn1_get_mpi(&p, params_end, &Q) != 0 ||
-        mbedtls_asn1_get_mpi(&p, params_end, &G) != 0 || p != params_end)
+    if (sp_dsa_read_param(&p, params_end, &P, bad_params) != 0 ||
+        sp_dsa_read_param(&p, params_end, &Q, bad_params) != 0 ||
+        sp_dsa_read_param(&p, params_end, &G, bad_params) != 0 || p != params_end)
       goto done;
     p = alg_end;
   }
@@ -909,12 +956,12 @@ static SpKey *sp_dsa_from_der(const uint8_t *der, size_t len, bool private_key, 
     if (mbedtls_asn1_get_tag(&p, end, &bits_len, MBEDTLS_ASN1_BIT_STRING) != 0 || bits_len == 0) goto done;
     if (*p != 0) goto done; /* the unused-bits byte */
     p++;
-    if (mbedtls_asn1_get_mpi(&p, end, &Y) != 0) goto done;
+    if (sp_dsa_read_strict(&p, end, &Y) != 0) goto done;
   } else {
     size_t oct_len;
     if (mbedtls_asn1_get_tag(&p, end, &oct_len, MBEDTLS_ASN1_OCTET_STRING) != 0) goto done;
     const unsigned char *oct_end = p + oct_len;
-    if (mbedtls_asn1_get_mpi(&p, oct_end, &X) != 0 || p != oct_end) goto done;
+    if (sp_dsa_read_strict(&p, oct_end, &X) != 0 || p != oct_end) goto done;
   }
   /* The positive values OpenSSL's decoder requires. */
   if (mbedtls_mpi_cmp_int(&P, 0) <= 0 || mbedtls_mpi_cmp_int(&Q, 0) <= 0 ||
@@ -3364,6 +3411,24 @@ static void sp_unsupported_key_input(const unsigned char *data, size_t len) {
   sp_throw_key_decrypt(unsupported, "DECODER routines", "unsupported", "ERR_OSSL_UNSUPPORTED", stack, n);
 }
 
+/* Whether `der` is a DSA SubjectPublicKeyInfo, whatever its key material:
+ * the shape Node's decoder recognizes before it rejects the value, which
+ * answers "Failed to read asymmetric key" rather than the decoder stack a
+ * private key's failure reports. */
+static bool sp_dsa_spki_shape(const unsigned char *der, size_t len) {
+  const unsigned char *end = der + len;
+  unsigned char *p = (unsigned char *)der;
+  size_t seq, alg, oid_len;
+  if (mbedtls_asn1_get_tag(&p, end, &seq, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0 ||
+      p + seq != end)
+    return false;
+  if (mbedtls_asn1_get_tag(&p, end, &alg, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0)
+    return false;
+  const unsigned char *alg_end = p + alg;
+  if (mbedtls_asn1_get_tag(&p, alg_end, &oid_len, MBEDTLS_ASN1_OID) != 0) return false;
+  return oid_len == sizeof sp_dsa_oid && memcmp(p, sp_dsa_oid, oid_len) == 0;
+}
+
 /* Whether `der` is a DH SubjectPublicKeyInfo, whatever its key material:
  * the shape Node's decoder recognizes before it rejects the value. */
 static bool sp_dh_spki_shape(const unsigned char *der, size_t len) {
@@ -3441,6 +3506,7 @@ static SpKey *sp_parse_with(const unsigned char *data, size_t len, bool private_
        * input form. */
       bool mlkem_unreadable = !ed && !failed && !private_key && sp_mlkem_spki_shape(der, der_len);
       bool dh_unreadable = !ed && !failed && !private_key && sp_dh_spki_shape(der, der_len);
+      bool dsa_unreadable = !ed && !failed && !private_key && sp_dsa_spki_shape(der, der_len);
       bool from_pem = decoded != NULL;
       if (decoded) {
         mbedtls_platform_zeroize(decoded, der_len);
@@ -3451,7 +3517,7 @@ static SpKey *sp_parse_with(const unsigned char *data, size_t len, bool private_
         sp_dsa_ffc_error();
         return NULL;
       }
-      if (mlkem_unreadable || dh_unreadable) {
+      if (mlkem_unreadable || dh_unreadable || dsa_unreadable) {
         if (from_pem) sp_evp_decode_error();
         else sp_unreadable_key();
         return NULL;
@@ -6104,8 +6170,8 @@ static bool sp_dsa_verify(SpSigKey *key, mbedtls_md_type_t md, const unsigned ch
     const unsigned char *end = sig + sig_len;
     size_t seq_len;
     if (mbedtls_asn1_get_tag(&p, end, &seq_len, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0 ||
-        (size_t)(end - p) != seq_len || mbedtls_asn1_get_mpi(&p, end, &R) != 0 ||
-        mbedtls_asn1_get_mpi(&p, end, &S) != 0 || p != end)
+        (size_t)(end - p) != seq_len || sp_dsa_read_strict(&p, end, &R) != 0 ||
+        sp_dsa_read_strict(&p, end, &S) != 0 || p != end)
       goto done;
   }
   /* 0 < r, s < q, then v = ((g^u1 y^u2 mod p) mod q) == r. */

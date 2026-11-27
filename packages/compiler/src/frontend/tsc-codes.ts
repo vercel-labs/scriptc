@@ -38,6 +38,14 @@ export const ADOPTED_OPTIONS = [
   "jsxFragmentFactory",
   "jsxImportSource",
   "reactNamespace",
+  // Decorator semantics: the checker must grade a legacy decorator against
+  // the legacy signature (`(target, key, descriptor)`), not the standard
+  // context call; `emitDecoratorMetadata` also changes the declared design
+  // types the checker admits. Programs with the latter setting are refused
+  // until the metadata lowering lands, but the checker still answers as the
+  // project's tsc would.
+  "experimentalDecorators",
+  "emitDecoratorMetadata",
 ] as const;
 
 /* ── The early-error boundary (read this before relaxing a code) ────────

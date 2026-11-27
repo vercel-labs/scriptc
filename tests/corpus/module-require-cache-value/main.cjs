@@ -3,6 +3,7 @@
  * their Module objects. */
 const cache = require.cache;
 console.log("object", typeof cache, cache === require.cache);
+console.log("proto", Object.getPrototypeOf(cache) === null, "toString" in cache);
 console.log("initial", Object.keys(cache).length, Object.keys(cache)[0] === __filename);
 const record = cache[__filename];
 console.log("self", typeof record, record === module, record.exports === module.exports);

@@ -10,3 +10,10 @@ module.exports.fromModule = 7;
 console.log("mirror", view.exports.fromModule, module.exports.fromModule);
 const viaView = require.cache[__filename].exports;
 console.log("stable", viaView === view.exports, viaView === module.exports);
+let keyCalls = 0;
+const keyOf = () => {
+  keyCalls += 1;
+  return __filename;
+};
+const viaKey = require.cache[keyOf()];
+console.log("key", keyCalls, viaKey.exports === module.exports, keyCalls);

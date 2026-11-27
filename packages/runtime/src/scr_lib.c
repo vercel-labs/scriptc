@@ -253,6 +253,35 @@ static SCR_TL ScrModuleRecord *scr_module_records = NULL;
 static SCR_TL size_t scr_module_record_count = 0;
 static SCR_TL size_t scr_module_next_cache_order = 1;
 
+/* The live cache entries in the order their requires entered them. A failed
+ * require drops its entry here, so require.cache's sync walks the current
+ * cache — never the history of orders assigned — and retrying a throwing
+ * lazy dependency costs the same every time. */
+static SCR_TL double *scr_module_cache_live = NULL;
+static SCR_TL size_t scr_module_cache_live_count = 0;
+static SCR_TL size_t scr_module_cache_live_cap = 0;
+
+static void scr_module_cache_live_push(double module_id) {
+  if (scr_module_cache_live_count == scr_module_cache_live_cap) {
+    size_t cap = scr_module_cache_live_cap ? scr_module_cache_live_cap * 2 : 16;
+    double *next = realloc(scr_module_cache_live, cap * sizeof *next);
+    if (!next) scr_trap("out of memory");
+    scr_module_cache_live = next;
+    scr_module_cache_live_cap = cap;
+  }
+  scr_module_cache_live[scr_module_cache_live_count++] = module_id;
+}
+
+static void scr_module_cache_live_remove(double module_id) {
+  for (size_t i = 0; i < scr_module_cache_live_count; i++) {
+    if (scr_module_cache_live[i] != module_id) continue;
+    for (size_t j = i + 1; j < scr_module_cache_live_count; j++)
+      scr_module_cache_live[j - 1] = scr_module_cache_live[j];
+    scr_module_cache_live_count--;
+    return;
+  }
+}
+
 static void scr_module_registry_cleanup(void) {
   for (size_t i = 0; i < scr_module_record_count; i++) {
     ScrModuleRecord *m = &scr_module_records[i];
@@ -268,6 +297,10 @@ static void scr_module_registry_cleanup(void) {
   scr_module_records = NULL;
   scr_module_record_count = 0;
   scr_module_next_cache_order = 1;
+  free(scr_module_cache_live);
+  scr_module_cache_live = NULL;
+  scr_module_cache_live_count = 0;
+  scr_module_cache_live_cap = 0;
 }
 
 /* Keep lazy process values out of the startup cleanup root.  The executable
@@ -541,12 +574,14 @@ void scr_module_define(double module_id, ScrStr *filename, ScrStr *id,
 /* The live require.cache object (below): a program that holds it sees the
  * modules a require enters and drops. */
 static void scr_module_cache_obj_sync(void);
+static SCR_TL ScrDyn *scr_module_cache_obj;
 
 void scr_module_enter(double module_id) {
   ScrModuleRecord *m = scr_module_record(module_id);
   if (!m->in_cache) {
     m->in_cache = true;
     m->cache_order = scr_module_next_cache_order++;
+    scr_module_cache_live_push(module_id);
     scr_module_cache_obj_sync();
   }
   m->loaded = false;
@@ -593,7 +628,9 @@ void scr_module_fail(double module_id) {
   m->in_cache = false;
   m->loaded = false;
   scr_module_dyn_refresh(m);
-  scr_module_cache_obj_sync();
+  scr_module_cache_live_remove(module_id);
+  if (scr_module_cache_obj != NULL && m->filename != NULL)
+    scr_dyn_obj_delete_field(scr_module_cache_obj, m->filename);
 }
 
 /* process.config: the build configuration Node reports. A compiled binary
@@ -929,33 +966,16 @@ static void scr_module_cache_obj_cleanup(void) {
 
 static void scr_module_cache_obj_sync(void) {
   if (scr_module_cache_obj == NULL) return;
-  /* A module that left the cache (a require that threw) leaves its entry:
-   * Node deletes it. */
-  ScrDyn *keys = scr_dyn_obj_own_keys(scr_module_cache_obj); /* +1 */
-  double count = scr_dyn_arr_len(keys);
-  for (double i = 0; i < count; i++) {
-    ScrDyn *key = scr_dyn_arr_at(keys, i); /* +1 */
-    if (key != NULL && key->kind == SCR_DYN_STR) {
-      bool live = false;
-      for (size_t r = 0; r < scr_module_record_count && !live; r++) {
-        const ScrModuleRecord *m = &scr_module_records[r];
-        if (m->in_cache && m->filename && scr_module_filename_equal(m, key->v.str)) live = true;
-      }
-      if (!live) scr_dyn_obj_delete_field(scr_module_cache_obj, key->v.str);
-    }
-    scr_dyn_release(key);
-  }
-  scr_dyn_release(keys);
-  /* Every cached module, in the order its require entered it. */
-  for (size_t order = 1; order < scr_module_next_cache_order; order++) {
-    for (size_t r = 0; r < scr_module_record_count; r++) {
-      ScrModuleRecord *m = &scr_module_records[r];
-      if (m->in_cache && m->cache_order == order && m->filename) {
-        scr_dyn_obj_set(scr_module_cache_obj, m->filename->data, m->filename->len,
-                        scr_module_dyn_object((double)r));
-        break;
-      }
-    }
+  /* The live entries, in the order their requires entered them: the work
+   * scales with the current cache. A module a failed require dropped is
+   * removed from this list and from the object when it fails. */
+  for (size_t i = 0; i < scr_module_cache_live_count; i++) {
+    size_t r = (size_t)scr_module_cache_live[i];
+    if (r >= scr_module_record_count) continue;
+    ScrModuleRecord *m = &scr_module_records[r];
+    if (!m->in_cache || m->filename == NULL) continue;
+    scr_dyn_obj_set(scr_module_cache_obj, m->filename->data, m->filename->len,
+                    scr_module_dyn_object((double)r));
   }
 }
 
@@ -965,7 +985,7 @@ ScrDyn *scr_module_cache_object(void) {
       scr_atexit(scr_module_cache_obj_cleanup);
       scr_module_cache_obj_cleanup_registered = true;
     }
-    scr_module_cache_obj = scr_dyn_new_obj();
+    scr_module_cache_obj = scr_dyn_new_obj_null_proto();
   }
   scr_module_cache_obj_sync();
   return scr_dyn_retain(scr_module_cache_obj);

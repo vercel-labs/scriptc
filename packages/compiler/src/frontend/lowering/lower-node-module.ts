@@ -920,12 +920,19 @@ export function lowerModuleViewMember(
   const read = cacheReadReceiverOf(lowerer, expr.expression);
   if (read === null) return null;
   const loc = locOf(expr);
+  // A binding already holds the module the cache key picked: read it, and do
+  // not run the key expression again (its side effects happen once, and the
+  // module it picked then is the one this read answers).
+  const receiver = withoutParenthesesTypeWrappers(expr.expression);
+  const handle = ts.isIdentifier(receiver)
+    ? lowerer.coerceInto(receiver, lowerer.lowerExpr(receiver), F64)
+    : cacheViewHandleOf(lowerer, read);
   return {
     kind: "dynKeyGet",
     value: {
       kind: "libCall",
       fn: "module.dynObjectOrAbsent",
-      args: [cacheViewHandleOf(lowerer, read)],
+      args: [handle],
       type: DYN,
       loc,
     },

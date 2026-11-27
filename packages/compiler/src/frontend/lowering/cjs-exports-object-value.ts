@@ -49,7 +49,7 @@ import { usesCjsTopLevelThis } from "./lower-node-module.js";
 import { v8CalleeText } from "./expressions/narrowing.js";
 import { DYN, VOID, type IrExpr, type IrGlobal, type IrStmt } from "../../ir/ir.js";
 import type { SrcLoc } from "../../ir/ir.js";
-import { dynUndefinedExpr, strLit, varRef } from "../../ir/build.js";
+import { dynUndefinedExpr, numLit, strLit, varRef } from "../../ir/build.js";
 
 /** The modules whose `module.exports` object some code takes as a value, by
  * their export table's own file (the target a forwarding
@@ -407,9 +407,7 @@ export function cjsExportStatementObjectWrites(lowerer: Lowerer, stmt: ts.Statem
   // only in the static member slots. A whole-table replacement is not
   // mirrored onto it — that would replace the registered object instead of
   // filling it.
-  const g =
-    cjsExportsObjectOf(lowerer, sf) ??
-    (cjs.kind === "table" ? null : (lowerer.cjsExportsThis.get(sf) ?? null));
+  const g = cjsExportsObjectOf(lowerer, sf) ?? lowerer.cjsExportsThis.get(sf) ?? null;
   if (g === null) return [];
   // A statement Node discards writes onto the exports object a
   // `module.exports =` assignment replaced: the module's object no longer
@@ -452,6 +450,22 @@ export function cjsExportStatementObjectWrites(lowerer: Lowerer, stmt: ts.Statem
       if (key === null) continue;
       out.push(keySet(g, key, readBack(key, prop), loc));
     }
+    // The module's registry entry follows the replacement: a view of it
+    // (require.cache[file].exports) reads the object Node's module.exports
+    // holds now, not the original one.
+    const moduleId = lowerer.cjsModuleIdOf.get(sf);
+    if (moduleId !== undefined)
+      out.push({
+        kind: "exprStmt",
+        expr: {
+          kind: "libCall",
+          fn: "module.setExportsDyn",
+          args: [numLit(moduleId, loc), varRef(g.id, DYN, loc)],
+          type: { kind: "void" },
+          loc,
+        },
+        loc,
+      });
     return out;
   }
   // The chain's members, outermost first, and the value they all take.

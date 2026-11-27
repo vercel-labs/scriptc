@@ -199,6 +199,9 @@ void scr_http_res_write_early_hints(ScrHttpRes *r, ScrArr *pairs /*borrowed: [na
 /* writeInformation(status[, headers]): the generic informational response,
  * status 100..199 but never 101; answers write()'s backpressure boolean. */
 bool scr_http_res_write_information(ScrHttpRes *r, double status, ScrArr *pairs /*borrowed, nullable*/);
+bool scr_http_res_write_information_cb(ScrHttpRes *r, double status,
+                                       ScrArr *pairs /*borrowed, nullable*/,
+                                       ScrClosure *cb /*moves, nullable*/);
 /* The callback forms: the callback fires once the message is written. */
 void scr_http_res_write_continue_cb(ScrHttpRes *r, ScrClosure *cb /*moves, nullable*/);
 void scr_http_res_write_processing_cb(ScrHttpRes *r, ScrClosure *cb /*moves, nullable*/);

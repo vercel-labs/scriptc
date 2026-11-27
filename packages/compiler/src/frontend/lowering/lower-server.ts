@@ -11875,18 +11875,36 @@ function lowerHttpResMethodCall(
           loc,
         };
       }
-      if (args.length < 1 || args.length > 2) {
+      if (args.length < 1 || args.length > 3) {
         lowerer.noLowering(
           `res.writeInformation with ${args.length} arguments`,
           call,
-          "the supported forms are writeInformation(status) and writeInformation(status, headers) (no callback)",
+          "use writeInformation(status[, headers][, callback])",
         );
       }
       const status = lowerer.lowerExprExpecting(args[0]!, F64);
       const pairs: IrExpr =
-        args.length === 2
+        args.length >= 2
           ? headerPairs(args[1]!, "writeInformation")
           : { kind: "arrayLit", elems: [], type: arrayOf(STRING), loc };
+      if (args.length === 3) {
+        const { cb } = lowerCallbackArg(
+          lowerer,
+          args[2]!,
+          "writeInformation callbacks",
+          0,
+          () => false,
+          "use ()",
+          [],
+        );
+        return {
+          kind: "libCall",
+          fn: "http.resWriteInformationCb",
+          args: [receiver, status, pairs, cb],
+          type: BOOL,
+          loc,
+        };
+      }
       return {
         kind: "libCall",
         fn: "http.resWriteInformation",

@@ -2205,6 +2205,12 @@ export interface TypeMapperCtx {
   unions: UnionRegistry;
   classNamer: ClassNamer;
   resolveTypeParam?: TypeParamResolver;
+  /** Set while mapping a type ASSERTION's target type (`x as T`). A record
+   * intersection with a bound type parameter keeps the bound layout there:
+   * an assertion does not make the parameter carry the members it names
+   * (mapBoundRecordIntersection), so a destructured or read field it only
+   * declares stays outside the source's shape. */
+  assertionTarget?: boolean;
   /** The ts-level twin of resolveTypeParam (bound CHECKER types), consulted
    * only where literal identity matters — indexed accesses (`T[K]`) inside
    * generic bodies whose K is bound to a literal key. */
@@ -9858,7 +9864,10 @@ function mapBoundMappedType(widened: ts.Type, ctx: TypeMapperCtx): IrType | null
  * record, or two parts giving one member different types. */
 function mapBoundRecordIntersection(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
   const { checker, resolveTypeParam, shapes } = ctx;
-  if (!resolveTypeParam || !widened.isIntersectionType()) return null;
+  // An asserted target keeps the bound layout: `item as T & { icons: string[] }`
+  // does not make T's values carry `icons`, and the destructuring fence
+  // that says so depends on the intersection not mapping.
+  if (ctx.assertionTarget || !resolveTypeParam || !widened.isIntersectionType()) return null;
   const fields = new Map<string, IrRecordField>();
   const order: string[] = [];
   const add = (part: readonly IrRecordField[]): boolean => {

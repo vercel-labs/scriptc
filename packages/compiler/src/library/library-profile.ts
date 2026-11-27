@@ -250,7 +250,7 @@
  * surface beyond the three ask-5 keys. */
 import { isNativeOptimization, type NativeOptimization } from "../backend/optimization.js";
 import { readFileSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, resolve } from "node:path";
 import { libProfileDiag, type ScrDiagnostic } from "../diagnostics/diagnostic.js";
 import {
   resolveLibraryFences,
@@ -535,16 +535,34 @@ function parseFilePrefixMap(
   return entries;
 }
 
+/** The spelling two Windows paths compare in: forward slashes and a
+ * lower-case drive letter. A frontend source path (`C:/build/lib.ts`) and a
+ * profile folder resolved on Windows (`C:\build`) name the same folder. */
+function matchPathName(path: string): string {
+  const slashes = path.replaceAll("\\", "/");
+  return /^[A-Za-z]:/.test(slashes) ? `${slashes[0]!.toLowerCase()}${slashes.slice(1)}` : slashes;
+}
+
 /** The name a library build emits for a source file, through the profile's
- * `file_prefix_map`; the read path when no folder holds it. */
+ * `file_prefix_map`; the read path when no folder holds it. Folders compare
+ * with one separator and drive-letter case (matchPathName), and the emitted
+ * name keeps the mapped prefix's own separator form (backslashes for a
+ * Windows prefix). */
 export function emittedSourcePath(
   profile: Pick<LibraryProfile, "filePrefixMap">,
   file: string,
 ): string {
+  if (profile.filePrefixMap.length === 0) return file;
+  const fileKey = matchPathName(file);
   for (const { folder, prefix } of profile.filePrefixMap) {
-    if (file === folder) return prefix;
-    const withSep = folder.endsWith(sep) ? folder : folder + sep;
-    if (file.startsWith(withSep)) return join(prefix, relative(folder, file));
+    const folderKey = matchPathName(folder);
+    if (fileKey === folderKey) return prefix;
+    const withSep = folderKey.endsWith("/") ? folderKey : `${folderKey}/`;
+    if (!fileKey.startsWith(withSep)) continue;
+    const remainder = fileKey.slice(withSep.length);
+    const backslash = prefix.includes("\\") && !prefix.includes("/");
+    const base = prefix.endsWith("/") || prefix.endsWith("\\") ? prefix.slice(0, -1) : prefix;
+    return `${base}${backslash ? "\\" : "/"}${backslash ? remainder.split("/").join("\\") : remainder}`;
   }
   return file;
 }

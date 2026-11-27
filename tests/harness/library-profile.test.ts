@@ -868,6 +868,21 @@ describe("file_prefix_map", () => {
     );
   });
 
+  test("Windows-style folders match slash-separated source paths", () => {
+    // The frontend names files with forward slashes (`C:/build/stage/lib.ts`)
+    // while a profile resolved on Windows keeps backslashes; the emitted name
+    // keeps the mapped prefix's own form.
+    const profile = {
+      filePrefixMap: [{ folder: "C:\\build\\stage", prefix: "C:\\project\\src" }],
+    };
+    expect(emittedSourcePath(profile, "C:/build/stage/lib.ts")).toBe("C:\\project\\src\\lib.ts");
+    // A drive letter's case is not identity.
+    expect(emittedSourcePath(profile, "c:/build/stage/deep/a.ts")).toBe(
+      "C:\\project\\src\\deep\\a.ts",
+    );
+    expect(emittedSourcePath(profile, "C:/other/lib.ts")).toBe("C:/other/lib.ts");
+  });
+
   test("a malformed map refuses with the field name", () => {
     expectSc4001({ ...good, file_prefix_map: ["stage"] }, "file_prefix_map");
     expectSc4001({ ...good, file_prefix_map: { stage: 1 } }, "file_prefix_map");

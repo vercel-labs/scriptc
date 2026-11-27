@@ -4677,11 +4677,29 @@ function webcryptoAliasNameOf(lowerer: Lowerer, expr: ts.Expression): string | n
   return null;
 }
 
+/** Whether an expression contains an await. An alias declaration emits no
+ * code, so an awaited initializer (a literal import's microtask hop) would
+ * be dropped; such declarations keep their ordinary lane. */
+function containsAwait(node: ts.Node): boolean {
+  let found = false;
+  const visit = (n: ts.Node): void => {
+    if (found) return;
+    if (ts.isAwaitExpression(n)) {
+      found = true;
+      return;
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(node);
+  return found;
+}
+
 export function stdlibGlobalAliasNameOf(
   lowerer: Lowerer,
   init: ts.Expression | undefined,
 ): string | null {
   if (!init) return null;
+  if (containsAwait(init)) return null;
   // CommonJS packages commonly guard Node's always-present globals for
   // browser bundlers (`let p = process || {}`). In the Node execution
   // model the left object is unconditionally truthy, so the fallback is

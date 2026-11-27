@@ -30,6 +30,11 @@ show("reimport", () => [backPriv.asymmetricKeyType, backPub.asymmetricKeyType,
   JSON.stringify(backPub.asymmetricKeyDetails)]);
 show("equals", () => [backPriv.equals(pair.privateKey), backPub.equals(pair.publicKey)]);
 show("public of private", () => [crypto.createPublicKey(pair.privateKey).equals(pair.publicKey)]);
+show("verify with imported private key",
+  () => crypto.verify("sha256", Buffer.from("hello"), backPriv, crypto.sign("sha256", Buffer.from("hello"), backPriv)));
+show("raw public", () => pair.publicKey.export({ format: "raw-public" }));
+show("raw private", () => pair.privateKey.export({ format: "raw-private" }));
+show("raw seed", () => pair.privateKey.export({ format: "raw-seed" }));
 
 const message = Buffer.from("hello");
 for (const digest of ["sha1", "sha256", "sha512"]) {

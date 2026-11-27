@@ -425,6 +425,8 @@ static void sp_unreadable_key(void) {
   scr_throw_error_msg(SCR_ERR_ERROR, message, sizeof message - 1);
 }
 
+static void sp_dsa_ffc_error(void);
+
 static void sp_evp_decode_error(void) {
   static const char message[] = "error:03000072:digital envelope routines::decode error";
   static const char code[] = "ERR_OSSL_EVP_DECODE_ERROR";
@@ -839,12 +841,35 @@ static int sp_write_dsa_pkcs8(SpKey *k, unsigned char *buf, size_t size) {
   return len + r;
 }
 
+/* The FFC parameter set DSA signing and verification are bounded by
+ * (FIPS 186-4): p of 1024 to 3072 bits, q of 160, 224 or 256 bits, q
+ * dividing p - 1, and the key's values inside the group (1 < g, y < p - 1
+ * and 0 < x < q). Checked on import, so no arithmetic below ever sees a
+ * parameter set that would make it unbounded work. */
+static bool sp_dsa_params_ok(const mbedtls_mpi *P, const mbedtls_mpi *Q, const mbedtls_mpi *G,
+                             const mbedtls_mpi *X, const mbedtls_mpi *Y) {
+  size_t pbits = mbedtls_mpi_bitlen(P), qbits = mbedtls_mpi_bitlen(Q);
+  if (pbits < 1024 || pbits > 3072) return false;
+  if (qbits != 160 && qbits != 224 && qbits != 256) return false;
+  mbedtls_mpi R, E;
+  mbedtls_mpi_init(&R);
+  mbedtls_mpi_init(&E);
+  bool ok = mbedtls_mpi_sub_int(&E, P, 1) == 0 && mbedtls_mpi_mod_mpi(&R, &E, Q) == 0 &&
+            mbedtls_mpi_cmp_int(&R, 0) == 0;
+  if (ok && (mbedtls_mpi_cmp_int(G, 1) <= 0 || mbedtls_mpi_cmp_mpi(G, &E) >= 0)) ok = false;
+  if (ok && Y && (mbedtls_mpi_cmp_int(Y, 1) <= 0 || mbedtls_mpi_cmp_mpi(Y, &E) >= 0)) ok = false;
+  if (ok && X && (mbedtls_mpi_cmp_int(X, 0) <= 0 || mbedtls_mpi_cmp_mpi(X, Q) >= 0)) ok = false;
+  mbedtls_mpi_free(&R);
+  mbedtls_mpi_free(&E);
+  return ok;
+}
+
 /* The DSA key encodings this unit writes, read back: PKCS#8 (version 0,
  * the id-dsa AlgorithmIdentifier over Dss-Parms and the private INTEGER x
  * in its OCTET STRING) and SubjectPublicKeyInfo (the public INTEGER y in
  * its BIT STRING). NULL for anything else (the callers fall through to
  * mbedTLS's decoders and report Node's decoder error). */
-static SpKey *sp_dsa_from_der(const uint8_t *der, size_t len, bool private_key) {
+static SpKey *sp_dsa_from_der(const uint8_t *der, size_t len, bool private_key, bool *bad_params) {
   unsigned char *p = (unsigned char *)der;
   const unsigned char *end = der + len;
   size_t seq_len;
@@ -896,6 +921,11 @@ static SpKey *sp_dsa_from_der(const uint8_t *der, size_t len, bool private_key) 
       mbedtls_mpi_cmp_int(&G, 0) <= 0 || mbedtls_mpi_cmp_mpi(&G, &P) >= 0)
     goto done;
   if (private_key ? mbedtls_mpi_cmp_int(&X, 0) <= 0 : mbedtls_mpi_cmp_int(&Y, 0) <= 0) goto done;
+  /* The parameter set every later operation is bounded by. */
+  if (!sp_dsa_params_ok(&P, &Q, &G, private_key ? &X : NULL, private_key ? NULL : &Y)) {
+    if (bad_params) *bad_params = true;
+    goto done;
+  }
   key = sp_key_alloc(private_key);
   key->dsa = true;
   key->dsa_p = sp_mpi_bytes(&P, &key->dsa_p_len);
@@ -903,7 +933,14 @@ static SpKey *sp_dsa_from_der(const uint8_t *der, size_t len, bool private_key) 
   key->dsa_g = sp_mpi_bytes(&G, &key->dsa_g_len);
   if (private_key) {
     key->dsa_x = sp_mpi_bytes(&X, &key->dsa_x_len);
-    if (!key->dsa_x) {
+    /* OpenSSL's decoder fills in the public half of a private key; every
+     * signature check with an imported private KeyObject reads it. */
+    mbedtls_mpi Yderived;
+    mbedtls_mpi_init(&Yderived);
+    if (key->dsa_x && mbedtls_mpi_exp_mod(&Yderived, &G, &X, &P, NULL) == 0)
+      key->dsa_y = sp_mpi_bytes(&Yderived, &key->dsa_y_len);
+    mbedtls_mpi_free(&Yderived);
+    if (!key->dsa_x || !key->dsa_y) {
       sp_key_release(key);
       key = NULL;
     }
@@ -3387,12 +3424,13 @@ static SpKey *sp_parse_with(const unsigned char *data, size_t len, bool private_
     size_t der_len;
     if (sp_der_of(data, len, &decoded, &der, &der_len)) {
       bool failed;
+      bool bad_dsa = false;
       SpKey *ed = sp_ed_from_der(der, der_len, private_key, &failed);
       if (!ed && !failed) ed = sp_pss_from_der(der, der_len, private_key, &failed);
-      if (!ed && !failed) ed = sp_dsa_from_der(der, der_len, private_key);
+      if (!ed && !failed) ed = sp_dsa_from_der(der, der_len, private_key, &bad_dsa);
       /* createPublicKey also reads a private key's encodings. */
       if (!ed && !failed && !private_key) {
-        SpKey *priv = sp_dsa_from_der(der, der_len, true);
+        SpKey *priv = sp_dsa_from_der(der, der_len, true, &bad_dsa);
         if (priv) {
           ed = sp_public_of(priv);
           sp_key_release(priv);
@@ -3409,6 +3447,10 @@ static SpKey *sp_parse_with(const unsigned char *data, size_t len, bool private_
         free(decoded);
       }
       if (ed || failed) return ed;
+      if (bad_dsa) {
+        sp_dsa_ffc_error();
+        return NULL;
+      }
       if (mlkem_unreadable || dh_unreadable) {
         if (from_pem) sp_evp_decode_error();
         else sp_unreadable_key();
@@ -3713,6 +3755,12 @@ static void sp_invalid_key_data(void) { sp_throw(SCR_ERR_TYPE, "ERR_INVALID_ARG_
  * every encoding of an RSA key, throw ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS.
  * NULL with the error pending. */
 static ScrDyn *sp_export_raw(SpKey *k, bool private_part, bool seed, bool compressed) {
+  /* No raw encoding exists for a DSA key: Node answers the incompatible
+   * key encoding error. */
+  if (sp_is_dsa(k)) {
+    sp_incompatible_key_type();
+    return NULL;
+  }
   if (sp_is_dh(k)) {
     sp_incompatible_key_type();
     return NULL;
@@ -5933,9 +5981,23 @@ static int sp_dsa_write_sig(const mbedtls_mpi *R, const mbedtls_mpi *S, unsigned
   return len + r;
 }
 
+/* The sizes sp_dsa_params_ok accepts, checked from the stored encodings
+ * before any arithmetic: q of 160, 224 or 256 bits and p of at most the
+ * 8192 bits a generated key can have. */
+static bool sp_dsa_bounded(const SpKey *k) {
+  return k->dsa_p_len >= 128 && k->dsa_p_len <= 1024 && k->dsa_g_len >= 1 && k->dsa_g_len <= 1024 &&
+         (k->dsa_q_len == 20 || k->dsa_q_len == 28 || k->dsa_q_len == 32) &&
+         (k->dsa_x == NULL || k->dsa_x_len <= 32) && (k->dsa_y == NULL || k->dsa_y_len <= 1024);
+}
+
 static ScrDyn *sp_dsa_sign(SpSigKey *key, mbedtls_md_type_t md, const unsigned char *hash, size_t hash_len) {
   (void)md;
   SpKey *k = key->key;
+  /* No arithmetic before the parameter sizes are known to be bounded. */
+  if (!sp_dsa_bounded(k)) {
+    sp_dsa_ffc_error();
+    return NULL;
+  }
   mbedtls_mpi P, Q, G, X, KIND, R, S, E, T, W, bound;
   mbedtls_mpi_init(&P);
   mbedtls_mpi_init(&Q);
@@ -6014,6 +6076,8 @@ static bool sp_dsa_verify(SpSigKey *key, mbedtls_md_type_t md, const unsigned ch
                           const unsigned char *sig, size_t sig_len) {
   (void)md;
   SpKey *k = key->key;
+  /* No arithmetic before the parameter sizes are known to be bounded. */
+  if (!sp_dsa_bounded(k)) return false;
   mbedtls_mpi P, Q, G, Y, R, S, E, W, U1, U2, V, T;
   mbedtls_mpi_init(&P);
   mbedtls_mpi_init(&Q);

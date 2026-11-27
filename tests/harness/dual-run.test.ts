@@ -143,17 +143,40 @@ describe("dual-run reporter", () => {
     const lines = run.stdout.split("\n");
     const lineFor = (name: string) =>
       lines.find((line) => line.includes(`tests/fixtures/dual-run/${name}`));
-    expect(lineFor("passing.test.mts")).toMatch(/^✔ .*\(2 passed\)$/);
+    expect(lineFor("passing.test.mts")).toMatch(
+      /^✔ .*  node ✓  compiled ✓  same output \(2 passed\)$/,
+    );
     // The comparison agrees, and the test failure Node reported is still
     // part of the report.
-    expect(lineFor("failing.test.mts")).toMatch(/^✖ .*\(1 passed, 1 failed\)$/);
+    expect(lineFor("failing.test.mts")).toMatch(
+      /^✖ .*  node ✓  compiled ✓  same output \(1 passed, 1 failed\)$/,
+    );
     expect(run.stdout).toContain("✖ fails: Expected values to be strictly deep-equal:");
-    expect(lineFor("diverges.test.mts")).toMatch(/^✖ .*native stdout differs at line 1/);
+    expect(lineFor("diverges.test.mts")).toMatch(/^✖ .*  node ✓  compiled ✖  output differs$/);
+    expect(run.stdout).toContain("@@ stdout line 1");
     // A file Node itself could not load still gets a line, with the failure
     // Node reported for it; the comparison found the two lanes equal.
-    expect(lineFor("load-failure.mts")).toMatch(/^✖ .*load-failure\.mts$/);
+    expect(lineFor("load-failure.mts")).toMatch(
+      /^✖ .*load-failure\.mts  node ✓  compiled ✓  same output$/,
+    );
     expect(run.stdout).toMatch(/ ✖ .*load-failure\.mts: test failed \(line 1\)/);
     expect(run.stderr).toBe("");
+    expect(run.exitCode).toBe(1);
+  }, 180_000);
+
+  test("each file's line states the comparison, with a short diff on a mismatch", async () => {
+    const files = ["passing.test.mts", "diverges.test.mts"].map((name) => join(fixturesDir, name));
+    const run = await runNodeTest(files, { withReporter: true });
+    // The matching file names both lanes and the agreement.
+    expect(run.stdout).toMatch(
+      /^✔ .*passing\.test\.mts  node ✓  compiled ✓  same output \(2 passed\)$/m,
+    );
+    // The differing file names the lane that differed and shows the diff
+    // itself: the changed line marked - for Node and + for the binary.
+    expect(run.stdout).toMatch(/^✖ .*diverges\.test\.mts  node ✓  compiled ✖  output differs$/m);
+    expect(run.stdout).toContain("@@ stdout line 1");
+    expect(run.stdout).toMatch(/^ - .+$/m);
+    expect(run.stdout).toMatch(/^ \+ .+$/m);
     expect(run.exitCode).toBe(1);
   }, 180_000);
 
@@ -164,7 +187,9 @@ describe("dual-run reporter", () => {
     // failure names the module as the declaring file; the report keeps one
     // line for the entry and does not compare the module as a file of its
     // own.
-    expect(run.stdout).toMatch(/^✖ .*imports-helper\.test\.mts \(2 passed, 1 failed\)$/m);
+    expect(run.stdout).toMatch(
+      /^✖ .*imports-helper\.test\.mts  node ✓  compiled ✓  same output \(2 passed, 1 failed\)$/m,
+    );
     expect(run.stdout).toContain("✖ helper fails: from the helper");
     expect(run.stdout).not.toContain("helper-failure.mjs");
     expect(run.stderr).toBe("");

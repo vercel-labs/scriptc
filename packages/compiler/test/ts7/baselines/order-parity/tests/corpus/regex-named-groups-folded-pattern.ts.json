@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/regex-named-groups-folded-pattern.ts"
+ ],
+ "diags": []
+}

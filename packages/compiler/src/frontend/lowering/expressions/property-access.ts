@@ -151,6 +151,7 @@ import {
   recordKeyResultOk,
   representedClassFieldTarget,
   staticRegexPatternOf,
+  staticStringOf,
 } from "../lower-exprs.js";
 import {
   cjsInFileExportGlobalOf,
@@ -4477,14 +4478,59 @@ function staticRegexFlagsOf(lowerer: Lowerer, node: ts.Expression): string | nul
   ) {
     const flags = expr.arguments?.nodes[1];
     if (!flags) return "";
-    if (ts.isStringLiteral(flags) || ts.isNoSubstitutionTemplateLiteral(flags)) return flags.text;
+    return staticStringOf(lowerer, flags);
   }
   return null;
 }
 
+/** The ONE expression a helper returns when that is all it can return: an
+ * arrow's expression body, or a block body whose return statements carry an
+ * expression at exactly one place (other returns answer undefined and give
+ * no match). `X ?? undefined` and `X || undefined` unwrap to X. */
+function returnedMatchExpression(body: ts.ConciseBody): ts.Expression | null {
+  if (!ts.isBlock(body)) return unwrapUndefinedDefault(body);
+  let found: ts.Expression | null = null;
+  for (const stmt of body.statements.nodes) {
+    if (!ts.isReturnStatement(stmt)) continue;
+    const expr = stmt.expression;
+    if (expr === undefined) continue;
+    if (found !== null) return null;
+    found = expr;
+  }
+  return found === null ? null : unwrapUndefinedDefault(found);
+}
+
+function unwrapUndefinedDefault(expr: ts.Expression): ts.Expression | null {
+  if (
+    ts.isBinaryExpression(expr) &&
+    (expr.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken ||
+      expr.operatorToken.kind === ts.SyntaxKind.BarBarToken) &&
+    ts.isIdentifier(expr.right) &&
+    expr.right.text === "undefined"
+  ) {
+    return expr.left;
+  }
+  return expr;
+}
+
+/** The function a local binding names: its const initializer when that is a
+ * function expression or an arrow, else the function declaration behind the
+ * symbol. Null for anything else. */
+function functionExpressionOf(
+  lowerer: Lowerer,
+  ident: ts.Identifier,
+): ts.Expression | ts.FunctionDeclaration | null {
+  const sym = lowerer.resolveValueSymbol(ident);
+  const decl = sym ? sym.valueDeclaration : undefined;
+  if (decl !== undefined && (ts.isFunctionDeclaration(decl) || ts.isFunctionExpression(decl))) {
+    return decl;
+  }
+  return constInitializerOf(lowerer, ident);
+}
+
 /** The regex EXPRESSION whose match produced `e` (see
  * matchResultNamedGroupsOf for the traced shapes). */
-function matchProducerRegexOf(lowerer: Lowerer, e: ts.Expression): ts.Expression | null {
+function matchProducerRegexOf(lowerer: Lowerer, e: ts.Expression, depth = 0): ts.Expression | null {
   let expr = e;
   for (;;) {
     if (ts.isParenthesizedExpression(expr) || ts.isNonNullExpression(expr)) {
@@ -4492,6 +4538,24 @@ function matchProducerRegexOf(lowerer: Lowerer, e: ts.Expression): ts.Expression
       continue;
     }
     break;
+  }
+  // A match a local helper returns: `const matchEscape = (s, i) =>
+  // RE.exec(s.slice(i))`, then `matchEscape(s, i).groups`. The helper's one
+  // returned expression carries the producer; a body with any other shape
+  // keeps the fence.
+  if (ts.isCallExpression(expr) && ts.isIdentifier(expr.expression) && depth < 8) {
+    const init = constInitializerOf(lowerer, expr.expression);
+    const fn = init ?? functionExpressionOf(lowerer, expr.expression);
+    if (
+      fn !== null &&
+      (ts.isArrowFunction(fn) || ts.isFunctionExpression(fn) || ts.isFunctionDeclaration(fn))
+    ) {
+      const body = fn.body;
+      if (body !== undefined) {
+        const returned = returnedMatchExpression(body);
+        if (returned !== null) return matchProducerRegexOf(lowerer, returned, depth + 1);
+      }
+    }
   }
   // The direct producers: re.exec(s) / s.match(re) — the receiver's
   // mapped type pins the STDLIB operation (a regex for exec, a string

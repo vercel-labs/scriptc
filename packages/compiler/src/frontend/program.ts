@@ -718,9 +718,10 @@ export interface TypeWorldDifferences {
    * (normalized paths), or null when the project has no tsconfig. A
    * JavaScript file outside this set is a dependency's shipped code. */
   projectSources: ReadonlySet<string> | null;
-  /** The files with decorators the project compiles under
-   * `experimentalDecorators`: refused by name (SC0016), which stands in for
-   * the checker's errors about those decorators' signatures. */
+  /** Every file whose tsconfig sets `experimentalDecorators`: its classes
+   * and their decorators take the legacy calling convention, evaluation
+   * order and descriptor rules (lowering reads the set through LowerOptions).
+   * A file compiled with `emitDecoratorMetadata` is still refused (SC0016). */
   legacyDecoratorFiles: ReadonlySet<string>;
   /** The project's `module` setting, or null. */
   projectModule: string | null;
@@ -1857,6 +1858,13 @@ function loadProgram7(
       : null,
   );
   const nodeTypes = config.configFile ? resolveNodeTypes7(entryPath) : null;
+  /** Whether the program type-checks against the bundled Node fallback
+   * declarations. A config-less project plans them, but a dependency can
+   * still pull the project's installed `@types/node` in (a
+   * `/// <reference types="node" />` directive resolves from the referring
+   * file regardless of the program roots), and the fallback then stands
+   * down. */
+  let nodeFallback = nodeTypes === null;
   // skipLibCheck is FORCED for every program: checking a third-party lib's
   // internals against OUR lib choice (es2025, no dyn, and the bundled Node
   // declarations when the project has no @types/node) is not scriptc's
@@ -1969,6 +1977,41 @@ function loadProgram7(
       program = host.createProgram([...programRoots, overridesDtsPath()], options, false, lineage);
       previous.dispose();
       if (pass === 31) throw new Error("static program-root discovery did not converge");
+    }
+    // The fallback stands down when the constructed program already holds
+    // the project's installed @types/node: a dependency's `/// <reference
+    // types="node" />` resolves it from the referring file, so both
+    // declaration sets would load and every global they share would be
+    // redeclared. `undici-types` alone is not Node's declarations (a
+    // dependency can reference it without installing @types/node), and the
+    // fallback stays for that program. Rebuild on the pulled types, and keep
+    // the bundled declarations only for a project that pulls nothing in.
+    const pulledNodeTypes = program
+      .getSourceFileNames()
+      .some((name) => npmPackageNameOf(name) === "@types/node");
+    if (nodeFallback && pulledNodeTypes) {
+      nodeFallback = false;
+      for (let index = programRoots.length - 1; index >= 0; index--)
+        if (isFallbackDtsPath(programRoots[index]!)) programRoots.splice(index, 1);
+      const previous = program;
+      program = host.createProgram([...programRoots, overridesDtsPath()], options, false, lineage);
+      previous.dispose();
+      // The adopted path adds the declarations an older @types/node lacks
+      // (DOMException for an imported package implementation's undici
+      // fetch); the fallback file carried them itself, so the stand-down
+      // must add them too.
+      const supplements = nodeTypesSupplementRoots7(program, host);
+      if (supplements.length > 0) {
+        for (const root of supplements) if (!programRoots.includes(root)) programRoots.push(root);
+        const withSupplements = program;
+        program = host.createProgram(
+          [...programRoots, overridesDtsPath()],
+          options,
+          false,
+          lineage,
+        );
+        withSupplements.dispose();
+      }
     }
     // Node 24 ships no temporal global, but TS 7 types it in an ESNext
     // lib slice. Programs that name it (feature probes such as smol-toml's
@@ -2211,48 +2254,47 @@ function loadProgram7(
     }
     // The other two things a file's tsconfig decides: the order of class
     // field initializers and parameter properties, which the lowering
-    // follows, and legacy decorators, which it refuses by name.
+    // follows, and legacy decorators, which the lowering lowers with the
+    // legacy calling convention and evaluation order. `emitDecoratorMetadata`
+    // is still refused by name: the design-type metadata serializer lands
+    // with its own support.
     const parameterPropertiesFirst = new Set<string>();
     const legacyDecoratorFiles = new Set<string>();
-    let legacyDecorators = 0;
-    let firstLegacyDecorator: ts.Node | null = null;
+    let metadataDecorators = 0;
+    let firstMetadataDecorator: ts.Node | null = null;
     for (const sf of program.getImplementationSourceFiles()) {
       if (sf.isDeclarationFile || !/\.(?:[mc]?ts|tsx)$/.test(sf.fileName)) continue;
       const dialect = dialectOf(sf.fileName);
       if (dialect === null) continue;
       if (dialect.parameterPropertiesFirst) parameterPropertiesFirst.add(sf.fileName);
-      const legacy = dialect.legacyDecorators;
-      if (legacy === null) continue;
+      if (dialect.legacyDecorators === null) continue;
+      // Every file compiled under the setting is marked, decorators or not:
+      // the lowering's class-statement order and calling convention follow
+      // the file's dialect, and only files with the setting have one.
+      legacyDecoratorFiles.add(sf.fileName);
+      if (dialect.legacyDecorators !== "all") continue;
       ts.walkPreorder(
         sf,
         (node) => {
-          const decorated = node.parent;
-          if (
-            legacy === "members" &&
-            decorated !== undefined &&
-            (ts.isClassDeclaration(decorated) || ts.isClassExpression(decorated))
-          )
-            return;
-          legacyDecorators++;
-          legacyDecoratorFiles.add(sf.fileName);
-          firstLegacyDecorator ??= node;
+          metadataDecorators++;
+          firstMetadataDecorator ??= node;
         },
         DECORATORS,
       );
     }
-    if (firstLegacyDecorator !== null) {
-      const at: ts.Node = firstLegacyDecorator;
+    if (firstMetadataDecorator !== null) {
+      const at: ts.Node = firstMetadataDecorator;
       config.diags.push(
         unfollowedSettingDiag(
-          '"experimentalDecorators"',
-          "a decorator here has the legacy semantics (it is called with the target, the member name and a descriptor, in another order), and scriptc compiles standard decorators only",
+          '"emitDecoratorMetadata"',
+          'this project sets "emitDecoratorMetadata", and scriptc does not emit the design-type metadata it asks for yet',
           {
             file: ts.getSourceFileOfNode(at).fileName,
             start: ts.tokenStartOfNode(at),
             end: at.end,
           },
-          legacyDecorators,
-          "remove the decorators from the compiled program, or write them as standard decorators and drop the setting",
+          metadataDecorators,
+          'remove "emitDecoratorMetadata" from the tsconfig until metadata support lands, or drop the decorators it covers',
         ),
       );
     }
@@ -2292,7 +2334,7 @@ function loadProgram7(
       ...(parameterPropertiesFirst.size > 0 ? { parameterPropertiesFirst } : {}),
       dependencyJs: dependencyJsPredicate(entry.fileName, projectSources),
       typeWorld: {
-        nodeFallback: nodeTypes === null,
+        nodeFallback,
         projectLib: config.projectLib ?? null,
         forcedStrictNullChecks: config.forcedStrictNullChecks ?? false,
         projectCheckJs: config.checkJs ?? false,
@@ -8526,19 +8568,42 @@ export function blockCommentSpansOf(sf: ts.SourceFile): readonly (readonly [numb
     // one admitted setter and a large comment-free body gives every node a
     // trivia span with no opener in it, so the walk would be quadratic in the
     // file's length.
-    const trivia = text.slice(from, to);
-    let offset = trivia.indexOf("/*");
-    while (offset >= 0) {
-      const open = from + offset;
-      const close = text.indexOf("*/", open + 2);
-      const end = close < 0 ? text.length : close + 2;
-      // A block-comment opener in the leading trivia of several nodes (a
-      // statement and its first token share a full start) is one comment.
-      if (!scanned.has(open)) {
-        scanned.add(open);
-        found.push([open, end]);
+    //
+    // Walk the trivia by comment, not by raw `indexOf("/*")`: an opener
+    // spelled inside a line comment (`// /*`) or a shebang opens nothing,
+    // and treating it as a block comment would let it swallow the code that
+    // follows up to the next `*/`. Line terminators are every ECMAScript
+    // one, including CRLF and the Unicode separators.
+    const lineEnd = (at: number): number => {
+      let i = at;
+      while (i < text.length) {
+        const ch = text.charCodeAt(i);
+        if (ch === 10 || ch === 13 || ch === 0x2028 || ch === 0x2029) return i;
+        i++;
       }
-      offset = trivia.indexOf("/*", end - from);
+      return text.length;
+    };
+    let i = from;
+    if (i === 0 && text.startsWith("#!")) i = lineEnd(2);
+    while (i < to) {
+      if (text[i] === "/" && text[i + 1] === "/") {
+        i = Math.max(lineEnd(i + 2), i + 2);
+        continue;
+      }
+      if (text[i] === "/" && text[i + 1] === "*") {
+        const open = i;
+        const close = text.indexOf("*/", open + 2);
+        const end = close < 0 ? text.length : close + 2;
+        // A block-comment opener in the leading trivia of several nodes (a
+        // statement and its first token share a full start) is one comment.
+        if (!scanned.has(open)) {
+          scanned.add(open);
+          found.push([open, end]);
+        }
+        i = Math.min(end, to);
+        continue;
+      }
+      i++;
     }
   };
   let triviaFrom = -1;
@@ -9018,18 +9083,9 @@ function preflightGate7(load: LoadResult): PreflightGate {
           : (tscWorld.projectWorld ?? tscWorld.program);
     // The errors a tsconfig setting scriptc does not follow produces, one
     // by one: a single SC0016 names the setting instead.
-    const legacyDecoratorFiles = load.typeWorld?.legacyDecoratorFiles;
     const projectModule = load.typeWorld?.projectModule ?? null;
     const moduleFormat: ScrDiagnostic[] = [];
     for (const d of errorsOf(world)) {
-      // The legacy decorators themselves are refused where the first one
-      // stands (loadProgram7).
-      if (
-        LEGACY_DECORATOR_ERRORS.has(d.code) &&
-        d.fileName !== undefined &&
-        legacyDecoratorFiles?.has(d.fileName) === true
-      )
-        continue;
       const diag = toPassthrough(d);
       if (projectModule !== null && (d.code === 1202 || d.code === 1203)) {
         moduleFormat.push(diag);
@@ -10840,12 +10896,6 @@ const DOM_GLOBALS = new Set([
 ]);
 /** Root identifiers whose members the bundled Node fallback declares. */
 const NODE_GLOBAL_ROOTS = new Set(["process", "Buffer", "console", "globalThis"]);
-
-/** TypeScript's errors about a decorator's signature when it is checked as
- * a standard decorator: TS1238 to TS1241 (unable to resolve the signature of
- * a class, parameter, property or method decorator), TS1270 and TS1271 (its
- * return type). */
-const LEGACY_DECORATOR_ERRORS: ReadonlySet<number> = new Set([1238, 1239, 1240, 1241, 1270, 1271]);
 
 /** TS2729 ("Property 'x' is used before its initialization") for a field
  * initializer that reads a parameter property, in a file whose tsconfig

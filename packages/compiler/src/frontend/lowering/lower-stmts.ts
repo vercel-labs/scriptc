@@ -370,7 +370,7 @@ import {
   createRequireProgramModuleDecl,
   createRequireProgramModuleOf,
 } from "./builtins/module-bindings.js";
-import { lowerNodeModuleCall } from "./builtins/module-resolution.js";
+import { createRequireCreatorThrow, lowerNodeModuleCall } from "./builtins/module-resolution.js";
 import { registerBuiltinCallableAlias } from "./builtins/callable-aliases.js";
 import { builtinClassAliasOwnsNoSlot, registerBuiltinClassAlias } from "./builtins/class-values.js";
 import { lowerEnumDeclaration } from "./lower-enums.js";
@@ -434,6 +434,7 @@ import { npmStaticAccessorExport, npmStaticPackageOfPath } from "../npm-static.j
 import { constructorStaticValue } from "./builtin-statics.js";
 import { packageBuiltWithoutMember } from "./package-built-values.js";
 import { fenceNodeModuleMutation, isNodeModuleHandle } from "./lower-node-module.js";
+import { builtinConstantsModuleOf } from "./builtins/constants.js";
 import { fencePerfEntryKeyWalk } from "./builtins/performance.js";
 import { fenceX509KeyWalk } from "./builtins/x509.js";
 import { classGeneratorIterable } from "./class-iterables.js";
@@ -7913,6 +7914,12 @@ export function lowerVarDecl(
   // effects happen and its throws unwind the module, even though the
   // loader value stays the deferred fence.
   if (createRequireBindingDecl(lowerer, decl.name, decl.initializer)) {
+    // A statically invalid base makes no loader at all: Node throws its
+    // argument error here, at the declaration, before any use of the
+    // binding, so the declaration lowerings that keep only the base must
+    // not evaluate it as a plain value.
+    const invalid = createRequireCreatorThrow(lowerer, decl.initializer, locOf(decl.initializer!));
+    if (invalid !== null) return { kind: "exprStmt", expr: invalid, loc: locOf(decl.initializer!) };
     const base = createRequireEvaluatedBaseOf(lowerer, decl.initializer);
     return base === null
       ? null
@@ -12521,6 +12528,16 @@ export function lowerExprStatement(
             const value = lowerer.lowerExprExpecting(expr.right, callableWrite.fieldType);
             return lowerer.fieldSetStmt(callableWrite, value, locOf(expr), expr.left);
           }
+        }
+        // A member of a baked constants object is read-only in Node
+        // (`perf_hooks.constants.NODE_PERFORMANCE_GC_MAJOR = 1` throws its
+        // TypeError), and the table's names bake where a source spells
+        // them rather than living on the value: the write is refused like
+        // any other non-variable. zlib.constants and crypto.constants reach
+        // the same refusal below (their readonly fields give no field
+        // target).
+        if (builtinConstantsModuleOf(lowerer, expr.left.expression) !== null) {
+          lowerer.unsupported("SC1090", expr.left, "assignment to non-variables");
         }
         const target = lowerer.fieldTarget(expr.left);
         if (target) {

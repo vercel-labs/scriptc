@@ -84,6 +84,10 @@ ScrDyn *scr_tls_sock_get_session(ScrNetSocket *s);
 /* tlsSocket.getTLSTicket(): the received session ticket as a +1 Buffer, or
  * undefined (a server socket, or a client without one yet). */
 ScrDyn *scr_tls_sock_get_tls_ticket(ScrNetSocket *s);
+/* the negotiated ephemeral key's facts (null server-side or not established),
+ * and setMaxSendFragment's ladder (Node's ERR_OUT_OF_RANGE and boolean). */
+ScrDyn *scr_tls_sock_ephemeral_key_info(ScrNetSocket *s); /* +1 */
+bool scr_tls_sock_set_max_fragment(ScrNetSocket *s, double size); /* MAY THROW */
 /* tlsSocket.disableRenegotiation(): renegotiation is off by default. */
 void scr_tls_sock_disable_renegotiation(ScrNetSocket *s);
 /* The checked-dynamic pair: which == 0 answers servername, 1 getSession
@@ -145,6 +149,12 @@ ScrSecureCtx *scr_tls_create_secure_context_dyn(const ScrDyn *opts);
 void scr_tls_server_add_context(ScrNetServer *server, const ScrDyn *servername,
                                 const ScrDyn *options /*nullable*/, ScrSecureCtx *ctx /*nullable*/);
 void scr_tls_server_set_secure_context(ScrNetServer *server, const ScrDyn *options);
+/* server.getTicketKeys(): the server's 48-byte ticket key material as a
+ * fresh Buffer (+1 dyn). server.setTicketKeys(keys): Node's validation
+ * ladder, then a re-key of the server — tickets minted under the previous
+ * material no longer resume. */
+ScrDyn *scr_tls_server_get_ticket_keys(ScrNetServer *server);
+void scr_tls_server_set_ticket_keys(ScrNetServer *server, const ScrDyn *keys);
 /* new tls.TLSSocket(socket, options) in server mode: a fresh TLS socket
  * takes over socket's connection and runs the server handshake, serving
  * ctx (options.secureContext; borrowed, nullable) or the options record's

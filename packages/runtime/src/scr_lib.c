@@ -14,6 +14,7 @@
  *   pending checks after every fs call (the MAY_THROW_LIB_FNS seed).
  *   scr_fs_exists never throws, like Node's existsSync.
  */
+#include "scr_optional.h"
 #include "scr_runtime.h"
 #include "scr_system_errors.h"
 #include "scr_dir_private.h"
@@ -284,11 +285,14 @@ static void scr_module_registry_cleanup(void) {
 extern void scr_census_write(void) __attribute__((weak));
 #endif
 
+static void scr_process_config_teardown(void);
+
 static void scr_lib_cleanup(void) {
 #if defined(__linux__) && !defined(SCR_LIB)
   if (scr_census_write != NULL) scr_census_write();
 #endif
   scr_module_registry_cleanup();
+  scr_process_config_teardown();
   scr_arr_release(scr_argv_arr);
   scr_argv_arr = NULL;
   free(scr_lib_argv_owned);
@@ -586,6 +590,82 @@ void scr_module_fail(double module_id) {
   scr_module_dyn_refresh(m);
 }
 
+/* process.config: the build configuration Node reports. A compiled binary
+ * has no gyp build of its own, so the object carries the shape Node's has —
+ * frozen, with `variables` and `target_defaults` — and the values this
+ * build can answer honestly: its architecture and the shared-library and
+ * OpenSSL switches the runtime is built with. +1, one object per process. */
+static SCR_TL ScrDyn *scr_process_config_obj = NULL;
+
+/* Whether the ICU unit is linked (scr_intl.c installs this from its
+ * constructor): the always-linked storage keeps a binary without ICU free
+ * of any reference to that unit. Process-wide, not thread-local: a worker
+ * must see the constructor's store too. */
+double (*scr_intl_i18n_support_fn)(void) = NULL;
+
+/* The cached configuration leaves with the process: scr_lib_cleanup runs
+ * before the RC audit (its atexit handler is registered later, and atexit is
+ * LIFO), so the singleton is released there whatever registered first. */
+static void scr_process_config_teardown(void) {
+  scr_dyn_release(scr_process_config_obj);
+  scr_process_config_obj = NULL;
+}
+
+ScrDyn *scr_process_config(void) {
+  if (scr_process_config_obj) return scr_dyn_retain(scr_process_config_obj);
+  ScrDyn *variables = scr_dyn_new_obj();
+  ScrStr *arch = scr_process_arch();
+  scr_dyn_obj_set(variables, "host_arch", 9, scr_dyn_new_str(arch));
+  scr_dyn_obj_set(variables, "target_arch", 11, scr_dyn_new_str(arch));
+  scr_str_release(arch);
+  scr_dyn_obj_set(variables, "node_shared", 11, scr_dyn_new_bool(false));
+  scr_dyn_obj_set(variables, "node_shared_libuv", 17, scr_dyn_new_bool(false));
+  scr_dyn_obj_set(variables, "node_use_openssl", 16, scr_dyn_new_bool(true));
+  /* The one variable a binary answers from what it links: v8_enable_i18n_support is 1
+   * when the ICU unit is part of the build (its constructor installed the hook). */
+  double i18n = scr_intl_i18n_support_fn && scr_intl_i18n_support_fn() != 0.0 ? 1.0 : 0.0;
+  scr_dyn_obj_set(variables, "v8_enable_i18n_support", 22, scr_dyn_new_num(i18n));
+  ScrDyn *target = scr_dyn_new_obj();
+  ScrDyn *include_dirs = scr_dyn_new_arr();
+  ScrDyn *libraries = scr_dyn_new_arr();
+  ScrDyn *defines = scr_dyn_new_arr();
+  ScrDyn *cflags = scr_dyn_new_arr();
+  scr_dyn_release(scr_dyn_freeze_data(include_dirs));
+  scr_dyn_release(scr_dyn_freeze_data(libraries));
+  scr_dyn_release(scr_dyn_freeze_data(defines));
+  scr_dyn_release(scr_dyn_freeze_data(cflags));
+  scr_dyn_obj_set(target, "include_dirs", 12, include_dirs);
+  scr_dyn_obj_set(target, "libraries", 9, libraries);
+  scr_dyn_obj_set(target, "defines", 7, defines);
+  scr_dyn_obj_set(target, "cflags", 6, cflags);
+  ScrStr *release = scr_str_new("Release", 7);
+  scr_dyn_obj_set(target, "default_configuration", 21, scr_dyn_new_str(release));
+  ScrDyn *configurations = scr_dyn_new_obj();
+  const char *const modes[2] = {"Release", "Debug"};
+  for (int i = 0; i < 2; i++) {
+    ScrDyn *mode = scr_dyn_new_obj();
+    /* Node's configuration is deeply frozen, the variables objects and the
+     * configurations entries included. */
+    ScrDyn *mode_variables = scr_dyn_new_obj();
+    scr_dyn_release(scr_dyn_freeze_data(mode_variables));
+    scr_dyn_obj_set(mode, "variables", 9, mode_variables);
+    scr_dyn_obj_set(mode, "v8_enable_v8_checks", 19, scr_dyn_new_num(i == 0 ? 0 : 1));
+    scr_dyn_release(scr_dyn_freeze_data(mode));
+    scr_dyn_obj_set(configurations, modes[i], strlen(modes[i]), mode);
+  }
+  scr_dyn_release(scr_dyn_freeze_data(configurations));
+  scr_dyn_obj_set(target, "configurations", 14, configurations);
+  scr_str_release(release);
+  ScrDyn *config = scr_dyn_new_obj();
+  scr_dyn_obj_set(config, "variables", 9, variables);
+  scr_dyn_obj_set(config, "target_defaults", 15, target);
+  scr_dyn_release(scr_dyn_freeze_data(variables));
+  scr_dyn_release(scr_dyn_freeze_data(target));
+  scr_dyn_release(scr_dyn_freeze_data(config));
+  scr_process_config_obj = scr_dyn_retain(config);
+  return config;
+}
+
 ScrStr *scr_module_filename(double module_id) {
   return scr_str_retain(scr_module_record(module_id)->filename);
 }
@@ -647,6 +727,11 @@ static void scr_module_dyn_children_remove(ScrModuleRecord *m, double child_id) 
   scr_dyn_release(kids);
 }
 
+/* Node's Module.prototype, from the module-class unit: a program that never
+ * names `Module` links none of it, and its module views keep the plain
+ * object prototype. */
+extern ScrDyn *scr_module_class_prototype(void) __attribute__((weak));
+
 /* The checked-dynamic view of one module record (Node's Module object as a
  * program sees it when the value's type is any): one object per record,
  * built once and cached, so identity holds between `module.children[i]`,
@@ -655,6 +740,14 @@ ScrDyn *scr_module_dyn_object(double module_id) {
   ScrModuleRecord *m = scr_module_record(module_id);
   if (m->dyn_self) return scr_dyn_retain(m->dyn_self);
   ScrDyn *o = scr_dyn_new_obj();
+  if (scr_module_class_prototype != NULL) {
+    ScrDyn *prototype = scr_module_class_prototype();
+    if (prototype != NULL) {
+      ScrDyn *linked = scr_dyn_set_prototype(o, prototype);
+      if (linked) scr_dyn_release(linked);
+      scr_dyn_release(prototype);
+    }
+  }
   /* Cache before filling: a require cycle reaches the parent through its
    * children, and the record must already answer its own object then. */
   m->dyn_self = scr_dyn_retain(o);
@@ -4513,19 +4606,143 @@ void scr_process_set_debug_port(ScrDyn *port) {
   scr_debug_port = converted;
 }
 
-/* process.sourceMapsEnabled — node:internal/source_map/source_map_cache's
- * flag, read through the getter-only accessor and written through
- * setSourceMapsEnabled(validateBoolean). */
-static SCR_TL bool scr_source_maps_enabled = false;
+/* process.sourceMapsEnabled, process.setSourceMapsEnabled and node:module's
+ * source-map support (getSourceMapsSupport, setSourceMapsSupport,
+ * findSourceMap) — node:internal/source_map/source_map_cache.js.
+ *
+ * Node keeps ONE frozen null-prototype record { enabled, nodeModules,
+ * generatedCode }; getSourceMapsSupport() answers that same object every
+ * time, process.sourceMapsEnabled reads its `enabled`, and
+ * process.setSourceMapsEnabled(v) is setSourceMapsSupport(v, undefined),
+ * which resets the two option flags to false.
+ *
+ * A compiled program has no V8 source-map registry: it runs no JavaScript, so
+ * no module carries a sourceMappingURL for a parse to cache. The record still
+ * answers exactly what Node's answers after the same calls, and
+ * findSourceMap() answers undefined, as Node does for a file whose map was
+ * never parsed. */
+static SCR_TL ScrDyn *scr_source_maps_support = NULL;
 
-bool scr_process_source_maps_enabled(void) { return scr_source_maps_enabled; }
+static void scr_source_maps_support_clear(void) {
+  ScrDyn *support = scr_source_maps_support;
+  scr_source_maps_support = NULL;
+  scr_dyn_release(support);
+}
 
-void scr_process_set_source_maps_enabled(ScrDyn *value) {
-  if (value->kind != SCR_DYN_BOOL) {
-    scr_dyn_arg_type_fail("enabled", "of type boolean", value);
+static ScrDyn *scr_source_maps_support_build(bool enabled, bool node_modules, bool generated_code) {
+  ScrDyn *support = scr_dyn_new_obj_null_proto();
+  scr_dyn_obj_set(support, "enabled", 7, scr_dyn_new_bool(enabled));
+  scr_dyn_obj_set(support, "nodeModules", 11, scr_dyn_new_bool(node_modules));
+  scr_dyn_obj_set(support, "generatedCode", 13, scr_dyn_new_bool(generated_code));
+  scr_dyn_release(scr_dyn_freeze_data(support));
+  return support;
+}
+
+/* The record this thread's earlier calls left, or Node's initial one. */
+ScrDyn *scr_module_source_maps_support(void) {
+  if (scr_source_maps_support == NULL) {
+    scr_source_maps_support = scr_source_maps_support_build(false, false, false);
+    scr_atexit(scr_source_maps_support_clear);
+  }
+  return scr_dyn_retain(scr_source_maps_support);
+}
+
+bool scr_process_source_maps_enabled(void) {
+  ScrDyn *support = scr_module_source_maps_support();
+  ScrDyn *value = scr_dyn_obj_read(support, "enabled", 7);
+  scr_dyn_release(support);
+  if (value == NULL) return false;
+  bool enabled = value->kind == SCR_DYN_BOOL && value->v.b;
+  scr_dyn_release(value);
+  return enabled;
+}
+
+/* Reads `key` off the options object the way a property read in the program
+ * does: a checked record or class instance boxed as a dynamic value answers
+ * from its native fields or its view. NULL with the error pending when a
+ * getter throws. */
+static ScrDyn *scr_source_maps_option(const ScrDyn *object, const char *key, size_t key_len) {
+  if (object->kind != SCR_DYN_TYPED_REF) return scr_dyn_obj_read(object, key, key_len);
+  ScrStr *name = scr_str_new(key, key_len);
+  ScrDyn *value = scr_dyn_typed_ref_own_get(object, name);
+  if (!value) {
+    ScrDyn *view = scr_dyn_typed_ref_materialize(object);
+    if (view) {
+      value = scr_dyn_obj_read(view, key, key_len);
+      scr_dyn_release(view);
+    }
+  }
+  scr_str_release(name);
+  return value;
+}
+
+/* setSourceMapsSupport(enabled, options): validateBoolean(enabled),
+ * validateObject(options), then the two option flags (each defaulting to
+ * false, each validateBoolean'd under its dotted property name). Unknown
+ * option members are ignored. */
+void scr_module_set_source_maps_support(ScrDyn *enabled, ScrDyn *options) {
+  if (enabled->kind != SCR_DYN_BOOL) {
+    scr_dyn_arg_type_fail("enabled", "of type boolean", enabled);
     return;
   }
-  scr_source_maps_enabled = value->v.b;
+  bool node_modules = false;
+  bool generated_code = false;
+  if (options->kind != SCR_DYN_UNDEF) {
+    /* validateObject: a null, a non-object and an Array are all refused. */
+    if (options->kind == SCR_DYN_NULL || !scr_dyn_is_object(options) ||
+        options->kind == SCR_DYN_ARR || scr_dyn_ref_is_array(options)) {
+      scr_dyn_arg_type_fail("options", "of type object", options);
+      return;
+    }
+    ScrDyn *node_modules_value = scr_source_maps_option(options, "nodeModules", 11);
+    if (node_modules_value == NULL) return;
+    ScrDyn *generated_code_value =
+        scr_source_maps_option(options, "generatedCode", 13);
+    if (generated_code_value == NULL) {
+      scr_dyn_release(node_modules_value);
+      return;
+    }
+    bool valid = true;
+    if (node_modules_value->kind != SCR_DYN_UNDEF) {
+      if (node_modules_value->kind == SCR_DYN_BOOL) {
+        node_modules = node_modules_value->v.b;
+      } else {
+        scr_dyn_arg_type_fail("options.nodeModules", "of type boolean", node_modules_value);
+        valid = false;
+      }
+    }
+    if (valid && generated_code_value->kind != SCR_DYN_UNDEF) {
+      if (generated_code_value->kind == SCR_DYN_BOOL) {
+        generated_code = generated_code_value->v.b;
+      } else {
+        scr_dyn_arg_type_fail("options.generatedCode", "of type boolean", generated_code_value);
+        valid = false;
+      }
+    }
+    scr_dyn_release(node_modules_value);
+    scr_dyn_release(generated_code_value);
+    if (!valid) return;
+  }
+  ScrDyn *support = scr_source_maps_support_build(enabled->v.b, node_modules, generated_code);
+  ScrDyn *previous = scr_source_maps_support;
+  scr_source_maps_support = support;
+  if (previous == NULL) scr_atexit(scr_source_maps_support_clear);
+  scr_dyn_release(previous);
+}
+
+/* process.setSourceMapsEnabled(v): setSourceMapsSupport(v) with the option
+ * defaults, leaving the support record as Node leaves it. */
+void scr_process_set_source_maps_enabled(ScrDyn *value) {
+  scr_module_set_source_maps_support(value, scr_dyn_undefined());
+}
+
+/* findSourceMap(sourceURL): no source map is registered in a compiled
+ * program, and Node answers undefined — never throwing — for a file whose
+ * map was not parsed, a non-string source URL, a node: builtin and a path
+ * under node_modules while that support is off. */
+ScrDyn *scr_module_find_source_map(const ScrDyn *path) {
+  (void)path;
+  return scr_dyn_undefined();
 }
 
 
@@ -17288,22 +17505,12 @@ ScrStr *scr_num_to_exponential(double x) {
  * |x| ≥ 1e21 (NaN and ±Infinity ride that arm's texts via ToString too,
  * matching the spec's early answers). */
 ScrStr *scr_num_to_fixed0(double x) {
-  if (isnan(x)) return scr_str_new("NaN", 3);
-  if (fabs(x) >= 1e21) return scr_f64_to_scrstr(x);
-  double a = fabs(x);
-  double fl = floor(a);
-  double n = (a - fl >= 0.5) ? fl + 1 : fl; /* exact: a < 2^70, and below
-                                             * 2^52 the fraction is exact;
-                                             * at/above it a - fl == 0 */
-  ScrStr *digits = scr_f64_to_scrstr(n); /* n < 1e21 → never exponent form */
-  if (!(x < 0)) return digits;
-  size_t len = digits->len;
-  char buf[64];
-  buf[0] = '-';
-  memcpy(buf + 1, digits->data, len);
-  ScrStr *r = scr_str_new(buf, len + 1);
-  scr_str_release(digits);
-  return r;
+  /* fractionDigits 0 is the same conversion as the written 0: the exact
+   * decimal integer of the binary value. Formatting the rounded double as
+   * shortest round-trip text instead (scr_f64_to_scrstr) answers the wrong
+   * digits for large integers below 1e21, e.g. 999999999999999900000,
+   * whose exact integer is 999999999999999868928. */
+  return scr_num_to_fixed(x, 0);
 }
 
 /* Number.prototype.toFixed(fractionDigits), with the argument already
@@ -18271,3 +18478,10 @@ ScrDyn *scr_crypto_get_random_values_dyn(ScrDyn *value) {
   scr_bytes_release(filled);
   return scr_dyn_retain(value);
 }
+
+/* The optional-unit tables (scr_optional.h). They live in this always-linked
+ * unit rather than one of their own, so a program that links neither unit adds
+ * no object to its link for them; a unit that is there installs its table from
+ * a constructor. */
+const ScrEventTargetOps *scr_optional_event_target = NULL;
+const ScrDcOps *scr_optional_dc = NULL;

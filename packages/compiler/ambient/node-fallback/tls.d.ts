@@ -18,6 +18,12 @@ declare module "tls" {
     addContext(hostname: string, context: TlsOptions | SecureContext): void;
     /* new connections serve a context made from `options` */
     setSecureContext(options: TlsOptions): void;
+    /* the 48 bytes of ticket key material the server mints tickets under;
+     * mutating the answer never changes the server's keys */
+    getTicketKeys(): Buffer;
+    /* re-key the server from 48 bytes: tickets minted under the previous
+     * material no longer resume */
+    setTicketKeys(keys: Buffer): void;
   }
   /** The value side of the class: `new tls.Server(options[, listener])`
    * builds the same server createServer does. */
@@ -56,6 +62,15 @@ declare module "tls" {
     getProtocol(): string | null;
     /* OpenSSL's suite name, the IANA name and the suite's version */
     getCipher(): CipherNameAndProtocol;
+    /* the negotiated ephemeral key's facts; null on a server-side socket,
+     * before the handshake and after destroy. The bundled provider does
+     * not surface the negotiated group, so a client answers an empty
+     * object where Node names the group (TLSGroup/ECDH). */
+    getEphemeralKeyInfo(): EphemeralKeyInfo | null;
+    /* cap the send fragment size: 512..16384 answers true, any other
+     * integer false; a non-integer, NaN or an infinity throws
+     * ERR_OUT_OF_RANGE like Node. */
+    setMaxSendFragment(size: number): boolean;
     /* whether the handshake resumed a cached session */
     isSessionReused(): boolean;
     /* derive keying material with the TLS exporter; the result is a Buffer */
@@ -133,8 +148,17 @@ declare module "tls" {
     standardName: string;
     version: string;
   }
+  /* Node's EphemeralKeyInfo; the provider-dependent members are optional
+   * because an empty object is a valid answer here. */
+  export interface EphemeralKeyInfo {
+    type?: "DH" | "ECDH" | "TLSGroup";
+    name?: string;
+    size?: number;
+  }
   export const DEFAULT_MIN_VERSION: string;
   export const DEFAULT_MAX_VERSION: string;
+  /* the curve the provider chooses when it negotiates ECDH ("auto") */
+  export const DEFAULT_ECDH_CURVE: string;
   /** tls.connect options — the RUNTIME options record (members read at
    * runtime; port/host/socket/rejectUnauthorized/ca/servername are the
    * honestly-implemented set, every other documented member throws the

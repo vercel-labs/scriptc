@@ -3259,15 +3259,46 @@ function memberName(m: ts.ClassElement): string | null {
   return null;
 }
 
+/** Whether a static field initializer reads `this` or `super`, which the
+ * class object's own creation has not made available to the native term that
+ * evaluates it. */
+function staticInitializerUsesClassBinding(initializer: ts.Expression | undefined): boolean {
+  if (initializer === undefined) return false;
+  let found = false;
+  const walk = (node: ts.Node): void => {
+    if (found) return;
+    if (node.kind === ts.SyntaxKind.ThisKeyword || node.kind === ts.SyntaxKind.SuperKeyword) {
+      found = true;
+      return;
+    }
+    ts.forEachChild(node, walk);
+  };
+  walk(initializer);
+  return found;
+}
+
 /** What NI-5b does not build yet, or null. */
 function islandSubclassRefusal(decl: ts.ClassDeclaration): { node: ts.Node; what: string } | null {
   for (const m of decl.members.nodes) {
     if (ts.isSemicolonClassElement(m)) continue;
     const mods = m.modifiers?.nodes ?? [];
-    if (mods.some((x) => x.kind === ts.SyntaxKind.StaticKeyword))
-      return { node: m, what: "static members" };
     if (mods.some((x) => x.kind === ts.SyntaxKind.Decorator))
       return { node: m, what: "decorators" };
+    if (ts.isClassStaticBlockDeclaration(m)) return { node: m, what: "static blocks" };
+    if (mods.some((x) => x.kind === ts.SyntaxKind.StaticKeyword)) {
+      // A static field is a property the JavaScript class object holds, which
+      // `nodeIsland.defineField` gives it (clipanion's `static paths`). The
+      // other static forms need the class's own definition to carry them.
+      if (ts.isPropertyDeclaration(m)) {
+        if (memberName(m) === null || mods.some((x) => x.kind === ts.SyntaxKind.AccessorKeyword))
+          return { node: m, what: "static private, computed or accessor members" };
+        if (staticInitializerUsesClassBinding(m.initializer))
+          return { node: m, what: "a static field initializer that reads 'this' or 'super'" };
+        continue;
+      }
+      if (ts.isClassStaticBlockDeclaration(m)) return { node: m, what: "static blocks" };
+      return { node: m, what: "static methods or accessors" };
+    }
     if (ts.isConstructorDeclaration(m)) {
       if (m.parameters.nodes.some((p) => (p.modifiers?.nodes.length ?? 0) > 0))
         return { node: m, what: "constructor parameter properties" };
@@ -3405,6 +3436,7 @@ export function lowerIslandSubclass(lowerer: Lowerer, decl: ts.ClassDeclaration)
   const getters: { key: IrExpr; value: IrExpr }[] = [];
   const setters: { key: IrExpr; value: IrExpr }[] = [];
   const fields: ts.PropertyDeclaration[] = [];
+  const staticFields: ts.PropertyDeclaration[] = [];
   let ctor: IrExpr = dynUndefinedExpr(loc);
   const key = (name: string): IrExpr => ({ kind: "strLit", value: name, type: STRING, loc });
   for (const m of decl.members.nodes) {
@@ -3429,7 +3461,8 @@ export function lowerIslandSubclass(lowerer: Lowerer, decl: ts.ClassDeclaration)
     } else if (ts.isPropertyDeclaration(m)) {
       const mods = m.modifiers?.nodes ?? [];
       if (mods.some((x) => x.kind === ts.SyntaxKind.DeclareKeyword)) continue;
-      fields.push(m);
+      if (mods.some((x) => x.kind === ts.SyntaxKind.StaticKeyword)) staticFields.push(m);
+      else fields.push(m);
     }
   }
   const fieldsFn: IrExpr =
@@ -3463,7 +3496,7 @@ export function lowerIslandSubclass(lowerer: Lowerer, decl: ts.ClassDeclaration)
     type: DYN,
     loc,
   });
-  return {
+  const create: IrStmt = {
     kind: "assign",
     localId: global.id,
     value: {
@@ -3475,6 +3508,27 @@ export function lowerIslandSubclass(lowerer: Lowerer, decl: ts.ClassDeclaration)
     },
     loc,
   };
+  if (staticFields.length === 0) return create;
+  // Static fields are properties of the class object itself, which the
+  // JavaScript constructor is once `nodeIsland.subclass` returns it. Each
+  // initializer evaluates here, in declaration order, as Node evaluates a
+  // class's static fields when the class definition runs.
+  const defines: IrStmt[] = staticFields.map((f) => ({
+    kind: "exprStmt",
+    expr: {
+      kind: "libCall",
+      fn: "nodeIsland.defineField",
+      args: [
+        varRef(global.id, DYN, locOf(f)),
+        key(memberName(f)!),
+        f.initializer !== undefined ? toIsland(lowerer, f.initializer) : dynUndefinedExpr(locOf(f)),
+      ],
+      type: VOID,
+      loc: locOf(f),
+    },
+    loc: locOf(f),
+  }));
+  return { kind: "block", body: [create, ...defines], loc };
 }
 
 /** The function whose `this` an expression inside a class member sees,

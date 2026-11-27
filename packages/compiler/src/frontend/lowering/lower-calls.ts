@@ -47,7 +47,11 @@ import { lowerUnionEquality, tagEqualityMayMissAlias } from "./strict-equality.j
 import { lowerHashStreamCall } from "./builtins/hash-stream.js";
 import { lowerUntypedStringLastIndexOfCall } from "./builtins/strings.js";
 import { lowerWebAssemblyValueOf } from "./builtins/webassembly.js";
-import { lowerResponseStaticJson } from "./lower-stdlib.js";
+import {
+  lowerResponseStaticError,
+  lowerResponseStaticJson,
+  lowerResponseStaticRedirect,
+} from "./lower-stdlib.js";
 import { lowerArrayCallbackCall } from "./containers/array-callback-call.js";
 /** Dispatch source calls, builtin members and receiver-specific operations.
  * Signature collection, argument completion and function bodies have their
@@ -371,6 +375,7 @@ import { fenceExpandoRead } from "./lower-expando.js";
 import {
   fenceNodeModuleMutationCall,
   isCjsRequireGlobal,
+  lowerModuleClassStaticCall,
   lowerRequireCacheKeys,
 } from "./lower-node-module.js";
 import { builtinConstantsObject, pathModuleValue } from "./lower-builtin-values.js";
@@ -606,6 +611,9 @@ export function refuseWrittenBuiltin(
 }
 
 export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
+  // `Module.isBuiltin(...)`: the class's statics are the module surface.
+  const moduleStatic = lowerModuleClassStaticCall(lowerer, expr);
+  if (moduleStatic) return moduleStatic;
   // `fs.readFileSync(…)` where `fs` is a require binding the file
   // reassigns: the binding's storage holds whatever the program stored, so
   // the method is read and called through that checked-dynamic value.
@@ -2325,6 +2333,8 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       lowerStaticIsPrototypeOfCall(lowerer, expr, expr.expression) ??
       // Static Response.json(data, init?) builds a native Response.
       lowerResponseStaticJson(lowerer, expr) ??
+      lowerResponseStaticError(lowerer, expr) ??
+      lowerResponseStaticRedirect(lowerer, expr) ??
       // Refuse Response constructor operations before generic-call
       // fallbacks can report an unrelated SC1090 diagnostic.
       lowerer.fenceUnsupportedFetchConstructorMember(expr.expression) ??
@@ -2908,28 +2918,16 @@ function refuseCopyingErasureInstanceCall(
 /** Refuse an erased instantiation whose boundary conversion would COPY the
  * value instead of carrying it by reference.
  *
- * Most conversions across the erased boundary are exact: records and arrays
- * box into `unknown` as live capsules of themselves, and the checked unbox
- * back answers the same object (object-model S1). Two conversions are not,
- * and compiling them would silently hand the program a different object
- * than Node's:
- *
- * - a promise payload crossing the boundary. The dynamic promise conversion
- *   re-materializes the settled record rather than boxing it live, so a
- *   `Promise<{ id: number }>` that crosses into `unknown` (or into a wider
- *   promise) settles to a copy. This is a pre-existing dynamic-tier
- *   behaviour — it is what `const u: unknown = await p` does today for a
- *   `Promise<Record>` with no generics in sight — so the erased form must
- *   not promise otherwise. A closure counts by its RESULT: calling a boxed
- *   closure converts its result into `unknown`, so a callback returning a
- *   promise of a record loses that record's identity (the createLimiter
- *   shape: `async () => shared` over the boundary).
- * - a record (or array) converting to a different record (or array) type: a
- *   width conversion copies.
- *
- * Everything the rule names is a shape the compiler refuses today, so no
- * program that compiles changes: these fences only replace a silent
- * divergence with a diagnostic. */
+ * Almost every conversion across the erased boundary is exact: records,
+ * arrays and structured unions box into `unknown` as live capsules of
+ * themselves, a boxed closure's RESULT does too (dynFuncThunkHelper boxes it
+ * through `liveToDyn`, so `f()` through an untyped slot answers the object
+ * the producer holds), a settled promise payload boxes the same way, and
+ * the checked unbox back answers the same object (object-model S1). The one
+ * conversion that is not exact is a record (or array) converting to a
+ * DIFFERENT record (or array) type: a width conversion copies. The erased
+ * form refuses that, so the program gets a diagnostic instead of a silent
+ * divergence from Node. */
 function refuseCopyingErasureBoundary(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -2987,8 +2985,10 @@ function dynCrossingCopyReason(lowerer: Lowerer, t: IrType): string | null {
   if (t.kind === "func") {
     const inner = dynCrossingCopyReason(lowerer, t.ret);
     if (inner !== null) return inner;
-    if (structuredResultHoldsCopy(lowerer, t.ret))
-      return `a '${lowerer.fmt(t.ret)}' result is re-materialized when the boxed function returns it`;
+    // A record, array or structured-union RESULT is not a copy: the boxed
+    // callable boxes it as a live capsule of the closure's own object
+    // (dynFuncThunkHelper's `liveToDyn`, corpus 8784), so `f()` through an
+    // untyped slot answers the object the producer holds, as Node does.
     return null;
   }
   if (t.kind === "union") {
@@ -3000,17 +3000,6 @@ function dynCrossingCopyReason(lowerer: Lowerer, t: IrType): string | null {
     return null;
   }
   return null;
-}
-
-/** True when a boxed function's RESULT is a record or array, or a union with
- * such an arm. The boxed callable converts that result through the dynamic
- * call, which answers a fresh value, so the caller does not get the object
- * the function returned. */
-function structuredResultHoldsCopy(lowerer: Lowerer, t: IrType): boolean {
-  if (t.kind === "record" || t.kind === "array") return true;
-  if (t.kind !== "union") return false;
-  const def = lowerer.unions.get(t.unionId);
-  return def !== undefined && def.arms.some((arm) => structuredResultHoldsCopy(lowerer, arm));
 }
 
 /** Everything else: evaluate the callee as a value and call through it
@@ -7216,7 +7205,11 @@ function lowerPrimitiveProtoCall(
     (name === "toFixed" || name === "toExponential") &&
     call.arguments.nodes.length <= 1 &&
     !call.arguments.nodes.some(ts.isSpreadElement) &&
-    isJsSourceFile(ts.getSourceFileOfNode(call))
+    // toFixed's digits conversion is the same for a typed file: a
+    // fractionDigits the checker cannot type (an `any` value) is what Node's
+    // ToIntegerOrInfinity answers, and the other casts below stay for the
+    // untyped-JavaScript forms.
+    (name === "toFixed" || isJsSourceFile(ts.getSourceFileOfNode(call)))
   ) {
     const operand = lowerer.lowerExpr(recv);
     if (
@@ -7231,6 +7224,60 @@ function lowerPrimitiveProtoCall(
         name,
         `${ts.getTextOfNode(recv)}.${name}`,
         lowerer.coerceToExpected(operand, DYN),
+      );
+      if (dispatched) return dispatched;
+    }
+    // A statically typed number with a fractionDigits value the checker
+    // leaves untyped (`n.toFixed(digits)` where a function assigns `digits`):
+    // the number branch of the primitive dispatch converts the argument with
+    // Node's ToIntegerOrInfinity and picks the absent form when it is
+    // undefined. Without it the call keeps the standard-library fence and
+    // throws where Node formats.
+    if (name === "toFixed" && operand.type.kind === "f64" && call.arguments.nodes.length === 1) {
+      const digits = lowerer.lowerExpr(call.arguments.nodes[0]!);
+      const loc = locOf(call);
+      if (digits.type.kind === "f64")
+        return { kind: "libCall", fn: "num.toFixed", args: [operand, digits], type: STRING, loc };
+      if (digits.type.kind === "undefinedT" || digits.type.kind === "void") {
+        // The argument is written, so the call is toFixed(0): the exact
+        // decimal integer, not the omitted-digits fast path (which answers
+        // the shortest round-trip text for a large integer).
+        const zero: IrExpr = { kind: "numLit", value: 0, type: F64, loc };
+        const exact: IrExpr = {
+          kind: "libCall",
+          fn: "num.toFixed",
+          args: [operand, zero],
+          type: STRING,
+          loc,
+        };
+        if (isSafeToDiscard(digits)) return exact;
+        // JavaScript evaluates the receiver before its arguments: the
+        // discarded digits expression runs after the receiver is read.
+        const receiver = lowerer.declareHiddenLocal("%toFixedReceiver", F64);
+        return {
+          kind: "seqExpr",
+          stmts: [
+            { kind: "varDecl", localId: receiver.id, init: operand, loc },
+            { kind: "exprStmt", expr: digits, loc },
+          ],
+          result: {
+            kind: "libCall",
+            fn: "num.toFixed",
+            args: [varRef(receiver.id, F64, loc), zero],
+            type: STRING,
+            loc,
+          },
+          type: STRING,
+          loc,
+        };
+      }
+      const dispatched = lowerDynPrimitiveMethodCall(
+        lowerer,
+        call,
+        name,
+        `${ts.getTextOfNode(recv)}.${name}`,
+        lowerer.coerceToExpected(operand, DYN),
+        [digits],
       );
       if (dispatched) return dispatched;
     }

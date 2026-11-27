@@ -1,0 +1,4 @@
+{
+  "order": ["<repo>/tests/corpus/stream-lifecycle-state.mjs"],
+  "diags": []
+}

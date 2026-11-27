@@ -2,6 +2,8 @@ import type { IrLibFn } from "../builtin-signatures.js";
 
 /** The builtins in the dyn module decided never to throw. */
 export const dynNeverThrow: readonly IrLibFn[] = [
+  // scr_dyn_truthy compares the value's kind; no program code runs.
+  "dyn.truthy",
   "dyn.moduleClassValue",
   // scr_dyn_native_search_params_is compares the value's kind and handle tag.
   "dyn.nativeSearchParamsIs",

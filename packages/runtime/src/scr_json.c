@@ -122,6 +122,10 @@ void scr_message_set_wrapper_ops(const ScrMessageWrapperOps *ops) {
  * which must stay that value so `new` and a call without `new` behave as
  * Node's global does). A program that never asks keeps this NULL. */
 ScrDyn *(*scr_dyn_global_constructor_hook)(const ScrStr *name) = NULL;
+/* The same lookup by C string, NULL for a name Node has no interned
+ * constructor for: a handle's `.constructor` answer (scr_dyn_handle_key_get)
+ * must not trap on the classes the interned table does not hold. */
+ScrDyn *(*scr_dyn_global_constructor_opt_hook)(const char *name) = NULL;
 /* Set by scr_dyn_invoke.c when a program links it (every program that
  * creates a native Proxy does): the Object.prototype, Array.prototype and
  * Function.prototype members a program's computed key or a trap-less
@@ -10709,6 +10713,18 @@ ScrDyn *scr_dyn_handle_key_get(const ScrDyn *d, const ScrStr *k) {
     return NULL;
   }
   if (!r) r = scr_dynh_method_value(tag, ops, k->data, k->len);
+  /* A handle's `constructor` is the class value the global name reads for
+   * that class (an Event's is the interned Event constructor), so
+   * `e.constructor === Event` and `.constructor.name` are Node's. */
+  if ((!r || r->kind == SCR_DYN_UNDEF) && k->len == 11 &&
+      memcmp(k->data, "constructor", 11) == 0 && ops->cls != NULL &&
+      scr_dyn_global_constructor_opt_hook != NULL) {
+    ScrDyn *interned = scr_dyn_global_constructor_opt_hook(ops->cls); /* +1 or NULL */
+    if (interned != NULL) {
+      scr_dyn_release(r);
+      return interned;
+    }
+  }
   /* A class value's prototype answers the members the handle models none
    * of (its `constructor` names the class value, as Node's instances answer
    * it through their class prototype). */

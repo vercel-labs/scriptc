@@ -2823,11 +2823,23 @@ ScrDyn *scr_dyn_global_constructor(const ScrStr *name) {
   return ctor;
 }
 
+/* The same lookup over a C string, answering NULL instead of trapping when
+ * Node has no interned constructor of that name: a handle's `.constructor`
+ * read asks for its class, and only the classes with an interned value
+ * answer one (scr_json.c's scr_dyn_handle_key_get). */
+ScrDyn *scr_dyn_global_constructor_opt(const char *name) {
+  if (strcmp(name, dyn_s20) == 0) return dyn_function_constructor();
+  ScrDyn *error = scr_dyn_error_constructor(name);
+  if (error) return error;
+  return dyn_global_ctor(name);
+}
+
 /* A value's `constructor` (a DataView's, a DOMException's) is answered through
  * this hook (scr_json.c) with the global's own interned value. A program that
  * never asks does not link this unit, and the read keeps its named refusal. */
 __attribute__((constructor)) static void dyn_global_constructor_hook_install(void) {
   scr_dyn_global_constructor_hook = scr_dyn_global_constructor;
+  scr_dyn_global_constructor_opt_hook = scr_dyn_global_constructor_opt;
 }
 
 /* Object.prototype.toString's tag: errors answer "[object Error]" (the

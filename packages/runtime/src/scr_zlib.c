@@ -19,6 +19,8 @@ static void scr_zlib_oom(void) {
   scr_trap("scriptc: out of memory\n");
 }
 
+void scr_zlib_compression_stream(void) {}
+
 ScrBytes *scr_zlib_deflate(const ScrBytes *data) {
   SCR_BYTES_SNAPSHOT(data);
   uLong srcLen = (uLong)data->len;
@@ -146,8 +148,6 @@ struct ScrZlibEngine {
   size_t dict_len;
 };
 
-enum { SCR_Z_DEFLATE = 1, SCR_Z_INFLATE, SCR_Z_GZIP, SCR_Z_GUNZIP, SCR_Z_DEFLATERAW,
-       SCR_Z_INFLATERAW, SCR_Z_UNZIP };
 
 ScrZlibEngine *scr_zlib_engine_new(int mode, int level, int window_bits, int mem_level,
                                    int strategy, const unsigned char *dict, size_t dict_len,

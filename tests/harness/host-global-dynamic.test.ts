@@ -89,12 +89,12 @@ test("'X' in globalThis throws for a host global", async () => {
 test("a computed 'X' in globalThis throws for a host global", async () => {
   const result = await runProgram(
     "in-computed",
-    `const key: string = "DecompressionStream";
+    `const key: string = "Navigator";
 console.log(key in globalThis);
 `,
   );
   expect(result.exitCode).toBe(1);
-  expect(result.stderr).toContain(`TypeError: ${missing("DecompressionStream")}`);
+  expect(result.stderr).toContain(`TypeError: ${missing("Navigator")}`);
 });
 
 test("absent capabilities and implemented globals keep their answers", async () => {

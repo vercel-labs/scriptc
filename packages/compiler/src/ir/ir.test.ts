@@ -332,6 +332,39 @@ describe("native promise checked storage", () => {
   });
 });
 
+describe("native generator checked storage", () => {
+  const iterator: IrType = {
+    kind: "generator",
+    async: true,
+    yieldT: F64,
+    retT: DYN,
+    nextT: DYN,
+  };
+  const replaced: IrType = { kind: "record", shapeId: "replaced" };
+  const result: IrType = { kind: "union", unionId: "result" };
+  const records = new Map<string, IrRecordShape>([
+    ["inactive", { id: "inactive", fields: [{ name: "status", type: STRING }] }],
+    ["replaced", { id: "replaced", fields: [{ name: "iterator", type: iterator }] }],
+  ]);
+  const shape = (id: string): IrRecordShape | undefined => records.get(id);
+  const unions = (id: string): IrUnionDef | undefined =>
+    id === "result" ? { id, arms: [{ kind: "record", shapeId: "inactive" }, replaced] } : undefined;
+
+  test("converts a generator held by identity in a record or union arm", () => {
+    for (const type of [
+      iterator,
+      { kind: "array", elem: iterator } as IrType,
+      replaced,
+      result,
+      { kind: "promise", inner: result } as IrType,
+    ]) {
+      expect(canConvertToDyn(type, shape, unions)).toBe(true);
+      expect(canDynCheckTo(type, shape, unions)).toBe(true);
+      expect(isJsonSafeType(type, shape, unions)).toBe(false);
+    }
+  });
+});
+
 describe("recursive checked graphs", () => {
   // A context whose method takes an options object whose callback receives
   // the same context: the check domain re-enters the record through a

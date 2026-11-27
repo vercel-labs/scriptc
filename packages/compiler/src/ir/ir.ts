@@ -5249,6 +5249,12 @@ function canBoxDynCompositeAt(
     case "searchParams":
     case "date":
       return true;
+    case "generator":
+      // A generator boxes by identity wherever the walker meets it, exactly
+      // as at the top level: a method whose result is a union with a
+      // generator arm (a promise settled with one, a record field holding
+      // one) still has a checked-dynamic form.
+      return true;
     case "func":
       return canBoxFuncIntoDyn(t, getRecord, getUnion, visiting);
     case "promise":

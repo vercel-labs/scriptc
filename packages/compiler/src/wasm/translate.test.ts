@@ -4,7 +4,9 @@ import { describe, expect, test } from "vitest";
 import { analyzeWasm } from "./binary.js";
 import { decodeBase64, encodeBase64 } from "./base64.js";
 import { WasmCursor, parseWasmModule } from "./module.js";
+import { simdOp } from "./simd.js";
 import {
+  WasmTranslateError,
   signatureHash,
   stackCheckedFunctions,
   translateWasmModule,
@@ -263,6 +265,370 @@ describe("stack checks", () => {
     expect(checked.split("@scr_wasm_stack_limit").length - 1).toBe(3);
     const guarded = translateWasmModule(calls, SHA, { boundsChecks: false }).text.join("\n");
     expect(guarded).not.toContain("@scr_wasm_stack_limit");
+  });
+});
+
+// A small module assembler for the SIMD translator tests.
+function leb(n: number): number[] {
+  const out: number[] = [];
+  do {
+    let b = n % 128;
+    n = Math.floor(n / 128);
+    if (n > 0) b |= 0x80;
+    out.push(b);
+  } while (n > 0);
+  return out;
+}
+function vec(items: number[][]): number[] {
+  return [...leb(items.length), ...items.flat()];
+}
+function section(id: number, body: number[]): number[] {
+  return [id, ...leb(body.length), ...body];
+}
+function simdModule(...sections: number[][]): Uint8Array {
+  return new Uint8Array([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, ...sections.flat()]);
+}
+const SIMD_I32 = 0x7f;
+const SIMD_V128 = 0x7b;
+const simdType = (params: number[], results: number[]): number[] => [
+  0x60,
+  ...vec(params.map((p) => [p])),
+  ...vec(results.map((r) => [r])),
+];
+const simdTypes = (...fts: number[][]): number[] => section(1, vec(fts));
+const simdFuncs = (...indices: number[]): number[] => section(3, vec(indices.map((i) => leb(i))));
+const simdBody = (code: number[], locals: number[] = [0x00]): number[] => {
+  const content = [...locals, ...code, 0x0b];
+  return [...leb(content.length), ...content];
+};
+const simdCode = (...bodies: number[][]): number[] => section(10, vec(bodies));
+const simdExports = (...entries: number[][]): number[] => section(7, vec(entries));
+const simdName = (text: string): number[] => {
+  const bytes = [...Buffer.from(text)];
+  return [...leb(bytes.length), ...bytes];
+};
+const simdMemory = (...limits: number[][]): number[] => section(5, vec(limits));
+const V128_CONST = (lanes: number[]): number[] => [0xfd, 0x0c, ...lanes];
+
+describe("SIMD translation", () => {
+  const prefix = wasmSymbolPrefix(SHA);
+
+  test("translates the issue's module: i32.const, i8x16.splat, drop", () => {
+    // (module (func i32.const 0 i8x16.splat drop))
+    const bytes = simdModule(
+      simdTypes(simdType([], [])),
+      simdFuncs(0),
+      simdCode(simdBody([0x41, 0x00, 0xfd, 0x0f, 0x1a])),
+    );
+    const text = translateWasmModule(bytes, SHA, { boundsChecks: false }).text.join("\n");
+    expect(text).toContain("trunc i32 0 to i8");
+    expect(text).toContain("insertelement <16 x i8> undef, i8 ");
+    expect(text).toContain("shufflevector <16 x i8>");
+    expect(text).toContain("bitcast <16 x i8>");
+  });
+
+  test("passes v128 parameters and results between functions", () => {
+    // (func $add (param v128 v128) (result v128) local.get 0 local.get 1 i8x16.add)
+    // (func (export "get") (result i32) v128.const ... v128.const ... call $add
+    //   i8x16.extract_lane_u 0)
+    const bytes = simdModule(
+      simdTypes(simdType([SIMD_V128, SIMD_V128], [SIMD_V128]), simdType([], [SIMD_I32])),
+      simdFuncs(0, 1),
+      simdExports([...simdName("get"), 0x00, ...leb(1)]),
+      simdCode(
+        simdBody([0x20, 0x00, 0x20, 0x01, 0xfd, 0x6e]),
+        simdBody([
+          ...V128_CONST(Array.from({ length: 16 }, (_, i) => i + 1)),
+          ...V128_CONST(Array.from({ length: 16 }, (_, i) => i + 2)),
+          0x10,
+          0x00,
+          0xfd,
+          0x16,
+          0x00,
+        ]),
+      ),
+    );
+    const text = translateWasmModule(bytes, SHA, { boundsChecks: false }).text.join("\n");
+    expect(text).toContain(
+      `define internal <4 x i32> @${prefix}_f0(ptr %inst, <4 x i32> %p0, <4 x i32> %p1)`,
+    );
+    expect(text).toContain("add <16 x i8>");
+    expect(text).toContain("extractelement <16 x i8>");
+    expect(text).toContain("zext i8");
+    expect(text).toContain(`define internal void @${prefix}_x1(ptr %inst, ptr %a, ptr %r)`);
+    // The signature identity includes the vector operands.
+    expect(text).toContain('c"VV:V\\00"');
+  });
+
+  test("loads and stores a full vector with a 16-byte bounds check", () => {
+    // (func (export "roundtrip") (param i32) (result i32)
+    //   local.get 0 v128.const . v128.store
+    //   local.get 0 v128.load i8x16.extract_lane_u 0)
+    const bytes = simdModule(
+      simdTypes(simdType([SIMD_I32], [SIMD_I32])),
+      simdFuncs(0),
+      simdMemory([0x00, 0x01]),
+      simdExports([...simdName("roundtrip"), 0x00, 0x00]),
+      simdCode(
+        simdBody([
+          0x20,
+          0x00,
+          ...V128_CONST(Array.from({ length: 16 }, (_, i) => i)),
+          0xfd,
+          0x0b,
+          0x00,
+          0x00,
+          0x20,
+          0x00,
+          0xfd,
+          0x00,
+          0x00,
+          0x00,
+          0xfd,
+          0x16,
+          0x00,
+        ]),
+      ),
+    );
+    const guarded = translateWasmModule(bytes, SHA, { boundsChecks: false }).text.join("\n");
+    expect(guarded).toContain("store <4 x i32>");
+    expect(guarded).toContain("load <4 x i32>, ptr");
+    // The memarg alignment is a hint: the same instruction may run unaligned.
+    expect(guarded).toContain("align 1");
+    expect(guarded).not.toContain("align 16");
+    const checked = translateWasmModule(bytes, SHA, { boundsChecks: true }).text.join("\n");
+    expect(checked).toContain("add i64 %v");
+    expect(checked).toMatch(/add i64 %v\d+, 16/);
+  });
+
+  test("keeps a dropped vector load's trap by loading it volatile", () => {
+    // (func i32.const 0 v128.load drop)
+    const bytes = simdModule(
+      simdTypes(simdType([], [])),
+      simdFuncs(0),
+      simdMemory([0x00, 0x01]),
+      simdCode(simdBody([0x41, 0x00, 0xfd, 0x00, 0x00, 0x00, 0x1a])),
+    );
+    const guarded = translateWasmModule(bytes, SHA, { boundsChecks: false }).text.join("\n");
+    expect(guarded).toContain("load volatile <4 x i32>");
+  });
+
+  test("puts the build's target-cpu on translated functions", () => {
+    const bytes = simdModule(
+      simdTypes(simdType([], [])),
+      simdFuncs(0),
+      simdCode(simdBody([0x41, 0x00, 0xfd, 0x0f, 0x1a])),
+    );
+    const text = translateWasmModule(bytes, SHA, {
+      boundsChecks: false,
+      targetAttributes: ' "target-cpu"="x86-64-v3"',
+    }).text.join("\n");
+    expect(text).toContain('nounwind "disable-tail-calls"="true" "target-cpu"="x86-64-v3"');
+    const plain = translateWasmModule(bytes, SHA, { boundsChecks: false }).text.join("\n");
+    expect(plain).not.toContain("target-cpu");
+  });
+
+  test("zero-initializes v128 locals and stores updates", () => {
+    // (func (local v128) local.get 0 drop)
+    const bytes = simdModule(
+      simdTypes(simdType([], [])),
+      simdFuncs(0),
+      simdCode(simdBody([0x20, 0x00, 0x1a], [0x01, 0x01, SIMD_V128])),
+    );
+    const text = translateWasmModule(bytes, SHA, { boundsChecks: false }).text.join("\n");
+    expect(text).toContain("%l0 = alloca <4 x i32>");
+    expect(text).toContain("store <4 x i32> zeroinitializer, ptr %l0");
+    expect(text).toContain("load <4 x i32>, ptr %l0");
+  });
+
+  test("emulates lane arithmetic with vector operations", () => {
+    // (func (param v128 v128) (result v128) i8x16.add_sat? no: add, sub, min_s,
+    //   shl, bitselect, bitmask, all_true)
+    const bytes = simdModule(
+      simdTypes(simdType([SIMD_V128, SIMD_V128], [SIMD_V128]), simdType([SIMD_V128], [SIMD_I32])),
+      simdFuncs(0, 1),
+      simdCode(
+        simdBody([0x20, 0x00, 0x20, 0x01, 0xfd, 0x6e]),
+        simdBody([
+          0x20,
+          0x00,
+          0xfd,
+          0x64, // i8x16.bitmask
+          0x1a,
+          0x20,
+          0x00,
+          0xfd,
+          0x63, // i8x16.all_true
+          0x1a,
+          0x20,
+          0x00,
+          0x41,
+          0x03,
+          0xfd,
+          0x6c, // i8x16.shr_s
+          0x1a,
+          0x20,
+          0x00,
+          0x20,
+          0x00,
+          0x20,
+          0x00,
+          0xfd,
+          0x52, // v128.bitselect
+          0x1a,
+          0x20,
+          0x00,
+          0xfd,
+          0x80,
+          0x02, // i8x16.relaxed_swizzle: relaxed SIMD is not translated yet
+        ]),
+      ),
+    );
+    expect(() => translateWasmModule(bytes, SHA, { boundsChecks: false })).toThrow(
+      WasmTranslateError,
+    );
+    // Drop the swizzle and the module translates with vector instructions.
+    const supported = simdModule(
+      simdTypes(simdType([SIMD_V128, SIMD_V128], [SIMD_V128]), simdType([SIMD_V128], [SIMD_I32])),
+      simdFuncs(0, 1),
+      simdCode(
+        simdBody([0x20, 0x00, 0x20, 0x01, 0xfd, 0x6e]),
+        simdBody([0x20, 0x00, 0xfd, 0x64, 0x1a, 0x20, 0x00, 0xfd, 0x63, 0x1a, 0x41, 0x00]),
+      ),
+    );
+    const text = translateWasmModule(supported, SHA, { boundsChecks: false }).text.join("\n");
+    expect(text).toContain("icmp ne <16 x i8>");
+    expect(text).toContain("icmp slt <16 x i8>");
+    expect(text).toContain("bitcast <16 x i1>");
+    expect(text).toContain("add <16 x i8>");
+  });
+
+  const descLine = (out: ReturnType<typeof translateWasmModule>): string =>
+    out.text
+      .join("\n")
+      .split("\n")
+      .find((line) => line.startsWith(`${out.descriptor} =`))!;
+
+  test("represents v128 exports, globals and imports at the boundary", () => {
+    // An exported v128 function: no slot thunk, and the descriptor is ABI 3.
+    const exported = simdModule(
+      simdTypes(simdType([], [SIMD_V128])),
+      simdFuncs(0),
+      simdExports([...simdName("f"), 0x00, 0x00]),
+      simdCode(simdBody(V128_CONST(new Array(16).fill(0)))),
+    );
+    const out = translateWasmModule(exported, SHA, { boundsChecks: false });
+    expect(out.text.join("\n")).not.toContain(`${wasmSymbolPrefix(SHA)}_x0`);
+    expect(descLine(out)).toContain("i64 3, i64 0,");
+    // A v128 global with a 16-byte cell accessed at align 8.
+    const global = simdModule(
+      section(
+        6,
+        vec([[SIMD_V128, 0x00, ...V128_CONST(Array.from({ length: 16 }, (_, i) => i)), 0x0b]]),
+      ),
+    );
+    const globalOut = translateWasmModule(global, SHA, { boundsChecks: false });
+    expect(globalOut.text.join("\n")).toContain("store <4 x i32>");
+    expect(globalOut.text.join("\n")).toContain(", align 8");
+    expect(descLine(globalOut)).toContain("i64 3, i64 0,");
+    // A v128 import calls the imported function's code directly.
+    const imported = simdModule(
+      simdTypes(simdType([SIMD_V128, SIMD_V128], [SIMD_V128]), simdType([], [])),
+      section(2, vec([[...simdName("m"), ...simdName("f"), 0x00, ...leb(0)]])),
+      simdFuncs(1),
+      simdCode(
+        simdBody([
+          ...V128_CONST(new Array(16).fill(1)),
+          ...V128_CONST(new Array(16).fill(2)),
+          0x10,
+          0x00,
+          0x1a,
+        ]),
+      ),
+    );
+    const importedOut = translateWasmModule(imported, SHA, { boundsChecks: false });
+    const importedText = [...importedOut.decls, ...importedOut.text].join("\n");
+    expect(importedText).toContain("declare ptr @scr_wasm_import_funcref(ptr, i32)");
+    expect(importedText).toContain("@scr_wasm_import_funcref(ptr %host, i32 0)");
+    expect(importedText).toContain("%code(ptr %cinst, <4 x i32> %p0, <4 x i32> %p1)");
+    // A JavaScript-backed v128 import must throw, never be dereferenced.
+    expect(importedText).toContain("icmp eq ptr %ref, null");
+    expect(importedText).toContain("call void @scr_wasm_trap(i32 101)");
+    // A scalar module keeps descriptor ABI 2.
+    const scalar = translateWasmModule(ADD, SHA, { boundsChecks: false });
+    expect(descLine(scalar)).toContain("i64 2, i64 0,");
+    // Relaxed SIMD is still not translated.
+    const unsupported = simdModule(
+      simdTypes(simdType([], [])),
+      simdFuncs(0),
+      simdCode(simdBody([0xfd, 0x80, 0x02])), // i8x16.relaxed_swizzle
+    );
+    expect(() => translateWasmModule(unsupported, SHA, { boundsChecks: false })).toThrow(
+      /SIMD instruction 0xfd 256 is not supported yet/,
+    );
+  });
+});
+
+/** A module with one function that takes the instruction's operands and
+ * performs it, for checking its lowered IR. */
+function oneOpModule(sub: number): Uint8Array {
+  const op = simdOp(sub)!;
+  const code: number[] = [];
+  for (let i = 0; i < op.params.length; i++) code.push(0x20, ...leb(i));
+  code.push(0xfd, ...leb(sub));
+  switch (op.immediate) {
+    case 1:
+    case 2:
+      for (let i = 0; i < 16; i++) code.push(i);
+      break;
+    case 3:
+      code.push(0);
+      break;
+    case 4:
+      code.push(0, 0);
+      break;
+    case 5:
+      code.push(0, 0, 0);
+      break;
+  }
+  return simdModule(
+    simdTypes(simdType([...op.params], [...op.results])),
+    simdFuncs(0),
+    simdMemory([0x00, 0x01]),
+    simdCode(simdBody(code)),
+  );
+}
+
+describe("later SIMD instruction families", () => {
+  test.each([
+    [1, "load <8 x i8>"], // load8x8_s
+    [14, "select <16 x i1>"], // i8x16.swizzle
+    [98, "llvm.ctpop.v16i8"], // i8x16.popcnt
+    [102, "icmp sgt <16 x i16>"], // narrow_i16x8_u clamps signed inputs
+    [111, "llvm.sadd.sat.v16i8"], // add_sat_s
+    [124, "add <8 x i16>"], // extadd_pairwise
+    [130, "ashr <8 x i32>"], // q15mulr rounds by shifting a widened product
+    [186, "add <4 x i32>"], // dot_i16x8_s
+    [228, "fadd <4 x float>"], // f32x4.add
+    [234, "fcmp olt <4 x float>"], // pmin is a compare and select
+    [253, "llvm.fptoui.sat.v2i32.v2f64"], // trunc_sat with zero high lanes
+  ])("lowers 0xfd %i to %s", (sub, fragment) => {
+    const out = translateWasmModule(oneOpModule(sub), SHA, { boundsChecks: false });
+    const text = [...out.decls, ...out.text].join("\n");
+    expect(text).toContain(fragment);
+  });
+
+  test("every standard SIMD instruction translates", () => {
+    const failures: string[] = [];
+    for (let sub = 0; sub < 0x100; sub++) {
+      if (simdOp(sub) === undefined) continue;
+      try {
+        translateWasmModule(oneOpModule(sub), SHA, { boundsChecks: false });
+      } catch (error) {
+        failures.push(`0x${sub.toString(16)}: ${(error as Error).message}`);
+      }
+    }
+    expect(failures).toEqual([]);
   });
 });
 

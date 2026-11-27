@@ -3178,7 +3178,9 @@ const NODE_CONSTRUCTOR_GLOBALS: ReadonlySet<string> = new Set([
   "Blob",
   "BroadcastChannel",
   "CloseEvent",
+  "CompressionStream",
   "CustomEvent",
+  "DecompressionStream",
   "DOMException",
   "Event",
   "EventTarget",
@@ -4316,10 +4318,30 @@ export function representedClassFieldTarget(
     value.type.kind === "union"
       ? lowerer.unions.get(value.type.unionId)?.arms.filter((arm) => !isUnitType(arm))
       : [value.type];
-  const objectType = arms?.length === 1 ? arms[0] : null;
-  return objectType?.kind === "object"
-    ? classFieldTarget(lowerer, receiverNode, objectType, fieldName, value)
-    : null;
+  if (!arms?.length || !arms.every((arm) => arm.kind === "object")) return null;
+  const objectArms = arms as (IrType & { kind: "object" })[];
+  const objectType = objectArms.length === 1 ? objectArms[0]! : null;
+  if (objectType) return classFieldTarget(lowerer, receiverNode, objectType, fieldName, value);
+  // Several class arms: every arm's instance holds its nearest common
+  // base's layout, so a field that base declares is one slot in all of
+  // them. Write through the value upcast to the base (classFieldTarget's
+  // union receiver narrows to it). The chain is walked from the FIRST
+  // arm's base: the nearest base every arm shares.
+  const first = lowerer.classes.get(objectArms[0]!.className);
+  for (let base = first?.base ?? null; base !== null; base = base.base) {
+    if (
+      base.fields.has(fieldName) &&
+      objectArms.every((arm) => lowerer.isSubclassOf(arm.className, base!.def.name))
+    )
+      return classFieldTarget(
+        lowerer,
+        receiverNode,
+        { kind: "object", className: base.def.name },
+        fieldName,
+        value,
+      );
+  }
+  return null;
 }
 
 /** A STATICALLY-RESOLVABLE unique-symbol key: an identifier whose value

@@ -191,6 +191,10 @@ void scr_worker_stdio_install(const struct ScrChildStreamOps *ops, ScrDyn *(*rea
                               ScrDyn *(*writable_box)(void *));
 void scr_worker_stdio_default(const struct ScrChildStreamOps *ops, ScrDyn *(*view)(void *));
 ScrDyn *scr_worker_new(double root, ScrStr *filename, ScrDyn *options);
+/* worker.getHeapStatistics(): the worker thread's heap figures in V8's
+ * field names, a promise that rejects with ERR_WORKER_NOT_RUNNING before
+ * the worker's 'online' event and after it exits (scr_worker_events.c). */
+ScrPromise *scr_worker_heap_statistics(ScrDyn *worker);
 bool scr_shared_array_buffer_is(const ScrDyn *);
 bool scr_buffer_storage_is(const ScrDyn *);
 ScrBytes *scr_bytes_from_external(void *data, size_t length);

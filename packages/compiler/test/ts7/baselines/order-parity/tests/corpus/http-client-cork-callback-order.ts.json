@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/http-client-cork-callback-order.ts"
+ ],
+ "diags": []
+}

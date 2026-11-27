@@ -8,7 +8,3 @@
 
 const pattern = new URLPattern({ pathname: "/books/:id" });
 console.log(pattern.test("http://localhost/books/1"));
-
-const gzip = new CompressionStream("gzip");
-const gunzip = new DecompressionStream("gzip");
-console.log(typeof gzip.readable, typeof gunzip.writable);

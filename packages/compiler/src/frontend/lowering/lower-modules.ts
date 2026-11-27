@@ -5020,7 +5020,11 @@ export function lowerFileInit(
       c.runtimeStatics !== undefined ||
       c.staticFields.length > 0 ||
       (c.staticBlocks?.length ?? 0) > 0 ||
-      c.classDecorators !== undefined;
+      c.classDecorators !== undefined ||
+      // A legacy class with only MEMBER or constructor PARAMETER decorators
+      // still runs their applications at its statement.
+      c.legacyMemberDecorations !== undefined ||
+      c.legacyConstructorDecorations !== undefined;
     const statics: {
       pos: number;
       info: ClassInfo | null;

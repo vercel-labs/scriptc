@@ -504,6 +504,10 @@ export const LINK_FEATURE_REQUIREMENTS: readonly LinkFeatureRequirement[] = [
   // wss connections with scr_tls.c, and dispatches its events through
   // scr_event_target.c (with the emitter and symbol units that unit needs).
   { feature: "webSocket", requires: ["net", "http", "tls", "emitter", "symbol", "dynAsync"] },
+  // A Blob (built, or produced by a body read) is a native handle of the
+  // blob unit, which the checked-dynamic tier links; the fetch unit's
+  // SCR_WEB_BODIES build reads its bytes through that unit.
+  { feature: "webBodies", requires: ["dynAsync"] },
   // scr_sqlite.c interns DatabaseSync's Symbol(sqlite-type) brand through
   // the symbol unit's registry, and reflection and util.inspect show it
   // whatever the program does with symbols.
@@ -534,6 +538,12 @@ export const LINK_FEATURE_REQUIREMENTS: readonly LinkFeatureRequirement[] = [
   // inspect unit's console entries, and colorMode 'auto' reads the
   // environment's color depth (scr_tty_colors.c).
   { feature: "consoleOptions", requires: ["inspect"] },
+  // scr_webstreams.c runs its stream algorithms through the checked-dynamic
+  // async unit (promise reactions, scratch streams) and calls the program's
+  // callbacks through the dyn-invoke unit; the compression streams'
+  // webstream.compressClass reaches the unit without any other call that
+  // would select them, so the requirement is stated here.
+  { feature: "webStreams", requires: ["dynAsync", "dynInvoke"] },
   { feature: "fsOpenAsBlob", requires: ["fileHandle", "dynAsync"] },
 ];
 

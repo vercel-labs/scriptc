@@ -27641,6 +27641,79 @@ ScrDyn *scr_dyn_destructure_rest(const ScrDyn *src, const ScrStr *msg) {
   return packs ? scr_dyn_iter_pack(src, msg) : scr_dyn_iter_steps(src, msg, 0, true);
 }
 
+/* Step an opened iterator to the end: +1 array of its values, or NULL with
+ * the error pending. Borrows the iterator, closing it when it has values
+ * left (the try-finally the protocol asks for). */
+static ScrDyn *scr_iterator_drain(ScrDyn *iterator) {
+  ScrDyn *next = scr_iterator_member(iterator, "next", 4);
+  if (!next) return NULL;
+  ScrDyn *out = scr_dyn_new_arr();
+  bool done = false;
+  while (!done) {
+    ScrDyn *value = scr_ih_step(iterator, next, &done);
+    if (!value) goto fail;
+    if (done) {
+      scr_dyn_release(value);
+      break;
+    }
+    scr_dyn_arr_push(out, value);
+  }
+  if (!done && !scr_ih_close(iterator, false)) goto fail;
+  scr_dyn_release(next);
+  return out;
+fail:
+  scr_dyn_release(out);
+  scr_dyn_release(next);
+  return NULL;
+}
+
+bool scr_dyn_sequence_values(const ScrDyn *src, ScrDyn **out) {
+  if (src->kind == SCR_DYN_TYPED_REF) {
+    ScrDyn *view = scr_dyn_typed_ref_materialize(src);
+    if (scr_exc_pending()) {
+      scr_dyn_release(view);
+      return false;
+    }
+    bool iterable = scr_dyn_sequence_values(view, out);
+    scr_dyn_release(view);
+    return iterable;
+  }
+  if (src->kind == SCR_DYN_ARR ||
+      (src->kind == SCR_DYN_BYTES && !src->v.bytes->is_data_view) ||
+      (src->kind == SCR_DYN_HANDLE && scr_dyn_handle_ops_of(src)->iter_pack)) {
+    *out = scr_dyn_iter_pack(src, NULL);
+    return *out != NULL;
+  }
+  /* WebIDL's sequence branch takes an object's iterator; a primitive is not
+   * an object, and a DataView or an ArrayBuffer has no iterator. */
+  switch (src->kind) {
+    case SCR_DYN_UNDEF:
+    case SCR_DYN_NULL:
+    case SCR_DYN_BOOL:
+    case SCR_DYN_NUM:
+    case SCR_DYN_STR:
+    case SCR_DYN_BIGINT:
+    case SCR_DYN_SYMBOL:
+    case SCR_DYN_BYTES: /* a typed array packed above; a DataView gets here */
+      return false;
+    default:
+      break;
+  }
+  int kind = 0;
+  ScrDyn *iterator = scr_dyn_open_iterator(src, &kind, true);
+  if (kind < 0) {
+    scr_dyn_release(iterator);
+    return false;
+  }
+  if (kind == 0) {
+    scr_dyn_release(iterator);
+    return false;
+  }
+  *out = scr_iterator_drain(iterator);
+  scr_dyn_release(iterator);
+  return *out != NULL;
+}
+
 ScrDyn *scr_dyn_iter_take(const ScrDyn *src, size_t n, const char *spell) {
   ScrStr *spelling = spell && *spell ? scr_str_new(spell, strlen(spell)) : NULL;
   ScrDyn *out = scr_dyn_iter_steps(src, spelling, n, false);

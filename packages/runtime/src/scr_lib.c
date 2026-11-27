@@ -732,6 +732,47 @@ static void scr_module_dyn_children_remove(ScrModuleRecord *m, double child_id) 
  * object prototype. */
 extern ScrDyn *scr_module_class_prototype(void) __attribute__((weak));
 
+/* require.extensions (node:module's Module._extensions): Node's loader
+ * table. A compiled program loads no module at run time, so the three
+ * handlers exist as function values with Node's empty name and length 2 and
+ * refuse when called, while the table itself — one per thread, null
+ * prototype like Node's — answers keys, JSON and identity with
+ * Module._extensions as Node's does. */
+static SCR_TL ScrDyn *scr_module_extensions_table;
+static SCR_TL bool scr_module_extensions_cleanup_registered;
+
+static ScrDyn *scr_module_extensions_refuse(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
+  (void)clo;
+  (void)args;
+  (void)argc;
+  static const char message[] =
+    "require.extensions handlers are part of the standard library types but have no scriptc lowering yet";
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+  return NULL;
+}
+
+static void scr_module_extensions_cleanup(void) {
+  scr_dyn_release(scr_module_extensions_table);
+  scr_module_extensions_table = NULL;
+}
+
+ScrDyn *scr_module_extensions(void) {
+  if (scr_module_extensions_table) return scr_dyn_retain(scr_module_extensions_table);
+  if (!scr_module_extensions_cleanup_registered) {
+    scr_atexit(scr_module_extensions_cleanup);
+    scr_module_extensions_cleanup_registered = true;
+  }
+  ScrDyn *table = scr_dyn_new_obj_null_proto();
+  static const char *names[] = {".js", ".json", ".node"};
+  for (size_t i = 0; i < 3; i++) {
+    ScrDyn *handler = scr_dyn_new_func(scr_closure_new(NULL, 0), scr_module_extensions_refuse, 2,
+                                       "native:module", "");
+    scr_dyn_obj_set(table, names[i], strlen(names[i]), handler);
+  }
+  scr_module_extensions_table = scr_dyn_retain(table);
+  return table;
+}
+
 /* The checked-dynamic view of one module record (Node's Module object as a
  * program sees it when the value's type is any): one object per record,
  * built once and cached, so identity holds between `module.children[i]`,
@@ -3388,12 +3429,19 @@ static void scr_detach_teardown(void) {
 }
 #endif
 
-#if defined(__linux__)
+#if defined(__linux__) || defined(__APPLE__)
 /* LLVM's profile writer. Instrumented builds (--profile-generate) link the
  * profile runtime, which writes the profile from an atexit handler that the
  * _Exit below skips, so the exit writes it first. Every other build leaves the
- * weak reference null. */
+ * weak reference null. Mach-O refuses an undefined weak reference in an
+ * executable, so macOS carries a hidden weak definition instead: the profile
+ * runtime's strong definition overrides it, and a build without the runtime
+ * calls the definition and writes nothing. */
+#if defined(__APPLE__)
+__attribute__((weak, visibility("hidden"))) int __llvm_profile_write_file(void) { return 0; }
+#else
 extern int __llvm_profile_write_file(void) __attribute__((weak));
+#endif
 #endif
 
 /* The shared exit sequence, after the code's exitCode-setter validation:
@@ -3426,8 +3474,10 @@ static void scr_process_exit_finish(int code) {
   scr_stdout_settle();
   fflush(stdout);
   scr_process_stdin_restore_mode();
-#if defined(__linux__)
+#if defined(__linux__) || defined(__APPLE__)
   if (__llvm_profile_write_file != NULL) (void)__llvm_profile_write_file();
+#endif
+#if defined(__linux__)
 #ifndef SCR_LIB
   if (scr_census_write != NULL) scr_census_write();
 #endif

@@ -1930,7 +1930,39 @@ ScrDyn *scr_crypto_x509_legacy_object(ScrBytes *der) {
 typedef struct {
   size_t rc;
   ScrBytes *der;
+  /* The own-property table the props unit hands over for a program that
+   * annotates or freezes the certificate (adopted, traced, released here). */
+  ScrDyn *props;
+  /* Node's `raw`: one Buffer per certificate, so writes through an earlier
+   * reference stay visible and `cert.raw === cert.raw`. */
+  ScrDyn *raw;
 } ScrX509Dyn;
+
+static ScrDyn *scr_x509_dyn_get(void *p, const char *key, size_t key_len);
+
+static void scr_x509_dyn_trace(void *ptr, ScrTraceVisit visit, void *ctx) {
+  ScrX509Dyn *h = ptr;
+  if (h->props) visit(h->props, ctx);
+  if (h->raw) visit(h->raw, ctx);
+}
+
+static void scr_x509_dyn_gcfree(void *ptr) {
+  ScrX509Dyn *h = ptr;
+  if (h->der) scr_bytes_release(h->der);
+  h->der = NULL;
+  scr_cyc_free(h);
+}
+
+static void scr_x509_dyn_destroy(void *ptr) {
+  ScrX509Dyn *h = ptr;
+  scr_dyn_release(h->props);
+  h->props = NULL;
+  scr_dyn_release(h->raw);
+  h->raw = NULL;
+  scr_x509_dyn_gcfree(h);
+}
+
+static ScrCycType scr_x509_dyn_cyc_type = {&scr_x509_dyn_trace, &scr_x509_dyn_gcfree, SCR_CYC_KIND_NONE, 0};
 
 static void *scr_x509_dyn_retain(void *p) {
   ScrX509Dyn *h = p;
@@ -1940,9 +1972,17 @@ static void *scr_x509_dyn_retain(void *p) {
 
 static void scr_x509_dyn_release(void *p) {
   ScrX509Dyn *h = p;
-  if (!h || h->rc == SIZE_MAX || --h->rc != 0) return;
-  scr_bytes_release(h->der);
-  free(h);
+  if (!h || h->rc == SIZE_MAX) return;
+  if (--h->rc == 0) {
+    scr_cyc_dead(h);
+    scr_rc_destroy(h, scr_x509_dyn_destroy);
+  } else {
+    scr_cyc_released(h);
+  }
+}
+
+static void scr_x509_dyn_adopt_props(void *p, ScrDyn *props) {
+  ((ScrX509Dyn *)p)->props = props;
 }
 
 /* A field's text as a dyn string; consumes the +1 `text`. */
@@ -1970,9 +2010,12 @@ static ScrDyn *scr_x509_dyn_get(void *p, const char *key, size_t key_len) {
   ScrBytes *der = h->der;
   if (SCR_X509_IS("ca")) return scr_dyn_new_bool(scr_crypto_x509_ca(der));
   if (SCR_X509_IS("raw")) {
-    ScrBytes *view = der;
-    SCR_BYTES_SNAPSHOT(view);
-    return scr_x509_dyn_buffer(SCR_X509_DER(view));
+    if (!h->raw) {
+      ScrBytes *view = der;
+      SCR_BYTES_SNAPSHOT(view);
+      h->raw = scr_x509_dyn_buffer(SCR_X509_DER(view));
+    }
+    return scr_dyn_retain(h->raw);
   }
   if (SCR_X509_IS("subject")) return scr_x509_field_text(scr_crypto_x509_subject(der));
   if (SCR_X509_IS("issuer")) return scr_x509_field_text(scr_crypto_x509_issuer(der));
@@ -2151,6 +2194,7 @@ static const ScrDynHandleOps scr_x509_ops = {
   .get = &scr_x509_dyn_get,
   .inspect_view = &scr_x509_dyn_inspect,
   .own_names = &scr_x509_dyn_own_names,
+  .adopt_props = &scr_x509_dyn_adopt_props,
   .methods = scr_x509_methods,
   .attributes = scr_x509_attributes,
   .json_value = &scr_x509_dyn_json,
@@ -2163,9 +2207,10 @@ bool scr_crypto_x509_is_dyn(ScrDyn *value) {
 }
 
 ScrDyn *scr_crypto_x509_dyn(ScrBytes *der) {
-  ScrX509Dyn *h = malloc(sizeof *h);
-  if (!h) scr_trap("scriptc: out of memory\n");
+  ScrX509Dyn *h = scr_cyc_alloc(sizeof *h, &scr_x509_dyn_cyc_type);
   h->rc = 1;
+  h->props = NULL;
+  h->raw = NULL;
   ScrBytes *view = der;
   SCR_BYTES_SNAPSHOT(view);
   h->der = scr_crypto_x509_raw_der(view);

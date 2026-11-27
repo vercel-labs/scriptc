@@ -64,7 +64,13 @@ const keep = (value) => value;
 const cert = new crypto.X509Certificate(LEAF);
 console.log("direct", describe(keep(cert)));
 console.log("again", describe(keep(new crypto.X509Certificate(LEAF))));
+const rawOnce = (cert) => {
+  const first = cert.raw;
+  first[0] = first[0] ^ 0xff;
+  return [cert.raw === first, cert.raw[0]];
+};
 const firstSubject = (list) => list[0].subject.replace(/\n/g, "|");
 const nested = (record) => String(record.cert).length;
 console.log("array", firstSubject([cert]));
 console.log("record", nested({ cert }));
+console.log("raw", JSON.stringify(rawOnce(cert)));

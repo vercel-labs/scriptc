@@ -10468,6 +10468,7 @@ ScrDyn *scr_dyn_new_handle(void *h, ScrDynHandleTag tag) {
       tag == SCR_DYNH_CIPHER || tag == SCR_DYNH_DECIPHER || tag == SCR_DYNH_SIGN ||
       tag == SCR_DYNH_VERIFY || tag == SCR_DYNH_FETCH_REQUEST ||
       tag == SCR_DYNH_FETCH_RESPONSE || tag == SCR_DYNH_FETCH_HEADERS ||
+      tag == SCR_DYNH_X509_CERT ||
       ((tag == SCR_DYNH_SET || tag == SCR_DYNH_MAP) &&
        ((ScrMap *)h)->traced != 0);
   return d;

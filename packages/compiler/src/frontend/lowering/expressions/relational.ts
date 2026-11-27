@@ -96,6 +96,7 @@ import { foldedStringKeyOf } from "./object-literals.js";
 import { NARROW_FIRST, sideEffectFreeOptionValue, stdlibGlobalNameOf } from "../surfaces.js";
 import { isExecExceptionType, refuseExecExceptionCode } from "../builtins/errors.js";
 import { isX509Type } from "../builtins/x509.js";
+import { checkedArmExtraction } from "../coercions/unions.js";
 import { hasRuntimeStatics } from "../class-runtime-statics.js";
 import { nullProtoRecordShape, recordNullProtoTest } from "../null-prototype.js";
 import { recordMayKeepSource } from "../record-sources.js";
@@ -468,6 +469,55 @@ function lowerX509InstanceOf(
   if (isX509Type(lowerer, value.type)) return staticAnswerAfter(value, true, loc);
   if (value.type.kind === "dyn")
     return { kind: "libCall", fn: "crypto.x509IsDyn", args: [value], type: BOOL, loc };
+  /* A union holding a certificate (a populated certificate lookup, say):
+   * the answer reads which arm the value carries, and a dynamic arm asks
+   * its handle. */
+  if (value.type.kind === "union") {
+    const union = lowerer.unions.get(value.type.unionId);
+    if (!union) return staticAnswerAfter(value, false, loc);
+    const local = lowerer.declareHiddenLocal("%x509Test", value.type);
+    const reference = varRef(local.id, value.type, loc);
+    const tagTest = (tag: number): IrExpr => ({
+      kind: "unionIsTag",
+      unionId: union.id,
+      value: reference,
+      tag,
+      negated: false,
+      type: BOOL,
+      loc,
+    });
+    let result: IrExpr | null = null;
+    union.arms.forEach((arm, tag) => {
+      let answer: IrExpr | null = null;
+      if (isX509Type(lowerer, arm)) {
+        answer = tagTest(tag);
+      } else if (arm.kind === "dyn") {
+        const extracted = checkedArmExtraction(lowerer, reference, tag, arm, () => null);
+        if (extracted)
+          answer = {
+            kind: "logical",
+            op: "&&",
+            left: tagTest(tag),
+            right: { kind: "libCall", fn: "crypto.x509IsDyn", args: [extracted], type: BOOL, loc },
+            type: BOOL,
+            loc,
+          };
+      }
+      if (!answer) return;
+      result =
+        result === null
+          ? answer
+          : { kind: "logical", op: "||", left: result, right: answer, type: BOOL, loc };
+    });
+    if (result === null) return staticAnswerAfter(value, false, loc);
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "varDecl", localId: local.id, init: value, loc }],
+      result,
+      type: BOOL,
+      loc,
+    };
+  }
   return staticAnswerAfter(value, false, loc);
 }
 

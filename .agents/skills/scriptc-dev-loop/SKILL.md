@@ -13,10 +13,7 @@ Add `scriptc` and `@scriptc/experimental` to the project's dev dependencies:
 
 ```console
 $ npm install --save-dev scriptc @scriptc/experimental
-$ npm pkg set type=module
 ```
-
-The second command marks the project as an ES module. A project created with `npm init -y` is CommonJS, and the program and test files in this loop use `import` and top-level `await`, which need module mode.
 
 ## Run and test
 

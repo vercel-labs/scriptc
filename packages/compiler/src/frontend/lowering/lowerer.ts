@@ -6503,6 +6503,7 @@ export class Lowerer {
       checkedTable("sharedModuleWarnings", () => this.sharedModuleWarnings.length),
       checkedTable("islandWorkerWarnings", () => this.islandWorkerWarnings.length),
       checkedTable("deferredRefusalWarnings", () => this.deferredRefusalWarnings.length),
+      checkedTable("castThroughUnknownWarnings", () => this.castThroughUnknownWarnings.length),
       // Node island call sites hold literals of the unit's IR that lowering's
       // end rewrites to module tree paths (nodeIslandRecord): a unit that adds
       // one lowers again rather than replaying a record.

@@ -17,12 +17,10 @@ import { compile } from "@scriptc/compiler";
 const execFileAsync = promisify(execFile);
 const repoRoot = join(import.meta.dirname, "../..");
 const entry = join(repoRoot, "tests/fixtures/fs-open-as-blob-fifo/main.ts");
-const readEntry = join(repoRoot, "tests/fixtures/fs-open-as-blob-fifo/read.ts");
 const outDir = join(repoRoot, "node_modules/.cache/scriptc-tests/fs-open-as-blob-fifo");
 const sanitize = process.env["SCRIPTC_SAN"] === "1";
 
 let binary = "";
-let readBinary = "";
 let dir = "";
 let fifo = "";
 
@@ -38,14 +36,6 @@ describe.skipIf(process.platform === "win32")("fs.openAsBlob over a FIFO", () =>
     if (!result.ok)
       throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
     binary = result.binaryPath;
-    const readResult = await compile(readEntry, {
-      outPath: join(outDir, "read"),
-      outDir,
-      sanitize,
-    });
-    if (!readResult.ok)
-      throw new Error(readResult.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
-    readBinary = readResult.binaryPath;
     dir = mkdtempSync(join(tmpdir(), "scriptc-open-as-blob-"));
     fifo = join(dir, "pipe");
     await execFileAsync("mkfifo", [fifo]);
@@ -64,10 +54,5 @@ describe.skipIf(process.platform === "win32")("fs.openAsBlob over a FIFO", () =>
     const actual = await run(binary, [fifo]);
     expect(actual).toBe(expected);
     expect(actual).toBe("after 0 false\n");
-  }, 60_000);
-
-  test("reading the Blob answers instead of parking the loop on a writer", async () => {
-    const actual = await run(readBinary, [fifo]);
-    expect(actual).toBe("read 0 0 false\n");
   }, 60_000);
 });

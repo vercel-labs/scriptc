@@ -1,0 +1,214 @@
+name: Canary post-merge corpus
+
+# The plain differential corpus on every push to canary, after the merge queue has landed it. Canary's merge queue
+# and push runs take the light tier (ci.yml), which runs fast_tests and none of the plain shards, so a corpus
+# regression that only shows in a plain shard would land on canary unseen. This workflow runs the same twenty plain
+# shards a merge queue group runs on main (ci.yml's tests job, plain flavor), on the pushed commit.
+#
+# It is not a required check. It does not run for pull requests or in the merge queue, and no branch rule or
+# merge-ready flow lists its jobs, so a red run reports a regression without blocking a merge. Each shard is its
+# own job named by shard number; a failing shard uploads the tests it reported as failing
+# (scripts/ci-failure-reporter.mjs); and the summary job writes the run summary with the failing shards, a link to
+# each shard's log, and the corpus programs that failed.
+#
+# Runner cost: one native package build and twenty shards of at most 60 minutes each, the same count and caching a
+# merge queue group uses on main. One run at a time: a running run finishes, and of the pushes that land meanwhile
+# only the newest keeps a run (GitHub cancels the older pending ones).
+
+on:
+  push:
+    branches: [canary]
+
+concurrency:
+  # Not cancel-in-progress: a running run finishes. Of the runs that queue meanwhile, GitHub keeps only the newest.
+  group: canary-postmerge
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  # Each shard writes the tests it reported as failing here (scripts/ci-failure-reporter.mjs), and uploads the
+  # directory when it fails.
+  SCRIPTC_CI_FAILURE_ARCHIVE: ${{ github.workspace }}/ci-failures
+
+jobs:
+  # The Linux native packages a plain shard downloads, built the way ci.yml's native_linux builds them.
+  native:
+    name: build (Linux x64 native packages)
+    runs-on: ubuntu-24.04
+    # 13 minutes at the 99th percentile, 21 at most (cache misses).
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        with:
+          version: 11.1.3
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - uses: ./.github/actions/llvm-linux
+      - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/zig
+      - uses: ./.github/actions/native-packages
+        with:
+          target: linux-x64-gnu
+      - name: Preserve executable permissions in shared packages
+        run: >-
+          tar -czf "$RUNNER_TEMP/canary-native-linux-x64-gnu.tar.gz"
+          packages/llvm-linux-x64-gnu/bin
+          packages/runtime-linux-x64-gnu/artifacts
+          packages/runtime-linux-x64-gnu/runtime-pack.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: canary-native-linux-x64-gnu
+          path: ${{ runner.temp }}/canary-native-linux-x64-gnu.tar.gz
+          retention-days: 1
+
+  # ci.yml's tests job, plain flavor: the same twenty shards, the same environment and steps, and the same case
+  # partitioning (SCRIPTC_TEST_SHARD). The sanitized flavor stays out; canary runs the plain corpus only.
+  corpus:
+    name: plain corpus (${{ matrix.shard }}/20)
+    needs: native
+    runs-on: ubuntu-24.04
+    # Longest green plain shard 2026-11-07..21: 31 minutes.
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+    env:
+      # Capped workers: the shared runner's cores oversubscribe under the corpus compile fan-out, and vitest's
+      # worker RPC times out with every test green (the same contention artifact ci.yml documents).
+      SCRIPTC_TEST_WORKERS: "4"
+      # Plain flavor: anything but "1" is plain (ci.yml sets "1" for the sanitized flavor, which stays out here).
+      SCRIPTC_SAN: ""
+      ASAN_OPTIONS: detect_leaks=0
+      # The plain lane's twenty slices (tests/harness/shard.ts): the shards' unions run every case exactly once.
+      SCRIPTC_TEST_SHARD: ${{ matrix.shard }}/20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        with:
+          version: 11.1.3
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - uses: ./.github/actions/llvm-linux
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: canary-native-linux-x64-gnu
+          path: ${{ runner.temp }}
+      - run: tar -xzf "$RUNNER_TEMP/canary-native-linux-x64-gnu.tar.gz"
+      - uses: ./.github/actions/icu-downloads
+      - run: pnpm build
+      # Node island tests load Node from a libnode pack, and fail rather than skip in this lane when none is
+      # configured.
+      - uses: ./.github/actions/libnode
+      # Ubuntu pipes core dumps to apport, and RLIMIT_CORE does not limit a piped dump; write cores to files
+      # instead, where the process limit applies.
+      - name: Disable piped core dumps
+        run: sudo sysctl -w kernel.core_pattern=core
+      - name: Tests (corpus and integration suites)
+        run: |
+          ulimit -c 0
+          if [ -d /run/systemd/system ]; then
+            exec sudo --preserve-env systemd-run --scope --quiet -p MemoryMax=15G -p OOMPolicy=continue \
+              --uid="$(id -u)" --gid="$(id -g)" -- env PATH="$PATH" HOME="$HOME" NODE_OPTIONS="--max-old-space-size=4096" node scripts/ci-test.mjs
+          fi
+          node scripts/ci-test.mjs
+      - name: Keep the failure report
+        if: failure()
+        uses: ./.github/actions/failure-report
+        with:
+          name: canary-corpus-failure-${{ matrix.shard }}
+
+  # Writes the run summary: the shards that failed with their logs, and the corpus programs they reported. The job
+  # succeeds so the summary is visible; the failed shard jobs are what make the run red.
+  summary:
+    name: Summarize failing shards
+    needs: corpus
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        # A passing run uploads no failure report. The step's failure in that case is not the run's result.
+        continue-on-error: true
+        with:
+          pattern: canary-corpus-failure-*
+          path: ${{ runner.temp }}/canary-failures
+      - name: Write the run summary
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CORPUS_RESULT: ${{ needs.corpus.result }}
+          REPORTS: ${{ runner.temp }}/canary-failures
+        run: |
+          node <<'NODE'
+          const { execFileSync } = require('node:child_process');
+          const { appendFileSync, existsSync, readFileSync, readdirSync } = require('node:fs');
+          const { join } = require('node:path');
+
+          const api = `repos/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}/jobs?per_page=100`;
+          const { jobs } = JSON.parse(execFileSync('gh', ['api', api], { encoding: 'utf8' }));
+          // Each shard job is named "plain corpus (<n>/20)" (this workflow's corpus job).
+          const shards = jobs
+            .map((job) => ({ ...job, match: /^plain corpus \((\d+)\/20\)$/.exec(job.name) }))
+            .filter((job) => job.match)
+            .map((job) => ({ shard: Number(job.match[1]), conclusion: job.conclusion, url: job.html_url }))
+            .sort((a, b) => a.shard - b.shard);
+
+          // The failure reports the failed shards uploaded (scripts/ci-failure-reporter.mjs).
+          const reports = new Map();
+          if (existsSync(process.env.REPORTS)) {
+            for (const artifact of readdirSync(process.env.REPORTS)) {
+              const file = join(process.env.REPORTS, artifact, 'report.json');
+              if (!existsSync(file)) continue;
+              const shard = Number(artifact.replace('canary-corpus-failure-', ''));
+              const report = JSON.parse(readFileSync(file, 'utf8'));
+              reports.set(shard, report);
+            }
+          }
+
+          const failed = shards.filter((shard) => shard.conclusion !== 'success');
+          const lines = [];
+          if (failed.length === 0) {
+            lines.push('## Canary plain corpus: all 20 shards passed', '');
+          } else {
+            lines.push(`## Canary plain corpus: ${failed.length} of ${shards.length} shards did not pass`, '');
+          }
+          lines.push(
+            'This workflow is not a required check, so merges are not blocked.', '',
+            '| Shard | Result | Failing entries | Log |', '| --- | --- | --- | --- |',
+          );
+          const programs = [];
+          const other = [];
+          for (const shard of shards) {
+            const report = reports.get(shard.shard);
+            const tests = report?.tests ?? [];
+            const errors = report?.other ?? [];
+            const entries = tests.length + errors.length;
+            const detail = report
+              ? String(entries)
+              : shard.conclusion === 'skipped'
+                ? 'not run'
+                : shard.conclusion === 'success'
+                  ? '0'
+                  : 'no report';
+            lines.push(`| ${shard.shard}/20 | ${shard.conclusion} | ${detail} | [job log](${shard.url}) |`);
+            for (const test of tests) programs.push(`- shard ${shard.shard}/20: \`${test.fullName || test.name}\` (${test.file})`);
+            for (const error of errors) other.push(`- shard ${shard.shard}/20: ${error}`);
+          }
+          if (programs.length > 0) lines.push('', '### Failing corpus programs', '', ...programs);
+          if (other.length > 0) lines.push('', '### Other failures and errors', '', ...other);
+          const text = lines.join('\n') + '\n';
+          appendFileSync(process.env.GITHUB_STEP_SUMMARY, text);
+          console.log(text);
+          NODE

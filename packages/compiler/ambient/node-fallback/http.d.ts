@@ -221,10 +221,7 @@ declare module "http" {
     /* off IS removeListener: the most recently registered matching
      * listener leaves its event's list. */
     off(event: "close" | "finish" | "prefinish" | "drain", listener: () => void): void;
-    removeListener(
-      event: "close" | "finish" | "prefinish" | "drain",
-      listener: () => void,
-    ): void;
+    removeListener(event: "close" | "finish" | "prefinish" | "drain", listener: () => void): void;
     /* OutgoingMessage.pipe(): an outgoing message is write-only, so Node
      * emits ERR_STREAM_CANNOT_PIPE whatever the arguments. */
     pipe(destination?: unknown, options?: unknown): void;

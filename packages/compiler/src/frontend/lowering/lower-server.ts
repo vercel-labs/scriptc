@@ -11469,11 +11469,7 @@ function lowerHttpReqMethodCall(
     const receiver = coerceToHandle(lowerer, access.expression, HTTPREQ_T);
     const listener = lowerer.lowerExpr(args[1]!);
     if (listener.type.kind !== "func") {
-      lowerer.unsupported(
-        "SC1090",
-        args[1]!,
-        `req.${name} with a listener that is not a function`,
-      );
+      lowerer.unsupported("SC1090", args[1]!, `req.${name} with a listener that is not a function`);
     }
     return {
       kind: "libCall",
@@ -12718,11 +12714,7 @@ function lowerHttpResMethodCall(
     const receiver = coerceToHandle(lowerer, access.expression, HTTPRES_T);
     const listener = lowerer.lowerExpr(args[1]!);
     if (listener.type.kind !== "func") {
-      lowerer.unsupported(
-        "SC1090",
-        args[1]!,
-        `res.${name} with a listener that is not a function`,
-      );
+      lowerer.unsupported("SC1090", args[1]!, `res.${name} with a listener that is not a function`);
     }
     return {
       kind: "libCall",

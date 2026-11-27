@@ -2920,6 +2920,17 @@ export function lowerProcessMethodCall(
         loc,
       );
     }
+    // In a program with Node islands the exception families' listeners
+    // live in Node's own process object, so a native dispatch would miss
+    // them (the stance this branch kept before signals lowered). The signal
+    // family dispatches the native registry the compiler owns.
+    if (lowerer.nodeIslands !== null && !name.startsWith("SIG")) {
+      lowerer.unsupported(
+        "SC1090",
+        call,
+        "process.emit in a program with Node islands (the listeners belong to Node's process)",
+      );
+    }
     if (DISPATCHED_PROCESS_EVENTS.has(name)) {
       const eventValue = lowerer.coerceToExpected(lowerer.lowerExpr(eventArg), DYN);
       // The argument vector is built into a fresh array in source order

@@ -20,3 +20,11 @@ process.once("SIGHUP", () => {
 console.log(process.emit("SIGHUP"));
 console.log(process.emit("SIGHUP"));
 console.log(process.emit("SIGUSR1"));
+
+// A manual signal emit calls the listener with no arguments, as Node does.
+let seen = -1;
+process.on("SIGUSR2", (...args) => {
+  seen = args.length;
+});
+process.emit("SIGUSR2");
+console.log("args", seen);

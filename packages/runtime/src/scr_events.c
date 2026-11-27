@@ -326,6 +326,10 @@ void scr_signal_off(ScrStr *name, ScrDyn *cb) {
  * delivers the event, not the OS signal). */
 bool scr_process_emit_signal(ScrStr *name) {
   if (name == NULL) return false;
+  // Node's process listeners belong to the thread's own process object.
+  // scriptc models the main thread's registry, so a worker's manual emit
+  // answers false rather than reading (and racing) the main thread's list.
+  if (!scr_context_is_main()) return false;
   int sig = scr_signal_from_name(name);
   if (sig < 0) sig = 0;
   ScrSigReg *reg = scr_sig_regs;
@@ -358,12 +362,10 @@ bool scr_process_emit_signal(ScrStr *name) {
         scr_island_emit(SCR_EVENTS_ISLAND_SIGNAL, snap[i].island, snap[i].name,
                         scr_signal_from_name(snap[i].name));
       } else {
-        ScrDyn *args[2] = {scr_dyn_new_str(snap[i].name),
-                           scr_dyn_new_num(scr_signal_from_name(snap[i].name))};
-        ScrDyn *result = scr_dyn_call(snap[i].cb, args, 2, "listener");
+        // Node calls a signal listener with no arguments, and an emit
+        // passes none (a listener's declared parameters read undefined).
+        ScrDyn *result = scr_dyn_call(snap[i].cb, NULL, 0, "listener");
         scr_dyn_release(result);
-        scr_dyn_release(args[0]);
-        scr_dyn_release(args[1]);
       }
     }
     scr_dyn_release(snap[i].cb);

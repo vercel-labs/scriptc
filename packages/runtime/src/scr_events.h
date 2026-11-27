@@ -104,7 +104,7 @@ bool scr_stdin_ended(void);
  * position, and a delivery calls them through the emit hook: this unit
  * cannot name scr_node_island_emit itself, because every program that uses
  * process events links it and only an island program links that one. */
-enum { SCR_EVENTS_ISLAND_SIGNAL = 1, SCR_EVENTS_ISLAND_EXIT = 2 };
+enum { SCR_EVENTS_ISLAND_SIGNAL = 1, SCR_EVENTS_ISLAND_EXIT = 2, SCR_EVENTS_ISLAND_SIGNAL_EMIT = 4 };
 void scr_events_set_island_emit(void (*fn)(uint32_t event, uint32_t listener, ScrStr *name, int arg));
 
 #endif /* SCR_EVENTS_H */

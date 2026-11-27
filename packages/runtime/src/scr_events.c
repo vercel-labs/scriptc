@@ -359,11 +359,10 @@ bool scr_process_emit_signal(ScrStr *name) {
         }
       }
       if (snap[i].island != 0 && scr_island_emit != NULL) {
-        scr_island_emit(SCR_EVENTS_ISLAND_SIGNAL, snap[i].island, snap[i].name,
-                        scr_signal_from_name(snap[i].name));
-      } else {
         // Node calls a signal listener with no arguments, and an emit
         // passes none (a listener's declared parameters read undefined).
+        scr_island_emit(SCR_EVENTS_ISLAND_SIGNAL_EMIT, snap[i].island, snap[i].name, 0);
+      } else {
         ScrDyn *result = scr_dyn_call(snap[i].cb, NULL, 0, "listener");
         scr_dyn_release(result);
       }
@@ -466,6 +465,8 @@ static void scr_signals_drain(void) {
         }
       }
       if (snap[i].island != 0 && scr_island_emit != NULL) {
+        // A real delivery carries the signal's name and number, matching
+        // the native adapter below.
         scr_island_emit(SCR_EVENTS_ISLAND_SIGNAL, snap[i].island, snap[i].name,
                         scr_signal_from_name(snap[i].name));
       } else {

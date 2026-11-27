@@ -119,6 +119,7 @@ void scr_node_island_leave_stack(uintptr_t sp);
 enum {
   SCR_NODE_ISLAND_EVENT_SIGNAL = SCR_EVENTS_ISLAND_SIGNAL,
   SCR_NODE_ISLAND_EVENT_EXIT = SCR_EVENTS_ISLAND_EXIT,
+  SCR_NODE_ISLAND_EVENT_SIGNAL_EMIT = SCR_EVENTS_ISLAND_SIGNAL_EMIT,
   SCR_NODE_ISLAND_EVENT_TURN = 3,
 };
 void scr_node_island_emit(uint32_t event, uint32_t listener, ScrStr *name, int arg);

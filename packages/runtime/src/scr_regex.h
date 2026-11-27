@@ -21,6 +21,10 @@ typedef struct ScrRegex {
    * on a match stores 2 * ncap pointers into s (NULL when unset) and
    * returns 1, otherwise 0. A negative len returns ncap. */
   ScrRegexMatcherFn matcher;
+  /* The pattern's simple-alternation scan program, built once on first
+   * exec (scr_regex.c): a global scan runs one exec per match, and rebuilding
+   * it per exec made every match re-read the whole pattern. */
+  void *simple;
 } ScrRegex;
 
 /* Backtrack stack of build-time regex matchers: grow *stack (initially the

@@ -124,3 +124,27 @@ console.log(wide.a, narrow.a);
     expect(result.stdout, name).toBe(stdout);
   }
 });
+
+test("two view pairs whose sources can hold each other's views are settled together", async () => {
+  // The backend settles its view pairs together: a source that reaches the
+  // other pair's source holds that pair's target, so one pair is refused and
+  // its copy keeps the warning. Rewriting both would leave a silent copy.
+  const source = `interface A { a: number }
+interface B { b: number }
+interface AHolder { at: A }
+interface BHolder { bt: B }
+interface SA { a: number; inner: BHolder }
+interface SB { b: number; inner: AHolder }
+const sa: SA = { a: 1, inner: { bt: { b: 7 } } };
+const sb: SB = { b: 3, inner: { at: { a: 9 } } };
+const a1: A = sa;
+const b1: B = sb;
+a1.a = 5;
+b1.b = 6;
+console.log(sa.a, sb.b);
+`;
+  const result = await run("mutual-views", source);
+  expect(result.warnings.filter((w) => w.code === "SC6001")).toHaveLength(1);
+  expect(result.diagnostics).toEqual([]);
+  expect(result.stdout).toBe("1 6\n");
+});

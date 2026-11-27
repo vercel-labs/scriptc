@@ -366,12 +366,19 @@ export function viewObservedRecordCopies(lowerer: Lowerer, functions: IrFunction
   if (sites.length === 0) return 0;
   const observations = new Observations(lowerer, functions);
   const pairOf = (site: CopySite): string => `${typeKey(site.from)}\0${typeKey(site.to)}`;
-  const observed = new Set<string>();
+  const candidates = new Map<string, { target: string; source: string }>();
   for (const site of sites) {
     if (!site.aliasable || observations.of(site) === null) continue;
     if (!viewableRecordPair(lowerer, site.from, site.to)) continue;
-    observed.add(pairOf(site));
+    if (site.from.kind !== "record" || site.to.kind !== "record") continue;
+    candidates.set(pairOf(site), { target: site.to.shapeId, source: site.from.shapeId });
   }
+  // A pair the backend's planner would refuse is not a view: rewriting it
+  // would leave a copy behind the conversion and lose its SC6001 warning.
+  // The planner's refusal depends on every other planned pair (a source can
+  // hold the target through the sources of the views it reaches), so the
+  // pairs are settled together.
+  const observed = survivingPairs(lowerer, candidates);
   if (observed.size === 0) return 0;
   const views = new Map<IrExpr & { kind: "call" }, IrType>();
   for (const site of sites) {
@@ -478,6 +485,69 @@ function viewableRecordPair(lowerer: Lowerer, from: IrType, to: IrType): boolean
     (id) => lowerer.shapes.get(id),
     (id) => lowerer.unions.get(id),
   );
+}
+
+/** The pairs among `pairs` the backend's view planner keeps: a pair whose
+ * source can hold the target through its fields, elements or the sources of
+ * the pairs its records reach is refused there (record-views.ts's `holds`
+ * fixpoint), so the copy must keep its SC6001 warning. Dropping one pair
+ * removes a source another pair can reach, so the answer repeats to a
+ * fixpoint. */
+function survivingPairs(
+  lowerer: Lowerer,
+  pairs: ReadonlyMap<string, { target: string; source: string }>,
+): Set<string> {
+  const sourcesOf = new Map<string, Set<string>>();
+  for (const pair of pairs.values()) {
+    const set = sourcesOf.get(pair.target);
+    if (set === undefined) sourcesOf.set(pair.target, new Set([pair.source]));
+    else set.add(pair.source);
+  }
+  const holds = (shapeId: string): Set<string> | "any" => {
+    const out = new Set<string>();
+    const seen = new Set<string>();
+    const visit = (type: IrType): boolean => {
+      const key = `t:${typeKey(type)}`;
+      if (seen.has(key)) return true;
+      seen.add(key);
+      switch (type.kind) {
+        case "record": {
+          out.add(type.shapeId);
+          const shape = lowerer.shapes.get(type.shapeId);
+          if (shape?.indexValue !== undefined && !visit(shape.indexValue)) return false;
+          for (const source of sourcesOf.get(type.shapeId) ?? [])
+            if (!visit({ kind: "record", shapeId: source })) return false;
+          return (shape?.fields ?? []).every((field) => visit(field.type));
+        }
+        case "array":
+        case "set":
+          return visit(type.elem);
+        case "map":
+          return visit(type.key) && visit(type.value);
+        case "union":
+          return (lowerer.unions.get(type.unionId)?.arms ?? []).every(visit);
+        default:
+          return RECORD_VIEW_LEAF_KINDS.has(type.kind);
+      }
+    };
+    return visit({ kind: "record", shapeId }) ? out : "any";
+  };
+  for (let changed = true; changed;) {
+    changed = false;
+    for (const [target, set] of sourcesOf) {
+      for (const source of [...set]) {
+        const held = holds(source);
+        if (held === "any" || held.has(target)) {
+          set.delete(source);
+          changed = true;
+        }
+      }
+    }
+  }
+  const kept = new Set<string>();
+  for (const [key, pair] of pairs)
+    if (sourcesOf.get(pair.target)?.has(pair.source) === true) kept.add(key);
+  return kept;
 }
 
 /** Whether a value of `type` may reference an arbitrary object: a function,

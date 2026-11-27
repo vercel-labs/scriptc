@@ -378,6 +378,9 @@ export function effectiveRuntimeFeatures(
   const httpEffective = features.http || nativeFetch;
   const tlsEffective = features.tls || nativeFetch;
   const tlsCaEffective = features.tlsCa || tlsEffective;
+  // scr_tls.c builds peer-certificate objects through the TLS certificate
+  // units, so every effective TLS link carries the x509 feature.
+  const x509Effective = features.x509 || tlsEffective;
   // The JavaScript object model build (t262-da §J): the features reached only
   // from JavaScript sources OR into one define and one runtime feature, so
   // their migrations share one build of each unit they touch instead of one
@@ -391,6 +394,7 @@ export function effectiveRuntimeFeatures(
     (features.nodeIsland === true && features.eventTarget === true);
   return {
     ...features,
+    x509: x509Effective,
     workers: features.workers === true,
     staticLink: features.staticLink === true,
     youngNursery: features.youngNursery === true,

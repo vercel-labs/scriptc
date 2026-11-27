@@ -868,6 +868,10 @@ struct ScrNetSocket {
   void *tctx;
   bool t_est;
   bool t_want_write; /* a handshake send hit EAGAIN: arm the write filter */
+  /* a transport renegotiation (TLS 1.2) is in flight, with its completion
+   * callback (+1, called with null) */
+  bool t_renegotiating;
+  ScrDyn *t_reneg_cb;
   bool in_registry;
   struct ScrNetSocket *prev, *next;
   /* the registry position (registration order) and the sweep work queue
@@ -1015,6 +1019,7 @@ void scr_net_sock_release(ScrNetSocket *s) {
     scr_als_ctx_release(s->als);
     scr_als_ctx_release(s->end_ctx);
     scr_str_release(s->pending_err);
+    scr_dyn_release(s->t_reneg_cb);
     scr_str_release(s->encoding);
     scr_str_release(s->remote_cache);
     for (size_t i = 0; i < s->dial_n; i++) scr_str_release(s->dial_ips[i]);
@@ -2297,14 +2302,41 @@ static void scr_net_sock_tunnel_pump(ScrNetSocket *s) {
  * handshake flight delivers. Failure already tore the socket down via
  * scr_net_sock_transport_error. */
 static void scr_net_sock_transport_pump(ScrNetSocket *s) {
-  if (!s->tops || s->t_est || s->fd < 0 || s->connecting || s->tunnel != NULL) return;
+  if (!s->tops || (s->t_est && !s->t_renegotiating) || s->fd < 0 || s->connecting ||
+      s->tunnel != NULL)
+    return;
   int r = s->tops->handshake(s->tctx);
   if (r == 0) {
     scr_net_sock_update_read(s);
     scr_net_sock_update_write(s);
     return;
   }
-  if (r < 0) return; /* the transport reported the failure */
+  if (r < 0) {
+    /* the transport reported the failure; a renegotiation's callback is not
+     * answered (the socket's error path carries it) */
+    if (s->t_renegotiating) {
+      s->t_renegotiating = false;
+      scr_dyn_release(s->t_reneg_cb);
+      s->t_reneg_cb = NULL;
+    }
+    return;
+  }
+  if (s->t_renegotiating) {
+    /* the renegotiation finished: the transport re-fires 'secure', then the
+     * caller's callback answers null */
+    s->t_renegotiating = false;
+    if (s->tops->on_renegotiated) s->tops->on_renegotiated(s->tctx);
+    ScrDyn *cb = s->t_reneg_cb;
+    s->t_reneg_cb = NULL;
+    if (cb != NULL) {
+      ScrDyn *arg = scr_dyn_new_null();
+      ScrDyn *answer = scr_dyn_call(cb, &arg, 1, "renegotiate callback");
+      scr_dyn_release(arg);
+      scr_dyn_release(cb);
+      scr_dyn_release(answer);
+    }
+    return;
+  }
   s->t_est = true;
   scr_net_sock_touch(s);
   if (s->tops->on_established) {
@@ -9310,6 +9342,29 @@ void *scr_net_sock_transport_ctx_for(ScrNetSocket *s, const ScrNetTransportOps *
  * fd readiness is coming — the client is waiting for the ServerHello). */
 void scr_net_sock_transport_resume(ScrNetSocket *s) { scr_net_sock_transport_pump(s); }
 
+/* Starts a transport renegotiation on an established socket, keeping `cb`
+ * (moves, nullable) for the completion. False when the transport cannot
+ * start one (an idle socket, a byte stream without renegotiation, or a
+ * transport that refuses the start). */
+bool scr_net_sock_renegotiate(ScrNetSocket *s, ScrDyn *cb) {
+  if (s == NULL || s->tops == NULL || s->tops->renegotiate == NULL || !s->t_est) {
+    scr_dyn_release(cb);
+    return false;
+  }
+  int r = s->tops->renegotiate(s->tctx);
+  if (r < 0) {
+    scr_dyn_release(cb);
+    return false;
+  }
+  s->t_renegotiating = true;
+  scr_dyn_release(s->t_reneg_cb);
+  s->t_reneg_cb = cb;
+  scr_net_sock_update_read(s);
+  scr_net_sock_update_write(s);
+  if (r == 0) scr_net_work_add(s); /* parked on I/O: readiness drives it */
+  return true;
+}
+
 /* Replay raw bytes at the FRONT of the receive buffer (the SNI
  * pre-parse handing the consumed ClientHello back to the TLS bio) —
  * unshift's shape over a raw span. */
@@ -9899,9 +9954,14 @@ static bool scr_net_sock_event(ScrNetSocket *s, unsigned events) {
   if (events & SCRP_WRITABLE) {
     if (s->connecting) scr_net_sock_connect_done(s);
     else if (s->tunnel != NULL) scr_net_sock_tunnel_pump(s);
-    else if (s->tops && !s->t_est) {
+    else if (s->tops && (!s->t_est || s->t_renegotiating)) {
       s->t_want_write = false;
       scr_net_sock_transport_pump(s);
+      if (!scr_exc_pending() && s->fd >= 0 && s->t_est) {
+        /* app data keeps flowing across a renegotiation */
+        if (s->tops->drain) s->tops->drain(s->tctx);
+        scr_net_sock_flush(s);
+      }
       if (!scr_exc_pending() && s->fd >= 0) scr_net_sock_update_write(s);
     } else {
       s->t_want_write = false;
@@ -9911,7 +9971,7 @@ static bool scr_net_sock_event(ScrNetSocket *s, unsigned events) {
   }
   if ((events & SCRP_READABLE) && !scr_exc_pending() && s->fd >= 0) {
     if (s->tunnel != NULL) scr_net_sock_tunnel_pump(s);
-    else if (s->tops && !s->t_est) scr_net_sock_transport_pump(s);
+    else if (s->tops && (!s->t_est || s->t_renegotiating)) scr_net_sock_transport_pump(s);
     else scr_net_sock_read(s);
   }
   return true;

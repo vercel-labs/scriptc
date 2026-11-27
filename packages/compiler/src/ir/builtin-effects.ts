@@ -586,6 +586,9 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   // setMaxSendFragment throws Node's ERR_OUT_OF_RANGE for NaN, an infinity
   // or a fraction.
   "tls.sockSetMaxFragment",
+  // renegotiate/setKeyCert run Node's argument ladders (ERR_INVALID_ARG_TYPE).
+  "tls.sockRenegotiate",
+  "tls.sockSetKeyCert",
   "net.sockWriteDyn",
   "net.sockEndDyn",
   // socket.write/end(data, encoding): Buffer.from's encoding ladder throws

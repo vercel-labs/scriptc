@@ -3761,6 +3761,43 @@ function lowerNetSocketMethodCall(
       loc,
     };
   }
+  if (name === "renegotiate") {
+    // renegotiate(options[, callback]): Node's ladder (a non-object options
+    // and a non-function callback throw), false on a TLS 1.3 connection
+    // with the callback scheduled ERR_SSL_WRONG_SSL_VERSION, true on 1.2.
+    const receiver = coerceToHandle(lowerer, access.expression, NETSOCKET_T);
+    const options =
+      args.length > 0
+        ? lowerer.coerceToExpected(lowerer.lowerExpr(args[0]!), DYN)
+        : dynUndefinedExpr(loc);
+    const cb =
+      args.length > 1
+        ? lowerer.coerceToExpected(lowerer.lowerExpr(args[1]!), DYN)
+        : dynUndefinedExpr(loc);
+    return {
+      kind: "libCall",
+      fn: "tls.sockRenegotiate",
+      args: [receiver, options, cb],
+      type: BOOL,
+      loc,
+    };
+  }
+  if (name === "setKeyCert") {
+    // setKeyCert(context): the argument must be object-like; the call
+    // applies to a handshake that has not started yet.
+    const receiver = coerceToHandle(lowerer, access.expression, NETSOCKET_T);
+    const context =
+      args.length > 0
+        ? lowerer.coerceToExpected(lowerer.lowerExpr(args[0]!), DYN)
+        : dynUndefinedExpr(loc);
+    return {
+      kind: "libCall",
+      fn: "tls.sockSetKeyCert",
+      args: [receiver, context],
+      type: VOID,
+      loc,
+    };
+  }
   if (name === "write" || name === "end") {
     // write() answers Node's backpressure boolean; end() answers the
     // socket (Node's chaining).

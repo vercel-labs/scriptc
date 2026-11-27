@@ -553,6 +553,11 @@ typedef struct ScrNetTransportOps {
   /* nullable: the established socket's fd is writable; the transport
    * writes what it holds back (TLS holds its final handshake flight) */
   void (*drain)(void *tctx);
+  /* nullable: start a renegotiation; a positive answer means the handshake
+   * loop drives it (the pump keeps running while t_renegotiating) */
+  int (*renegotiate)(void *tctx);
+  /* nullable: a renegotiation completed; the transport re-fires 'secure' */
+  void (*on_renegotiated)(void *tctx);
 } ScrNetTransportOps;
 void scr_net_sock_set_transport(ScrNetSocket *s, const ScrNetTransportOps *ops, void *tctx);
 /* new tls.TLSSocket(socket) and tls.connect({ socket }): a fresh socket
@@ -563,6 +568,10 @@ void scr_net_sock_set_transport(ScrNetSocket *s, const ScrNetTransportOps *ops, 
  * call scr_net_sock_adopt_start. */
 ScrNetSocket *scr_net_sock_adopt(ScrNetSocket *raw);
 void scr_net_sock_adopt_start(ScrNetSocket *t);
+/* Starts a transport renegotiation on an established socket, keeping `cb`
+ * (moves, nullable) for the completion (called with null) or the failure.
+ * False when the transport cannot start one (the caller reports). */
+bool scr_net_sock_renegotiate(ScrNetSocket *s, ScrDyn *cb);
 /* Routes a client socket through an HTTP CONNECT proxy. Call it right
  * after the dial (scr_net_connect to the proxy) and before any transport
  * is set: once TCP is up, `request` (the CONNECT head, copied) is sent

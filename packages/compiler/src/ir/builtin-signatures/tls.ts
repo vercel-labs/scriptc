@@ -89,6 +89,12 @@ export const tlsSignatures = defineLibFnSignatures({
   /** disableRenegotiation(): a no-op call, so the receiver is still
    * evaluated (and its exceptions still surface). */
   "tls.sockDisableRenegotiation": { argTypes: [NETSOCKET_T], result: VOID },
+  /** renegotiate(options[, callback]): Node's validation ladder (a non-object
+   * options or non-function callback throws), false on TLS 1.3 with the
+   * callback scheduled ERR_SSL_WRONG_SSL_VERSION, true on TLS 1.2. MAY THROW. */
+  "tls.sockRenegotiate": { argTypes: [NETSOCKET_T, DYN, DYN], result: BOOL },
+  /** setKeyCert(context): the argument must be object-like. MAY THROW. */
+  "tls.sockSetKeyCert": { argTypes: [NETSOCKET_T, DYN], result: VOID },
   "tls.sockGetProtocol": { argTypes: [NETSOCKET_T], result: DYN },
   "tls.sockGetCipher": { argTypes: [NETSOCKET_T], result: DYN },
   /** getTLSTicket(): the received session ticket as a dyn Buffer, or

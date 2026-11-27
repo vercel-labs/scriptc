@@ -90,6 +90,11 @@ ScrDyn *scr_tls_sock_ephemeral_key_info(ScrNetSocket *s); /* +1 */
 bool scr_tls_sock_set_max_fragment(ScrNetSocket *s, double size); /* MAY THROW */
 /* tlsSocket.disableRenegotiation(): renegotiation is off by default. */
 void scr_tls_sock_disable_renegotiation(ScrNetSocket *s);
+/* renegotiate(options[, callback]) and setKeyCert(context): Node's argument
+ * ladders, the TLS 1.3 refusal (false + a scheduled error) and the TLS 1.2
+ * renegotiation (true; the callback answers null at completion). */
+bool scr_tls_sock_renegotiate(ScrNetSocket *s, const ScrDyn *options, const ScrDyn *callback);
+void scr_tls_sock_set_key_cert(ScrNetSocket *s, const ScrDyn *context);
 /* The checked-dynamic pair: which == 0 answers servername, 1 getSession
  * (each +1, as above). */
 ScrDyn *scr_tls_sock_dyn_member(ScrNetSocket *s, double which);

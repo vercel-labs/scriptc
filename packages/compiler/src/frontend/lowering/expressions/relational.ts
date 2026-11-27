@@ -1233,6 +1233,39 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
         loc,
       };
     }
+    // A certificate is the X509Certificate record: Node's class test answers
+    // true for a certificate value — but an indexed read of one can be absent
+    // at run time (the checker's type drops the undefined the storage holds),
+    // and Node answers false for that, so the test reads the value's own tag
+    // instead of folding the checker's type.
+    if (rhsBuiltin?.module === "crypto" && rhsBuiltin.member === "X509Certificate") {
+      const value = lowerer.lowerExpr(expr.left);
+      if (value.type.kind === "record" && isX509Type(lowerer, value.type)) {
+        return {
+          kind: "seqExpr",
+          stmts: [{ kind: "exprStmt", expr: value, loc }],
+          result: { kind: "boolLit", value: true, type: BOOL, loc },
+          type: BOOL,
+          loc,
+        };
+      }
+      if (value.type.kind === "union") {
+        const def = lowerer.unions.get(value.type.unionId);
+        const tag =
+          def?.arms.findIndex((arm) => arm.kind === "record" && isX509Type(lowerer, arm)) ?? -1;
+        if (def !== undefined && tag >= 0) {
+          return {
+            kind: "unionIsTag",
+            unionId: value.type.unionId,
+            tag,
+            value,
+            negated: false,
+            type: BOOL,
+            loc,
+          };
+        }
+      }
+    }
     // A built-in class that has no test of its own above: name it, and
     // what a program can test instead.
     const builtinClass =

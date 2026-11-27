@@ -466,9 +466,13 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.stream, "scr_stream_wrap.c"),
   // Its checked-dynamic entry point unwraps a boxed readable (scr_stream_dyn.c).
   unit((u) => u.opts.streamDyn === true, "scr_stream_wrap_dyn.c"),
-  // The stream defaults (setDefaultHighWaterMark) are process state the net
-  // and http units read for the streams they build.
-  unit((u) => u.opts.stream || u.net || u.http, "scr_stream_defaults.c"),
+  // The stream defaults (setDefaultHighWaterMark) are process state the
+  // stream constructors, and the net and http units, read for the streams
+  // they build: the constructors' unit is linked for web streams too.
+  unit(
+    (u) => u.opts.stream || u.net || u.http || u.opts.webStreams === true,
+    "scr_stream_defaults.c",
+  ),
   // The zlib stream classes reference both the zlib engine and the
   // stream unit.
   unit((u) => u.opts.zlib && u.opts.stream, "scr_zlib_stream.c"),

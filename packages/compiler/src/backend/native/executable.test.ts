@@ -56,6 +56,7 @@ test("node:module's Module class links the handle-class unit its value installs"
     "scr_dyn_handle_class.c",
     "scr_stream.c",
     "scr_fs_stream.c",
+    "scr_stream_defaults.c",
   ]);
   expect(source({ webStreams: true, dynAsync: true })).toEqual([
     "scr_async_dyn.c",
@@ -65,6 +66,7 @@ test("node:module's Module class links the handle-class unit its value installs"
     "scr_dyn_handle_class.c",
     "scr_stream.c",
     "scr_fs_stream.c",
+    "scr_stream_defaults.c",
     "scr_stream_duplex_from_web.c",
     "scr_stream_from_web_writable.c",
   ]);

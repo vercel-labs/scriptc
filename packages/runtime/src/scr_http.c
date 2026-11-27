@@ -7251,6 +7251,18 @@ ScrStr *scr_http_client_get_header(ScrHttpClientReq *c, ScrStr *name) {
   return NULL;
 }
 
+/* getHeader(name): the value as set (case-insensitive), +1 — an array value
+ * answers the array the record holds, a scalar its string, and the undefined
+ * value when the header is absent (Node's getHeader). */
+ScrDyn *scr_http_client_get_header_dyn(ScrHttpClientReq *c, ScrStr *name) {
+  for (size_t i = 0; i < c->nheaders; i++) {
+    if (!scr_http_name_eq(c->hnames[i], name)) continue;
+    if (c->hraw[i] != NULL) return scr_dyn_retain(c->hraw[i]);
+    return scr_dyn_new_str(c->hvalues[i]);
+  }
+  return scr_dyn_retain(scr_dyn_undefined());
+}
+
 bool scr_http_client_has_header_named(ScrHttpClientReq *c, ScrStr *name) {
   for (size_t i = 0; i < c->nheaders; i++)
     if (scr_http_name_eq(c->hnames[i], name)) return true;

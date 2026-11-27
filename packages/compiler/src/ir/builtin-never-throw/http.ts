@@ -2,6 +2,9 @@ import type { IrLibFn } from "../builtin-signatures.js";
 
 /** The builtins in the http module decided never to throw. */
 export const httpNeverThrow: readonly IrLibFn[] = [
+  // Reads the stored client request header record and answers the value as
+  // set; no program code runs.
+  "http.clientGetHeaderDyn",
   // The OutgoingMessage write-buffer readers compare and sum stored byte
   // counts (the corked buffer's length, the held head's, the socket's
   // pending bytes) and a boolean flag; registering a 'drain' listener

@@ -153,7 +153,7 @@ jobs:
         run: |
           node <<'NODE'
           const { execFileSync } = require('node:child_process');
-          const { appendFileSync, existsSync, readFileSync, readdirSync } = require('node:fs');
+          const { appendFileSync, existsSync, readFileSync, readdirSync, statSync } = require('node:fs');
           const { join } = require('node:path');
 
           const api = `repos/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}/jobs?per_page=100`;
@@ -165,15 +165,31 @@ jobs:
             .map((job) => ({ shard: Number(job.match[1]), conclusion: job.conclusion, url: job.html_url }))
             .sort((a, b) => a.shard - b.shard);
 
-          // The failure reports the failed shards uploaded (scripts/ci-failure-reporter.mjs).
+          // The failure reports the failed shards uploaded. scripts/ci-test.mjs names one file per task
+          // ("<index>-<task>.json"), scripts/ci-failure-reporter.mjs writes it as
+          // { tests: [{ file, name, fullName }], other: [string] }, and download-artifact nests the files under a
+          // directory named after the artifact. Read every JSON in a shard's directory: one per task that ran.
           const reports = new Map();
           if (existsSync(process.env.REPORTS)) {
             for (const artifact of readdirSync(process.env.REPORTS)) {
-              const file = join(process.env.REPORTS, artifact, 'report.json');
-              if (!existsSync(file)) continue;
-              const shard = Number(artifact.replace('canary-corpus-failure-', ''));
-              const report = JSON.parse(readFileSync(file, 'utf8'));
-              reports.set(shard, report);
+              const directory = join(process.env.REPORTS, artifact);
+              if (!statSync(directory).isDirectory()) continue;
+              const tests = [];
+              const other = [];
+              let files = 0;
+              for (const file of readdirSync(directory).sort()) {
+                if (!file.endsWith('.json')) continue;
+                files++;
+                try {
+                  const report = JSON.parse(readFileSync(join(directory, file), 'utf8'));
+                  tests.push(...(report.tests ?? []));
+                  other.push(...(report.other ?? []));
+                } catch {
+                  other.push(`${file}: unreadable failure report`);
+                }
+              }
+              // A directory with no task report (the shard was killed before writing one) is "no report".
+              if (files > 0) reports.set(Number(artifact.replace('canary-corpus-failure-', '')), { tests, other });
             }
           }
 
@@ -190,6 +206,7 @@ jobs:
           );
           const programs = [];
           const other = [];
+          const seen = new Set();
           for (const shard of shards) {
             const report = reports.get(shard.shard);
             const tests = report?.tests ?? [];
@@ -203,7 +220,21 @@ jobs:
                   ? '0'
                   : 'no report';
             lines.push(`| ${shard.shard}/20 | ${shard.conclusion} | ${detail} | [job log](${shard.url}) |`);
-            for (const test of tests) programs.push(`- shard ${shard.shard}/20: \`${test.fullName || test.name}\` (${test.file})`);
+            for (const test of tests) {
+              const label = test.fullName || test.name || test.file;
+              const key = `${test.file}\0${label}`;
+              // A test can appear in two tasks' reports; list it once.
+              if (seen.has(key)) continue;
+              seen.add(key);
+              // An error that names this program ends its line; the rest are listed below.
+              const matched = errors.findIndex((error) => error.includes(label));
+              const error = matched === -1 ? undefined : errors.splice(matched, 1)[0];
+              // The reporter writes "file > suite > test: message"; show the message after the program's name.
+              const message = error === undefined
+                ? undefined
+                : error.slice(error.indexOf(label) + label.length).replace(/^:\s*/, '');
+              programs.push(`- shard ${shard.shard}/20: \`${label}\` (${test.file})${message ? `: ${message}` : ''}`);
+            }
             for (const error of errors) other.push(`- shard ${shard.shard}/20: ${error}`);
           }
           if (programs.length > 0) lines.push('', '### Failing corpus programs', '', ...programs);

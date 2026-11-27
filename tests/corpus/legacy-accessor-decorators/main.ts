@@ -68,6 +68,19 @@ class E {
   }
 }
 
+class P {
+  private v = 0;
+
+  @acc("pair")
+  get pair(): number {
+    return this.v;
+  }
+
+  set pair(@param("sp") n: number) {
+    this.v = n;
+  }
+}
+
 const c = new C();
 console.log("read", c.x, c.y);
 c.x = 7;
@@ -77,3 +90,6 @@ console.log("doubled", new D().z);
 const e = new E();
 e.e = 3;
 console.log("setter-param", e.e);
+const p = new P();
+p.pair = 4;
+console.log("pair", p.pair);

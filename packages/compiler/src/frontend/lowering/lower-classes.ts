@@ -2562,6 +2562,49 @@ export function collectClassShapeInner(
           }
           return found;
         };
+        // tsc decorates an accessor PROPERTY once, at its first declaration:
+        // a getter's member decorator and a setter's parameter decorators
+        // form one array (member decorators first, then __param entries).
+        const accessorGroups = new Map<
+          string,
+          {
+            first: ts.GetAccessorDeclaration | ts.SetAccessorDeclaration;
+            decorators: ts.Decorator[];
+            parameters: LegacyParameterDecoration[];
+          }
+        >();
+        if (legacyDecorators)
+          for (const member of decl.members.nodes) {
+            if (!ts.isGetAccessorDeclaration(member) && !ts.isSetAccessorDeclaration(member))
+              continue;
+            if (
+              ts.getModifiers(member)?.some((m) => m.kind === ts.SyntaxKind.StaticKeyword) === true
+            )
+              continue;
+            const name =
+              ts.isIdentifier(member.name) ||
+              ts.isStringLiteral(member.name) ||
+              ts.isNumericLiteral(member.name)
+                ? member.name.text
+                : null;
+            if (name === null) continue;
+            const decorators = decoratorNodesOf(member);
+            const parameters = ts.isSetAccessorDeclaration(member)
+              ? parameterDecoratorsOf(member)
+              : [];
+            if (decorators.length === 0 && parameters.length === 0) continue;
+            const group = accessorGroups.get(name);
+            if (group === undefined)
+              accessorGroups.set(name, {
+                first: member,
+                decorators: [...decorators],
+                parameters: [...parameters],
+              });
+            else {
+              group.decorators.push(...decorators);
+              group.parameters.push(...parameters);
+            }
+          }
         if (legacyDecorators) {
           // Constructor parameter decorators apply with the class decorations
           // (`__param(i, d)` entries on the class's `__decorate`), even when
@@ -2660,18 +2703,19 @@ export function collectClassShapeInner(
               !staticMember &&
               literalName
             ) {
+              const name = (member.name as ts.Identifier | ts.StringLiteral | ts.NumericLiteral)
+                .text;
+              const group = accessorGroups.get(name);
+              // One event per property, at its FIRST declaration; the other
+              // half only contributes its decorators/parameters to the group.
+              if (group === undefined || group.first !== member) continue;
               legacyInstanceMembers.push({
                 kind: "accessor",
-                member,
-                decorators,
-                name: (member.name as ts.Identifier | ts.StringLiteral | ts.NumericLiteral).text,
+                member: group.first,
+                decorators: group.decorators,
+                name,
                 static: false,
-                // A setter's parameter decorators ride the accessor's
-                // decoration array as `__param` entries (a getter has no
-                // parameters).
-                parameters: ts.isSetAccessorDeclaration(member)
-                  ? parameterDecoratorsOf(member)
-                  : [],
+                parameters: group.parameters,
               });
               continue;
             }
@@ -6863,6 +6907,28 @@ function lowerLegacyMemberDecorations(lowerer: Lowerer, info: ClassInfo): IrStmt
   if (members === undefined || members.length === 0 || info.decl === null) return [];
   const loc = locOf(info.decl);
   const stmts: IrStmt[] = [];
+  const runtimeRootedAncestor = (start: ClassInfo | null): boolean => {
+    for (let current = start; current; current = current.base)
+      if (
+        current.def.runtime ||
+        current.builtinError ||
+        current.builtinEmitter ||
+        current.builtinStream
+      )
+        return true;
+    return false;
+  };
+  if (runtimeRootedAncestor(info)) {
+    // Instance reads and calls on a class rooted in a runtime-provided
+    // built-in answer from the compiled/rooted class, not from a reflected
+    // prototype, so a decorator-installed replacement would never run.
+    const first = members[0]!;
+    lowerer.unsupported(
+      "SC1090",
+      first.decorators[0] ?? first.parameters[0]!.decorators[0]!,
+      `legacy ${first.kind} decorators on a class rooted in a built-in error ('${info.def.jsName ?? info.def.name}' instances answer from the runtime class, so a decorator-installed replacement would not run)`,
+    );
+  }
   try {
     let prototypeLocal: string | null = null;
     const prototypeTarget = (at: SrcLoc): string => {

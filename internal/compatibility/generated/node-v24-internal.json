@@ -126069,6 +126069,8 @@
           "tests/corpus/port-listener-order-cycle.mjs",
           "tests/corpus/port-listeners-typed.ts",
           "tests/corpus/port-post-message-return.mjs",
+          "tests/corpus/port-post-message-void-result.ts",
+          "tests/corpus/port-post-message-void-value.mjs",
           "tests/corpus/port-post-self-warning.mjs",
           "tests/corpus/port-transfer-detached.mjs",
           "tests/corpus/worker-cpu-usage-quiet/main.ts",
@@ -126473,7 +126475,9 @@
           "tests/corpus/port-post-message-return.mjs",
           "tests/corpus/port-transfer-detached.mjs",
           "tests/corpus/port-post-self-warning.mjs",
-          "tests/corpus/port-clone-error-text.mjs"
+          "tests/corpus/port-clone-error-text.mjs",
+          "tests/corpus/port-post-message-void-result.ts",
+          "tests/corpus/port-post-message-void-value.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -126847,7 +126851,9 @@
           "tests/corpus/port-post-message-return.mjs",
           "tests/corpus/port-transfer-detached.mjs",
           "tests/corpus/port-post-self-warning.mjs",
-          "tests/corpus/port-clone-error-text.mjs"
+          "tests/corpus/port-clone-error-text.mjs",
+          "tests/corpus/port-post-message-void-result.ts",
+          "tests/corpus/port-post-message-void-value.mjs"
         ]
       },
       "anchorSource": "exact"

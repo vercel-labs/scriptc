@@ -44,6 +44,7 @@ import { readFileSync, statSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { Node, SourceFile } from "./ast-types.js";
 import type { Ts7DiagnosticData } from "./session-schema.generated.js";
+import { Ts7FrameLimitError } from "./rpc-wire.js";
 import { checkedFileDiagnosticDataBatched, type Ts7SessionProgram } from "./session.js";
 import { NodeFlags, SyntaxKind } from "./enums.js";
 import { walkPreorder } from "./ast.js";
@@ -348,9 +349,11 @@ function reuse(
   // The full check, as before. Its answers for the supplied files are stored
   // when it reports no global diagnostics and the program's scripts declare
   // none of the supplied files' globals (so nothing of the program reached
-  // what those files report).
+  // what those files report). A cold store on a large program can push the
+  // one full-check response over the channel frame limit; the batched
+  // checked-file path answers the same diagnostics then.
   const global = program.diagnosticData("getGlobalDiagnostics");
-  const semantic = program.diagnosticData("getSemanticDiagnostics");
+  const semantic = fullCheckSemantics(program, fileNames);
   // A server that cannot check only some files could never use the answer.
   if (global.length === 0 && stored === null && program.checkedFileDiagnosticData([]) !== null) {
     const names = scripts.length === 0 ? null : suppliedGlobalNames(libs, sourceFile);
@@ -365,6 +368,24 @@ function reuse(
     }
   }
   return { semantic, global };
+}
+
+/** getSemanticDiagnostics for the full check, or the batched checked-file
+ * answer when its one response is over the channel limit (a cold store's
+ * full check of a large program). */
+function fullCheckSemantics(
+  program: Ts7SessionProgram,
+  fileNames: readonly string[],
+): Ts7DiagnosticData[] {
+  try {
+    return program.diagnosticData("getSemanticDiagnostics");
+  } catch (error) {
+    if (!(error instanceof Ts7FrameLimitError)) throw error;
+    const checked = checkedFileDiagnosticDataBatched(program, fileNames);
+    if (checked === null) throw error;
+    const byFile = new Map(fileNames.map((name, index) => [name, checked.files[index] ?? []]));
+    return inFileOrder(byFile);
+  }
 }
 
 /** Stores an answer: the supplied files' diagnostics, and their global names

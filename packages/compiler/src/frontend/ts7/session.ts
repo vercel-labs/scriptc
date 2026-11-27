@@ -575,7 +575,6 @@ export class Ts7SessionProgram {
   }
 }
 
-
 /** Files named in one getDiagnosticsOfCheckedFiles request. The answer is
  * one frame, and a large program's answer can exceed the channel limit, so
  * the files are asked for in batches of this size. */
@@ -594,7 +593,7 @@ export function checkedFileDiagnosticDataBatched(
   const out: Ts7DiagnosticData[][] = new Array(files.length);
   const seen = new Set<string>();
   const global: Ts7DiagnosticData[] = [];
-  for (let start = 0; start < files.length; ) {
+  for (let start = 0; start < files.length;) {
     let end = Math.min(start + DIAGNOSTIC_FILES_PER_REQUEST, files.length);
     let answer: Ts7CheckedFileDiagnosticData | null;
     for (;;) {
@@ -609,7 +608,8 @@ export function checkedFileDiagnosticDataBatched(
       }
     }
     if (answer === null) return null;
-    for (let index = 0; index < end - start; index++) out[start + index] = answer.files[index] ?? [];
+    for (let index = 0; index < end - start; index++)
+      out[start + index] = answer.files[index] ?? [];
     for (const diagnostic of answer.global) {
       const key = `${diagnostic.fileName ?? ""}:${diagnostic.pos}:${diagnostic.end}:${diagnostic.code}:${diagnostic.category}:${diagnostic.text}`;
       if (seen.has(key)) continue;

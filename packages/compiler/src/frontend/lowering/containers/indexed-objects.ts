@@ -1472,6 +1472,10 @@ export function lowerObjectAssignIndexShape(
     fromId: string;
     fields: { name: string; type: IrType; lift: WidthLift | "dyn" }[];
     ovfLift: (WidthLift | "dyn") | null;
+    /** An OPTIONAL source (`Record<string, T> | undefined`): the value is
+     * held at this union and the merge runs only on the record arm — Node's
+     * rule that Object.assign SKIPS a nullish source. */
+    optional?: { unionId: string; tag: number; unionT: IrType };
   }
   /** A source the frontend could only map to the checked-dynamic tree (an
    * `unknown`/`any` argument, a value whose type it cannot model): nothing
@@ -1498,7 +1502,28 @@ export function lowerObjectAssignIndexShape(
         ) && to.fields.every((f) => typeEquals(f.type, tIv));
   const plans: SourcePlan[] = [];
   for (const argNode of call.arguments.nodes.slice(1)) {
-    const srcIr = lowerer.mapTypeOf(lowerer.typeOf(argNode));
+    let srcIr = lowerer.mapTypeOf(lowerer.typeOf(argNode));
+    // A source the checker types `Record | undefined` (an optional override
+    // record): Node's Object.assign skips a nullish source, so the merge
+    // runs only on the record arm — the plan carries the union and tag and
+    // the call site guards it.
+    let optional: RecordSourcePlan["optional"];
+    if (srcIr?.kind === "union") {
+      const def = lowerer.unions.get(srcIr.unionId);
+      const recordArms = def?.arms.filter((arm) => arm.kind === "record") ?? [];
+      if (
+        def !== undefined &&
+        recordArms.length === 1 &&
+        def.arms.every((arm) => arm.kind === "record" || isUnitType(arm))
+      ) {
+        optional = {
+          unionId: srcIr.unionId,
+          tag: def.arms.indexOf(recordArms[0]!),
+          unionT: srcIr,
+        };
+        srcIr = recordArms[0]!;
+      }
+    }
     if (srcIr?.kind === "dyn") {
       // The target keeps its typed representation while the checker's
       // `T & U` answer for a dyn `U` is some other type, so only the
@@ -1529,7 +1554,7 @@ export function lowerObjectAssignIndexShape(
       ovfLift = slotLift(from.indexValue);
       if (ovfLift === null) return null;
     }
-    plans.push({ kind: "record", fromId: srcIr.shapeId, fields, ovfLift });
+    plans.push({ kind: "record", fromId: srcIr.shapeId, fields, ovfLift, ...(optional ? { optional } : {}) });
   }
   const helperFor = (plan: RecordSourcePlan): string => {
     const key = `assign:${targetIr.shapeId}:${plan.fromId}`;
@@ -1773,6 +1798,56 @@ export function lowerObjectAssignIndexShape(
   for (let i = 0; i < plans.length; i++) {
     const plan = plans[i]!;
     const argNode = call.arguments.nodes[i + 1]!;
+    if (plan.kind === "record" && plan.optional !== undefined) {
+      // `Object.assign(target, maybe, ...)`: the source evaluates once and
+      // the merge runs only on the record arm; the nullish arm leaves the
+      // target untouched (Node skips it).
+      const { unionId, tag, unionT } = plan.optional;
+      const target = lowerer.declareHiddenLocal("%assignTarget", targetIr);
+      const source = lowerer.declareHiddenLocal("%assignSource", unionT);
+      const targetRef = (): IrExpr => varRef(target.id, targetIr, loc);
+      const sourceRef = (): IrExpr => varRef(source.id, unionT, loc);
+      const narrowed: IrExpr = {
+        kind: "unionNarrow",
+        unionId,
+        tag,
+        value: sourceRef(),
+        type: { kind: "record", shapeId: plan.fromId },
+        loc,
+      };
+      acc = {
+        kind: "seqExpr",
+        stmts: [
+          { kind: "varDecl", localId: target.id, init: acc, loc },
+          { kind: "varDecl", localId: source.id, init: lowerer.lowerExpr(argNode), loc },
+        ],
+        result: {
+          kind: "ternary",
+          cond: {
+            kind: "unionIsTag",
+            unionId,
+            tag,
+            negated: false,
+            value: sourceRef(),
+            type: BOOL,
+            loc,
+          },
+          then: {
+            kind: "call",
+            callee: helperFor(plan),
+            args: [targetRef(), narrowed],
+            type: targetIr,
+            loc,
+          },
+          else_: targetRef(),
+          type: targetIr,
+          loc,
+        },
+        type: targetIr,
+        loc,
+      };
+      continue;
+    }
     const src: IrExpr =
       plan.kind === "dyn"
         ? lowerer.coerceToExpected(lowerer.lowerExpr(argNode), DYN)

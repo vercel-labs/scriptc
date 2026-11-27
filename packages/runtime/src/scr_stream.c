@@ -9720,6 +9720,25 @@ static const ScrHandleStreamHooks scr_handle_stream_hooks_impl = {
   scr_handle_stream_get,
 };
 
+/* [Symbol.asyncIterator]() on a stream seen as a value: the stream's own
+ * iterator, a fresh one per call, as Node's Readable answers it. */
+static ScrDyn *scr_stream_async_iter_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)args;
+  (void)argc;
+  ScrStream *s = scr_box_get_ref(closure->caps[0]); /* +1 */
+  ScrDyn *iterator = NULL;
+  /* The iterator unit's checked-dynamic dispatch, with no options: Node's
+   * defaults for a fresh iterator. A program that links no iterator unit
+   * answers the same not-supported error `iterator()` does. */
+  if (scr_stream_iterator_hook) iterator = scr_stream_iterator_hook(s, NULL, 0);
+  else {
+    static const char message[] = "'readable.iterator' has no native lowering in this program";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+  }
+  scr_stream_release(s);
+  return iterator;
+}
+
 ScrDyn *scr_stream_dyn_view(ScrStream *stream) {
   ScrDyn *view = scr_dyn_new_obj();
   ScrDyn *prototype = scr_dyn_new_obj();
@@ -9751,6 +9770,27 @@ ScrDyn *scr_stream_dyn_view(ScrStream *stream) {
     scr_dyn_obj_set(prototype, "close", 5,
         scr_dyn_new_func(cb, scr_stream_view_call, 0, "native stream method", "close"));
     stream->st->native_ops->view(stream, view);
+  }
+  if (stream->st->has_r) {
+    /* The well-known async-iterator member, on the prototype as Node's
+     * Readable.prototype carries it (a stream with no readable side has
+     * none). The dyn core keeps Symbol.asyncIterator once the symbol unit
+     * makes it; the unit's hook makes it here when a member read came first,
+     * so this unit refers to no symbol function. A program without the
+     * symbol unit cannot name the member and gets none. */
+    ScrDyn *key = scr_dyn_async_iterator_symbol_value(); /* +1, or NULL */
+    if (key == NULL && scr_sym_well_known_make_hook != NULL) {
+      scr_sym_well_known_make_hook("asyncIterator", 13);
+      key = scr_dyn_async_iterator_symbol_value();
+    }
+    if (key != NULL) {
+      ScrDyn *method = scr_dyn_new_func(
+          scr_stream_done_new(stream, (void *)&scr_stream_async_iter_call),
+          scr_stream_async_iter_call, 0, "native stream method", "[Symbol.asyncIterator]");
+      scr_dyn_key_set_computed(prototype, key, method);
+      scr_dyn_release(method);
+      scr_dyn_release(key);
+    }
   }
   ScrDyn *attached = scr_dyn_set_prototype(view, prototype);
   scr_dyn_release(attached);

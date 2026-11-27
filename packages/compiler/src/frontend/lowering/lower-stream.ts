@@ -8763,6 +8763,50 @@ export function lowerStreamMethodCall(
   return null;
 }
 
+/** `stream[Symbol.asyncIterator]()` on a receiver the checker types as a
+ * readable: Node's Readable.prototype answers the stream's own iterator,
+ * `iterator()` with its defaults, so the call lowers to the same runtime
+ * entry that spelling does — a fresh iterator per call. Null for other
+ * element-access calls; a class that declares the member itself is the
+ * caller's earlier case, and a dynamically typed receiver reads the member
+ * through the runtime stream view. */
+export function lowerStreamSymbolIteratorCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+): IrExpr | null {
+  const access = call.expression;
+  if (!ts.isElementAccessExpression(access) || access.questionDotToken || call.questionDotToken) {
+    return null;
+  }
+  let key = access.argumentExpression;
+  while (ts.isParenthesizedExpression(key)) key = key.expression;
+  if (!ts.isPropertyAccessExpression(key)) return null;
+  if (lowerer.stdlibGlobalMember(key, "Symbol") !== "asyncIterator") return null;
+  let classT: IrType | null;
+  try {
+    classT = lowerer.mapTypeOf(lowerer.typeOf(access.expression));
+  } catch {
+    return null;
+  }
+  if (classT?.kind !== "object") return null;
+  const info = lowerer.classes.get(classT.className);
+  const sides = streamSidesOf(lowerer, info);
+  if (sides !== "r" && sides !== "rw") return null;
+  // Node's member takes no arguments, and iterator(options) would read one
+  // as its options: only the argument-less call has this lowering.
+  if (call.arguments.nodes.length > 0) {
+    lowerer.noLowering("a stream's [Symbol.asyncIterator] with arguments", call);
+  }
+  const loc = locOf(call);
+  return {
+    kind: "libCall",
+    fn: "readable.iterator",
+    args: [streamReceiverExpr(lowerer, access.expression), boolLit(true, loc)],
+    type: DYN,
+    loc,
+  };
+}
+
 /** `stream[Symbol.asyncDispose]()` on a receiver the checker types as a
  * stream class: Node's Readable.prototype and Writable.prototype define
  * it (a Duplex inherits Readable's). Null for other element-access calls;

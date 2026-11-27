@@ -11354,6 +11354,35 @@ function lowerHttpReqMethodCall(
       loc,
     };
   }
+  if (name === "destroy" && args.length === 1) {
+    // destroy(err): the message reports err to its 'error' listeners on a
+    // later sweep, before 'close'; destroy(undefined) and destroy(null) are
+    // destroy(), as in Node.
+    requireStatementPosition(lowerer, call, "req.destroy(err)");
+    const receiver = coerceToHandle(lowerer, access.expression, HTTPREQ_T);
+    const arg = args[0]!;
+    if (
+      arg.kind === ts.SyntaxKind.NullKeyword ||
+      (ts.isIdentifier(arg) && arg.text === "undefined")
+    ) {
+      return { kind: "libCall", fn: "http.reqDestroy", args: [receiver], type: VOID, loc };
+    }
+    const err = lowerer.lowerExpr(arg);
+    if (err.type.kind !== "object") {
+      lowerer.noLowering(
+        `destroy with a '${lowerer.fmt(err.type)}' argument`,
+        args[0]!,
+        "pass an Error value, or call destroy() without one",
+      );
+    }
+    return {
+      kind: "libCall",
+      fn: "http.reqDestroyError",
+      args: [receiver, lowerer.coerceToExpected(err, ERROR_T)],
+      type: VOID,
+      loc,
+    };
+  }
   if (name === "resume" || name === "pause" || name === "destroy") {
     requireStatementPosition(lowerer, call, `req.${name}()`);
     if (args.length !== 0) {
@@ -12617,6 +12646,35 @@ function lowerHttpResMethodCall(
       kind: "libCall",
       fn: "http.resRemoveHeader",
       args: [receiver, header],
+      type: VOID,
+      loc,
+    };
+  }
+  if (name === "destroy" && args.length === 1) {
+    // destroy(err): the teardown is the same as destroy(); Node reports the
+    // error nowhere on the response. destroy(undefined) and destroy(null)
+    // are destroy(), as in Node.
+    requireStatementPosition(lowerer, call, "res.destroy(err)");
+    const receiver = coerceToHandle(lowerer, access.expression, HTTPRES_T);
+    const arg = args[0]!;
+    if (
+      arg.kind === ts.SyntaxKind.NullKeyword ||
+      (ts.isIdentifier(arg) && arg.text === "undefined")
+    ) {
+      return { kind: "libCall", fn: "http.resDestroy", args: [receiver], type: VOID, loc };
+    }
+    const err = lowerer.lowerExpr(arg);
+    if (err.type.kind !== "object") {
+      lowerer.noLowering(
+        `destroy with a '${lowerer.fmt(err.type)}' argument`,
+        args[0]!,
+        "pass an Error value, or call destroy() without one",
+      );
+    }
+    return {
+      kind: "libCall",
+      fn: "http.resDestroyError",
+      args: [receiver, lowerer.coerceToExpected(err, ERROR_T)],
       type: VOID,
       loc,
     };

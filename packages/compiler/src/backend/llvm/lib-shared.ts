@@ -2089,6 +2089,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "http.reqTrailerPairs": "scr_http_req_trailer_pairs",
   "http.reqPipeRes": "scr_http_req_pipe_res",
   "http.reqPipeClient": "scr_http_req_pipe_client",
+  "http.reqDestroyError": "scr_http_req_destroy_error",
+  "http.resDestroyError": "scr_http_res_destroy_error",
   "http.reqPipeSock": "scr_http_req_pipe_sock",
   "http.reqResume": "scr_http_req_resume",
   "http.reqPause": "scr_http_req_pause",

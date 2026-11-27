@@ -283,6 +283,9 @@ struct ScrHttpReq {
   struct ScrDyn *headers_view;
   bool sock_held; /* this request stopped its socket's reads */
   ScrNetLs aborted_ls; /* req.on('aborted') — the h2 compat event */
+  /* req.destroy(err): the error the message reports to its 'error'
+   * listeners (Node emits the given error, not the teardown's) (+1). */
+  ScrError *destroy_error;
 };
 
 #ifdef SCR_RC_AUDIT
@@ -413,6 +416,7 @@ void scr_http_req_release(ScrHttpReq *r) {
     scr_net_ls_drop(&r->close_ls);
     scr_net_ls_drop(&r->timeout_ls);
     scr_net_ls_drop(&r->aborted_ls);
+    if (r->destroy_error != NULL) scr_error_release(r->destroy_error);
     scr_http_res_release(r->pipe_res);
     scr_http_client_release(r->pipe_client);
     scr_net_sock_release(r->pipe_sock);
@@ -3475,7 +3479,8 @@ enum {
   SCR_HTTP_EMIT_CLIENT_WAE = 12, /* ScrHttpClientReq: a write after end() */
   SCR_HTTP_EMIT_CLIENT_WCB = 13, /* ScrHttpClientReq: write(chunk, cb) callbacks */
   SCR_HTTP_EMIT_CLIENT_WAE_CB = 14, /* ScrHttpWaeCb: the late write callback, ahead of WAE */
-  SCR_HTTP_EMIT_CLIENT_DRAIN = 15 /* ScrHttpClientReq: 'drain', off the write stack */
+  SCR_HTTP_EMIT_CLIENT_DRAIN = 15, /* ScrHttpClientReq: 'drain', off the write stack */
+  SCR_HTTP_EMIT_REQ_DESTROY_ERROR = 16 /* ScrHttpReq: destroy(err)'s 'error' */
 };
 
 typedef struct {
@@ -3548,7 +3553,8 @@ static void scr_http_emit_release(ScrHttpEmit *e) {
   case SCR_HTTP_EMIT_RES_FINISH: scr_http_res_release((ScrHttpRes *)e->h); break;
   case SCR_HTTP_EMIT_REQ_CLOSE:
   case SCR_HTTP_EMIT_REQ_DRAIN:
-  case SCR_HTTP_EMIT_REQ_ABORTED: scr_http_req_release((ScrHttpReq *)e->h); break;
+  case SCR_HTTP_EMIT_REQ_ABORTED:
+  case SCR_HTTP_EMIT_REQ_DESTROY_ERROR: scr_http_req_release((ScrHttpReq *)e->h); break;
   case SCR_HTTP_EMIT_CLIENT_CLOSE:
   case SCR_HTTP_EMIT_CLIENT_SOCKET:
   case SCR_HTTP_EMIT_CLIENT_WCB:
@@ -3584,6 +3590,24 @@ static void scr_http_queue_req_close(ScrHttpReq *req) {
 
 static void scr_http_queue_req_aborted(ScrHttpReq *req) {
   scr_http_emit_push(SCR_HTTP_EMIT_REQ_ABORTED, scr_http_req_retain(req));
+}
+
+/* req.destroy(err): the teardown runs now, and the message reports the given
+ * error to its 'error' listeners on a later sweep, before 'close' (Node's
+ * deferred stream destroy). */
+void scr_http_req_destroy_error(ScrHttpReq *r, ScrError *err /*borrowed*/) {
+  if (r->destroy_error == NULL) r->destroy_error = scr_error_retain(err);
+  if (!r->destroyed && !r->close_emitted && r->err_ls.n != 0)
+    scr_http_emit_push(SCR_HTTP_EMIT_REQ_DESTROY_ERROR, scr_http_req_retain(r));
+  scr_http_req_destroy(r);
+}
+
+/* res.destroy(err): Node reports a ServerResponse's destroy error nowhere on
+ * the response (its 'error' listeners do not fire); the connection teardown
+ * and the deferred 'close' are the whole observable effect. */
+void scr_http_res_destroy_error(ScrHttpRes *r, ScrError *err /*borrowed*/) {
+  (void)err;
+  scr_http_res_destroy(r);
 }
 
 /* The end(cb) deferral: 'finish'-time callbacks fire one sweep after the
@@ -3747,7 +3771,8 @@ static ScrAlsCtx *scr_http_emit_ctx(const ScrHttpEmit *e) {
   case SCR_HTTP_EMIT_RES_WCB: return ((ScrHttpRes *)e->h)->als;
   case SCR_HTTP_EMIT_REQ_CLOSE:
   case SCR_HTTP_EMIT_REQ_DRAIN:
-  case SCR_HTTP_EMIT_REQ_ABORTED: return ((ScrHttpReq *)e->h)->als;
+  case SCR_HTTP_EMIT_REQ_ABORTED:
+  case SCR_HTTP_EMIT_REQ_DESTROY_ERROR: return ((ScrHttpReq *)e->h)->als;
   case SCR_HTTP_EMIT_CLIENT_WAE_CB: return scr_http_client_ctx(((ScrHttpWaeCb *)e->h)->c);
   default: return scr_http_client_ctx((struct ScrHttpClientReq *)e->h);
   }
@@ -3962,6 +3987,20 @@ static void scr_http_proto_sweep(void) {
       }
       /* the message's signal follows 'aborted', as Node's does */
       scr_http_req_abort_signal(req);
+      break;
+    }
+    case SCR_HTTP_EMIT_REQ_DESTROY_ERROR: {
+      ScrHttpReq *req = (ScrHttpReq *)e.h;
+      /* Node's stream destroy reports the error destroy() was given to the
+       * message's own 'error' listeners, before 'close'. A message with no
+       * listener reports it nowhere: the teardown's 'close' is all. */
+      if (!req->close_emitted && req->destroy_error != NULL && req->err_ls.n != 0) {
+        ScrError *saved = scr_event_error_payload;
+        scr_event_error_payload = req->destroy_error;
+        scr_net_fire_err_this(&req->err_ls, req->destroy_error->message, req,
+                              SCR_DYNH_HTTP_REQ);
+        scr_event_error_payload = saved;
+      }
       break;
     }
     case SCR_HTTP_EMIT_CLIENT_CLOSE:

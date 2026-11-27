@@ -280,6 +280,12 @@ export const httpSignatures = defineLibFnSignatures({
   "http.reqResume": { argTypes: [HTTPREQ_T], result: VOID },
   "http.reqPause": { argTypes: [HTTPREQ_T], result: VOID },
   "http.reqDestroy": { argTypes: [HTTPREQ_T], result: VOID },
+  /** req.destroy(err): the teardown runs now; the given error reaches the
+   * message's 'error' listeners on a later sweep, before 'close'. */
+  "http.reqDestroyError": {
+    argTypes: [HTTPREQ_T, { kind: "object", className: "%Error" }],
+    result: VOID,
+  },
   "http.reqOnError": { argTypes: [HTTPREQ_T, null, BOOL], result: VOID },
   "http.reqOnClose": {
     argTypes: [HTTPREQ_T, { kind: "func", params: [], ret: VOID }, BOOL],
@@ -298,6 +304,12 @@ export const httpSignatures = defineLibFnSignatures({
   "http.resDestroyed": { argTypes: [HTTPRES_T], result: BOOL },
   "http.reqComplete": { argTypes: [HTTPREQ_T], result: BOOL },
   "http.resDestroy": { argTypes: [HTTPRES_T], result: VOID },
+  /** res.destroy(err): the same teardown; Node reports the error nowhere on
+   * the response. */
+  "http.resDestroyError": {
+    argTypes: [HTTPRES_T, { kind: "object", className: "%Error" }],
+    result: VOID,
+  },
   "http.resOnClose": {
     argTypes: [HTTPRES_T, { kind: "func", params: [], ret: VOID }, BOOL],
     result: VOID,

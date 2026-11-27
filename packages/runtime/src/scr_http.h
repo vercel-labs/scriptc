@@ -356,9 +356,15 @@ void scr_http_res_on_write_flush(ScrHttpRes *r, ScrClosure *cb /*moves*/);
 /* req.setEncoding(enc) — the socket twin's contract; may throw. */
 void scr_http_req_set_encoding(ScrHttpReq *r, ScrStr *enc /*borrowed*/);
 void scr_http_req_destroy(ScrHttpReq *r);
+/* req.destroy(err): the teardown runs now; the given error reaches the
+ * message's 'error' listeners on a later sweep, before 'close'. */
+void scr_http_req_destroy_error(ScrHttpReq *r, ScrError *err /*borrowed*/);
 void scr_http_req_on_error(ScrHttpReq *r, ScrClosure *cb /*moves*/, ScrChildErrFn fn, bool once);
 void scr_http_req_on_close(ScrHttpReq *r, ScrClosure *cb /*moves*/, bool once);
 void scr_http_res_destroy(ScrHttpRes *r);
+/* res.destroy(err): the same teardown; Node reports the error nowhere on the
+ * response, so its 'error' listeners do not fire. */
+void scr_http_res_destroy_error(ScrHttpRes *r, ScrError *err /*borrowed*/);
 void scr_http_res_on_close(ScrHttpRes *r, ScrClosure *cb /*moves*/, bool once);
 void scr_http_res_write_head_pairs(ScrHttpRes *r, double status, ScrArr *pairs /*borrowed*/);
 /* writeHead(status, object): parallel names and dyn values (string, number

@@ -1132,17 +1132,37 @@ static bool ws_read_field(const ScrDyn *object, const char *name, ScrStr **out) 
   return true;
 }
 
-/* A checked-dynamic value's ordinary object view: a typed reference (a
- * compiled record held in an untyped array or slot) materializes to its
- * own-field snapshot. NULL when the value is not a record; `*snapshot` then
- * holds the +1 view the caller releases. */
+/* Whether the value is an object a WebIDL dictionary conversion reads: every
+ * object kind answers the member gets (a native URL through its class
+ * getters, a Proxy through its traps, an array or function through
+ * Object.prototype), while a primitive does not. */
+static bool ws_is_record_input(const ScrDyn *value) {
+  switch (value->kind) {
+  case SCR_DYN_OBJ:
+  case SCR_DYN_ARR:
+  case SCR_DYN_BYTES:
+  case SCR_DYN_FUNC:
+  case SCR_DYN_HANDLE:
+  case SCR_DYN_PROMISE:
+  case SCR_DYN_PROXY:
+  case SCR_DYN_TYPED_REF:
+    return true;
+  default:
+    return false;
+  }
+}
+
+/* The dictionary's view: a typed reference (a compiled record held in an
+ * untyped array or slot) materializes to its own-field snapshot; every other
+ * object answers the gets itself. NULL when the value is not an object;
+ * `*snapshot` then holds the +1 view the caller releases. */
 static ScrDyn *ws_object_view(ScrDyn *value, ScrDyn **snapshot) {
   *snapshot = NULL;
   if (value->kind == SCR_DYN_TYPED_REF) {
     *snapshot = scr_dyn_typed_ref_materialize(value);
     return *snapshot;
   }
-  return value->kind == SCR_DYN_OBJ ? value : NULL;
+  return ws_is_record_input(value) ? value : NULL;
 }
 
 /* The URL standard's percent-encode sets for a special URL's components.
@@ -1809,7 +1829,7 @@ static bool ws_init_from_dyn(ScrDyn *input, ScrStr *base_text, bool *from_string
     if (base_text != NULL && !ws_apply_base(out, base_text)) return false;
     return true;
   }
-  if (input->kind == SCR_DYN_OBJ || input->kind == SCR_DYN_TYPED_REF) {
+  if (ws_is_record_input(input)) {
     ScrDyn *snapshot = NULL;
     ScrDyn *record = ws_object_view(input, &snapshot);
     if (record == NULL) return false;
@@ -1966,7 +1986,7 @@ static bool ws_input_from_dyn(ScrDyn *input, ScrStr *base_text, WsInput *out,
     scr_url_release(url);
     return true;
   }
-  if (input->kind == SCR_DYN_OBJ || input->kind == SCR_DYN_TYPED_REF) {
+  if (ws_is_record_input(input)) {
     WsInit init;
     memset(&init, 0, sizeof init);
     ScrDyn *snapshot = NULL;
@@ -2161,7 +2181,9 @@ static ScrDyn *ws_exec(ScrUrlPattern *pattern, ScrDyn *input, ScrDyn *base, bool
   if (ok && !test_only) {
     out = scr_dyn_new_obj();
     ScrDyn *inputs = scr_dyn_new_arr();
-    if (input->kind == SCR_DYN_OBJ) {
+    ScrDyn *copy_view = NULL;
+    ScrDyn *copy_src = ws_object_view(input, &copy_view);
+    if (copy_src != NULL) {
       /* Node's result carries the input record's coerced copy, keys in
        * alphabetical order and only the fields the input spelled. */
       static const char *const fields[9] = {"baseURL",  "hash",   "hostname", "password", "pathname",
@@ -2170,7 +2192,7 @@ static ScrDyn *ws_exec(ScrUrlPattern *pattern, ScrDyn *input, ScrDyn *base, bool
       bool ok_fields = true;
       for (size_t i = 0; i < 9 && ok_fields; i++) {
         ScrStr *text = NULL;
-        if (!ws_read_field(input, fields[i], &text)) {
+        if (!ws_read_field(copy_src, fields[i], &text)) {
           ok_fields = false;
           break;
         }
@@ -2193,6 +2215,7 @@ static ScrDyn *ws_exec(ScrUrlPattern *pattern, ScrDyn *input, ScrDyn *base, bool
         scr_str_release(search);
         scr_str_release(hash);
         ws_input_free(&in);
+        scr_dyn_release(copy_view);
         *threw = true;
         return NULL;
       }
@@ -2200,6 +2223,7 @@ static ScrDyn *ws_exec(ScrUrlPattern *pattern, ScrDyn *input, ScrDyn *base, bool
     } else {
       scr_dyn_arr_push(inputs, scr_dyn_retain(input));
     }
+    scr_dyn_release(copy_view);
     if (base_text != NULL) scr_dyn_arr_push(inputs, scr_dyn_new_str(base_text));
     /* Node's result keys, in alphabetical order. */
     static const char *const order[9] = {"hash",   "hostname", "inputs", "password", "pathname",

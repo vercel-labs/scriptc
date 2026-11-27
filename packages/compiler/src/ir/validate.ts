@@ -4968,6 +4968,20 @@ function validateFunction(
       }
       return true;
     }
+    if (e.fn === "http2.reqUrl") {
+      // Result is the interned `string | undefined` union (the :path-less
+      // CONNECT arm).
+      const def = e.type.kind === "union" ? unions.get(e.type.unionId) : undefined;
+      const ok =
+        def &&
+        def.arms.length === 2 &&
+        def.arms[0]!.kind === "string" &&
+        def.arms[1]!.kind === "undefinedT";
+      if (!ok) {
+        err(`libCall http2.reqUrl must return the 'string | undefined' union`, e.loc);
+      }
+      return true;
+    }
     if (e.fn === "net.sockRemoteAddress") {
       // Result is the interned `string | undefined` union (envGet's).
       const def = e.type.kind === "union" ? unions.get(e.type.unionId) : undefined;
@@ -6197,6 +6211,7 @@ function validateFunction(
       e.fn === "stream.duplexFromGen" ||
       e.fn === "stream.duplexFromGenNoSource" ||
       e.fn === "stream.duplexFromDyn" ||
+      e.fn === "stream.composeStageDyn" ||
       e.fn === "stream.duplexifyReadable" ||
       e.fn === "stream.duplexifyWritable" ||
       e.fn === "stream.duplexifyPair" ||
@@ -6298,6 +6313,7 @@ function validateFunction(
         e.fn === "stream.duplexFromGen" ||
         e.fn === "stream.duplexFromGenNoSource" ||
         e.fn === "stream.duplexFromDyn" ||
+        e.fn === "stream.composeStageDyn" ||
         e.fn === "stream.duplexFromAsyncFn" ||
         e.fn === "stream.duplexFromAsyncFnNoSource" ||
         e.fn === "stream.duplexFromGenSignal" ||

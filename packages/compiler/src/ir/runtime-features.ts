@@ -402,6 +402,7 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.duplexFromGen",
   "stream.duplexFromGenNoSource",
   "stream.duplexFromDyn",
+  "stream.composeStageDyn",
   "stream.duplexFromPromise",
   "stream.duplexFromAsyncFn",
   "stream.duplexFromAsyncFnNoSource",
@@ -503,6 +504,7 @@ const READABLE_DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.duplexFromGen",
   "stream.duplexFromGenNoSource",
   "stream.duplexFromDyn",
+  "stream.composeStageDyn",
   "stream.duplexFromPromise",
   "stream.duplexFromAsyncFn",
   "stream.duplexFromAsyncFnNoSource",
@@ -2902,6 +2904,8 @@ const RUNTIME_FEATURE_RULES = {
   fsExistsValue: rule({ fns: ["fs.existsSyncValue"] }),
   /** node:module's compile cache family: scr_module_cache.c. */
   moduleCompileCache: rule({ prefixes: ["module.compileCache"] }),
+  /** node:module's SourceMap class: scr_source_map.c. */
+  sourceMap: rule({ prefixes: ["sourceMap."] }),
   moduleClass: rule({ fns: ["module.ctor", "module.ctorPrototype"] }),
   /** The BYTE-data and checked-data spellings of the options write and of
    * fs.promises.writeFile: scr_fs_bytes_write.c, so a program that writes no
@@ -3012,6 +3016,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     fsFlags: false,
     fsExistsValue: false,
     moduleCompileCache: false,
+    sourceMap: false,
     moduleClass: false,
     fsBytesWrites: false,
     fsWatch: false,

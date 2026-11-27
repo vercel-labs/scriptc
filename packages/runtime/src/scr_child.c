@@ -8702,20 +8702,26 @@ static bool scr_spawn_kill_signal(const ScrDyn *value, int *signo) {
  * gets its call, and a listener added now belongs to the next emit. Each
  * entry is retained for the snapshot, so removing it from the live
  * registry cannot end its lifetime before the call returns. */
-static void scr_child_emit_error_obj(ScrChild *c, ScrError *err) {
-  if (scr_exc_pending()) return;
-  size_t held = c->n_err;
-  if (held == 0) {
-    scr_throw_obj(scr_error_retain(err), &scr_error_retain_v, &scr_error_release_v,
-                  scr_error_trace_arg());
-    return;
-  }
-  ScrChildErrEntry *snapshot = malloc(held * sizeof *snapshot);
+/* The child's 'error' listeners, snapshotted with one reference each. The
+ * snapshot is what an emission delivers to: a listener that removes another
+ * (or the last) 'error' listener from its callback does not change who the
+ * already-decided emission reaches, exactly as Node's errorhandler and
+ * EventEmitter snapshot do. `*held` is the snapshot's length; NULL when the
+ * child has none. */
+static ScrChildErrEntry *scr_child_error_snapshot(ScrChild *c, size_t *held) {
+  *held = c->n_err;
+  if (*held == 0) return NULL;
+  ScrChildErrEntry *snapshot = malloc(*held * sizeof *snapshot);
   if (snapshot == NULL) scr_child_oom();
-  for (size_t i = 0; i < held; i++) {
+  for (size_t i = 0; i < *held; i++) {
     snapshot[i].cb = scr_closure_retain(c->err_cbs[i].cb);
     snapshot[i].fn = c->err_cbs[i].fn;
   }
+  return snapshot;
+}
+
+/* Delivers `err` to a snapshot from scr_child_error_snapshot and releases it. */
+static void scr_child_emit_error_snapshot(ScrChildErrEntry *snapshot, size_t held, ScrError *err) {
   ScrError *outer = scr_event_error_payload;
   scr_event_error_payload = err;
   for (size_t i = 0; i < held; i++) {
@@ -8725,6 +8731,18 @@ static void scr_child_emit_error_obj(ScrChild *c, ScrError *err) {
   scr_event_error_payload = outer;
   for (size_t i = 0; i < held; i++) scr_closure_release(snapshot[i].cb);
   free(snapshot);
+}
+
+static void scr_child_emit_error_obj(ScrChild *c, ScrError *err) {
+  if (scr_exc_pending()) return;
+  size_t held = 0;
+  ScrChildErrEntry *snapshot = scr_child_error_snapshot(c, &held);
+  if (held == 0) {
+    scr_throw_obj(scr_error_retain(err), &scr_error_retain_v, &scr_error_release_v,
+                  scr_error_trace_arg());
+    return;
+  }
+  scr_child_emit_error_snapshot(snapshot, held, err);
 }
 
 /* abortChildProcess: child.kill(killSignal), then 'error' with Node's
@@ -8749,15 +8767,19 @@ static void scr_exec_abort_deliver(ScrChild *c, ScrDyn *reason) {
   c->exec_fired = true;
   ScrError *error = scr_error_abort(reason);
   scr_child_error_cmd(error, c->exec_display->data);
-  /* The listeners see the same error after the callback; this reference
-   * keeps it alive across the callback's move. No listener is not an
-   * unhandled 'error' here: exec's listener is the callback that ran. */
-  ScrError *heard = c->n_err > 0 ? scr_error_retain(error) : NULL;
+  /* The listeners that exist at the abort are the ones that hear the error,
+   * even when the callback removes them: Node captures its 'error' listeners
+   * before the callback runs. This reference keeps the error alive across the
+   * callback's move; no listener means no emission (exec's callback is the
+   * one that ran). */
+  size_t heard_count = 0;
+  ScrChildErrEntry *heard_listeners = scr_child_error_snapshot(c, &heard_count);
+  ScrError *heard = heard_count > 0 ? scr_error_retain(error) : NULL;
   ScrStr *out = scr_exec_capture_text(c->out_stream);
   ScrStr *err = scr_exec_capture_text(c->err_stream);
   c->exec_fn(c->exec_cb, error, out, err); /* error/out/err move */
   if (heard != NULL) {
-    scr_child_emit_error_obj(c, heard);
+    scr_child_emit_error_snapshot(heard_listeners, heard_count, heard);
     scr_error_release(heard);
   }
 }
@@ -10405,18 +10427,33 @@ static ScrDyn *scr_child_bridge_readable(ScrChildStream *reader, ScrDyn **cached
   }
   if (!*cached) {
     ScrStream *stream = scr_child_stream_ops->readable("Socket");
-    scr_child_stream_on_data(reader, scr_child_bridge_callback(stream, (void *)scr_child_bridge_data),
-        scr_child_bridge_data, false);
-    scr_child_stream_on_end(reader, scr_child_bridge_callback(stream, (void *)scr_child_bridge_end), false);
-    /* the child's 'close' waits for this stream to close */
-    reader->bridge = scr_child_stream_ops->retain(stream);
-    if (reader->child) {
-      /* Node's maybeClose runs the child's 'close' inside the stdio
-       * stream's 'close'; this listener comes before the program's. */
-      ScrClosure *closed = scr_closure_new((void *)scr_child_bridge_closed_inv, 1);
-      closed->caps[0] = scr_box_new_obj(&scr_child_retain_v, &scr_child_release_v, NULL);
-      scr_box_set_ref(closed->caps[0], scr_child_retain(reader->child));
-      scr_child_stream_ops->on_close(stream, closed);
+    if (reader->eof) {
+      /* The reader already reached EOF, so the data/end subscriptions below
+       * would be discarded. A bridge created now must not become the child's
+       * outstanding stdio stream: the child's 'close' would wait for a stream
+       * whose read side is gone, and the close listener below would hold the
+       * child in a cycle the collector cannot trace. The stream still reports
+       * Node's end for a child that is running (its close not yet fired); a
+       * child that already closed leaves the late stream inert, as Node's
+       * stdio does. */
+      if (reader->child != NULL && !reader->child->close_done)
+        scr_child_stream_ops->end(stream);
+    } else {
+      scr_child_stream_on_data(reader,
+          scr_child_bridge_callback(stream, (void *)scr_child_bridge_data),
+          scr_child_bridge_data, false);
+      scr_child_stream_on_end(reader,
+          scr_child_bridge_callback(stream, (void *)scr_child_bridge_end), false);
+      /* the child's 'close' waits for this stream to close */
+      reader->bridge = scr_child_stream_ops->retain(stream);
+      if (reader->child) {
+        /* Node's maybeClose runs the child's 'close' inside the stdio
+         * stream's 'close'; this listener comes before the program's. */
+        ScrClosure *closed = scr_closure_new((void *)scr_child_bridge_closed_inv, 1);
+        closed->caps[0] = scr_box_new_obj(&scr_child_retain_v, &scr_child_release_v, NULL);
+        scr_box_set_ref(closed->caps[0], scr_child_retain(reader->child));
+        scr_child_stream_ops->on_close(stream, closed);
+      }
     }
     *cached = scr_child_readable_box(stream);
     scr_child_stream_ops->release(stream);

@@ -183,6 +183,7 @@ import { valueStreamOf, writableStreamOf } from "./builtins/hash-stream.js";
 import { lowerNetAddressCall, lowerNetAddressNew } from "./builtins/net-address.js";
 import { lowerMimeCall, lowerMimeNew } from "./builtins/mime.js";
 import { lowerSqliteCall, lowerSqliteNew } from "./builtins/sqlite.js";
+import { lowerSourceMapNew } from "./builtins/source-map.js";
 import { lowerPerfNew } from "./builtins/performance.js";
 import {
   installFetchBodyWebStreams,
@@ -4095,6 +4096,10 @@ export class Lowerer {
    * that assigns module.exports) does not change the binding. Required
    * bindings read the live slot at their own position instead. */
   readonly cjsRuntimeExportSnapshotGlobals = new Map<ts.SourceFile, IrGlobal>();
+  /** Element kinds (SCR_ELEM_* numbers) whose arrays the program gives a
+   * prototype: their allocations carry the collector header, so the
+   * prototype the array owns is an edge the collector can see. */
+  readonly prototypeArrayKinds = new Set<number>();
   /** Per module some namespace import reads, the export members its
    * functions assign (`cjsExportsAssignedInFunctions`): each member's slot
    * takes the values the module's exports held when the first ESM module
@@ -6808,6 +6813,10 @@ export class Lowerer {
     "wholeSlotDegradation",
     "untypedConstructors",
     "dynamicClassValues",
+    // Element kinds the program gives a prototype: a program fact the
+    // setPrototypeOf lowerings record, and a replay of a unit records its
+    // kinds again (the set only grows with the program's own calls).
+    "prototypeArrayKinds",
     // Which refusals involve a held constructor (held-constructors.ts): a
     // count and its mark for the statement being lowered, and the answers
     // per named type, computed again when asked.
@@ -10666,11 +10675,23 @@ export class Lowerer {
       this.facts.npmStaticModule(ts.getSourceFileOfNode(node), spec, "require");
     if (!dep || dep.fileName.endsWith(".json")) return null;
     if (this.asyncInitFiles.has(dep)) {
-      this.unsupported(
-        "SC1090",
-        node,
-        `require() of '${spec}' (its ES-module graph uses top-level await; use import() instead)`,
-      );
+      // Node throws here: the require is synchronous and the graph is not.
+      const loc = locOf(node);
+      return {
+        kind: "exprStmt",
+        expr: nodeThrowExpr(
+          0,
+          "ERR_REQUIRE_ASYNC_MODULE",
+          "require() cannot be used on an ESM graph with top-level await. " +
+            "Use import() instead. To see where the top-level await comes from, " +
+            "use --experimental-print-required-tla." +
+            `\nRequired module: ${dep.fileName}` +
+            `\nRequire stack:\n- ${ts.getSourceFileOfNode(node).fileName}`,
+          VOID,
+          loc,
+        ),
+        loc,
+      };
     }
     const initName = this.initNameOf.get(dep);
     if (initName === undefined) return null;
@@ -15774,6 +15795,9 @@ export class Lowerer {
             ...(this.usesLifetimeRegions ? { lifetimeRegions: true as const } : {}),
             ...(this.usesNodeIsland ? { nodeIsland: this.nodeIslandRecord() } : {}),
             ...(this.declBoundary ? { declBoundary: true as const } : {}),
+            ...(this.prototypeArrayKinds.size > 0
+              ? { prototypeOverrideArrayKinds: [...this.prototypeArrayKinds].sort((a, b) => a - b) }
+              : {}),
             ...(shapeOverlayFileNames().length > 0
               ? {
                   inferredFactFiles: shapeOverlayFileNames()
@@ -25189,6 +25213,7 @@ export class Lowerer {
       lowerNetAddressNew(this, expr) ??
       lowerMimeNew(this, expr) ??
       lowerSqliteNew(this, expr) ??
+      lowerSourceMapNew(this, expr) ??
       lowerPerfNew(this, expr) ??
       lowerWebStreamNew(this, expr) ??
       lowerStaticReadableStreamNew(this, expr) ??

@@ -881,9 +881,13 @@ static void ws_rcontroller_clear_algorithms(WsRController *c) {
 
 static void ws_readable_close(WsReadable *s) {
   s->state = WS_STATE_CLOSED;
+  /* Hold the reader across the settlements below: a promise reaction runs
+   * while they settle, and one that releases the lock can drop the reader's
+   * last reference before the requests are answered. */
+  WsReader *r = s->reader;
+  if (r) ws_reader_retain(r);
   if (s->closed_materialized) ws_deferred_resolve_undefined(&s->closed);
   if (s->controller && s->controller->bytes) ws_bytes_settle(s->controller, NULL, true);
-  WsReader *r = s->reader;
   if (!r) return;
   if (r->closed && r->closed_live) {
     r->closed_live = false;
@@ -891,7 +895,6 @@ static void ws_readable_close(WsReadable *s) {
     ws_fulfill(r->closed, u);
     scr_dyn_release(u);
   }
-  ws_reader_retain(r);
   while (r->head) {
     WsReadRequest *q = r->head;
     r->head = q->next;
@@ -907,12 +910,16 @@ static void ws_tee_source_error(WsTee *t, ScrDyn *error);
 static void ws_readable_error(WsReadable *s, ScrDyn *error) {
   s->state = WS_STATE_ERRORED;
   s->stored_error = scr_dyn_retain(error);
+  /* Hold the reader across the settlements below, as ws_readable_close
+   * does: a rejection reaction can release the lock and drop the reader's
+   * last reference. */
+  WsReader *r = s->reader;
+  if (r) ws_reader_retain(r);
   if (s->controller && s->controller->bytes) ws_bytes_settle(s->controller, error, false);
   if (s->closed_materialized) {
     ws_set_handled(s->closed.promise);
     ws_deferred_reject(&s->closed, error);
   }
-  WsReader *r = s->reader;
   if (!r) return;
   if (r->closed && r->closed_live) {
     r->closed_live = false;
@@ -920,7 +927,6 @@ static void ws_readable_error(WsReadable *s, ScrDyn *error) {
     ws_reject(r->closed, error);
   }
   if (r->tee) ws_tee_source_error(r->tee, error);
-  ws_reader_retain(r);
   while (r->head) {
     WsReadRequest *q = r->head;
     r->head = q->next;
@@ -6579,14 +6585,22 @@ WS_OPS(ws_byte_strategy_ops, "ByteLengthQueuingStrategy", ws_strategy_retain, ws
        "Value of \"this\" must be of type ByteLengthQueuingStrategy", ws_strategy_attrs, NULL, ws_strategy_inspect_view);
 static SCR_TL bool ws_installed;
 
-/* Defined by the stream unit; weak so a web-streams-only link stays valid. */
+/* Both are the stream unit's, and a program using web streams without it
+ * (no node:stream) links this object alone. ELF reads the weak references as
+ * 0 there; Mach-O refuses an undefined weak reference in an executable, so
+ * the Apple branch gives them weak definitions instead, and the stream unit's
+ * strong definitions replace them when it is linked. */
+#if defined(__APPLE__)
+__attribute__((weak)) ScrStream *(*scr_stream_web_pair_hook)(ScrDyn *value, double flags) = NULL;
+__attribute__((weak)) ScrStream *scr_stream_duplex_from_web(ScrDyn *pair, double flags) {
+  (void)pair;
+  (void)flags;
+  return NULL;
+}
+#else
 extern ScrStream *(*scr_stream_web_pair_hook)(ScrDyn *value, double flags) __attribute__((weak));
-
-/* The pair adaptation the hook answers with lives in the stream unit too
- * (a program that reaches it links streams, web streams and the dyn tier),
- * so the reference is weak: the hook is only called from the stream unit,
- * which links this one with it. */
 extern ScrStream *scr_stream_duplex_from_web(ScrDyn *pair, double flags) __attribute__((weak));
+#endif
 
 static ScrStream *ws_stream_web_pair(ScrDyn *value, double flags) {
   if (value == NULL) return NULL;

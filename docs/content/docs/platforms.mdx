@@ -137,6 +137,27 @@ The library profile declares the exported functions, the host callbacks the libr
 - iOS targets build only on macOS hosts.
 - WASI builds can't use APIs that need capabilities WASI Preview 1 lacks, as described above.
 
+## Runtime pack capabilities
+
+Runtime packs differ in the native code they carry, and a program that needs a capability its pack omits fails the build with `SC3002`. The one difference in the supported targets is `Intl`.
+
+`Intl` is implemented over ICU, which is C++: each pack would have to build the ICU archive with Zig's C++ driver for its own platform, and only the `linux-x64-gnu` pack does. The `intl.` fast paths that need no ICU — `NumberFormat` for `en-US` without options and the grapheme segmenter that string width and length use — work in every pack. Everything else under `Intl` is ICU-backed.
+
+| `SCRIPTC_TARGET` | Runtime pack | ICU-backed `Intl` |
+| --- | --- | --- |
+| `x86_64-linux-gnu` | `@scriptc/runtime-linux-x64-gnu` | Yes |
+| `aarch64-linux-gnu` | `@scriptc/runtime-linux-arm64-gnu` | No |
+| `x86_64-linux-musl` | `@scriptc/runtime-linux-x64-musl` | No |
+| `aarch64-linux-musl` | `@scriptc/runtime-linux-arm64-musl` | No |
+| `arm64-apple-macosx14.0.0` | `@scriptc/runtime-darwin-arm64` | No |
+| `x86_64-apple-macosx14.0.0` | `@scriptc/runtime-darwin-x64` | No |
+| `x86_64-windows-gnu` | `@scriptc/runtime-win32-x64-msvc` | No |
+| `wasm32-wasi` | `@scriptc/runtime-wasm32-wasi` | No |
+| `aarch64-apple-ios`, `aarch64-apple-ios-simulator` | `@scriptc/runtime-ios-arm64`, `@scriptc/runtime-ios-simulator-arm64` | No (library mode) |
+| `aarch64-linux-android` | `@scriptc/runtime-android-arm64` | No (library mode) |
+
+A program for any other target that reaches ICU-backed `Intl` — directly, or through a dependency's own import graph — fails with an `SC3002` that names the target and says that only the `linux-x64-gnu` pack provides `Intl`. The error points at the import whose path reached the call, which is not necessarily where the call itself sits; `scriptc coverage` lists the `Intl` members the program reaches when you need to find it. Removing the `Intl` use from the program's graph (or the dependency that reaches it) is the only way to build it for those targets today.
+
 ## Summary
 
 <table>

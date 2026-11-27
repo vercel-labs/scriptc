@@ -65,6 +65,8 @@ export interface NativeLinkFeatures {
   fsExistsValue?: boolean;
   /** node:module's compile cache family: scr_module_cache.c. */
   moduleCompileCache?: boolean;
+  /** node:module's SourceMap class: scr_source_map.c. */
+  sourceMap?: boolean;
   /** node:module's Module class object: scr_module_class.c and the
    * class installs in scr_dyn_handle_class.c. */
   moduleClass?: boolean;
@@ -498,6 +500,10 @@ export const LINK_FEATURE_REQUIREMENTS: readonly LinkFeatureRequirement[] = [
   { feature: "eventTarget", requires: ["emitter", "symbol"] },
   { feature: "abortSignal", requires: ["emitter", "symbol"] },
   { feature: "fetch", requires: ["emitter", "symbol"] },
+  // scr_sqlite.c interns DatabaseSync's Symbol(sqlite-type) brand through
+  // the symbol unit's registry, and reflection and util.inspect show it
+  // whatever the program does with symbols.
+  { feature: "sqlite", requires: ["symbol"] },
   // events.once with options registers the await through the emitter unit.
   { feature: "eventsOnceSignal", requires: ["emitter"] },
   // scr_perf.c resolves performance.measure's Node timing milestone names

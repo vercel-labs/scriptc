@@ -113,6 +113,7 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
   host.usesTimers = true;
   const direct: Record<string, string> = {
     "http2.createServer": "scr_http2_create_server",
+    "http2.createServerOpts": "scr_http2_create_server_opts",
     "http2.sessionRequest": "scr_http2_session_request",
     "http2.sessionDestroy": "scr_http2_session_destroy",
     "http2.sessionSetLocalWindowSize": "scr_http2_session_set_local_window_size",
@@ -124,6 +125,9 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
     "http2.responseWriteInformation": "scr_http_h2_res_write_information",
     "http2.sessionPingPayload": "scr_http2_session_ping",
     "http2.sessionConnecting": "scr_http2_session_connecting",
+    "http2.sessionSetTimeout": "scr_http2_session_set_timeout",
+    "http2.sessionRef": "scr_http2_session_ref",
+    "http2.sessionUnref": "scr_http2_session_unref",
     "http2.getPackedSettings": "scr_http2_get_packed_settings",
     "http2.getUnpackedSettings": "scr_http2_get_unpacked_settings",
     "http2.sessionSettingsGet": "scr_http2_session_settings_get",
@@ -156,6 +160,7 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
     "http2.streamPending": "scr_http2_stream_pending",
     "http2.streamHeadersSent": "scr_http2_stream_headers_sent",
     "http2.reqComplete": "scr_http2_req_complete",
+    "http2.reqUrl": "scr_http_req_url_opt",
     "http2.pairsValues": "scr_http2_pairs_values",
     "http2.streamSession": "scr_http2_stream_session",
     "http2.statusMessageUnsupported": "scr_http2_status_message_unsupported",
@@ -186,6 +191,11 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
         "scr_http2_create_server_req",
         requestHandler(host, args[0]!),
       );
+    case "http2.createServerReqOpts":
+      return finishRuntimeCall(host, e, "scr_http2_create_server_req_opts", [
+        ...requestHandler(host, args[0]!),
+        a[1]!,
+      ]);
     case "http2.createSecureServerDyn":
     case "http2.createSecureServerDynCb":
       return finishRuntimeCall(host, e, "scr_http2_create_secure_server_dyn", [
@@ -277,6 +287,17 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
         [...a.slice(0, cbIndex), a[cbIndex] ?? ptr()],
       );
     }
+    case "http2.sessionGoaway":
+    case "http2.sessionGoawayData":
+      return finishRuntimeCall(host, e, "scr_http2_session_goaway", [
+        a[0]!,
+        a[1]!,
+        a[2]!,
+        e.fn === "http2.sessionGoawayData" ? a[3]! : ptr(),
+      ]);
+    case "http2.sessionSetTimeoutCb":
+      host.toHeap(args[2]!);
+      return finishRuntimeCall(host, e, "scr_http2_session_set_timeout_cb", [a[0]!, a[1]!, a[2]!]);
     case "http2.streamPriority0":
       return finishRuntimeCall(host, e, "scr_http2_stream_priority", [a[0]!, ptr()]);
     case "http2.streamSetTimeoutCb":
@@ -330,7 +351,7 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
       break;
     case "http2.sessionOnGoaway":
       runtime = "scr_http2_session_on_goaway";
-      thunk = `scr_http2_goaway_thunk${Math.min(arity, 2)}`;
+      thunk = `scr_http2_goaway_thunk${Math.min(arity, 3)}`;
       params = ["ptr", "double", "double", "ptr"];
       break;
     case "http2.sessionOnError":
@@ -374,6 +395,9 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
       break;
     case "http2.sessionOnClose":
       runtime = "scr_http2_session_on_close";
+      break;
+    case "http2.sessionOnTimeout":
+      runtime = "scr_http2_session_on_timeout";
       break;
     case "http2.streamOnTrailers":
       // The header-record adapter is already the runtime ABI (pairs, flags).

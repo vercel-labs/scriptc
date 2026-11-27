@@ -55,6 +55,7 @@
 #include "scr_cluster.h"
 #include "scr_fs_exists_dyn.h"
 #include "scr_module_cache.h"
+#include "scr_source_map.h"
 #include "scr_module_class.h"
 #include "scr_json.h"
 #include "scr_record_source_get.h"

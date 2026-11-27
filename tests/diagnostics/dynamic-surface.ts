@@ -6,8 +6,8 @@
 // trim/pad variants, parseInt, isNaN, the global parseFloat/isFinite and
 // Number.parseFloat/Number.parseInt over exactly-typed arguments,
 // string-pattern replacement and toPrecision compile statically now and no
-// longer appear here; toLocaleString at an explicit non-en-US locale still
-// has no lowering (the default-locale form lowers over ICU).)
+// longer appear here; a list of locales still has no lowering (one string
+// tag lowers over ICU).)
 const up = Math.cbrt(2);
 const tau = Math.PI * 2;
 const price = (19.99).toLocaleString(["de-DE"]);

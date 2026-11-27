@@ -806,10 +806,20 @@ static void scr_http_req_consume(ScrHttpReq *r) {
 /* req.unpipe(dst): that destination stops receiving the body. A
  * destination the request is not piping to changes nothing, as Node's
  * unpipe ignores one it does not hold. */
+/* Node pauses a readable whose last pipe destination leaves: body bytes that
+ * arrive before a new consumer attaches wait in the buffer instead of being
+ * dropped, and resume() (or a later flow) delivers them. */
+static void scr_http_req_pause_without_consumer(ScrHttpReq *r) {
+  if (r->pipe_res != NULL || r->pipe_client != NULL || r->pipe_sock != NULL) return;
+  if (r->data_ls.n != 0 || r->ended) return;
+  r->paused = true;
+}
+
 void scr_http_req_unpipe_res(ScrHttpReq *r, ScrHttpRes *dst /*borrowed*/) {
   if (r->pipe_res == NULL || r->pipe_res != dst) return;
   scr_http_res_release(r->pipe_res);
   r->pipe_res = NULL;
+  scr_http_req_pause_without_consumer(r);
   scr_http_req_update_hold(r);
 }
 
@@ -817,6 +827,7 @@ void scr_http_req_unpipe_client(ScrHttpReq *r, ScrHttpClientReq *dst /*borrowed*
   if (r->pipe_client == NULL || r->pipe_client != dst) return;
   scr_http_client_release(r->pipe_client);
   r->pipe_client = NULL;
+  scr_http_req_pause_without_consumer(r);
   scr_http_req_update_hold(r);
 }
 
@@ -824,6 +835,7 @@ void scr_http_req_unpipe_sock(ScrHttpReq *r, ScrNetSocket *dst /*borrowed*/) {
   if (r->pipe_sock == NULL || r->pipe_sock != dst) return;
   scr_net_sock_release(r->pipe_sock);
   r->pipe_sock = NULL;
+  scr_http_req_pause_without_consumer(r);
   scr_http_req_update_hold(r);
 }
 #endif

@@ -1116,19 +1116,17 @@ static ScrStr *ws_strip_protocol(ScrStr *value) {
 }
 
 static bool ws_read_field(const ScrDyn *object, const char *name, ScrStr **out) {
-  /* An ordinary property read, so a component behind a getter answers the
-   * value its getter returns (the standard reads the record's components
-   * with Get, not as own data properties). Owned result. */
+  /* One member of the dictionary: an ordinary property get, so a component
+   * behind a getter answers the value its getter returns (the standard reads
+   * the record's components with Get, not as own data properties), and only
+   * a string is a component. Every other value — a number, a boolean, an
+   * object with a toString, a boxed String, a Symbol — is ignored without a
+   * conversion, as Node ignores it. Owned result; *out keeps its prior value
+   * for a member the record does not spell. */
   ScrDyn *value = scr_dyn_obj_read(object, name, strlen(name));
   if (value == NULL) return false;
-  if (value->kind == SCR_DYN_UNDEF || value->kind == SCR_DYN_NULL) {
-    scr_dyn_release(value);
-    return true;
-  }
-  ScrStr *text = scr_dyn_string_coerce_js(value);
+  if (value->kind == SCR_DYN_STR) *out = scr_str_retain(value->v.str);
   scr_dyn_release(value);
-  if (text == NULL) return false;
-  *out = text;
   return true;
 }
 
@@ -1840,15 +1838,18 @@ static bool ws_init_from_dyn(ScrDyn *input, ScrStr *base_text, bool *from_string
       return false;
     }
     ScrStr *base_field = NULL;
-    if (!ws_read_field(record, "protocol", &out->protocol) ||
-        !ws_read_field(record, "username", &out->username) ||
-        !ws_read_field(record, "password", &out->password) ||
-        !ws_read_field(record, "hostname", &out->hostname) ||
-        !ws_read_field(record, "port", &out->port) ||
-        !ws_read_field(record, "pathname", &out->pathname) ||
-        !ws_read_field(record, "search", &out->search) ||
+    /* WebIDL converts a dictionary's members in their lexicographic order,
+     * so a throwing getter stops the conversion at the member the standard
+     * would have read first. */
+    if (!ws_read_field(record, "baseURL", &base_field) ||
         !ws_read_field(record, "hash", &out->hash) ||
-        !ws_read_field(record, "baseURL", &base_field)) {
+        !ws_read_field(record, "hostname", &out->hostname) ||
+        !ws_read_field(record, "password", &out->password) ||
+        !ws_read_field(record, "pathname", &out->pathname) ||
+        !ws_read_field(record, "port", &out->port) ||
+        !ws_read_field(record, "protocol", &out->protocol) ||
+        !ws_read_field(record, "search", &out->search) ||
+        !ws_read_field(record, "username", &out->username)) {
       scr_str_release(base_field);
       scr_dyn_release(snapshot);
       return false;
@@ -1914,9 +1915,13 @@ static bool ws_build(ScrUrlPattern *pattern, WsInit *init, bool from_string, boo
 
 typedef struct {
   ScrStr *protocol, *username, *password, *hostname, *port, *pathname, *search, *hash;
+  /* The record input's string members as spelled, for exec's `inputs` copy;
+   * NULL for a URL string. Owned. */
+  ScrDyn *copy;
 } WsInput;
 
 static void ws_input_free(WsInput *in) {
+  scr_dyn_release(in->copy);
   scr_str_release(in->protocol);
   scr_str_release(in->username);
   scr_str_release(in->password);
@@ -1959,7 +1964,7 @@ static ScrStr **ws_init_field(WsInit *init, int field) {
  * record, which reaches the caller; other invalid inputs just fail the
  * match. */
 static bool ws_input_from_dyn(ScrDyn *input, ScrStr *base_text, WsInput *out,
-                              const char *base_error, bool *fatal) {
+                              const char *base_error, bool *fatal, bool want_copy) {
   *fatal = false;
   memset(out, 0, sizeof *out);
   if (input->kind == SCR_DYN_STR) {
@@ -1993,21 +1998,39 @@ static bool ws_input_from_dyn(ScrDyn *input, ScrStr *base_text, WsInput *out,
     ScrDyn *record = ws_object_view(input, &snapshot);
     if (record == NULL) return false;
     ScrStr *base_field = NULL;
-    if (!ws_read_field(record, "protocol", &init.protocol) ||
-        !ws_read_field(record, "username", &init.username) ||
-        !ws_read_field(record, "password", &init.password) ||
-        !ws_read_field(record, "hostname", &init.hostname) ||
-        !ws_read_field(record, "port", &init.port) ||
-        !ws_read_field(record, "pathname", &init.pathname) ||
-        !ws_read_field(record, "search", &init.search) ||
+    /* The members are read once, in the lexicographic order WebIDL converts
+     * them in, so the copy exec hands back below is exactly the values this
+     * match used. */
+    if (!ws_read_field(record, "baseURL", &base_field) ||
         !ws_read_field(record, "hash", &init.hash) ||
-        !ws_read_field(record, "baseURL", &base_field)) {
+        !ws_read_field(record, "hostname", &init.hostname) ||
+        !ws_read_field(record, "password", &init.password) ||
+        !ws_read_field(record, "pathname", &init.pathname) ||
+        !ws_read_field(record, "port", &init.port) ||
+        !ws_read_field(record, "protocol", &init.protocol) ||
+        !ws_read_field(record, "search", &init.search) ||
+        !ws_read_field(record, "username", &init.username)) {
       ws_init_free(&init);
       scr_str_release(base_field);
       scr_dyn_release(snapshot);
       /* the record's own getter threw: that exception reaches the caller */
       *fatal = true;
       return false;
+    }
+    if (want_copy) {
+      /* Node's result carries the record's string members as spelled, keyed
+       * in the same order. */
+      static const char *const names[9] = {"baseURL",  "hash",     "hostname", "password",
+                                           "pathname", "port",     "protocol", "search",
+                                           "username"};
+      ScrStr *const values[9] = {base_field,   init.hash,     init.hostname,
+                                 init.password, init.pathname, init.port,
+                                 init.protocol, init.search,   init.username};
+      ScrDyn *copy = scr_dyn_new_obj();
+      for (size_t i = 0; i < 9; i++)
+        if (values[i] != NULL)
+          scr_dyn_obj_set(copy, names[i], strlen(names[i]), scr_dyn_new_str(values[i]));
+      out->copy = copy;
     }
     if (base_text != NULL) {
       /* the standard takes a base URL only with a URL string */
@@ -2141,7 +2164,7 @@ static ScrDyn *ws_exec(ScrUrlPattern *pattern, ScrDyn *input, ScrDyn *base, bool
   WsInput in;
   bool fatal = false;
   const char *base_error = test_only ? "Failed to test URLPattern" : "Failed to exec URLPattern";
-  if (!ws_input_from_dyn(input, base_text, &in, base_error, &fatal)) {
+  if (!ws_input_from_dyn(input, base_text, &in, base_error, &fatal, !test_only)) {
     ws_input_free(&in);
     *matched = false;
     if (fatal) {
@@ -2181,49 +2204,10 @@ static ScrDyn *ws_exec(ScrUrlPattern *pattern, ScrDyn *input, ScrDyn *base, bool
   if (ok && !test_only) {
     out = scr_dyn_new_obj();
     ScrDyn *inputs = scr_dyn_new_arr();
-    ScrDyn *copy_view = NULL;
-    ScrDyn *copy_src = ws_object_view(input, &copy_view);
-    if (copy_src != NULL) {
-      /* Node's result carries the input record's coerced copy, keys in
-       * alphabetical order and only the fields the input spelled. */
-      static const char *const fields[9] = {"baseURL",  "hash",   "hostname", "password", "pathname",
-                                            "port",     "protocol", "search", "username"};
-      ScrDyn *copy = scr_dyn_new_obj();
-      bool ok_fields = true;
-      for (size_t i = 0; i < 9 && ok_fields; i++) {
-        ScrStr *text = NULL;
-        if (!ws_read_field(copy_src, fields[i], &text)) {
-          ok_fields = false;
-          break;
-        }
-        if (text != NULL) {
-          scr_dyn_obj_set(copy, fields[i], strlen(fields[i]), scr_dyn_new_str(text));
-          scr_str_release(text);
-        }
-      }
-      if (!ok_fields) {
-        scr_dyn_release(copy);
-        scr_dyn_release(inputs);
-        /* the field coercion's exception is pending */
-        for (size_t i = 0; i < 8; i++) scr_dyn_release(groups[i]);
-        scr_str_release(protocol);
-        scr_str_release(username);
-        scr_str_release(password);
-        scr_str_release(hostname);
-        scr_str_release(port);
-        scr_str_release(pathname);
-        scr_str_release(search);
-        scr_str_release(hash);
-        ws_input_free(&in);
-        scr_dyn_release(copy_view);
-        *threw = true;
-        return NULL;
-      }
-      scr_dyn_arr_push(inputs, copy);
-    } else {
-      scr_dyn_arr_push(inputs, scr_dyn_retain(input));
-    }
-    scr_dyn_release(copy_view);
+    /* Node's result carries the input record's string members as spelled
+     * (keys in alphabetical order), or the URL string itself. The record's
+     * copy is the one the reader built from the values the match used. */
+    scr_dyn_arr_push(inputs, in.copy != NULL ? scr_dyn_retain(in.copy) : scr_dyn_retain(input));
     if (base_text != NULL) scr_dyn_arr_push(inputs, scr_dyn_new_str(base_text));
     /* Node's result keys, in alphabetical order. */
     static const char *const order[9] = {"hash",   "hostname", "inputs", "password", "pathname",

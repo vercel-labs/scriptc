@@ -178,4 +178,27 @@ async function run(tag, composed, sink, ...chunks) {
   log.push(`tail web data=${data.join(" | ")} rom=${composed.readableObjectMode}`);
 }
 
+{
+  // an object-mode stage before a web last stage hands it the value it wrote
+  const seen = [];
+  const composed = compose(
+    new PassThrough({ objectMode: true }),
+    new TransformStream({
+      transform(chunk, controller) {
+        seen.push(`${typeof chunk} ${String(chunk)}`);
+        controller.enqueue(chunk);
+      },
+    }),
+  );
+  const data = [];
+  composed.on("data", (chunk) =>
+    data.push(`${Buffer.isBuffer(chunk) ? "buf" : typeof chunk} ${String(chunk)}`),
+  );
+  const ended = new Promise((resolve) => composed.on("end", resolve));
+  composed.write("s");
+  composed.end();
+  await ended;
+  log.push(`tail object-mode in[${seen.join(" | ")}] data[${data.join(" | ")}]`);
+}
+
 console.log(log.join("\n"));

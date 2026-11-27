@@ -92,6 +92,8 @@ declare module "http2" {
     /* A 1xx block before the response starts: 100..199 (never 101). */
     writeInformation(statusCode: number, headers?: OutgoingHttpHeaders): boolean;
     write(data: string | Uint8Array): void;
+    write(data: string | Uint8Array, callback: () => void): void;
+    write(data: string | Uint8Array, encoding: string, callback: () => void): void;
     flushHeaders(): void;
     cork(): void;
     uncork(): void;

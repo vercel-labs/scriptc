@@ -1,13 +1,7 @@
 import { keyedHelperName } from "./stable-names.js";
 import { lowerTlsCertificateCall } from "./builtins/x509.js";
-import {
-  dynUndefinedExpr,
-  nodeThrowExpr,
-  boolLit,
-  numLit,
-  strLit,
-  varRef,
-} from "../../ir/build.js";
+import { knownBufEncoding } from "./containers/bytes.js";
+import { dynUndefinedExpr, boolLit, numLit, strLit, varRef } from "../../ir/build.js";
 
 import * as ts from "../ts7/adapter.js";
 import { withoutParentheses, withoutParenthesesAssertions } from "../outer-expressions.js";
@@ -3774,32 +3768,60 @@ function lowerNetSocketMethodCall(
       name === "write"
         ? { kind: "libCall", fn, args: callArgs, type: BOOL, loc }
         : receiverReturningCall(lowerer, fn, callArgs, NETSOCKET_T, loc);
-    // write(chunk, encoding) — the two-argument encoding form: 'buffer'
-    // beside a string chunk is Writable's encoding check (a synchronous
-    // ERR_UNKNOWN_ENCODING TypeError, "Unknown encoding: buffer" — the
-    // invalid-input probes' shape); utf8 spellings are the plain write
-    // (that IS the encoding written); a Buffer chunk ignores the encoding
-    // like Node does. Other encodings keep the fence.
-    if (name === "write" && args.length === 2) {
-      const encT = lowerer.typeOf(args[1]!);
+    // write(chunk, encoding) and end(chunk, encoding): a string chunk is
+    // encoded like Buffer.from's (Node's ladder; an unknown name throws
+    // ERR_UNKNOWN_ENCODING catchably at run time), and a Buffer chunk
+    // ignores the encoding exactly as Node does.
+    if (args.length === 2) {
+      const encNodeT = lowerer.typeOf(args[1]!);
+      const encT = lowerer.mapTypeOf(encNodeT);
+      /* The compile-time fast paths below skip evaluating the encoding
+       * expression, so only a SYNTACTIC literal may take them: a value whose
+       * type happens to be a string-literal type (a call to a helper with a
+       * literal return type, a const) must still be evaluated for its side
+       * effects and errors, exactly as Node evaluates the argument. */
+      const literalEnc =
+        ts.isStringLiteral(args[1]!) || ts.isNoSubstitutionTemplateLiteral(args[1]!)
+          ? args[1]!.text
+          : null;
       const chunkT = lowerer.mapTypeOf(lowerer.typeOf(args[0]!));
-      if (encT.isStringLiteralType() && chunkT !== null) {
-        if (
-          encT.value === "buffer" &&
-          chunkT.kind === "string" &&
-          isJsSourceFile(ts.getSourceFileOfNode(call))
-        ) {
-          lowerer.lowerExpr(args[0]!); // evaluation order (effect-free in practice)
-          return nodeThrowExpr(1, "ERR_UNKNOWN_ENCODING", "Unknown encoding: buffer", VOID, loc);
+      if (encT !== null && encT.kind === "string" && chunkT !== null) {
+        const socket = coerceToHandle(lowerer, access.expression, NETSOCKET_T);
+        if (chunkT.kind === "string") {
+          const data = lowerer.lowerExprExpecting(args[0]!, STRING);
+          // a literal utf8 spelling is the plain write: the string's UTF-8
+          // bytes are what the wire carries either way
+          if (literalEnc === "utf8" || literalEnc === "utf-8") {
+            return resultOf(name === "write" ? "net.sockWrite" : "net.sockEndStr", [socket, data]);
+          }
+          const enc = lowerer.lowerExprExpecting(args[1]!, STRING);
+          return resultOf(name === "write" ? "net.sockWriteEnc" : "net.sockEndEnc", [
+            socket,
+            data,
+            enc,
+          ]);
         }
-        const passthrough =
-          (chunkT.kind === "string" && (encT.value === "utf8" || encT.value === "utf-8")) ||
-          (chunkT.kind === "bytes" && chunkT.elem === "u8");
-        if (passthrough) {
-          const socket = coerceToHandle(lowerer, access.expression, NETSOCKET_T);
+        if (chunkT.kind === "bytes" && chunkT.elem === "u8") {
           const chunk = lowerer.lowerExpr(args[0]!);
-          const fn: IrLibFn = chunk.type.kind === "string" ? "net.sockWrite" : "net.sockWriteBytes";
-          return { kind: "libCall", fn, args: [socket, chunk], type: BOOL, loc };
+          // a literal encoding Writable accepts (Buffer.isEncoding, or the
+          // exact "buffer"/"" spellings) needs no run-time validation
+          if (
+            literalEnc !== null &&
+            (literalEnc === "buffer" ||
+              literalEnc === "" ||
+              knownBufEncoding(literalEnc) !== undefined)
+          ) {
+            return resultOf(name === "write" ? "net.sockWriteBytes" : "net.sockEndBytes", [
+              socket,
+              chunk,
+            ]);
+          }
+          const enc = lowerer.lowerExprExpecting(args[1]!, STRING);
+          return resultOf(name === "write" ? "net.sockWriteBytesEnc" : "net.sockEndBytesEnc", [
+            socket,
+            chunk,
+            enc,
+          ]);
         }
       }
     }
@@ -4769,6 +4791,104 @@ function lowerH2SessionMethodCall(
     requireStatementPosition(lowerer, call, "session.destroy(...)");
     return { kind: "libCall", fn: "http2.sessionDestroy", args: [receiver()], type: VOID, loc };
   }
+  if (name === "goaway") {
+    // goaway([code][, lastStreamID][, opaqueData]): code defaults to 0 and
+    // lastStreamID to the session's last processed stream (-1 here), Node's
+    // defaults. The opaque data is a Buffer/Uint8Array appended to the frame.
+    requireStatementPosition(lowerer, call, "session.goaway(...)");
+    if (args.length > 3) {
+      lowerer.noLowering(
+        `session.goaway with ${args.length} arguments`,
+        call,
+        "use goaway() / goaway(code) / goaway(code, lastStreamID) / goaway(code, lastStreamID, opaqueData)",
+      );
+    }
+    const code: IrExpr =
+      args.length >= 1
+        ? lowerer.lowerExprExpecting(args[0]!, F64)
+        : { kind: "numLit", value: 0, type: F64, loc };
+    const last: IrExpr =
+      args.length >= 2
+        ? lowerer.lowerExprExpecting(args[1]!, F64)
+        : { kind: "numLit", value: -1, type: F64, loc };
+    if (args.length === 3) {
+      const opaque = lowerer.lowerExpr(args[2]!);
+      if (opaque.type.kind !== "bytes") {
+        lowerer.noLowering(
+          `session.goaway with a '${lowerer.fmt(opaque.type)}' opaqueData`,
+          args[2]!,
+          "the opaque data is a Buffer or Uint8Array",
+        );
+      }
+      return {
+        kind: "libCall",
+        fn: "http2.sessionGoawayData",
+        args: [receiver(), code, last, opaque],
+        type: VOID,
+        loc,
+      };
+    }
+    return {
+      kind: "libCall",
+      fn: "http2.sessionGoaway",
+      args: [receiver(), code, last],
+      type: VOID,
+      loc,
+    };
+  }
+  if (name === "setTimeout") {
+    // setTimeout(msecs[, callback]): the session's socket idle timer; the
+    // callback is registered as a once listener on 'timeout' (Node).
+    requireStatementPosition(lowerer, call, "session.setTimeout(...)");
+    if (args.length < 1 || args.length > 2) {
+      lowerer.noLowering(
+        `session.setTimeout with ${args.length} arguments`,
+        call,
+        "use setTimeout(msecs) or setTimeout(msecs, callback)",
+      );
+    }
+    const ms = lowerer.lowerExprExpecting(args[0]!, F64);
+    if (args.length === 2) {
+      const { cb } = lowerCallbackArg(
+        lowerer,
+        args[1]!,
+        "timeout callbacks",
+        0,
+        () => false,
+        "use ()",
+        [],
+      );
+      return {
+        kind: "libCall",
+        fn: "http2.sessionSetTimeoutCb",
+        args: [receiver(), ms, cb],
+        type: VOID,
+        loc,
+      };
+    }
+    return {
+      kind: "libCall",
+      fn: "http2.sessionSetTimeout",
+      args: [receiver(), ms],
+      type: VOID,
+      loc,
+    };
+  }
+  if (name === "ref" || name === "unref") {
+    // ref()/unref() on the session's underlying socket (Node answers
+    // undefined, the internal stream calls' shape).
+    requireStatementPosition(lowerer, call, `session.${name}(...)`);
+    if (args.length !== 0) {
+      lowerer.noLowering(`session.${name} with ${args.length} arguments`, call, `use ${name}()`);
+    }
+    return {
+      kind: "libCall",
+      fn: name === "ref" ? "http2.sessionRef" : "http2.sessionUnref",
+      args: [receiver()],
+      type: VOID,
+      loc,
+    };
+  }
   if (name === "setLocalWindowSize") {
     // Node validates the window size and applies no observable change in
     // Node 24 (the local settings record and the peer's view stay as they
@@ -4927,6 +5047,24 @@ function lowerH2SessionMethodCall(
         loc,
       };
     }
+    if (event === "timeout") {
+      const { cb } = lowerCallbackArg(
+        lowerer,
+        args[1]!,
+        "timeout listeners",
+        0,
+        () => false,
+        "use ()",
+        [],
+      );
+      return {
+        kind: "libCall",
+        fn: "http2.sessionOnTimeout",
+        args: [receiver(), cb, once],
+        type: VOID,
+        loc,
+      };
+    }
     if (event === "error") {
       const { cb } = lowerCallbackArg(
         lowerer,
@@ -4982,20 +5120,33 @@ function lowerH2SessionMethodCall(
     }
     if (event === "goaway") {
       const cb = lowerer.lowerExpr(args[1]!);
-      // The runtime hands a listener (errorCode, lastStreamID): a third
-      // parameter would read an argument nobody passed.
-      if (cb.type.kind !== "func" || cb.type.ret.kind !== "void" || cb.type.params.length > 2) {
+      // (errorCode, lastStreamID[, opaqueData]): the frame's opaque data is
+      // a Buffer when present and undefined otherwise, Node's shape.
+      // Node passes the frame's opaque data as a Buffer when the GOAWAY
+      // carries any and undefined otherwise, so a three-parameter listener's
+      // third parameter is Buffer | undefined — a plain Buffer would be
+      // handed the absent case's undefined.
+      const opaqueOk = (p: IrType): boolean => {
+        if (p.kind !== "union") return false;
+        const arms = lowerer.unions.get(p.unionId)?.arms ?? [];
+        return (
+          arms.length === 2 &&
+          arms.some((a) => a.kind === "bytes" && a.elem === "u8") &&
+          arms.some((a) => a.kind === "undefinedT")
+        );
+      };
+      if (cb.type.kind !== "func" || cb.type.ret.kind !== "void" || cb.type.params.length > 3) {
         lowerer.unsupported(
           "SC1090",
           args[1]!,
-          "goaway listeners with more than two parameters (the opaque data is not passed) or returning a value",
+          "goaway listeners with more than three parameters or returning a value",
         );
       }
-      if (cb.type.params.some((p) => p.kind !== "f64")) {
+      if (cb.type.params.some((p, i) => (i < 2 ? p.kind !== "f64" : !opaqueOk(p)))) {
         lowerer.unsupported(
           "SC1090",
           args[1]!,
-          "goaway listeners whose parameters are not (errorCode: number, lastStreamID: number)",
+          "goaway listeners whose parameters are not (errorCode: number, lastStreamID: number, opaqueData?: Buffer)",
         );
       }
       return {
@@ -5027,7 +5178,7 @@ function lowerH2SessionMethodCall(
     lowerer.noLowering(
       `session.${name}("${event ?? "?"}", ...)`,
       args[0]!,
-      '"close", "error", "connect", "stream", "goaway", "ping", "localSettings", and "remoteSettings" are the supported session events',
+      '"close", "timeout", "error", "connect", "stream", "goaway", "ping", "localSettings", and "remoteSettings" are the supported session events',
     );
   }
   lowerer.noLowering(
@@ -10477,6 +10628,16 @@ function lowerHttpClientMethodCall(
     // high-water mark), so it may stand in an expression; end() still only
     // as a statement.
     if (name === "end") requireStatementPosition(lowerer, call, `request.${name}(...)`);
+    const withExtraArgs = lowerWriteEndArgs(
+      lowerer,
+      name,
+      () => lowerer.lowerExpr(access.expression),
+      args,
+      name === "write" ? "http.clientWriteArgs" : "http.clientEndArgs",
+      name === "write" ? BOOL : VOID,
+      loc,
+    );
+    if (withExtraArgs !== null) return withExtraArgs;
     const minArgs = name === "write" ? 1 : 0;
     if (args.length < minArgs || args.length > 1) {
       lowerer.noLowering(
@@ -11138,6 +11299,91 @@ function lowerHttpReqMethodCall(
 
 /** Method calls on ServerResponse receivers: setHeader/writeHead/write/
  * end. Null for other receivers. */
+/** write/end with an encoding and/or a flush callback: the data, the
+ * encoding (undefined when the call omits it) and the callback (undefined
+ * when it omits that) cross as checked-dynamic values, so the runtime applies
+ * Node's rules — an encoding applies to a string chunk only, and a callback
+ * runs once the chunk has been flushed. Null when the arguments are not one
+ * of those forms, which leaves them to the call's other shapes. */
+function lowerWriteEndArgs(
+  lowerer: Lowerer,
+  name: "write" | "end",
+  lowerReceiver: () => IrExpr,
+  args: readonly ts.Expression[],
+  fn: IrLibFn,
+  resultType: IrType,
+  loc: SrcLoc,
+): IrExpr | null {
+  const typeAt = (node: ts.Expression): IrType | null => lowerer.mapTypeOf(lowerer.typeOf(node));
+  /* Node treats a present-but-undefined argument as absent: write(chunk,
+   * undefined, cb), write(chunk, encoding, undefined) and end(data,
+   * undefined) are the same calls without it. */
+  const absent = (i: number): boolean =>
+    i >= args.length || (lowerer.typeOf(args[i]!).flags & ts.TypeFlags.Undefined) !== 0;
+  const dyn = (node: ts.Expression | undefined): IrExpr => {
+    if (node === undefined) return dynUndefinedExpr(loc);
+    const value = lowerer.lowerExpr(node);
+    return value.type.kind === "dyn"
+      ? value
+      : { kind: "dynFrom", value, type: DYN, loc: locOf(node) };
+  };
+  // end(callback): the callback alone, with no data
+  if (name === "end" && args.length === 1 && typeAt(args[0]!)?.kind === "func") {
+    return {
+      kind: "libCall",
+      fn,
+      args: [lowerReceiver(), dynUndefinedExpr(loc), dynUndefinedExpr(loc), dyn(args[0])],
+      type: resultType,
+      loc,
+    };
+  }
+  if (args.length < 2 || args.length > 3) return null;
+  const second = typeAt(args[1]!);
+  const third = args.length === 3 ? typeAt(args[2]!) : null;
+  const encodingForm = second?.kind === "string";
+  // both calls take a callback second (a request's end(data, cb) included)
+  const callbackForm = second?.kind === "func";
+  if (!encodingForm && !callbackForm && !absent(1)) return null;
+  if (third !== null && third.kind !== "func" && !absent(2)) return null;
+  const receiver = lowerReceiver();
+  const chunk = dyn(args[0]);
+  /* A present argument whose value is undefined still evaluates, in its own
+   * argument position — Node evaluates every argument before the call, and an
+   * undefined-returning expression can carry a side effect. The expression
+   * runs as a statement inside the slot and the constant undefined is what
+   * the call sees (the runtime reads it as the argument's absence). */
+  const undefinedArg = (node: ts.Expression): IrExpr => {
+    const value = lowerer.lowerExpr(node);
+    if (value.kind === "unitLit") return dynUndefinedExpr(loc);
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "exprStmt", expr: value, loc: locOf(node) }],
+      result: dynUndefinedExpr(loc),
+      type: DYN,
+      loc: locOf(node),
+    };
+  };
+  const encoding = encodingForm
+    ? dyn(args[1])
+    : absent(1)
+      ? undefinedArg(args[1]!)
+      : dynUndefinedExpr(loc);
+  const callback = callbackForm
+    ? dyn(args[1])
+    : third === null
+      ? dynUndefinedExpr(loc)
+      : third.kind === "func"
+        ? dyn(args[2]!)
+        : undefinedArg(args[2]!);
+  return {
+    kind: "libCall",
+    fn,
+    args: [receiver, chunk, encoding, callback],
+    type: resultType,
+    loc,
+  };
+}
+
 function lowerHttpResMethodCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -11741,6 +11987,16 @@ function lowerHttpResMethodCall(
     // mark), so it may stand in an expression; end() still only as a
     // statement.
     if (name === "end") requireStatementPosition(lowerer, call, `res.${name}(...)`);
+    const withExtraArgs = lowerWriteEndArgs(
+      lowerer,
+      name,
+      () => coerceToHandle(lowerer, access.expression, HTTPRES_T),
+      args,
+      name === "write" ? "http.resWriteArgs" : "http.resEndArgs",
+      name === "write" ? BOOL : VOID,
+      loc,
+    );
+    if (withExtraArgs !== null) return withExtraArgs;
     const minArgs = name === "write" ? 1 : 0;
     const maxArgs = name === "write" ? 3 : 2;
     if (args.length < minArgs || args.length > maxArgs) {

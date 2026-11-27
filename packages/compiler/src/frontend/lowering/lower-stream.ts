@@ -3841,16 +3841,16 @@ function planStreamArg(
  * the validation ladder: finished() rejects EVERY non-stream through
  * isNodeStream, while pipeline() accepts iterables (strings, arrays) and
  * { readable, writable } pairs — those shapes fence instead of throwing
- * a ladder Node never throws. `composeStage` marks a compose stage before
- * the last: its web pair keeps its chunks web values, as the pipeline's
- * stages do. */
+ * a ladder Node never throws. `composeAt` marks a compose stage before the
+ * last (its web pair keeps its chunks web values, as the pipeline's stages
+ * do) or the last (a pair keeps duplexify's byte-for-byte sides). */
 function lowerStreamArg(
   lowerer: Lowerer,
   node: ts.Expression,
   what: "finished" | "pipeline" | "addAbortSignal" | "compose" | "toWeb",
-  composeStage = false,
+  composeAt: "stage" | "tail" | null = null,
 ): IrExpr {
-  return streamArgOf(lowerer, node, lowerer.lowerExpr(node), what, composeStage);
+  return streamArgOf(lowerer, node, lowerer.lowerExpr(node), what, composeAt);
 }
 
 /** lowerStreamArg over the argument's lowered value. */
@@ -3859,7 +3859,7 @@ function streamArgOf(
   node: ts.Expression,
   lowered: IrExpr,
   what: "finished" | "pipeline" | "addAbortSignal" | "compose" | "toWeb",
-  composeStage = false,
+  composeAt: "stage" | "tail" | null = null,
 ): IrExpr {
   // A plain { readable, writable } record of web streams is a stage Node
   // accepts: pipeline pumps its web sides with the chunks untouched, and
@@ -3888,7 +3888,12 @@ function streamArgOf(
       lowered.type.kind === "dyn" ? lowered : { kind: "dynFrom", value: lowered, type: DYN, loc };
     return {
       kind: "libCall",
-      fn: composeStage ? "stream.composeStageDyn" : "stream.duplexFromDyn",
+      fn:
+        composeAt === "stage"
+          ? "stream.composeStageDyn"
+          : composeAt === "tail"
+            ? "stream.composeTailDyn"
+            : "stream.duplexFromDyn",
       args: [stage],
       type: { kind: "object", className: "%Duplex" },
       loc,
@@ -6129,6 +6134,33 @@ function lowerPipelineStages(
       srcT = stream.type;
       continue;
     }
+    // A synchronous source function: pipeline calls it with { signal } and
+    // pumps what it returns — a stream, an iterable or an async iterable — so
+    // the first stage is the checked-dynamic source stage, whose runtime
+    // answers Node's invalid-return error for anything else.
+    const sourceIsAsync = (fn.modifiers?.nodes ?? []).some(
+      (m) => m.kind === ts.SyntaxKind.AsyncKeyword,
+    );
+    const sourceIsGen = !ts.isArrowFunction(fn) && fn.asteriskToken !== undefined;
+    if (j === 0 && srcT === null && !sourceIsAsync && !sourceIsGen) {
+      const value = lowerer.lowerExpr(arg);
+      const dynValue: IrExpr =
+        value.type.kind === "dyn" ? value : { kind: "dynFrom", value, type: DYN, loc };
+      const source = lowerDynSourceStage(
+        lowerer,
+        dynValue,
+        loc,
+        givesToNext ? cellRef() : undefined,
+      );
+      if (source === null) lowerer.noLowering("a pipeline source function with this result", arg);
+      takes = givesToNext;
+      mask |= 1 << stages.length;
+      positions += 1;
+      argOrder.push({ list: stages, index: stages.length });
+      stages.push(source!.closure);
+      srcT = source!.out;
+      continue;
+    }
     const isLast = j === stageArgs.length - 1;
     const isAsync = (fn.modifiers?.nodes ?? []).some((m) => m.kind === ts.SyntaxKind.AsyncKeyword);
     const isGen = !ts.isArrowFunction(fn) && fn.asteriskToken !== undefined;
@@ -6921,7 +6953,9 @@ function lowerStreamCompose(lowerer: Lowerer, args: readonly ts.Expression[], lo
   }
   let streams: IrExpr[];
   try {
-    streams = args.map((a, i) => pre.get(i) ?? lowerStreamArg(lowerer, a, "compose", i < last));
+    streams = args.map(
+      (a, i) => pre.get(i) ?? lowerStreamArg(lowerer, a, "compose", i < last ? "stage" : "tail"),
+    );
   } catch (e) {
     if (e instanceof StreamArgTypeThrow) return e.expr;
     throw e;

@@ -173,6 +173,15 @@ export function mangleRecordTrace(shapeId: string): string {
 export function mangleRecordGcFree(shapeId: string): string {
   return `sc_rgcfree_${sanitize(shapeId)}`;
 }
+/** The hidden prototype slot's accessors (ScrDynTypedRecordOps's
+ * proto_get/proto_set) of a shape the program gives a prototype with
+ * Object.setPrototypeOf. */
+export function mangleRecordProtoGet(shapeId: string): string {
+  return `sc_rproto_get_${sanitize(shapeId)}`;
+}
+export function mangleRecordProtoSet(shapeId: string): string {
+  return `sc_rproto_set_${sanitize(shapeId)}`;
+}
 
 /** Module-level variable ("%g.e.count" → "sc_g_e_count"). The id's tag
  * segment ("e."/"m<i>.") plus dot-free user identifiers make this injective. */

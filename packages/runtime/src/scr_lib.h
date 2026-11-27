@@ -42,6 +42,9 @@ ScrArr *scr_module_paths(double module_id);
 ScrArr *scr_module_children(double module_id);
 /* The checked-dynamic Module object for a record, one per record (+1), and
  * its children as a fresh checked-dynamic array (+1). */
+/** require.extensions / Module._extensions, one shared table per thread
+ * (+1): the three handlers as function values, the object null-prototype. */
+ScrDyn *scr_module_extensions(void);
 ScrDyn *scr_module_dyn_object(double module_id);
 ScrDyn *scr_module_dyn_children(double module_id);
 /* module.parent as a checked-dynamic value (+1): null, undefined or the
@@ -508,6 +511,13 @@ void scr_process_set_debug_port(ScrDyn *port);
  * ERR_INVALID_ARG_TYPE). */
 bool scr_process_source_maps_enabled(void);
 void scr_process_set_source_maps_enabled(ScrDyn *enabled);
+/* node:module's source-map support (getSourceMapsSupport, setSourceMapsSupport,
+ * findSourceMap): the thread's frozen { enabled, nodeModules, generatedCode }
+ * record (+1), the setter it shares with process.setSourceMapsEnabled, and
+ * findSourceMap's undefined answer. */
+ScrDyn *scr_module_source_maps_support(void);
+void scr_module_set_source_maps_support(ScrDyn *enabled, ScrDyn *options);
+ScrDyn *scr_module_find_source_map(const ScrDyn *path);
 ScrArr *scr_active_resources(void);
 /* chdir(2) — throws Node's fs-shaped error on failure (syscall "chdir"). */
 void scr_process_chdir(ScrStr *dir);

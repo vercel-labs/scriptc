@@ -105,6 +105,7 @@ class Discovery {
         error: summary.error,
         features: summary.features,
         unsupported: summary.unsupported,
+        simdOps: summary.simdOps,
         functions: summary.functions,
         imports: summary.imports,
         exports: summary.exports,

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/frozen-array-sparse-sorts.ts"
+ ],
+ "diags": []
+}

@@ -121,8 +121,10 @@ typedef enum {
  * always-linked storage or code: a program that never boxes the new handle
  * links byte-identical objects. Raising the capacity is a program-wide
  * layout change; do it in a change of its own, measured as neutral, and
- * only when the tags outgrow it. */
-#define SCR_DYNH_CAPACITY 128
+ * only when the tags outgrow it. The compression streams' two tags took the
+ * list past 128 to this 160. The tables are thread-local pointer rows, so the
+ * capacity changes no per-value representation. */
+#define SCR_DYNH_CAPACITY 160
 
 /* The handle-type tags the checked-dynamic tree can carry. The set is deliberately the
  * HANDLE kinds whose member surfaces already have complete static
@@ -279,6 +281,7 @@ typedef enum {
   Y(PERF_OBSERVER) /* PerformanceObserver (scr_perf.c) */ \
   Y(RUN_SCOPE) /* async_hooks RunScope — AsyncLocalStorage.withScope (scr_async_dyn.c) */ \
   Y(SLIDING_HISTOGRAM) /* perf_hooks SlidingWindowHistogram (scr_perf_loop.c) */ \
+  Y(SOURCE_MAP) /* node:module SourceMap (scr_source_map.c) */ \
   Y(SQLITE_DB) /* node:sqlite DatabaseSync (scr_sqlite.c) */ \
   Y(SQLITE_ITERATOR) /* StatementSync.iterate()'s iterator (scr_sqlite.c) */ \
   Y(SQLITE_LIMITS) /* node:sqlite DatabaseSync#limits (scr_sqlite.c) */ \
@@ -286,7 +289,9 @@ typedef enum {
   Y(SQLITE_STATEMENT) /* node:sqlite StatementSync (scr_sqlite.c) */ \
   Y(SQLITE_TAG_STORE) /* node:sqlite SQLTagStore (scr_sqlite.c) */ \
   Y(TRACING) /* trace_events.Tracing (scr_async_dyn.c) */ \
-  Y(WEAK_REF) /* WeakRef (scr_json.c) */
+  Y(WEAK_REF) /* WeakRef (scr_json.c) */ \
+  Y(WS_COMPRESSION) /* CompressionStream (scr_webstream_compress.c) */ \
+  Y(WS_DECOMPRESSION) /* DecompressionStream (scr_webstream_compress.c) */
 
 /* Values below the largest pinned one that no tag holds, each with the
  * reason. Never reuse one without removing it here. */
@@ -501,6 +506,14 @@ typedef struct ScrDynTypedRecordOps {
    * NULL when the program never writes through a dynamic view, and for a
    * field whose storage it cannot replace (an inline union). */
   bool (*set)(void *rec, size_t index, const ScrDyn *value);
+  /* Object.setPrototypeOf's prototype the native record owns: `proto_get`
+   * answers it (+1; a null-kind value for the null prototype) or NULL when
+   * the record has none. `proto_set` stores it: it takes its own reference,
+   * a NULL pointer stores no prototype, and a null-kind value the null
+   * prototype. Emitted only for a shape the program can prototype; NULL in
+   * every other table. */
+  ScrDyn *(*proto_get)(void *rec);
+  void (*proto_set)(void *rec, ScrDyn *prototype);
 } ScrDynTypedRecordOps;
 /* A record capsule's ops while it answers from the native record (no view
  * created yet), or NULL. */
@@ -1554,6 +1567,7 @@ ScrDyn *scr_dyn_class_test_prototype(ScrDyn *object);
 bool scr_dyn_bag_create_field(ScrDyn *bag, const ScrStr *key);
 bool scr_dyn_is_class_capsule(const ScrDyn *d);
 ScrDyn *scr_dyn_get_prototype(ScrDyn *object);
+bool scr_dyn_is_plain_object(ScrDyn *value);
 ScrDyn *scr_dyn_get_own_property_descriptors(ScrDyn *object);
 ScrDyn *scr_dyn_set_prototype(ScrDyn *object, ScrDyn *prototype);
 ScrDyn *scr_dyn_prevent_extensions(ScrDyn *object);
@@ -1981,6 +1995,14 @@ ScrDyn *scr_dyn_destructure_rest(const ScrDyn *src, const ScrStr *msg);
  * `spell` is the compile-time not-iterable wording, or NULL. +1, or NULL
  * with the error pending. */
 ScrDyn *scr_dyn_iter_take(const ScrDyn *src, size_t n, const char *spell);
+/* A WebIDL sequence conversion's values: true with *out a fresh array (+1) of
+ * what `src` yields — packed for arrays, typed arrays and native collections,
+ * stepped through the iterator protocol for any other object with
+ * Symbol.iterator (a compiled generator included). False with *out untouched
+ * when `src` is not an object with an iterator (the caller's record branch or
+ * its own not-iterable message), or with the exception pending from reading
+ * the iterator. */
+bool scr_dyn_sequence_values(const ScrDyn *src, ScrDyn **out);
 /* True for typed capsules that iterate through the protocol (a compiled
  * synchronous generator) rather than through their materialized view. */
 bool scr_dyn_iterates_by_protocol(const ScrDyn *value);

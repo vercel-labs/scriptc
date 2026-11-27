@@ -763,6 +763,13 @@ static ScrDyn *sw_import(const ScrDyn *args) {
   /* An Ed25519 private key derives its public key in the Ed25519 unit. */
   if (kind == SW_ED25519 && private_key && !scr_pki_ed25519_ready()) goto done;
   if (is_jwk) {
+    /* Node validates the usages against the key's kind and public/private
+     * shape before it reads the JWK, so a malformed JWK whose usages the
+     * key type cannot take answers the usage error first. */
+    if ((unsigned)usages & ~allowed) {
+      sw_unsupported_usage(kind, name);
+      goto done;
+    }
     const ScrDyn *kty = sw_jwk_member(jwk, "kty");
     if (!kty) {
       scr_throw_domex("DataError", "Invalid keyData");
@@ -782,10 +789,6 @@ static ScrDyn *sw_import(const ScrDyn *args) {
         !sw_jwk_is(sw_jwk_member(jwk, "crv"),
                    kind == SW_ED25519 ? "Ed25519" : kind == SW_X448 ? "X448" : "X25519")) {
       scr_throw_domex("DataError", "JWK \"crv\" Parameter and algorithm name mismatch");
-      goto done;
-    }
-    if ((unsigned)usages & ~allowed) {
-      sw_unsupported_usage(kind, name);
       goto done;
     }
     if (!sw_jwk_checks(jwk, (unsigned)usages, extractable,
@@ -1379,7 +1382,10 @@ static ScrPromise *sw_sign_verify(const ScrDyn *args, bool verify) {
       scr_wc_missing_member("EcdsaParams", "hash");
       goto done;
     }
-    hash = sw_hash(plain, "EcdsaParams", false, method);
+    /* Node runs its SHA-only check for EcdsaParams before normalizing, so
+     * any name that does not start with "SHA" answers that message (a
+     * non-SHA hash such as MD5 and an unrecognized name alike). */
+    hash = sw_hash(plain, "EcdsaParams", true, method);
     if (!hash) goto done;
   } else if (kind == SW_PSS) {
     if (!scr_wc_is_object(plain)) {

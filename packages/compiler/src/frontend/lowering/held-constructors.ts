@@ -160,10 +160,10 @@ export function holdsConstructorFunction(lowerer: Lowerer, type: IrType): boolea
     case "union":
     case "object": {
       const walk: Walk = { keys: new Set<string>(), incomplete: false };
-      const result = holds(lowerer, type, null, walk);
+      const result = holds(lowerer, type, walk);
       // A walk that answered no settles every type it met: none of them
       // holds a constructor, whatever cut kept the walk from repeating a
-      // type already on its path. Keeping them answers a type met again
+      // type it already met. Keeping them answers a type met again
       // where another union, record or lowered value reaches it without
       // walking its members again. A type whose definition was not
       // registered when the walk met it is not settled.
@@ -191,41 +191,41 @@ function incompleteWalk(walk: Walk): false {
   return false;
 }
 
-function holds(lowerer: Lowerer, type: IrType, visiting: Set<string> | null, walk: Walk): boolean {
+function holds(lowerer: Lowerer, type: IrType, walk: Walk): boolean {
   switch (type.kind) {
     case "func": {
       if (type.argumentsPresence === true) return true;
-      for (const param of type.params) if (holds(lowerer, param, visiting, walk)) return true;
-      return holds(lowerer, type.ret, visiting, walk);
+      for (const param of type.params) if (holds(lowerer, param, walk)) return true;
+      return holds(lowerer, type.ret, walk);
     }
     case "array":
     case "set":
-      return holds(lowerer, type.elem, visiting, walk);
+      return holds(lowerer, type.elem, walk);
     case "map":
-      return holds(lowerer, type.key, visiting, walk) || holds(lowerer, type.value, visiting, walk);
+      return holds(lowerer, type.key, walk) || holds(lowerer, type.value, walk);
     case "promise":
-      return holds(lowerer, type.inner, visiting, walk);
+      return holds(lowerer, type.inner, walk);
     case "generator":
       return (
-        holds(lowerer, type.yieldT, visiting, walk) ||
-        holds(lowerer, type.retT, visiting, walk) ||
-        holds(lowerer, type.nextT, visiting, walk)
+        holds(lowerer, type.yieldT, walk) ||
+        holds(lowerer, type.retT, walk) ||
+        holds(lowerer, type.nextT, walk)
       );
     case "record": {
       const shapeId = type.shapeId;
-      return named(lowerer, `r:${shapeId}`, visiting, walk, (inner) => {
+      return named(lowerer, `r:${shapeId}`, walk, () => {
         const shape = lowerer.shapes.get(shapeId);
         if (shape === undefined) return incompleteWalk(walk);
-        for (const field of shape.fields) if (holds(lowerer, field.type, inner, walk)) return true;
-        return shape.indexValue !== undefined && holds(lowerer, shape.indexValue, inner, walk);
+        for (const field of shape.fields) if (holds(lowerer, field.type, walk)) return true;
+        return shape.indexValue !== undefined && holds(lowerer, shape.indexValue, walk);
       });
     }
     case "union": {
       const unionId = type.unionId;
-      return named(lowerer, `u:${unionId}`, visiting, walk, (inner) => {
+      return named(lowerer, `u:${unionId}`, walk, () => {
         const arms = lowerer.unions.get(unionId)?.arms;
         if (arms === undefined) return incompleteWalk(walk);
-        for (const arm of arms) if (holds(lowerer, arm, inner, walk)) return true;
+        for (const arm of arms) if (holds(lowerer, arm, walk)) return true;
         return false;
       });
     }
@@ -235,8 +235,8 @@ function holds(lowerer: Lowerer, type: IrType, visiting: Set<string> | null, wal
       if (fields === undefined) return incompleteWalk(walk);
       // A class gains fields while it is collected: the answer is kept for
       // the fields it was given for.
-      return named(lowerer, `c:${className}:${fields.size}`, visiting, walk, (inner) => {
-        for (const field of fields.values()) if (holds(lowerer, field, inner, walk)) return true;
+      return named(lowerer, `c:${className}:${fields.size}`, walk, () => {
+        for (const field of fields.values()) if (holds(lowerer, field, walk)) return true;
         return false;
       });
     }
@@ -246,25 +246,19 @@ function holds(lowerer: Lowerer, type: IrType, visiting: Set<string> | null, wal
 }
 
 /** The answer for a named type (a record shape, a union, a class), kept in
- * Lowerer.constructorHolders. A type met again while it is being answered
- * holds nothing new: the rest of the walk decides (a cut answers no, and a
- * no is right for the whole walk). A yes is kept at once; a no is kept by
- * the walk (holdsConstructorFunction) once no type it met was incomplete. */
-function named(
-  lowerer: Lowerer,
-  key: string,
-  visiting: Set<string> | null,
-  walk: Walk,
-  answer: (visiting: Set<string>) => boolean,
-): boolean {
+ * Lowerer.constructorHolders. The question is whether any type reachable
+ * from the first one holds a constructor, and a yes ends the whole walk, so
+ * a type the walk already met (on the current path or on one it finished)
+ * holds nothing new: the rest of the walk decides. Each type is walked once
+ * per question; forgetting a finished type walked a graph of shared records
+ * and unions once per path to it. A yes is kept at once; a no is kept by the
+ * walk (holdsConstructorFunction) once no type it met was incomplete. */
+function named(lowerer: Lowerer, key: string, walk: Walk, answer: () => boolean): boolean {
   const known = lowerer.constructorHolders.get(key);
   if (known !== undefined) return known;
-  if (visiting !== null && visiting.has(key)) return false;
-  const inner = visiting ?? new Set<string>();
+  if (walk.keys.has(key)) return false;
   walk.keys.add(key);
-  inner.add(key);
-  const result = answer(inner);
-  inner.delete(key);
+  const result = answer();
   if (result) lowerer.constructorHolders.set(key, true);
   return result;
 }

@@ -734,6 +734,7 @@ const RESPONSE_BODY_MEMBERS: ReadonlySet<string> = new Set([
   "text",
   "bytes",
   "arrayBuffer",
+  "blob",
 ]);
 
 /** Static Response.json(): consume the native Response's readable body
@@ -781,7 +782,12 @@ export function lowerStaticResponseCall(lowerer: Lowerer, call: ts.CallExpressio
         }
       : {
           kind: "libCall",
-          fn: member === "arrayBuffer" ? "fetch.responseArrayBuffer" : "fetch.responseJson",
+          fn:
+            member === "arrayBuffer"
+              ? "fetch.responseArrayBuffer"
+              : member === "blob"
+                ? "fetch.responseBlob"
+                : "fetch.responseJson",
           args: [receiver],
           type: { kind: "promise", inner: DYN },
           loc: locOf(call),

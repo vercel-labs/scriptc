@@ -178,6 +178,10 @@ export const streamSignatures = defineLibFnSignatures({
    * stream answers a Duplex whose chunks stay web values (the pipeline's
    * adaptation), where Duplex.from's body adaptation encodes them. */
   "stream.composeStageDyn": { argTypes: [DYN], result: VOID },
+  /** A compose last stage whose value arrives untyped: a web stream pair
+   * keeps duplexify's byte-for-byte sides, and a lone web WritableStream
+   * keeps the chunks written to it. */
+  "stream.composeTailDyn": { argTypes: [DYN], result: VOID },
   /** Duplex.from over a lone Readable or Writable, or a { readable,
    * writable } pair of streams (duplexify.js's _duplexify). */
   "stream.duplexifyReadable": { argTypes: [null], result: VOID },

@@ -7037,8 +7037,22 @@ function lowerLegacyMemberDecorations(lowerer: Lowerer, info: ClassInfo): IrStmt
       }
       return classLocal;
     };
+    const dateRooted = (start: ClassInfo | null): boolean => {
+      for (let current = start; current; current = current.base)
+        if (current.extendsDate !== undefined) return true;
+      return false;
+    };
     for (const entry of members) {
       const at = locOf(entry.member);
+      // A Date subclass's instance accessor reads answer from the runtime
+      // date class, not the reflected prototype, so a decorator-installed
+      // replacement would be bypassed. Refuse the combination instead.
+      if (entry.kind === "accessor" && dateRooted(info))
+        lowerer.unsupported(
+          "SC1090",
+          entry.decorators[0]!,
+          "accessor decorators on a class extending Date (instance accessor reads answer from the runtime date class, so a decorator-installed replacement would be bypassed)",
+        );
       const targetId =
         entry.kind === "accessor"
           ? accessorTarget(at)

@@ -467,3 +467,18 @@ test("accessor decorators on a class crossing into a Node island are refused", a
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("accessor decorators on a class extending Date are refused", async () => {
+  const source = [
+    "function guard(t: object, k: string, d: PropertyDescriptor): void {",
+    "  d.get = function (this: unknown): number { return 1; };",
+    "}",
+    "class D extends Date {",
+    "  @guard",
+    "  get stamp(): number { return super.getTime(); }",
+    "}",
+    "console.log(new D(0).stamp);",
+    "",
+  ].join("\n");
+  expect(await refusalCodes(source, legacyTsconfig)).toContain("SC1090");
+});

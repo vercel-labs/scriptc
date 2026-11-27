@@ -126029,6 +126029,7 @@
           "tests/corpus/native-worker-terminate-suspended.ts",
           "tests/corpus/native-worker-terminate-wait.ts",
           "tests/corpus/port-add-listener-order.mjs",
+          "tests/corpus/port-clone-error-text.mjs",
           "tests/corpus/port-event-name-coercion.mjs",
           "tests/corpus/port-handler-attribute.mjs",
           "tests/corpus/port-listener-bookkeeping.mjs",
@@ -126432,7 +126433,8 @@
           "tests/corpus/native-worker-message-graphs.ts",
           "tests/corpus/native-worker-shared-views.ts",
           "tests/corpus/native-worker-clone-errors.ts",
-          "tests/corpus/native-worker-delayed-messages.ts"
+          "tests/corpus/native-worker-delayed-messages.ts",
+          "tests/corpus/port-clone-error-text.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -126802,7 +126804,8 @@
           "tests/corpus/native-worker-message-graphs.ts",
           "tests/corpus/native-worker-shared-views.ts",
           "tests/corpus/native-worker-clone-errors.ts",
-          "tests/corpus/native-worker-delayed-messages.ts"
+          "tests/corpus/native-worker-delayed-messages.ts",
+          "tests/corpus/port-clone-error-text.mjs"
         ]
       },
       "anchorSource": "exact"

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/module-strip-typescript-types/main.cjs"
+ ],
+ "diags": []
+}

@@ -42,6 +42,9 @@ export const moduleSignatures = defineLibFnSignatures({
    * the records module.cacheGet/cacheKeys walk (Module._cache answers the same
    * object). */
   "module.cacheObject": { argTypes: [], result: DYN },
+  /** module.stripTypeScriptTypes reports Node's one-time experimental
+   * warning on its first call (scr_lib.c). */
+  "module.stripTypesWarning": { argTypes: [], result: VOID },
   /** node:module's compile cache family (scr_module_cache.c). A compiled
    * program loads no JavaScript, so enableCompileCache validates its
    * argument as Node does and answers a fresh { status, message } with the

@@ -7694,20 +7694,39 @@ static bool sp_dh_params_equal(const SpKey *a, const SpKey *b) {
  * modulus size, the secret Node derives. A peer value outside [2, p - 2],
  * or a secret of 0, 1 or p - 1, fails as OpenSSL's derivation does. NULL
  * with the error pending. */
-/* The groups OpenSSL recognizes by their parameters whose subgroup the
- * derivation checks: the RFC 5114 parameter sets, whose prime is not safe,
- * so elements outside the order-q subgroup exist and a peer value in one
- * of those small subgroups would confine the secret. The safe-prime groups
- * need no such entry: their only elements outside the order-q subgroup are
- * 0, 1 and p - 1, which the range and secret checks reject. */
-static const struct {
+/* The DH parameter sets OpenSSL recognizes by their p and g. The
+ * safe-prime groups derive with the generator 2: a peer outside [2, p - 2]
+ * (the only elements of their small counter-subgroup) fails with Node's
+ * uncoded derivation error, and every value inside the range derives. The
+ * RFC 5114 sets carry a q because their primes are not safe, and their
+ * peers face OpenSSL's coded range and subgroup check-pubkey errors.
+ * Parameters matching neither (an explicit prime) get the coded range
+ * errors and no subgroup test, as OpenSSL without a q does. */
+typedef struct {
   const unsigned char *p;
   size_t p_len;
   const unsigned char *g;
   size_t g_len;
-  const unsigned char *q;
+  const unsigned char *q; /* NULL for the safe-prime groups */
   size_t q_len;
-} sp_dh_q_groups[] = {
+} SpDhKnownGroup;
+
+static const unsigned char sp_dh_two[] = {2};
+
+static const SpDhKnownGroup sp_dh_known_groups[] = {
+  {scr_dh_modp1_p, sizeof scr_dh_modp1_p, sp_dh_two, sizeof sp_dh_two, NULL, 0},
+  {scr_dh_modp2_p, sizeof scr_dh_modp2_p, sp_dh_two, sizeof sp_dh_two, NULL, 0},
+  {scr_dh_modp5_p, sizeof scr_dh_modp5_p, sp_dh_two, sizeof sp_dh_two, NULL, 0},
+  {scr_dh_modp14_p, sizeof scr_dh_modp14_p, sp_dh_two, sizeof sp_dh_two, NULL, 0},
+  {scr_dh_modp15_p, sizeof scr_dh_modp15_p, sp_dh_two, sizeof sp_dh_two, NULL, 0},
+  {scr_dh_modp16_p, sizeof scr_dh_modp16_p, sp_dh_two, sizeof sp_dh_two, NULL, 0},
+  {scr_dh_modp17_p, sizeof scr_dh_modp17_p, sp_dh_two, sizeof sp_dh_two, NULL, 0},
+  {scr_dh_modp18_p, sizeof scr_dh_modp18_p, sp_dh_two, sizeof sp_dh_two, NULL, 0},
+  {scr_dh_ffdhe2048_p, sizeof scr_dh_ffdhe2048_p, sp_dh_two, sizeof sp_dh_two, NULL, 0},
+  {scr_dh_ffdhe3072_p, sizeof scr_dh_ffdhe3072_p, sp_dh_two, sizeof sp_dh_two, NULL, 0},
+  {scr_dh_ffdhe4096_p, sizeof scr_dh_ffdhe4096_p, sp_dh_two, sizeof sp_dh_two, NULL, 0},
+  {scr_dh_ffdhe6144_p, sizeof scr_dh_ffdhe6144_p, sp_dh_two, sizeof sp_dh_two, NULL, 0},
+  {scr_dh_ffdhe8192_p, sizeof scr_dh_ffdhe8192_p, sp_dh_two, sizeof sp_dh_two, NULL, 0},
   {scr_dh_dh_1024_160_p, sizeof scr_dh_dh_1024_160_p, scr_dh_dh_1024_160_g,
    sizeof scr_dh_dh_1024_160_g, scr_dh_dh_1024_160_q, sizeof scr_dh_dh_1024_160_q},
   {scr_dh_dh_2048_224_p, sizeof scr_dh_dh_2048_224_p, scr_dh_dh_2048_224_g,
@@ -7716,27 +7735,25 @@ static const struct {
    sizeof scr_dh_dh_2048_256_g, scr_dh_dh_2048_256_q, sizeof scr_dh_dh_2048_256_q},
 };
 
-/* DH_check_pub_key's subgroup test for those groups: y^q = 1 (mod p). A
- * group outside the table (an explicit prime with no q) passes; its range
- * and secret checks stand. */
-static bool sp_dh_peer_in_subgroup(const SpKey *k, const mbedtls_mpi *Y, const mbedtls_mpi *P) {
-  const unsigned char *q = NULL;
-  size_t q_len = 0;
-  for (size_t i = 0; i < sizeof sp_dh_q_groups / sizeof sp_dh_q_groups[0]; i++) {
-    if (sp_dh_q_groups[i].p_len != k->dh_p_len ||
-        memcmp(sp_dh_q_groups[i].p, k->dh_p, k->dh_p_len) != 0 ||
-        sp_dh_q_groups[i].g_len != k->dh_g_len ||
-        memcmp(sp_dh_q_groups[i].g, k->dh_g, k->dh_g_len) != 0)
-      continue;
-    q = sp_dh_q_groups[i].q;
-    q_len = sp_dh_q_groups[i].q_len;
-    break;
+static const SpDhKnownGroup *sp_dh_known_group(const SpKey *k) {
+  for (size_t i = 0; i < sizeof sp_dh_known_groups / sizeof sp_dh_known_groups[0]; i++) {
+    const SpDhKnownGroup *g = &sp_dh_known_groups[i];
+    if (g->p_len == k->dh_p_len && memcmp(g->p, k->dh_p, k->dh_p_len) == 0 &&
+        g->g_len == k->dh_g_len && memcmp(g->g, k->dh_g, k->dh_g_len) == 0)
+      return g;
   }
-  if (q_len == 0) return true;
+  return NULL;
+}
+
+/* DH_check_pub_key's subgroup test for the RFC 5114 sets: y^q = 1 (mod p).
+ * A group without a q passes; its range and secret checks stand. */
+static bool sp_dh_peer_in_subgroup(const SpKey *k, const mbedtls_mpi *Y, const mbedtls_mpi *P) {
+  const SpDhKnownGroup *known = sp_dh_known_group(k);
+  if (!known || known->q_len == 0) return true;
   mbedtls_mpi Q, R;
   mbedtls_mpi_init(&Q);
   mbedtls_mpi_init(&R);
-  bool ok = mbedtls_mpi_read_binary(&Q, q, q_len) == 0 &&
+  bool ok = mbedtls_mpi_read_binary(&Q, known->q, known->q_len) == 0 &&
             mbedtls_mpi_exp_mod(&R, (mbedtls_mpi *)Y, &Q, (mbedtls_mpi *)P, NULL) == 0 &&
             mbedtls_mpi_cmp_int(&R, 1) == 0;
   mbedtls_mpi_free(&Q);
@@ -7770,22 +7787,28 @@ static ScrDyn *sp_dh_agree(SpKey *priv, SpKey *pub, bool props) {
             mbedtls_mpi_read_binary(&X, priv->dh_x, priv->dh_x_len) == 0 &&
             mbedtls_mpi_read_binary(&Y, peer, peer_len) == 0 &&
             mbedtls_mpi_sub_int(&bound, &P, 1) == 0;
-  /* DH_check_pub_key in OpenSSL's order: the peer value below 2 is too
-   * small, one at or above p - 1 too large, and a value inside that range
-   * that lies outside the subgroup of a group OpenSSL knows by its
-   * parameters (RFC 5114's primes are not safe) invalid; then the shared
-   * secret itself must not be 0, 1 or p - 1. */
+  /* DH_check_pub_key as OpenSSL reports it for each parameter set: a
+   * named safe-prime group answers a peer outside [2, p - 2] with the
+   * uncoded derivation error, the RFC 5114 sets answer the coded
+   * too-small, too-large and (inside the range) outside-the-subgroup
+   * errors, and an explicit prime answers the coded range errors; then
+   * the shared secret itself must not be 0, 1 or p - 1. */
+  const SpDhKnownGroup *known = sp_dh_known_group(priv);
   const char *check_code = NULL, *check_reason = NULL, *check_node = NULL;
-  if (ok && mbedtls_mpi_cmp_int(&Y, 1) <= 0) {
-    check_code = "0280007C";
-    check_reason = "check pubkey too small";
-    check_node = "ERR_OSSL_DH_CHECK_PUBKEY_TOO_SMALL";
+  bool uncoded_failure = false;
+  if (ok && (mbedtls_mpi_cmp_int(&Y, 1) <= 0 || mbedtls_mpi_cmp_mpi(&Y, &bound) >= 0)) {
     ok = false;
-  } else if (ok && mbedtls_mpi_cmp_mpi(&Y, &bound) >= 0) {
-    check_code = "0280007B";
-    check_reason = "check pubkey too large";
-    check_node = "ERR_OSSL_DH_CHECK_PUBKEY_TOO_LARGE";
-    ok = false;
+    if (known && known->q_len == 0) {
+      uncoded_failure = true;
+    } else if (mbedtls_mpi_cmp_int(&Y, 1) <= 0) {
+      check_code = "0280007C";
+      check_reason = "check pubkey too small";
+      check_node = "ERR_OSSL_DH_CHECK_PUBKEY_TOO_SMALL";
+    } else {
+      check_code = "0280007B";
+      check_reason = "check pubkey too large";
+      check_node = "ERR_OSSL_DH_CHECK_PUBKEY_TOO_LARGE";
+    }
   } else if (ok && !sp_dh_peer_in_subgroup(priv, &Y, &P)) {
     check_code = "0280007A";
     check_reason = "check pubkey invalid";
@@ -7816,7 +7839,9 @@ static ScrDyn *sp_dh_agree(SpKey *priv, SpKey *pub, bool props) {
     free(peer);
   }
   if (!secret) {
-    if (check_node)
+    if (uncoded_failure)
+      scr_throw_error_msg(SCR_ERR_ERROR, "Deriving bits failed", 20);
+    else if (check_node)
       sp_throw_openssl(check_code, "Diffie-Hellman routines", check_reason, check_node, props);
     else
       sp_dh_failed(props);

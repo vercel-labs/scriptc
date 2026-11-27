@@ -131,6 +131,10 @@ const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
   "worker.setEnvironmentData",
   "worker.getEnvironmentData",
   "worker.broadcastChannel",
+  // callback while the lock is held.
+
+  // The heap figures are sampled and the promise may reject.
+
   "process.exit",
   // process.exit(expr) and the exitCode writes convert the value with
   // Node's setter rules: the non-numeric-string TypeError, the Symbol and

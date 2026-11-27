@@ -7650,6 +7650,7 @@ static const char *sp_type_name(const SpKey *k) {
          : sp_is_x(k)   ? "x25519"
          : k->rsa_pss   ? "rsa-pss"
          : sp_is_rsa(k) ? "rsa"
+         : sp_is_dh(k)  ? "dh"
                         : "ec";
 }
 
@@ -7682,7 +7683,74 @@ static void sp_dh_failed(bool props) {
                    props);
 }
 
+/* Whether two DH keys carry the same domain parameters: OpenSSL's
+ * derivation refuses a pair whose groups differ. */
+static bool sp_dh_params_equal(const SpKey *a, const SpKey *b) {
+  return a->dh_p_len == b->dh_p_len && memcmp(a->dh_p, b->dh_p, a->dh_p_len) == 0 &&
+         a->dh_g_len == b->dh_g_len && memcmp(a->dh_g, b->dh_g, a->dh_g_len) == 0;
+}
+
+/* Two DH KeyObjects over those parameters: y^x mod p, padded to the
+ * modulus size, the secret Node derives. A peer value outside [2, p - 2],
+ * or a secret of 0, 1 or p - 1, fails as OpenSSL's derivation does. NULL
+ * with the error pending. */
+static ScrDyn *sp_dh_agree(SpKey *priv, SpKey *pub, bool props) {
+  if (!sp_dh_params_equal(priv, pub)) {
+    sp_throw_openssl("1C8000CB", "Provider routines", "mismatching domain parameters",
+                     "ERR_OSSL_MISMATCHING_DOMAIN_PARAMETERS", props);
+    return NULL;
+  }
+  unsigned char *peer = pub->dh_y;
+  size_t peer_len = pub->dh_y_len;
+  bool owned = false;
+  if (!peer) {
+    if (!sp_dh_public_from_private(pub, &peer, &peer_len)) {
+      sp_dh_failed(props);
+      return NULL;
+    }
+    owned = true;
+  }
+  mbedtls_mpi P, X, Y, S, bound;
+  mbedtls_mpi_init(&P);
+  mbedtls_mpi_init(&X);
+  mbedtls_mpi_init(&Y);
+  mbedtls_mpi_init(&S);
+  mbedtls_mpi_init(&bound);
+  bool ok = mbedtls_mpi_read_binary(&P, priv->dh_p, priv->dh_p_len) == 0 &&
+            mbedtls_mpi_read_binary(&X, priv->dh_x, priv->dh_x_len) == 0 &&
+            mbedtls_mpi_read_binary(&Y, peer, peer_len) == 0 &&
+            mbedtls_mpi_sub_int(&bound, &P, 1) == 0;
+  /* DH_check_pub_key's range, then the shared secret of the OpenSSL
+   * derivation (a small-order peer makes it 0, 1 or p - 1). */
+  ok = ok && mbedtls_mpi_cmp_int(&Y, 1) > 0 && mbedtls_mpi_cmp_mpi(&Y, &bound) < 0 &&
+       mbedtls_mpi_exp_mod(&S, &Y, &X, &P, NULL) == 0 &&
+       mbedtls_mpi_cmp_int(&S, 1) > 0 && mbedtls_mpi_cmp_mpi(&S, &bound) < 0;
+  ScrDyn *secret = NULL;
+  if (ok) {
+    size_t n = mbedtls_mpi_size(&P);
+    unsigned char *out = malloc(n ? n : 1);
+    if (!out) scr_trap("scriptc: out of memory\n");
+    if (mbedtls_mpi_write_binary(&S, out, n) == 0) secret = sp_dyn_buffer(out, n);
+    mbedtls_platform_zeroize(out, n);
+    free(out);
+  }
+  if (X.MBEDTLS_PRIVATE(p))
+    mbedtls_platform_zeroize(X.MBEDTLS_PRIVATE(p), X.MBEDTLS_PRIVATE(n) * sizeof(mbedtls_mpi_uint));
+  mbedtls_mpi_free(&P);
+  mbedtls_mpi_free(&X);
+  mbedtls_mpi_free(&Y);
+  mbedtls_mpi_free(&S);
+  mbedtls_mpi_free(&bound);
+  if (owned) {
+    mbedtls_platform_zeroize(peer, peer_len);
+    free(peer);
+  }
+  if (!secret) sp_dh_failed(props);
+  return secret;
+}
+
 static ScrDyn *sp_dh_compute(SpKey *priv, SpKey *pub, bool props) {
+  if (sp_is_dh(priv) && sp_is_dh(pub)) return sp_dh_agree(priv, pub, props);
   if (sp_is_x448(priv) && sp_is_x448(pub)) {
     uint8_t out[56];
     if (!sp_x448(priv->x448_seed, pub->x448_pub, out)) {
@@ -7768,7 +7836,7 @@ ScrDyn *scr_crypto_diffie_hellman(ScrDyn *options, ScrDyn *callback) {
   SpKey *a = sp_key_of(private_value), *b = sp_key_of(public_value);
   if (a && b && a->private_key) {
     const char *ta = sp_type_name(a), *tb = sp_type_name(b);
-    if (strcmp(ta, tb) != 0 || (!sp_is_ec(a) && !sp_is_x(a) && !sp_is_x448(a))) {
+    if (strcmp(ta, tb) != 0 || (!sp_is_ec(a) && !sp_is_x(a) && !sp_is_x448(a) && !sp_is_dh(a))) {
       scr_pki_throw_fmt(SCR_ERR_ERROR, "ERR_CRYPTO_INCOMPATIBLE_KEY",
                         "Incompatible key types for Diffie-Hellman: %s and %s", ta, tb);
       goto done;

@@ -71,7 +71,10 @@ export const TRAP_NULL = 9;
 export const TRAP_EXHAUSTION = 100;
 
 /** The descriptor ABI version both sides agree on. */
-export const WASM_ABI_VERSION = 2;
+/** The descriptor version: 2 for scalar modules (unchanged), 3 when a
+ * module carries v128 in a signature or global. The runtime accepts both. */
+export const WASM_ABI_VERSION = 3;
+export const WASM_ABI_VERSION_SCALAR = 2;
 
 /** Instance slot offsets (bytes). */
 const OFF_MEMBASE = 8;
@@ -340,6 +343,11 @@ class ModuleTranslator {
   /** Attributes on the boundary thunks and the init function, which the
    * runtime calls directly. */
   thunkAttrs: string;
+  /** The descriptor ABI version this module's descriptor carries. */
+  abiVersion: number;
+  /** Whether a v128 import needs scr_wasm_import_funcref. */
+  needsImportFuncref = false;
+
   /** LLVM intrinsic declarations the translated code calls. */
   intrinsics = new Set<string>();
 
@@ -358,10 +366,14 @@ class ModuleTranslator {
     this.typeHashes = m.types.map((t) => signatureHash(sigString(t)));
     this.memoryCount = m.memories.length;
     if (m.memories.length > 1) throw new WasmTranslateError("multiple memories are not supported");
-    for (const global of m.globals) {
-      if (global.type === VAL_V128)
-        throw new WasmTranslateError("v128 globals are not supported yet");
+    let vectors = false;
+    for (const t of m.types) {
+      if (hasV128(t.params) || hasV128(t.results)) vectors = true;
     }
+    for (const global of m.globals) {
+      if (global.type === VAL_V128) vectors = true;
+    }
+    this.abiVersion = vectors ? WASM_ABI_VERSION : WASM_ABI_VERSION_SCALAR;
     this.stackChecked = stackCheckedFunctions(m);
   }
 
@@ -400,7 +412,8 @@ class ModuleTranslator {
   importStub(index: number): void {
     const ft = this.funcType(index);
     if (hasV128(ft.params) || hasV128(ft.results)) {
-      throw new WasmTranslateError("v128 in an imported function signature is not supported yet");
+      this.importVecStub(index, ft);
+      return;
     }
     const out: string[] = [];
     out.push(`define internal ${this.signature(ft, this.fn(index))} ${this.thunkAttrs} {`);
@@ -417,6 +430,36 @@ class ModuleTranslator {
     out.push(`  %host = load ptr, ptr %inst`);
     out.push(`  call void @scr_wasm_import_call(ptr %host, i32 ${index}, ptr %args, ptr %res)`);
     emitSlotReturn(out, ft.results, "%res");
+    out.push(`}`);
+    this.text.push(out.join("\n"));
+  }
+
+  /** A v128-carrying import: call the imported WebAssembly function's code
+   * directly, with the vectors in registers. The runtime resolves the
+   * import to its function reference and throws Node's TypeError when the
+   * import is a plain JavaScript function. */
+  importVecStub(index: number, ft: WasmFuncType): void {
+    this.needsImportFuncref = true;
+    const out: string[] = [];
+    out.push(`define internal ${this.signature(ft, this.fn(index))} ${this.thunkAttrs} {`);
+    out.push(`entry:`);
+    const args: string[] = [];
+    for (let i = 0; i < ft.params.length; i++) args.push(`${llType(ft.params[i]!)} %p${i}`);
+    out.push(`  %host = load ptr, ptr %inst`);
+    out.push(`  %ref = call ptr @scr_wasm_import_funcref(ptr %host, i32 ${index})`);
+    out.push(`  %code.p = getelementptr inbounds i8, ptr %ref, i64 0`);
+    out.push(`  %code = load ptr, ptr %code.p, align 8`);
+    out.push(`  %cinst.p = getelementptr inbounds i8, ptr %ref, i64 16`);
+    out.push(`  %cinst = load ptr, ptr %cinst.p, align 8`);
+    const call = `%code(ptr %cinst${args.length > 0 ? ", " + args.join(", ") : ""})`;
+    const ret = retType(ft.results);
+    if (ft.results.length === 0) {
+      out.push(`  call void ${call}`);
+      out.push(`  ret void`);
+    } else {
+      out.push(`  %r = call ${ret} ${call}`);
+      out.push(`  ret ${ret} %r`);
+    }
     out.push(`}`);
     this.text.push(out.join("\n"));
   }
@@ -520,6 +563,8 @@ class ModuleTranslator {
         // A defined externref global starts as null or another global's
         // value; the runtime's setter retains it.
         body.add(`  call void @scr_wasm_global_set_ref(ptr ${cell}, ptr ${v})`);
+      } else if (global.type === VAL_V128) {
+        body.add(`  store ${llType(global.type)} ${v}, ptr ${cell}, align 8`);
       } else {
         body.add(`  store ${llType(global.type)} ${v}, ptr ${cell}`);
       }
@@ -626,13 +671,18 @@ class ModuleTranslator {
       let type = "";
       let call = "null";
       if (ex.kind === KIND_FUNC) {
-        type = sigString(this.funcType(ex.index));
-        let thunk = thunks.get(ex.index);
-        if (thunk === undefined) {
-          thunk = this.exportThunk(ex.index);
-          thunks.set(ex.index, thunk);
+        const ft = this.funcType(ex.index);
+        type = sigString(ft);
+        // A v128 export has no 64-bit-slot thunk; the runtime's JavaScript
+        // wrapper rejects the call before converting anything.
+        if (!hasV128(ft.params) && !hasV128(ft.results)) {
+          let thunk = thunks.get(ex.index);
+          if (thunk === undefined) {
+            thunk = this.exportThunk(ex.index);
+            thunks.set(ex.index, thunk);
+          }
+          call = thunk;
         }
-        call = thunk;
       } else if (ex.kind === KIND_TABLE) {
         type = sigChar(m.tables[ex.index]!.elemType);
       } else if (ex.kind === KIND_GLOBAL) {
@@ -662,7 +712,13 @@ class ModuleTranslator {
       codes.push(referenced ? `ptr ${this.fn(f)}` : "ptr null");
       // Referenced functions the module does not export reach JavaScript
       // through their signature's call thunk.
-      if (referenced && !thunks.has(f)) {
+      const referencedFt = this.funcType(f);
+      if (
+        referenced &&
+        !thunks.has(f) &&
+        !hasV128(referencedFt.params) &&
+        !hasV128(referencedFt.results)
+      ) {
         const type = m.funcTypes[f]!;
         let thunk = callThunkSyms.get(type);
         if (thunk === undefined) {
@@ -786,7 +842,7 @@ class ModuleTranslator {
     const fields = [
       `[32 x i8] [${sha.join(", ")}]`,
       `i64 ${m.bytes.length}`,
-      `i64 ${WASM_ABI_VERSION}`,
+      `i64 ${this.abiVersion}`,
       `i64 ${this.opts.boundsChecks ? 1 : 0}`,
       `i64 ${m.imports.length}`,
       `ptr ${importsSym}`,
@@ -1142,7 +1198,9 @@ class FunctionTranslator {
         case 0x23: {
           const g = c.u32();
           const cell = this.loadPtrSlot(this.mt.globalSlot(g));
-          stack.push(this.emit(`load ${llType(this.m.globals[g]!.type)}, ptr ${cell}`));
+          const t = this.m.globals[g]!.type;
+          const align = t === VAL_V128 ? ", align 8" : "";
+          stack.push(this.emit(`load ${llType(t)}, ptr ${cell}${align}`));
           break;
         }
         case 0xd0:
@@ -3326,6 +3384,7 @@ export function translateWasmModule(
   const descriptor = mt.descriptor(sha256);
   const decls = RUNTIME_DECLS.slice();
   for (const decl of mt.intrinsics) decls.push(decl);
+  if (mt.needsImportFuncref) decls.push("declare ptr @scr_wasm_import_funcref(ptr, i32)");
   // Initial-exec: executables and their static runtime define it, so the
   // check is one thread-pointer-relative load, not a TLS lookup call.
   if (opts.boundsChecks)

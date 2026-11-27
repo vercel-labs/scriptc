@@ -1794,68 +1794,98 @@ export function lowerObjectAssignIndexShape(
     lowerer.liftedFns.push(fn);
     return name;
   };
-  let acc = lowerer.lowerExprExpecting(call.arguments.nodes[0]!, targetIr);
+  // Node evaluates every argument before the first merge: the target, then
+  // each source in argument order (side effects included), and only then
+  // copies. Bind the target and each source to hidden locals in that order,
+  // then chain the merges over the locals.
+  const prelude: IrStmt[] = [];
+  const target = lowerer.declareHiddenLocal("%assignTarget", targetIr);
+  prelude.push({
+    kind: "varDecl",
+    localId: target.id,
+    init: lowerer.lowerExprExpecting(call.arguments.nodes[0]!, targetIr),
+    loc,
+  });
+  const targetRef = (): IrExpr => varRef(target.id, targetIr, loc);
+  const sources: { plan: SourcePlan; ref: () => IrExpr }[] = [];
   for (let i = 0; i < plans.length; i++) {
     const plan = plans[i]!;
     const argNode = call.arguments.nodes[i + 1]!;
     if (plan.kind === "record" && plan.optional !== undefined) {
-      // `Object.assign(target, maybe, ...)`: the source evaluates once and
-      // the merge runs only on the record arm; the nullish arm leaves the
-      // target untouched (Node skips it).
-      const { unionId, tag, unionT } = plan.optional;
-      const target = lowerer.declareHiddenLocal("%assignTarget", targetIr);
-      const source = lowerer.declareHiddenLocal("%assignSource", unionT);
-      const targetRef = (): IrExpr => varRef(target.id, targetIr, loc);
-      const sourceRef = (): IrExpr => varRef(source.id, unionT, loc);
-      const narrowed: IrExpr = {
-        kind: "unionNarrow",
-        unionId,
-        tag,
-        value: sourceRef(),
-        type: { kind: "record", shapeId: plan.fromId },
+      const optional = plan.optional;
+      const source = lowerer.declareHiddenLocal("%assignSource", optional.unionT);
+      prelude.push({
+        kind: "varDecl",
+        localId: source.id,
+        init: lowerer.lowerExpr(argNode),
         loc,
-      };
+      });
+      sources.push({ plan, ref: (): IrExpr => varRef(source.id, optional.unionT, loc) });
+      continue;
+    }
+    if (plan.kind === "dyn") {
+      const source = lowerer.declareHiddenLocal("%assignSource", DYN);
+      prelude.push({
+        kind: "varDecl",
+        localId: source.id,
+        init: lowerer.coerceToExpected(lowerer.lowerExpr(argNode), DYN),
+        loc,
+      });
+      sources.push({ plan, ref: (): IrExpr => varRef(source.id, DYN, loc) });
+      continue;
+    }
+    const recordT: IrType = { kind: "record", shapeId: plan.fromId };
+    const source = lowerer.declareHiddenLocal("%assignSource", recordT);
+    prelude.push({
+      kind: "varDecl",
+      localId: source.id,
+      init: lowerer.lowerExprExpecting(argNode, recordT),
+      loc,
+    });
+    sources.push({ plan, ref: (): IrExpr => varRef(source.id, recordT, loc) });
+  }
+  let acc: IrExpr = targetRef();
+  for (const { plan, ref } of sources) {
+    if (plan.kind === "record" && plan.optional !== undefined) {
+      const { unionId, tag } = plan.optional;
       acc = {
-        kind: "seqExpr",
-        stmts: [
-          { kind: "varDecl", localId: target.id, init: acc, loc },
-          { kind: "varDecl", localId: source.id, init: lowerer.lowerExpr(argNode), loc },
-        ],
-        result: {
-          kind: "ternary",
-          cond: {
-            kind: "unionIsTag",
-            unionId,
-            tag,
-            negated: false,
-            value: sourceRef(),
-            type: BOOL,
-            loc,
-          },
-          then: {
-            kind: "call",
-            callee: helperFor(plan),
-            args: [targetRef(), narrowed],
-            type: targetIr,
-            loc,
-          },
-          else_: targetRef(),
+        kind: "ternary",
+        cond: {
+          kind: "unionIsTag",
+          unionId,
+          tag,
+          negated: false,
+          value: ref(),
+          type: BOOL,
+          loc,
+        },
+        then: {
+          kind: "call",
+          callee: helperFor(plan),
+          args: [
+            acc,
+            {
+              kind: "unionNarrow",
+              unionId,
+              tag,
+              value: ref(),
+              type: { kind: "record", shapeId: plan.fromId },
+              loc,
+            },
+          ],
           type: targetIr,
           loc,
         },
+        else_: acc,
         type: targetIr,
         loc,
       };
       continue;
     }
-    const src: IrExpr =
-      plan.kind === "dyn"
-        ? lowerer.coerceToExpected(lowerer.lowerExpr(argNode), DYN)
-        : lowerer.lowerExprExpecting(argNode, { kind: "record", shapeId: plan.fromId });
     const callee = plan.kind === "dyn" ? dynHelperFor() : helperFor(plan);
-    acc = { kind: "call", callee, args: [acc, src], type: targetIr, loc };
+    acc = { kind: "call", callee, args: [acc, ref()], type: targetIr, loc };
   }
-  return acc;
+  return { kind: "seqExpr", stmts: prelude, result: acc, type: targetIr, loc };
 }
 
 /** One contributor of a pure-index-record MERGE literal: a full spread of

@@ -22,11 +22,34 @@
  *
  * A program with an aliasable copy and no observation of its layouts
  * behaves as it does under Node; every other aliasable copy is reported
- * (SC6001). Programs without copy helpers skip the scan. */
+ * (SC6001). Programs without copy helpers skip the scan.
+ *
+ * A record copy the program observes, and whose pair the backend can plan a
+ * record view for, is not left as a copy: viewObservedRecordCopies rewrites
+ * it into the live checked conversion that answers a VIEW of the original
+ * record (backend/llvm/record-views.ts), so writes and identity through
+ * either name reach the one object. The pass runs before the scan, on the
+ * same function list, so a rewritten conversion performs no copy and is not
+ * reported. */
 import type { IrExpr, IrFunction, IrLibFn, IrStmt, IrType, SrcLoc } from "../../ir/ir.js";
-import { isUnitType, typeKey } from "../../ir/ir.js";
+import {
+  DYN,
+  isDirentShape,
+  isUnitType,
+  KEY_ORDER_FIELD,
+  shapeHasAccessorSlots,
+  shapeKeyOrders,
+  typeKey,
+  canDynCheckTo,
+} from "../../ir/ir.js";
 import { dynamicFieldStores, type DynamicFieldStores } from "../../ir/int32-slots.js";
-import { everyExprChild, everyStmtChild, everyTypeChild } from "../../ir/traverse.js";
+import {
+  everyExprChild,
+  everyStmtChild,
+  everyStmtList,
+  everyTypeChild,
+  transformStmtList,
+} from "../../ir/traverse.js";
 import type { IrModule } from "../../ir/ir.js";
 import * as ts from "../ts7/adapter.js";
 import {
@@ -140,8 +163,11 @@ interface CopyEffect {
   routed: boolean;
 }
 
-/** A conversion site before the program's observations are asked. */
-type CopySite = Omit<WidthCopyFact, "observed">;
+/** A conversion site before the program's observations are asked. `call`
+ * names the helper call a value-depth copy is made by, for the pass that
+ * turns observed record copies into record views; it never leaves this
+ * module. */
+type CopySite = Omit<WidthCopyFact, "observed"> & { call?: IrExpr & { kind: "call" } };
 
 function copyKindOf(name: string): WidthCopyKind | null {
   if (name.charCodeAt(0) !== 37 /* % */) return null;
@@ -272,14 +298,161 @@ function collectCopies(
     const key = `${site.loc.file}\0${site.loc.start}\0${site.kind}\0${site.depth}\0${site.routed ? 1 : 0}\0${typeKey(site.from)}\0${typeKey(site.to)}`;
     if (seen.has(key)) continue;
     seen.add(key);
+    const fact: CopySite = { ...site };
+    delete fact.call;
     if (!site.aliasable) {
-      facts.push({ ...site, observed: null });
+      facts.push({ ...fact, observed: null });
       continue;
     }
     observations ??= new Observations(lowerer, functions);
-    facts.push({ ...site, observed: observations.of(site) });
+    facts.push({ ...fact, observed: observations.of(site) });
   }
   return facts;
+}
+
+/** Turns the record-to-record copies the program can observe into record
+ * VIEWS (backend/llvm/record-views.ts): the source will be boxed as a live
+ * capsule and checked against the narrower record type, which the backend
+ * answers with a view whose field offsets point at the source's slots. Reads
+ * and writes through either name then reach the same storage, and boxing
+ * either answers the source's capsule, so identity holds as in Node.js.
+ *
+ * Only pairs the program OBSERVES are converted: the same scan that reports
+ * SC6001 decides, and a copy nothing can tell from its object stays a native
+ * copy, so the dynamic field tests a view target pays are confined to
+ * programs that can observe the difference. A pair this pass cannot prove
+ * viewable (a freezable shape, an arm of a shape union) keeps its copies and
+ * its warning. A worker program and one that publishes values have no view
+ * target at all (other threads cannot read one), so those programs keep
+ * every copy. Returns the number of conversions rewritten. */
+export function viewObservedRecordCopies(lowerer: Lowerer, functions: IrFunction[]): number {
+  if (lowerer.usesWorkers) return 0;
+  const helpers = new Map<string, IrFunction>();
+  for (const fn of functions) if (isConversionHelper(fn.name)) helpers.set(fn.name, fn);
+  if (helpers.size === 0) return 0;
+  // A published type has no view target: readers in other threads have no
+  // entry for the value. The IR names the publish call its arguments reach.
+  let publishes = false;
+  for (const fn of functions)
+    everyStmtList(fn.body, {
+      stmt: () => !publishes,
+      expr: (expr) => {
+        if (expr.kind === "intrinsic" && expr.name === "threads.publish") publishes = true;
+        return !publishes;
+      },
+    });
+  if (publishes) return 0;
+  const scan = new CopyScan(helpers, functions, false, (id) => lowerer.unions.get(id)?.arms);
+  const sites = scan.sites().filter(
+    (site) =>
+      site.call !== undefined &&
+      site.kind === "width" &&
+      site.depth === "value" &&
+      !site.routed &&
+      // A collection stores its elements by value in a vector, a Map slot
+      // or a dictionary table, where a view's own storage is what the slot
+      // holds: the copy the store makes is not the object the source names
+      // (an untyped write through the stored element does not reach it).
+      // Those slots keep their copies and their warning.
+      !collectionSlot(site.slot) &&
+      // The call must be the conversion itself, not a routing helper whose
+      // result is another type.
+      typeKey(site.call.type) === typeKey(site.to),
+  );
+  if (sites.length === 0) return 0;
+  const observations = new Observations(lowerer, functions);
+  const pairOf = (site: CopySite): string => `${typeKey(site.from)}\0${typeKey(site.to)}`;
+  const observed = new Set<string>();
+  for (const site of sites) {
+    if (!site.aliasable || observations.of(site) === null) continue;
+    if (!viewableRecordPair(lowerer, site.from, site.to)) continue;
+    observed.add(pairOf(site));
+  }
+  if (observed.size === 0) return 0;
+  const views = new Map<IrExpr & { kind: "call" }, IrType>();
+  for (const site of sites) {
+    if (site.call === undefined || !site.aliasable) continue;
+    if (!observed.has(pairOf(site))) continue;
+    views.set(site.call, site.to);
+  }
+  if (views.size === 0) return 0;
+  let rewritten = 0;
+  for (const fn of functions) {
+    if (helpers.has(fn.name)) continue;
+    fn.body = transformStmtList(fn.body, {
+      stmt: (stmt) => stmt,
+      expr: (expr) => {
+        const target = views.get(expr as IrExpr & { kind: "call" });
+        if (target === undefined) return expr;
+        rewritten++;
+        const call = expr as IrExpr & { kind: "call" };
+        return {
+          kind: "dynCheck",
+          value: { kind: "dynFrom", value: call.args[0]!, liveRef: true, type: DYN, loc: call.loc },
+          type: target,
+          loc: call.loc,
+        };
+      },
+    });
+  }
+  return rewritten;
+}
+
+/** Slots that store a record by value inside a collection: array elements
+ * (a literal, `push`/`unshift`/index stores, the element of a width-lifted
+ * array), Map/Set entries and dictionary tables. A view stored there keeps
+ * its own bytes, so the store's copy is not the source object. */
+function collectionSlot(slot: string): boolean {
+  return (
+    slot === "arrayLit" ||
+    slot === "arraySet" ||
+    slot === "dynSet" ||
+    slot === "recordSet" ||
+    slot.startsWith("arrIntrinsic.") ||
+    slot.startsWith("mapIntrinsic.") ||
+    slot.startsWith("setIntrinsic.")
+  );
+}
+
+/** Whether a wider record `from` can be viewed as the narrower record `to`:
+ * the target's fields all exist in the source with the same types, both
+ * shapes are plain, neither may be frozen, and the target is not an arm of
+ * a shape union (the backend declines views there, and the frontend cannot
+ * see published types, so those programs keep their copies). */
+function viewableRecordPair(lowerer: Lowerer, from: IrType, to: IrType): boolean {
+  if (from.kind !== "record" || to.kind !== "record") return false;
+  const source = lowerer.shapes.get(from.shapeId);
+  const target = lowerer.shapes.get(to.shapeId);
+  if (source === undefined || target === undefined) return false;
+  const plain = (shape: typeof source): boolean =>
+    !shape.tuple &&
+    shape.indexValue === undefined &&
+    !isDirentShape(shape) &&
+    !shapeHasAccessorSlots(shape) &&
+    shapeKeyOrders(shape).length === 1 &&
+    !shape.fields.some((field) => field.name === KEY_ORDER_FIELD || field.name.startsWith("%"));
+  if (!plain(source) || !plain(target)) return false;
+  if (source.freezable === true || target.freezable === true) return false;
+  const sourceFields = new Map(source.fields.map((field) => [field.name, typeKey(field.type)]));
+  if (!target.fields.every((field) => sourceFields.get(field.name) === typeKey(field.type)))
+    return false;
+  // Only a union of TWO OR MORE record shapes tags its arms' reserved word
+  // (the backend's shape union): the target keeps that encoding and cannot
+  // carry a view. A single record arm beside a unit arm (`T | null`) does
+  // not, so it stays viewable.
+  for (const union of lowerer.unions.unions) {
+    const recordArms = union.arms.filter((arm) => arm.kind === "record");
+    if (
+      recordArms.length > 1 &&
+      recordArms.some((arm) => arm.kind === "record" && arm.shapeId === to.shapeId)
+    )
+      return false;
+  }
+  return canDynCheckTo(
+    to,
+    (id) => lowerer.shapes.get(id),
+    (id) => lowerer.unions.get(id),
+  );
 }
 
 /** Finds the copy helper calls of a function list and whether each
@@ -330,7 +503,13 @@ class CopyScan {
         effect.depth === "value"
           ? this.fresh(arg) || PROJECTING_SLOTS.has(slot)
           : this.deepFresh(arg);
-      this.out.push({ ...effect, loc: call.loc, aliasable: !unseen, slot });
+      this.out.push({
+        ...effect,
+        loc: call.loc,
+        aliasable: !unseen,
+        slot,
+        ...(effect.depth === "value" ? { call } : {}),
+      });
     }
   }
 

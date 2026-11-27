@@ -117,6 +117,7 @@ import {
   collectWidthCopies,
   refuseObservedCopies,
   traceWidthCopies,
+  viewObservedRecordCopies,
   widthCopyDivergences,
   type WidthCopyFact,
 } from "./width-copies.js";
@@ -15695,6 +15696,14 @@ export class Lowerer {
     );
     this.timedPass("guardPartialReads", () => guardPartialReads(this, functions));
     this.timedPass("guardFrozenWrites", () => guardFrozenWrites(this, functions, census));
+    // A record copied into a narrower layout that the program can observe
+    // becomes a VIEW of the original instead (record-views.ts), so identity
+    // and writes through either name survive the conversion as in Node.js.
+    // The pairs come from the same scan that reports SC6001; unobserved
+    // copies stay native. After guardFrozenWrites, which decides which
+    // shapes may be frozen: a freezable type keeps its copies, and the
+    // backend declines to view it.
+    this.timedPass("viewObservedRecordCopies", () => viewObservedRecordCopies(this, functions));
     this.timedPass("applyHandleProperties", () => applyHandleProperties(this, functions, census));
     this.timedPass("adoptIslandThenables", () => adoptIslandThenables(this, functions, census));
     this.timedPass("shareIslandProcessState", () =>

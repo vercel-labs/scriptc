@@ -193,6 +193,7 @@ import {
   isCjsModuleGlobal,
   lowerModuleClassStatic,
   lowerNodeModuleProperty,
+  lowerRequireExtensionsProperty,
   lowerRequireMainProperty,
 } from "../lower-node-module.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../../ir/build.js";
@@ -890,6 +891,14 @@ export function lowerPropertyAccessExpr(
     const ref = builtinClassRefOf(lowerer, expr.expression);
     if (ref !== null) return { kind: "strLit", value: ref.name, type: STRING, loc };
   }
+  // `Event.name`, `EventTarget.name`: a stdlib global class with an interned
+  // constructor value (GLOBAL_CONSTRUCTOR_VALUES) answers the name the
+  // runtime's own value carries, which is the global's name in Node.
+  if (expr.name.text === "name" && !expr.questionDotToken) {
+    const canonical = stdlibGlobalNameOf(lowerer, expr.expression);
+    if (canonical !== null && GLOBAL_CONSTRUCTOR_VALUES.has(canonical))
+      return { kind: "strLit", value: canonical, type: STRING, loc };
+  }
   // `x.constructor.name` and `x.constructor` on an instance of
   // EventEmitter or a stream class (builtins/runtime-constructor.ts).
   if (expr.name.text === "name" && !expr.questionDotToken) {
@@ -899,6 +908,33 @@ export function lowerPropertyAccessExpr(
   {
     const ctor = runtimeConstructorReceiver(lowerer, expr);
     if (ctor) return lowerRuntimeConstructor(lowerer, expr, ctor.info);
+  }
+  // `x.constructor` on an instance of a builtin class (Date, Map, Set,
+  // RegExp, Error, a URL, a Response, a typed array's element view, an
+  // HTTP handle, ...): the class object the runtime answers a `.constructor`
+  // read with, read through the checked-dynamic value. That answer is
+  // Node's own — a program subclass of the class reports itself — and it is
+  // the interned constructor `Date === Date` compares equal to, so identity
+  // and `.name` both work. Program classes and the runtime constructor
+  // classes above are claimed before this point.
+  if (expr.name.text === "constructor" && !expr.questionDotToken) {
+    const mapped = lowerer.mapTypeOf(lowerer.typeOf(expr.expression));
+    const info = mapped?.kind === "object" ? lowerer.classes.get(mapped.className) : undefined;
+    const value = mapped?.kind === "object" ? lowerer.lowerExpr(expr.expression) : null;
+    if (
+      value !== null &&
+      (info === undefined || info.decl === null) &&
+      value.type.kind !== "dyn" &&
+      lowerer.dynConvertible(value.type)
+    ) {
+      return {
+        kind: "dynKeyGet",
+        value: lowerer.coerceToExpected(value, DYN),
+        key: { kind: "strLit", value: "constructor", type: STRING, loc },
+        type: DYN,
+        loc,
+      };
+    }
   }
   // `C.name` through a runtime-provided class VALUE (a `typeof Readable`
   // parameter): the class object's stored name.
@@ -966,6 +1002,8 @@ export function lowerPropertyAccessExpr(
   }
   const requireMain = lowerRequireMainProperty(lowerer, expr);
   if (requireMain) return requireMain;
+  const requireExtensions = lowerRequireExtensionsProperty(lowerer, expr);
+  if (requireExtensions) return requireExtensions;
   const moduleProperty = lowerNodeModuleProperty(lowerer, expr);
   if (moduleProperty) return moduleProperty;
   const moduleStatic = lowerModuleClassStatic(lowerer, expr);
@@ -7121,6 +7159,16 @@ const GLOBAL_CONSTRUCTOR_VALUES: ReadonlySet<string> = new Set([
   "BigUint64Array",
   "Proxy",
   ...ERROR_CONSTRUCTOR_VALUES,
+  // The DOM classes the runtime interns a constructor value for (the event
+  // and abort units register them): a program reads `Event` as a value for
+  // identity (`x.constructor === Event`), `.name`, or storage, and the
+  // interned value is what the runtime's own `constructor` reads answer.
+  "Event",
+  "CustomEvent",
+  "EventTarget",
+  "AbortController",
+  "DOMException",
+  "MessageChannel",
 ]);
 
 /** The builtin global functions JavaScript sources read as interned

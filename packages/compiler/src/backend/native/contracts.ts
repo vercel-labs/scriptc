@@ -458,6 +458,7 @@ export interface CcOptions {
   /** The program uses filehandle.readableWebStream: compiles
    * scr_fs_web_stream.c into the binary, and scr_webstreams.c with it. */
   fsWebStream?: boolean;
+  fsUtf8Stream?: boolean;
   /** The executable manifest has a format-5 foreign callback descriptor:
    * compiles the MPSC queue/self-pipe unit. Other FFI and non-FFI binaries
    * keep their existing runtime size class. */

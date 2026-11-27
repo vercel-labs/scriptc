@@ -4991,6 +4991,7 @@ function isJsonSafeAt(
 export const DYN_HANDLE_KINDS: ReadonlyMap<string, { tag: string; cls: string }> = new Map([
   ["child", { tag: "SCR_DYNH_CHILD", cls: "ChildProcess" }],
   ["fileHandle", { tag: "SCR_DYNH_FILE_HANDLE", cls: "FileHandle" }],
+  ["utf8Stream", { tag: "SCR_DYNH_UTF8_STREAM", cls: "Utf8Stream" }],
   ["httpReq", { tag: "SCR_DYNH_HTTP_REQ", cls: "IncomingMessage" }],
   ["httpRes", { tag: "SCR_DYNH_HTTP_RES", cls: "ServerResponse" }],
   ["netSocket", { tag: "SCR_DYNH_NET_SOCKET", cls: "Socket" }],

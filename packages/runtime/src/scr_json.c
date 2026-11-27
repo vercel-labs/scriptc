@@ -122,6 +122,10 @@ void scr_message_set_wrapper_ops(const ScrMessageWrapperOps *ops) {
  * which must stay that value so `new` and a call without `new` behave as
  * Node's global does). A program that never asks keeps this NULL. */
 ScrDyn *(*scr_dyn_global_constructor_hook)(const ScrStr *name) = NULL;
+/* The same lookup by C string, NULL for a name Node has no interned
+ * constructor for: a handle's `.constructor` answer (scr_dyn_handle_key_get)
+ * must not trap on the classes the interned table does not hold. */
+ScrDyn *(*scr_dyn_global_constructor_opt_hook)(const char *name) = NULL;
 /* Set by scr_dyn_invoke.c when a program links it (every program that
  * creates a native Proxy does): the Object.prototype, Array.prototype and
  * Function.prototype members a program's computed key or a trap-less
@@ -10709,6 +10713,18 @@ ScrDyn *scr_dyn_handle_key_get(const ScrDyn *d, const ScrStr *k) {
     return NULL;
   }
   if (!r) r = scr_dynh_method_value(tag, ops, k->data, k->len);
+  /* A handle's `constructor` is the class value the global name reads for
+   * that class (an Event's is the interned Event constructor), so
+   * `e.constructor === Event` and `.constructor.name` are Node's. */
+  if ((!r || r->kind == SCR_DYN_UNDEF) && k->len == 11 &&
+      memcmp(k->data, "constructor", 11) == 0 && ops->cls != NULL &&
+      scr_dyn_global_constructor_opt_hook != NULL) {
+    ScrDyn *interned = scr_dyn_global_constructor_opt_hook(ops->cls); /* +1 or NULL */
+    if (interned != NULL) {
+      scr_dyn_release(r);
+      return interned;
+    }
+  }
   /* A class value's prototype answers the members the handle models none
    * of (its `constructor` names the class value, as Node's instances answer
    * it through their class prototype). */
@@ -12954,6 +12970,13 @@ ScrDyn *scr_dyn_iterator(const ScrDyn *source, const ScrStr *spell) {
 }
 
 static ScrDyn *scr_iterator_read(const ScrDyn *value, const char *key, size_t len) {
+  /* A compiled generator capsule keeps its next/return/throw methods in the
+   * program's getters, not in a materialized view; an async capsule answers
+   * the promise its method returns, which the caller awaits. */
+  if (scr_generator_member_hook && scr_dyn_generator(value)) {
+    ScrDyn *member = scr_generator_member_hook(value, key, len);
+    if (member) return member;
+  }
   if (value->kind == SCR_DYN_TYPED_REF) {
     ScrDyn *view = scr_dyn_typed_ref_materialize(value);
     if (!view) return NULL;
@@ -26312,14 +26335,24 @@ size_t scr_weak_collect_entries(void) { return scr_weak_judge_all(); }
  * its cleanup), so the registry keeps neither the callback nor the held
  * values. A token with a weak lifetime is a key of an internal WeakMap
  * counting its registrations, so it is not kept alive. A token the weak
- * tables cannot key (a handle kind without a weak entry, a copied native
- * value) is held here instead, compared by value, so unregister still
- * answers for the registration the program made; the registry releases
- * those tokens with itself. */
+ * tables cannot key (a handle kind without a weak entry, a typed reference,
+ * a copied native value) is remembered here instead, so unregister still
+ * answers for the registration the program made: by the identity the token
+ * answers with (a handle's native object, a reference's target) and without
+ * a reference to the token — a discarded token, with whatever payload its
+ * handle carries, is freed with the program's last reference to it. Only a
+ * value that is compared by its own copy is kept. */
+typedef struct {
+  bool by_value;   /* compare `value` with strict equality */
+  ScrDyn *value;   /* +1 when by_value, else NULL */
+  int64_t kind;    /* a handle tag, or -1 for a typed reference */
+  void *identity;  /* the native object the token stands for */
+} ScrFinalizationHeld;
+
 typedef struct {
   size_t rc;
   ScrDyn *tokens; /* WeakMap: token -> registration count */
-  ScrDyn **held_tokens; /* tokens with no weak lifetime, compared by value */
+  ScrFinalizationHeld *held_tokens; /* tokens with no weak map entry */
   size_t held_len, held_cap;
 } ScrFinalizationRegistry;
 
@@ -26334,7 +26367,9 @@ static void scr_finalization_registry_release(void *ptr) {
   /* Weak collections keyed by the registry drop their entries. */
   scr_weak_dispose(registry);
   scr_dyn_release(registry->tokens);
-  for (size_t i = 0; i < registry->held_len; i++) scr_dyn_release(registry->held_tokens[i]);
+  for (size_t i = 0; i < registry->held_len; i++) {
+    if (registry->held_tokens[i].value) scr_dyn_release(registry->held_tokens[i].value);
+  }
   /* The token array grows through scr_mem_realloc, whose block belongs to
    * the small-object allocator: it goes back through scr_mem_free (which
    * also takes a system block), never through the C library's free. */
@@ -26342,28 +26377,60 @@ static void scr_finalization_registry_release(void *ptr) {
   free(registry);
 }
 
+/* The identity a token with no weak map entry answers unregister with: a
+ * handle's native object (with its tag), a typed reference's target. False
+ * for a value that has only its own copy to compare. */
+static bool scr_finalization_identity(const ScrDyn *token, int64_t *kind, void **identity) {
+  if (token->kind == SCR_DYN_HANDLE) {
+    *kind = (int64_t)token->v.handle.tag;
+    *identity = token->v.handle.ptr;
+    return true;
+  }
+  if (token->kind == SCR_DYN_TYPED_REF) {
+    *kind = -1;
+    *identity = token->v.typed_ref.ptr;
+    return true;
+  }
+  return false;
+}
+
 /* The position of a token the weak tables cannot key, compared the way
- * JavaScript compares the token it is handed back (a handle's own identity,
- * a copied value's own), or -1. */
+ * JavaScript compares the token it is handed back: by the identity it
+ * answers with, or by its own copy for a value that has none, else -1. */
 static long scr_finalization_held_index(const ScrFinalizationRegistry *registry,
                                         const ScrDyn *token) {
-  for (size_t i = 0; i < registry->held_len; i++)
-    if (scr_dyn_strict_eq(registry->held_tokens[i], token)) return (long)i;
+  int64_t kind = 0;
+  void *identity = NULL;
+  bool has_identity = scr_finalization_identity(token, &kind, &identity);
+  for (size_t i = 0; i < registry->held_len; i++) {
+    const ScrFinalizationHeld *held = &registry->held_tokens[i];
+    if (!held->by_value) {
+      if (has_identity && held->kind == kind && held->identity == identity) return (long)i;
+    } else if (!has_identity && held->value && scr_dyn_strict_eq(held->value, token)) {
+      return (long)i;
+    }
+  }
   return -1;
 }
 
-/* Keep a token with no weak lifetime, once (one entry answers every
- * registration with it, as the count does for a weak key). */
-static void scr_finalization_hold(ScrFinalizationRegistry *registry, ScrDyn *token) {
+/* Remember a token with no weak map entry once (one entry answers every
+ * registration with it, as the count does for a weak key), by identity and
+ * not by reference. */
+static void scr_finalization_hold(ScrFinalizationRegistry *registry, const ScrDyn *token) {
   if (scr_finalization_held_index(registry, token) >= 0) return;
   if (registry->held_len == registry->held_cap) {
     size_t cap = registry->held_cap ? registry->held_cap * 2 : 4;
-    ScrDyn **grown = scr_mem_realloc(registry->held_tokens, cap * sizeof *grown);
+    ScrFinalizationHeld *grown =
+        scr_mem_realloc(registry->held_tokens, cap * sizeof *grown);
     if (!grown) scr_json_oom();
     registry->held_tokens = grown;
     registry->held_cap = cap;
   }
-  registry->held_tokens[registry->held_len++] = scr_dyn_retain(token);
+  ScrFinalizationHeld *entry = &registry->held_tokens[registry->held_len++];
+  entry->kind = 0;
+  entry->identity = NULL;
+  entry->by_value = !scr_finalization_identity(token, &entry->kind, &entry->identity);
+  entry->value = entry->by_value ? scr_dyn_retain((ScrDyn *)token) : NULL;
 }
 
 static void scr_finalization_type_error(const char *message) {
@@ -26482,10 +26549,10 @@ static ScrDyn *scr_finalization_registry_invoke(void *ptr, ScrDyn *self, const c
     if (kind == SCR_WEAK_UNTRACKED_KIND) {
       long at = scr_finalization_held_index(registry, first);
       if (at < 0) return scr_dyn_new_bool(false);
-      ScrDyn *held = registry->held_tokens[at];
+      ScrFinalizationHeld *held = &registry->held_tokens[at];
+      if (held->value) scr_dyn_release(held->value);
       registry->held_len--;
       registry->held_tokens[at] = registry->held_tokens[registry->held_len];
-      scr_dyn_release(held);
       return scr_dyn_new_bool(true);
     }
     ScrWeakEntry *entry = scr_weak_find(tokens, identity, kind);
@@ -27541,6 +27608,7 @@ void scr_class_throw_not_extensible(ScrStr *field) {
 
 static SCR_TL ScrDyn *scr_generator_next_getter;
 static SCR_TL ScrDyn *scr_generator_return_getter;
+static SCR_TL ScrDyn *scr_generator_throw_getter;
 /* Set with the getters, so only programs that register them link the
  * iterator helpers through these paths. External, so the compiler keeps
  * the calls through them indirect. */
@@ -27554,18 +27622,23 @@ static bool scr_generator_helper_invoke(ScrDyn *recv, const char *method, ScrDyn
 static void scr_generator_members_cleanup(void) {
   scr_dyn_release(scr_generator_next_getter);
   scr_dyn_release(scr_generator_return_getter);
+  scr_dyn_release(scr_generator_throw_getter);
   scr_generator_next_getter = NULL;
   scr_generator_return_getter = NULL;
+  scr_generator_throw_getter = NULL;
   scr_generator_member_hook = NULL;
   scr_dyn_generator_helper_hook = NULL;
 }
 
-void scr_dyn_set_generator_members(ScrDyn *next_getter, ScrDyn *return_getter) {
+void scr_dyn_set_generator_members(ScrDyn *next_getter, ScrDyn *return_getter,
+                                   ScrDyn *throw_getter) {
   if (!scr_generator_next_getter) scr_atexit(scr_generator_members_cleanup);
   scr_dyn_release(scr_generator_next_getter);
   scr_dyn_release(scr_generator_return_getter);
+  scr_dyn_release(scr_generator_throw_getter);
   scr_generator_next_getter = scr_dyn_retain(next_getter);
   scr_generator_return_getter = scr_dyn_retain(return_getter);
+  scr_generator_throw_getter = scr_dyn_retain(throw_getter);
   scr_generator_member_hook = &scr_generator_member;
   scr_dyn_generator_helper_hook = &scr_generator_helper_invoke;
 }
@@ -27574,11 +27647,13 @@ static bool scr_dyn_sync_generator(const ScrDyn *value) {
   return scr_dyn_generator(value) && value->v.typed_ref.type_key[0] == 'g';
 }
 
-/* A synchronous generator capsule's next or return method (+1), read
- * through the program's registered getters. NULL for other keys. */
+/* A generator capsule's next, return or throw method (+1), read through the
+ * program's registered getters. NULL for other keys. */
 static ScrDyn *scr_generator_member(const ScrDyn *capsule, const char *key, size_t len) {
-  ScrDyn *getter = len == 4 && !memcmp(key, "next", 4) ? scr_generator_next_getter
-    : len == 6 && !memcmp(key, "return", 6) ? scr_generator_return_getter : NULL;
+  ScrDyn *getter = len == 4 && !memcmp(key, "next", 4)                  ? scr_generator_next_getter
+                   : len == 6 && !memcmp(key, "return", 6)              ? scr_generator_return_getter
+                   : len == 5 && !memcmp(key, "throw", 5)               ? scr_generator_throw_getter
+                                                                        : NULL;
   if (!getter) return NULL;
   ScrDyn *args[1] = { (ScrDyn *)capsule };
   return scr_dyn_call(getter, args, 1, "next");

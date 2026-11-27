@@ -394,6 +394,7 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // filehandle.readableWebStream's byte stream over the handle's reads,
   // its own gate (it links the FileHandle and web stream units with it).
   unit((u) => u.opts.fsWebStream === true, "scr_fs_web_stream.c"),
+  unit((u) => u.opts.fsUtf8Stream === true, "scr_fs_utf8_stream.c"),
   // scr_dyn_handle_class.c also carries the class installs dns.Resolver and
   // dns/promises' Resolver need (scr_dns_resolve.c's own class row) and the
   // one node:module's Module class value needs (scr_module_class.c), so a

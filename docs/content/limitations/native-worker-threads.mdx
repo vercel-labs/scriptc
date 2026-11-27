@@ -16,6 +16,7 @@ Runtime paths, `eval`, loaders, and shared environments are unsupported.
 Worker argument strings containing null bytes are also unsupported.
 
 Workers support `online`, `message`, `error`, and `exit` events, `postMessage`, `terminate`, `ref`, `unref`, `cpuUsage`, whose promise the worker's thread answers with its own CPU time, and `performance.eventLoopUtilization`, whose values advance when the worker's loop turns, as in Node.
+`worker.getHeapStatistics()` answers V8's heap-statistics field names and order, and rejects with `ERR_WORKER_NOT_RUNNING` before the worker's `online` event and after it exited, as in Node; the figures are the runtime heap's own sample, which is the process's single heap, where Node reports the worker's own V8 isolate.
 `worker[Symbol.asyncDispose]()` terminates the worker and resolves with `undefined` after its `exit` event, so `await using` disposes a Worker at the end of its block.
 A worker's uncaught exception reaches its `error` listeners as Node's error serializer sends it: an Error keeps the nearest of `Error` and its six native subclasses (an `AggregateError` arrives as an `Error` named `AggregateError`) along with its name, message, cause, and other data properties and their enumerability, and other thrown values clone as messages do.
 An unhandled rejection whose reason is not error-like arrives as an `UnhandledPromiseRejection` Error with code `ERR_UNHANDLED_REJECTION` quoting the reason.
@@ -26,6 +27,7 @@ Port messages arrive in Node's order: each port's queued messages as one batch b
 A worker's messages to its parent, and the parent's messages in the worker, also arrive as one batch before `setImmediate` callbacks, each followed by its microtasks, as in Node: the messages queued when delivery starts, and those that arrive meanwhile until the batch holds 1000.
 `receiveMessageOnPort(parentPort)` in a worker takes the parent's next message.
 A port delivers each message to its `onmessage` handler and its `addEventListener` listeners as a `'message'` `MessageEvent`, and holds an `onmessageerror` handler the way Node does.
+A port's `on`-family and `addEventListener` listeners count, list and remove together, as Node's single listener map does; because they live in two stores, a function registered through both spellings counts and serves twice where Node keeps one entry, and an `emit` runs one kind after the other in the order the type's first registration came from rather than their exact interleaving.
 `BroadcastChannel` delivers each message to every other open channel with the same name, in any thread, as a `'message'` `MessageEvent` through `onmessage` and `addEventListener`; an open channel keeps the process alive until `close()` or `unref()`.
 A `messageerror` event is never dispatched: every message is produced by the same encoder that reads it, so one cannot arrive that the receiver fails to deserialize; a Worker accepts a `'messageerror'` listener, and a port or channel holds an `onmessageerror` handler, as in Node.
 The parent port supports message listeners, `postMessage`, `close`, `start`, `ref`, `unref`, and `hasRef`.

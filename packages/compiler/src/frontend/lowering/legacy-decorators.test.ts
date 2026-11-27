@@ -113,6 +113,49 @@ test("a legacy method decorator runs after the static initializers, with a metho
   expect(defines.length).toBeGreaterThan(0);
 });
 
+test("a legacy property decorator gets (target, key, undefined) and defines nothing", async () => {
+  const source = [
+    "function mark(): (t: object, k: string) => void {",
+    "  return (t: object, k: string): void => { console.log(k); };",
+    "}",
+    "class Widget {",
+    "  @mark()",
+    "  name = 'w';",
+    "}",
+    "console.log(new Widget().name);",
+    "",
+  ].join("\n");
+  const mod = await lower(source, legacyTsconfig);
+  const init = initFunction(mod);
+  const expressions = exprs(init);
+  const application = expressions.find((e) => e.kind === "dynCall" && e.calleeName === "decorator");
+  expect(application).toBeDefined();
+  if (application?.kind !== "dynCall") throw new Error("expected a dynamic call");
+  expect(application.args).toHaveLength(3);
+  const defines = expressions.filter((e) => e.kind === "libCall" && e.fn === "dyn.defineProperty");
+  expect(defines).toHaveLength(0);
+});
+
+test("constructor parameter decorators decorate a class with no class decorator", async () => {
+  const source = [
+    "function inject(): (t: object, k: string | symbol | undefined, i: number) => void {",
+    "  return (t: object, k: string | symbol | undefined, i: number): void => { console.log(k, i); };",
+    "}",
+    "class Widget {",
+    "  constructor(@inject() public dep: number) {}",
+    "}",
+    "console.log(new Widget(1).dep);",
+    "",
+  ].join("\n");
+  const mod = await lower(source, legacyTsconfig);
+  const init = initFunction(mod);
+  const application = exprs(init).find((e) => e.kind === "dynCall" && e.calleeName === "decorator");
+  expect(application).toBeDefined();
+  if (application?.kind !== "dynCall") throw new Error("expected a dynamic call");
+  // (class, undefined, index)
+  expect(application.args).toHaveLength(3);
+});
+
 test("a class whose only decoration is a method decorator still runs it", async () => {
   const source = [
     "function make(): (t: object, k: string, d: PropertyDescriptor) => void {",
@@ -224,6 +267,84 @@ test("legacy method decorators on a base with a generic subclass are refused", a
     "",
   ].join("\n");
   const dir = await mkdtemp(join(tmpdir(), "scriptc-legacy-decorators-generic-"));
+  try {
+    const entry = join(dir, "main.ts");
+    await writeFile(entry, source);
+    await writeFile(join(dir, "tsconfig.json"), JSON.stringify(legacyTsconfig));
+    const result = await compile(entry, {
+      outDir: dir,
+      outPath: join(dir, "main.ir.json"),
+      outputKind: "ir",
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected a refusal");
+    expect(result.diagnostics.map((d) => d.code)).toContain("SC1090");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+async function refusalCodes(source: string, tsconfig: object): Promise<string[]> {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-legacy-decorators-refusal-"));
+  try {
+    const entry = join(dir, "main.ts");
+    await writeFile(entry, source);
+    await writeFile(join(dir, "tsconfig.json"), JSON.stringify(tsconfig));
+    const result = await compile(entry, {
+      outDir: dir,
+      outPath: join(dir, "main.ir.json"),
+      outputKind: "ir",
+    });
+    if (result.ok) return [];
+    return result.diagnostics.map((d) => d.code);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+test("a parameter-only method decorator with a generic subclass is a diagnostic, not a crash", async () => {
+  const source = [
+    "function p(): (t: object, k: string | symbol | undefined, i: number) => void {",
+    "  return (t: object, k: string | symbol | undefined, i: number): void => { console.log(i); };",
+    "}",
+    "class Base {",
+    "  m(@p() x: number): number { return x; }",
+    "}",
+    "class Sub<T> extends Base {}",
+    "console.log(new Sub<number>().m(1));",
+    "",
+  ].join("\n");
+  expect(await refusalCodes(source, legacyTsconfig)).toContain("SC1090");
+});
+
+test("a constructor parameter decorator on a parameter property is refused with constructor-assigned fields", async () => {
+  const source = [
+    "function validate(t: object, k: string | symbol | undefined, i: number): void { console.log(i); }",
+    "class C {",
+    "  constructor(@validate public x: number) {}",
+    "}",
+    "console.log(new C(1).x);",
+    "",
+  ].join("\n");
+  const assignTsconfig = {
+    compilerOptions: { ...legacyTsconfig.compilerOptions, target: "ES2021" },
+  };
+  expect(await refusalCodes(source, assignTsconfig)).toContain("SC1090");
+});
+
+test("a dynamic legacy class decorator on a base with subclasses is refused", async () => {
+  const source = [
+    "type LegacyClassDecorator = <T>(target: T) => T | void;",
+    "function injectable(): LegacyClassDecorator {",
+    "  return <T>(target: T): T | void => { return undefined; };",
+    "}",
+    "@injectable()",
+    "class Base {}",
+    "class Sub extends Base {}",
+    "console.log(new Sub() instanceof Base);",
+    "",
+  ].join("\n");
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-legacy-decorators-dynamic-sub-"));
   try {
     const entry = join(dir, "main.ts");
     await writeFile(entry, source);

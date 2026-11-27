@@ -131,6 +131,10 @@ const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
   "worker.setEnvironmentData",
   "worker.getEnvironmentData",
   "worker.broadcastChannel",
+  // callback while the lock is held.
+
+  // The heap figures are sampled and the promise may reject.
+
   "process.exit",
   // process.exit(expr) and the exitCode writes convert the value with
   // Node's setter rules: the non-numeric-string TypeError, the Symbol and
@@ -284,6 +288,10 @@ const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
   "fetch.responseError",
   "fetch.responseRedirect",
   "fetch.responseJsonStatic",
+  // Response.blob() is a body collector like the siblings above: a receiver
+  // that is not a fetch response throws "Illegal invocation" before its
+  // promise exists.
+  "fetch.responseBlob",
   "abort.timeout",
   "abort.any",
   "event.new",
@@ -1537,6 +1545,7 @@ const MAY_THROW_LIB_FNS_PART_5: readonly IrLibFn[] = [
   "fs.readFileChk",
   "fs.opendirChk",
   "fs.watchFileChk",
+  "fs.utf8StreamNew",
   "fs.lchmodChk",
   "fs.lchmodSyncChk",
   "fsp.lchmodChk",

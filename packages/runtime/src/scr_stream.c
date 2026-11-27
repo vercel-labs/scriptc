@@ -2127,7 +2127,10 @@ static ScrStream *scr_from_dyn_ex(ScrDyn *src, ScrDyn *opts, bool duplex) {
     kind = scr_dyn_iterable_kind(src);
     if (kind < 0) return NULL;
   } else if (!single) {
-    iter = scr_dyn_from_iterator(src, &kind);
+    /* A compiled generator an object's iterator method returns is stepped
+     * through its checked-dynamic next/return members, as for await steps
+     * one: from.js opens the same iterator either way. */
+    iter = scr_dyn_open_iterator(src, &kind, true);
     if (kind < 0) return NULL;
   }
   if (!single && kind == 0) {
@@ -10392,7 +10395,24 @@ ScrDyn *scr_stream_dyn_source_value(const ScrDyn *value, bool returned) {
     if (scr_exc_pending()) return NULL;
     return scr_dyn_retain((ScrDyn *)value);
   }
-  if (scr_stream_dyn_stage_returned_stream(value)) return NULL;
+  /* A source function's result is pipelineImpl's isIterable(ret, true): a
+   * readable stream answers an iterator, so it is pumped like one, where a
+   * transform stage's result must be an iterable. A stream of the other side
+   * is Node's invalid-return error naming the class. */
+  ScrStream *native = scr_stream_of_handle(value);
+  if (!native) native = scr_stream_boxed(value);
+  if (native) {
+    bool readable = native->st->has_r;
+    char cls[64];
+    snprintf(cls, sizeof cls, "%s", native->cls ? native->cls : "Stream");
+    scr_stream_release(native);
+    if (!readable) {
+      if (!scr_exc_pending())
+        scr_stream_throw_invalid_return_class("Iterable, AsyncIterable or Stream", "source", cls);
+      return NULL;
+    }
+    return scr_dyn_retain((ScrDyn *)value);
+  }
   int kind = scr_dyn_iterable_kind(value);
   if (kind < 0) return NULL;
   if (kind == 0) {

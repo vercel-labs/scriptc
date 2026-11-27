@@ -744,6 +744,12 @@
   "code": "SC2020"
  },
  {
+  "file": "scr_fs_utf8_stream.c",
+  "function": "scr_u8_invoke",
+  "message": "fs.Utf8Stream member is not supported yet [SC2020]",
+  "code": "SC2020"
+ },
+ {
   "file": "scr_glob.c",
   "function": "scr_fs_glob",
   "message": "fs.glob exclude functions with withFileTypes have no native lowering",
@@ -1330,6 +1336,12 @@
   "function": "scr_dyn_get_own_property_descriptors",
   "message": "Object.getOwnPropertyDescriptors on this value is not supported yet",
   "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_for_in_keys",
+  "message": "for-in over this checked-dynamic kind is not supported yet",
+  "code": "SC1090"
  },
  {
   "file": "scr_json.c",

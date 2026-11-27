@@ -181,7 +181,11 @@ import {
   type ScrDiagnostic,
 } from "./diagnostics/diagnostic.js";
 import { libnodeCacheKey, libnodeTarget } from "./node-islands/libnode.js";
-import { loadLibraryProfile, type LibraryProfile } from "./library/library-profile.js";
+import {
+  emittedSourcePath,
+  loadLibraryProfile,
+  type LibraryProfile,
+} from "./library/library-profile.js";
 import { clearFenceEvalCaches, decorateLibraryRefusals } from "./library/fence-eval.js";
 import {
   canonicalModuleGraph,
@@ -367,6 +371,7 @@ export {
   type ResolvedLibraryFence,
 } from "./library/fence-eval.js";
 export {
+  emittedSourcePath,
   loadLibraryProfile,
   profileTeaching,
   profileRemediation,
@@ -923,6 +928,7 @@ async function compileExecutableNative(
     ...(features.largePages ? { largePages: true } : {}),
     ...(features.webStreams ? { webStreams: true } : {}),
     ...(features.fsWebStream ? { fsWebStream: true } : {}),
+    ...(features.fsUtf8Stream ? { fsUtf8Stream: true } : {}),
     // The C-source link (a sanitized build) compiles the runtime itself, so it
     // needs the same Blob/File body define the runtime pack selects.
     ...(features.webBodies ? { webBodies: true } : {}),
@@ -3104,6 +3110,9 @@ async function compileLibraryTracked(
       // A dev library carries the sources a dev executable does, so native
       // debuggers and stack frames name the TypeScript lines.
       ...(carriesDebugSources(profile.optimization, false) ? { debugSources: sourceTexts } : {}),
+      ...(profile.filePrefixMap.length === 0
+        ? {}
+        : { sourcePathMap: (file: string) => emittedSourcePath(profile, file) }),
     });
     timing("llvm-emit", {
       output_bytes:

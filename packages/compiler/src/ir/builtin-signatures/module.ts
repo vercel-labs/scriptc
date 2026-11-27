@@ -69,6 +69,10 @@ export const moduleSignatures = defineLibFnSignatures({
   "module.dynObjectOrAbsent": { argTypes: [F64], result: DYN },
   "module.dynOf": { argTypes: [DYN], result: DYN },
   "module.setExportsDyn": { argTypes: [F64, DYN], result: VOID },
+  /** require.extensions / Module._extensions: Node's loader table as one
+   * shared null-prototype object whose three handlers refuse when called.
+   * Never throws. */
+  "module.extensions": { argTypes: [], result: DYN },
   /** node:module's source-map support (scr_lib.c). A compiled program
    * registers no source map, so the record answers the flags the program
    * set (Node's frozen { enabled, nodeModules, generatedCode }) and

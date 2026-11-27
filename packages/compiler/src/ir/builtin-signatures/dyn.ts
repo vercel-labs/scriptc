@@ -108,7 +108,7 @@ export const dynSignatures = defineLibFnSignatures({
   "dyn.iteratorCanStep": { argTypes: [DYN, DYN], result: BOOL },
   "dyn.iteratorStep": { argTypes: [DYN], result: DYN },
   "dyn.iteratorStepDone": { argTypes: [DYN], result: BOOL },
-  "dyn.setGeneratorMembers": { argTypes: [DYN, DYN], result: VOID },
+  "dyn.setGeneratorMembers": { argTypes: [DYN, DYN, DYN], result: VOID },
   "dyn.iteratorHelperMethod": { argTypes: [STRING], result: DYN },
   "dyn.collectionIteratorIndex": { argTypes: [DYN], result: F64 },
   "dyn.mapSeedEntries": { argTypes: [DYN], result: DYN },

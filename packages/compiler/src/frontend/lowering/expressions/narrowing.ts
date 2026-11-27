@@ -2211,9 +2211,15 @@ function throughUnknownAssertion(
  * a record is never an array), or `from` is no layout at all. Record and
  * class are left to the checker: an instance's fields can serve a record,
  * and a class assertion is checked against the class at run time. */
-function layoutKindsCannotMatch(from: IrType, to: IrType): boolean {
+function layoutKindsCannotMatch(lowerer: Lowerer, from: IrType, to: IrType): boolean {
   // A dynamic source is not judged: its value can be anything.
   if (from.kind === "union" || from.kind === "dyn") return false;
+  // A tuple is a record with positional fields, and a tuple and an array of
+  // the matching elements convert on either side (arrTuple/tupleArr), so an
+  // assertion between them is representable rather than impossible.
+  const tuple = (type: IrType): boolean =>
+    type.kind === "record" && lowerer.shapes.get(type.shapeId)?.tuple === true;
+  if (tuple(from) || tuple(to)) return false;
   const family = (t: IrType): "array" | "record" | "object" | "other" =>
     t.kind === "array"
       ? "array"
@@ -2271,7 +2277,7 @@ function noteDoubleAssertionWarning(
       return null;
     }
   })();
-  if (sourceType !== null && layoutKindsCannotMatch(sourceType, target))
+  if (sourceType !== null && layoutKindsCannotMatch(lowerer, sourceType, target))
     lowerer.noteCastThroughUnknown(
       expr,
       ts.getTextOfNode(expr),

@@ -483,7 +483,9 @@ export function paramShape(lowerer: Lowerer, param: ts.ParameterDeclaration): Pa
   const stage = lowerer.stageSourceType(param.name);
   if (stage) return { type: stage, mode: "required" };
   if (isJsSourceFile(ts.getSourceFileOfNode(param)) && ts.isSetAccessorDeclaration(param.parent))
-    return { type: DYN, mode: "required" };
+    return param.initializer !== undefined
+      ? { type: DYN, mode: "omittable", bodyType: DYN }
+      : { type: DYN, mode: "required" };
   // A JavaScript parameter among the bindings a for-in head writes keys into
   // (or that stores one) takes checked-dynamic storage in its slot too
   // (analyzeJsForInKeyBindings, analyzeJsWidenedBindings): the loop writes the

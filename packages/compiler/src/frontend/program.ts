@@ -8787,6 +8787,16 @@ function preflightGate7(load: LoadResult): PreflightGate {
     return false;
   };
 
+  /* TS1052 on a JavaScript setter parameter with a default
+   * (`set x(v = 1) {}`): the grammar rule belongs to TypeScript. The
+   * initializer is legal JavaScript and Node applies the default when the
+   * assigned value is undefined, which the lowering's omittable parameter
+   * prologue already does (call-signatures.ts's paramShape takes the
+   * initializer as an omittable dynamic parameter). A checked JavaScript
+   * file keeps no other opinion about it. */
+  const jsSetterParameterInitializerSuppressed = (d: ts.Diagnostic): boolean =>
+    d.code === 1052 && d.fileName !== undefined && isJsSourceFileName(d.fileName);
+
   // A `return` at the top level of a CommonJS module (TS1108): Node runs
   // the module as a function body, so the return ends the module's
   // evaluation. ES modules and TypeScript keep the error.
@@ -8963,6 +8973,7 @@ function preflightGate7(load: LoadResult): PreflightGate {
       !cjsTopLevelReturnSuppressed(p, d) &&
       !jsdocTypeSuppressed(p, d, commentDup) &&
       !jsdocOptionalSetterParameterSuppressed(p, d) &&
+      !jsSetterParameterInitializerSuppressed(d) &&
       !parameterPropertyOrderSuppressed(p, d, load.parameterPropertiesFirst);
     // Every filter except the opinion admission, in its historical order.
     const keptApartFromOpinion = (d: ts.Diagnostic): boolean =>

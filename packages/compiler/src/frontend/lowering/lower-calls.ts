@@ -53,6 +53,7 @@ import {
   lowerResponseStaticRedirect,
 } from "./lower-stdlib.js";
 import { lowerArrayCallbackCall } from "./containers/array-callback-call.js";
+import { lowerUnionSearchMethodCall } from "./union-receiver-methods.js";
 /** Dispatch source calls, builtin members and receiver-specific operations.
  * Signature collection, argument completion and function bodies have their
  * own owners; this module selects the applicable call path. */
@@ -2498,6 +2499,14 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
           loc: locOf(expr),
         };
       }
+    }
+    // A search call on a union the value holds as a string or an array
+    // (`string | string[]` headers): each arm runs its own method, chosen
+    // by the arm tag (union-receiver-methods.ts). Before the lib fence,
+    // which has no union form of the member.
+    {
+      const unionSearch = lowerUnionSearchMethodCall(lowerer, expr, expr.expression);
+      if (unionSearch) return unionSearch;
     }
     // The lib fence's METHOD-CALL chokepoint: a stdlib-declared member
     // that every lowering above declined — an unlowered member

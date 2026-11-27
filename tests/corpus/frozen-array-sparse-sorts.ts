@@ -47,6 +47,19 @@ attempt("comparator dense", () => holes(2, [[0, "b"], [1, "a"]]), (a) => a.sort(
 console.log("calls", calls);
 attempt("comparator hole first", () => holes(3, [[0, "c"], [2, "a"]]), (a) => a.sort(compare));
 
+// With dense and sparse entries together, a present entry in the sparse
+// tail can be the first write a backward copyWithin needs even while the
+// dense prefix holds a value, and the other way round.
+attempt("mixed copyWithin target sparse", () => holes(5, [[0, "a"], [4, "e"]]), (a) =>
+  a.copyWithin(3, 1),
+);
+attempt("mixed copyWithin dense below range", () => holes(6, [[0, "a"], [1, "b"], [2, "c"], [5, "f"]]), (a) =>
+  a.copyWithin(1, 0),
+);
+attempt("mixed copyWithin source sparse", () => holes(5, [[0, "a"], [1, "b"], [4, "e"]]), (a) =>
+  a.copyWithin(0, 1),
+);
+
 // The first reversed pair that writes is the one with the lowest lower half,
 // even when only the upper half of an earlier pair is present.
 attempt("reverse upper pairs", () => holes(6, [[4, "d"], [5, "e"]]), (a) => a.reverse());
@@ -66,6 +79,11 @@ attempt("sparse reverse single", () => hugeSparse(far + 1, [[far, "z"]]), (a) =>
 attempt("sparse sort single", () => hugeSparse(far + 1, [[far, "z"]]), (a) => a.sort(), false);
 attempt("sparse sort holes", () => hugeSparse(far + 1, []), (a) => a.sort(), false);
 attempt("sparse copyWithin", () => hugeSparse(far + 1, [[far, "z"]]), (a) => a.copyWithin(0, far), false);
+// The sparse tail decides a backward copyWithin even when a dense entry
+// sits below both ranges: its entry names the first write.
+attempt("sparse mixed copyWithin target", () => hugeSparse(far + 3, [[0, "a"], [far + 2, "z"]]), (a) =>
+  a.copyWithin(far, far - 1),
+false);
 // The largest array index keeps its presence through the set guard.
 const writable: string[] = [];
 writable[4294967294] = "kept";

@@ -2486,6 +2486,17 @@ static bool scr_frozen_present(const ScrArr *a, size_t len, size_t index) {
  * same order scr_arr_next_present reads in the other direction, so a sparse
  * array with a huge length costs its present entries, not its holes. */
 static size_t scr_frozen_prev_present(const ScrArr *a, size_t len, size_t before) {
+  /* The sparse tail's entries sit above the dense prefix, so the largest
+   * present index below `before` is there whenever the tail has one inside
+   * that bound; only otherwise does the dense scan decide. Reading the
+   * dense side first would return a smaller index and hide the write the
+   * sparse entry names. */
+  size_t pos = scr_arr_sparse_lower_bound(SCR_AX(a)->sparse, SCR_AX(a)->sparse_len, before);
+  while (pos > 0) {
+    size_t index = SCR_AX(a)->sparse[pos - 1].index;
+    if (index < len && scr_frozen_present(a, len, index)) return index;
+    pos--;
+  }
   size_t end = a->cap < len ? a->cap : len;
   if (before < end) end = before;
   if (scr_arr_has_states(a)) {
@@ -2496,8 +2507,6 @@ static size_t scr_frozen_prev_present(const ScrArr *a, size_t len, size_t before
   } else if (end > 0) {
     return end - 1;
   }
-  size_t pos = scr_arr_sparse_lower_bound(SCR_AX(a)->sparse, SCR_AX(a)->sparse_len, before);
-  if (pos > 0 && SCR_AX(a)->sparse[pos - 1].index < len) return SCR_AX(a)->sparse[pos - 1].index;
   return SIZE_MAX;
 }
 

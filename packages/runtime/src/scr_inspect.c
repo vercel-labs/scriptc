@@ -59,6 +59,10 @@ static void ib_grow(InspBuf *b, size_t need) {
 }
 
 static void ib_bytes(InspBuf *b, const char *s, size_t len) {
+  /* An empty append touches nothing: the buffer has no storage yet, so the
+   * copy would name a null destination (undefined behavior UBSan reports,
+   * and the fuzz lane has to switch the check off for). */
+  if (len == 0) return;
   ib_grow(b, len);
   memcpy(b->data + b->len, s, len);
   b->len += len;

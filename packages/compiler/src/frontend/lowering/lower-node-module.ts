@@ -995,6 +995,11 @@ export function lowerModuleRequireResultMember(
   expr: ts.PropertyAccessExpression,
 ): IrExpr | null {
   if (expr.questionDotToken) return null;
+  // A private name (#x) is never a plain property read: it runs the brand
+  // check of the class that declares it, which throws Node's TypeError when
+  // the value is not one of that class's instances. Reading it here as a
+  // public member would let a dynamic value fake private state.
+  if (ts.isPrivateIdentifier(expr.name)) return null;
   const recv = withoutParenthesesTypeWrappers(expr.expression);
   if (!ts.isIdentifier(recv)) return null;
   const decl = lowerer.checker

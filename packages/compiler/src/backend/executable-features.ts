@@ -112,6 +112,7 @@ export function executableLinkFeatures(
     ...(features.sqlite ? { sqlite: true } : {}),
     ...(features.webStreams || features.fsWebStream ? { webStreams: true } : {}),
     ...(features.fsWebStream ? { fsWebStream: true } : {}),
+    ...(features.fsUtf8Stream ? { fsUtf8Stream: true } : {}),
     ...(features.webBodies ? { webBodies: true } : {}),
     ...(abortSignal ? { abortSignal: true } : {}),
     ...(features.utilTiming ? { utilTiming: true } : {}),

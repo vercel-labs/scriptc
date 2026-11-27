@@ -31,6 +31,8 @@ export interface NativeLinkFeatures {
   fsOpenAsBlob?: boolean;
   /** filehandle.readableWebStream: scr_fs_web_stream.c. */
   fsWebStream?: boolean;
+  /** fs.Utf8Stream: scr_fs_utf8_stream.c, the buffered file writer. */
+  fsUtf8Stream?: boolean;
   fetch: boolean;
   eventTarget?: boolean;
   /** The WebAssembly API (scr_wasm.c). Absent when unused, so programs
@@ -525,6 +527,7 @@ export const LINK_FEATURE_REQUIREMENTS: readonly LinkFeatureRequirement[] = [
   { feature: "pki", requires: ["mlkem"] },
   { feature: "mlkem", requires: ["pki"] },
   { feature: "fsWebStream", requires: ["fileHandle"] },
+  { feature: "fsUtf8Stream", requires: ["fileHandle", "dynAsync"] },
   // scr_stream_dyn.c tests values and calls JavaScript stream members through
   // the dyn-invoke unit (the checked-dynamic stream slots).
   { feature: "streamDyn", requires: ["dynInvoke"] },

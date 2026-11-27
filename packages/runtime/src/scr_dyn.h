@@ -289,6 +289,7 @@ typedef enum {
   Y(SQLITE_STATEMENT) /* node:sqlite StatementSync (scr_sqlite.c) */ \
   Y(SQLITE_TAG_STORE) /* node:sqlite SQLTagStore (scr_sqlite.c) */ \
   Y(TRACING) /* trace_events.Tracing (scr_async_dyn.c) */ \
+  Y(UTF8_STREAM) /* fs.Utf8Stream (scr_fs_utf8_stream.c) */ \
   Y(WEAK_REF) /* WeakRef (scr_json.c) */ \
   Y(WS_COMPRESSION) /* CompressionStream (scr_webstream_compress.c) */ \
   Y(WS_DECOMPRESSION) /* DecompressionStream (scr_webstream_compress.c) */
@@ -1387,6 +1388,10 @@ void scr_dyn_fn_seed_prototype(ScrDyn *function, ScrDyn *prototype);
 /* The interned builtin constructor `name` (Object, Date, RegExp, Map, Set,
  * Promise, WeakMap, WeakSet) as a dynamic function value: +1. */
 ScrDyn *scr_dyn_global_constructor(const ScrStr *name);
+/* The same lookup by C string; NULL when Node has no interned constructor
+ * of that name (no trap). */
+ScrDyn *scr_dyn_global_constructor_opt(const char *name);
+extern ScrDyn *(*scr_dyn_global_constructor_opt_hook)(const char *name);
 /* That table as another unit reaches it: scr_dyn_invoke.c installs the hook
  * at startup when a program links it, and scr_json.c answers a value's
  * `constructor` (a DataView's, a DOMException's) with the global's own value
@@ -1530,7 +1535,8 @@ ScrDyn *scr_dyn_native_iterator_source(const ScrDyn *iterator);
  * untyped values registers the checked functions that read a generator
  * capsule's next and return methods (each takes the capsule). The
  * iterator helpers below then drive compiled generators. */
-void scr_dyn_set_generator_members(ScrDyn *next_getter, ScrDyn *return_getter);
+void scr_dyn_set_generator_members(ScrDyn *next_getter, ScrDyn *return_getter,
+                                   ScrDyn *throw_getter);
 /* An iterator helper method called on a synchronous generator capsule:
  * true with *out set (+1, or NULL with the exception pending) when
  * `method` is one. NULL until the program registers its generator

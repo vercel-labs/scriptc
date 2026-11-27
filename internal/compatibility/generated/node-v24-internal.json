@@ -20723,6 +20723,7 @@
           "tests/corpus/crypto-create-mac.ts",
           "tests/corpus/crypto-dep0203-deprecation-flags.cjs",
           "tests/corpus/crypto-dep0203-warning-override.cjs",
+          "tests/corpus/crypto-dh-diffie-hellman.mjs",
           "tests/corpus/crypto-dh-key-parse.mjs",
           "tests/corpus/crypto-dh-keyobjects.mjs",
           "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
@@ -21262,6 +21263,7 @@
         "evidence": "compiler-feature:crypto.crypto.createDiffieHellman",
         "tests": [
           "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
+          "tests/corpus/crypto-dh-diffie-hellman.mjs",
           "tests/corpus/6700-ecdh-shared-secret.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
@@ -21296,6 +21298,7 @@
         "evidence": "compiler-feature:crypto.crypto.createDiffieHellman",
         "tests": [
           "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
+          "tests/corpus/crypto-dh-diffie-hellman.mjs",
           "tests/corpus/6700-ecdh-shared-secret.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
@@ -21330,6 +21333,7 @@
         "evidence": "compiler-feature:crypto.crypto.createDiffieHellmanGroup",
         "tests": [
           "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
+          "tests/corpus/crypto-dh-diffie-hellman.mjs",
           "tests/corpus/6700-ecdh-shared-secret.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
@@ -21364,6 +21368,7 @@
         "evidence": "compiler-feature:crypto.crypto.createECDH",
         "tests": [
           "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
+          "tests/corpus/crypto-dh-diffie-hellman.mjs",
           "tests/corpus/6700-ecdh-shared-secret.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
@@ -21735,6 +21740,7 @@
         "evidence": "compiler-feature:crypto.crypto.diffieHellman",
         "tests": [
           "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
+          "tests/corpus/crypto-dh-diffie-hellman.mjs",
           "tests/corpus/6700-ecdh-shared-secret.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
@@ -22063,6 +22069,7 @@
         "evidence": "compiler-feature:crypto.crypto.getDiffieHellman",
         "tests": [
           "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
+          "tests/corpus/crypto-dh-diffie-hellman.mjs",
           "tests/corpus/6700-ecdh-shared-secret.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
@@ -47599,6 +47606,7 @@
           "tests/corpus/fs-stats-member-tables.cjs",
           "tests/corpus/fs-sync-dynamic-control.cjs",
           "tests/corpus/fs-sync-dynamic-descriptors.cjs",
+          "tests/corpus/fs-utf8-stream.cjs",
           "tests/corpus/fs-watch-file-names.ts",
           "tests/corpus/fs-watch-file-polling.ts",
           "tests/corpus/fs-watch-file-statwatcher.ts",
@@ -55018,8 +55026,11 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fs.Utf8Stream",
+        "tests": [
+          "tests/corpus/fs-utf8-stream.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -55041,8 +55052,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "supported",
+        "evidence": "compiler-feature:fs.utf8Stream.destroy",
+        "tests": [
+          "tests/corpus/fs-utf8-stream.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -55064,8 +55078,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "supported",
+        "evidence": "compiler-feature:fs.utf8Stream.end",
+        "tests": [
+          "tests/corpus/fs-utf8-stream.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -55087,8 +55104,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "supported",
+        "evidence": "compiler-feature:fs.utf8Stream.flush",
+        "tests": [
+          "tests/corpus/fs-utf8-stream.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -55110,8 +55130,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "supported",
+        "evidence": "compiler-feature:fs.utf8Stream.flushSync",
+        "tests": [
+          "tests/corpus/fs-utf8-stream.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -55156,8 +55179,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "supported",
+        "evidence": "compiler-feature:fs.utf8Stream.write",
+        "tests": [
+          "tests/corpus/fs-utf8-stream.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -55202,8 +55228,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "supported",
+        "evidence": "compiler-feature:fs.append",
+        "tests": [
+          "tests/corpus/fs-utf8-stream.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -55225,8 +55254,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "supported",
+        "evidence": "compiler-feature:fs.contentMode",
+        "tests": [
+          "tests/corpus/fs-utf8-stream.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -55271,8 +55303,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "supported",
+        "evidence": "compiler-feature:fs.file",
+        "tests": [
+          "tests/corpus/fs-utf8-stream.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -55294,8 +55329,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fsync",
+        "tests": [
+          "tests/corpus/fs-utf8-stream.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -55340,8 +55378,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "supported",
+        "evidence": "compiler-feature:fs.minLength",
+        "tests": [
+          "tests/corpus/fs-utf8-stream.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -55455,8 +55496,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "supported",
+        "evidence": "compiler-feature:fs.writing",
+        "tests": [
+          "tests/corpus/fs-utf8-stream.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -55478,8 +55522,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "supported",
+        "evidence": "compiler-feature:fs.'close'",
+        "tests": [
+          "tests/corpus/fs-utf8-stream.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -55501,8 +55548,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "supported",
+        "evidence": "compiler-feature:fs.'drain'",
+        "tests": [
+          "tests/corpus/fs-utf8-stream.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -55524,8 +55574,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "supported",
+        "evidence": "compiler-feature:fs.'drop'",
+        "tests": [
+          "tests/corpus/fs-utf8-stream.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -55570,8 +55623,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "supported",
+        "evidence": "compiler-feature:fs.'finish'",
+        "tests": [
+          "tests/corpus/fs-utf8-stream.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -55593,8 +55649,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "supported",
+        "evidence": "compiler-feature:fs.'ready'",
+        "tests": [
+          "tests/corpus/fs-utf8-stream.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -55616,8 +55675,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "supported",
+        "evidence": "compiler-feature:fs.'write'",
+        "tests": [
+          "tests/corpus/fs-utf8-stream.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -125969,6 +126031,12 @@
           "tests/corpus/native-worker-terminate-loop.ts",
           "tests/corpus/native-worker-terminate-suspended.ts",
           "tests/corpus/native-worker-terminate-wait.ts",
+          "tests/corpus/port-add-listener-order.mjs",
+          "tests/corpus/port-event-name-coercion.mjs",
+          "tests/corpus/port-handler-attribute.mjs",
+          "tests/corpus/port-listener-bookkeeping.mjs",
+          "tests/corpus/port-listener-order-cycle.mjs",
+          "tests/corpus/port-listeners-typed.ts",
           "tests/corpus/worker-cpu-usage-quiet/main.ts",
           "tests/corpus/worker-cpu-usage.ts",
           "tests/corpus/worker-env-option.ts",
@@ -126306,7 +126374,13 @@
         "tests": [
           "tests/corpus/native-worker-commonjs.cjs",
           "tests/corpus/native-worker-port-lifetime.ts",
-          "tests/corpus/native-worker-references.ts"
+          "tests/corpus/native-worker-references.ts",
+          "tests/corpus/port-listener-bookkeeping.mjs",
+          "tests/corpus/port-handler-attribute.mjs",
+          "tests/corpus/port-listeners-typed.ts",
+          "tests/corpus/port-event-name-coercion.mjs",
+          "tests/corpus/port-listener-order-cycle.mjs",
+          "tests/corpus/port-add-listener-order.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -127075,7 +127149,13 @@
         "tests": [
           "tests/corpus/native-worker-commonjs.cjs",
           "tests/corpus/native-worker-port-lifetime.ts",
-          "tests/corpus/native-worker-references.ts"
+          "tests/corpus/native-worker-references.ts",
+          "tests/corpus/port-listener-bookkeeping.mjs",
+          "tests/corpus/port-handler-attribute.mjs",
+          "tests/corpus/port-listeners-typed.ts",
+          "tests/corpus/port-event-name-coercion.mjs",
+          "tests/corpus/port-listener-order-cycle.mjs",
+          "tests/corpus/port-add-listener-order.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -127520,7 +127600,13 @@
         "tests": [
           "tests/corpus/native-worker-commonjs.cjs",
           "tests/corpus/native-worker-port-lifetime.ts",
-          "tests/corpus/native-worker-references.ts"
+          "tests/corpus/native-worker-references.ts",
+          "tests/corpus/port-listener-bookkeeping.mjs",
+          "tests/corpus/port-handler-attribute.mjs",
+          "tests/corpus/port-listeners-typed.ts",
+          "tests/corpus/port-event-name-coercion.mjs",
+          "tests/corpus/port-listener-order-cycle.mjs",
+          "tests/corpus/port-add-listener-order.mjs"
         ]
       },
       "anchorSource": "chapter"
@@ -127548,7 +127634,13 @@
         "tests": [
           "tests/corpus/native-worker-commonjs.cjs",
           "tests/corpus/native-worker-port-lifetime.ts",
-          "tests/corpus/native-worker-references.ts"
+          "tests/corpus/native-worker-references.ts",
+          "tests/corpus/port-listener-bookkeeping.mjs",
+          "tests/corpus/port-handler-attribute.mjs",
+          "tests/corpus/port-listeners-typed.ts",
+          "tests/corpus/port-event-name-coercion.mjs",
+          "tests/corpus/port-listener-order-cycle.mjs",
+          "tests/corpus/port-add-listener-order.mjs"
         ]
       },
       "anchorSource": "chapter"
@@ -127630,7 +127722,13 @@
         "tests": [
           "tests/corpus/native-worker-commonjs.cjs",
           "tests/corpus/native-worker-port-lifetime.ts",
-          "tests/corpus/native-worker-references.ts"
+          "tests/corpus/native-worker-references.ts",
+          "tests/corpus/port-listener-bookkeeping.mjs",
+          "tests/corpus/port-handler-attribute.mjs",
+          "tests/corpus/port-listeners-typed.ts",
+          "tests/corpus/port-event-name-coercion.mjs",
+          "tests/corpus/port-listener-order-cycle.mjs",
+          "tests/corpus/port-add-listener-order.mjs"
         ]
       },
       "anchorSource": "chapter"
@@ -127685,7 +127783,13 @@
         "tests": [
           "tests/corpus/native-worker-commonjs.cjs",
           "tests/corpus/native-worker-port-lifetime.ts",
-          "tests/corpus/native-worker-references.ts"
+          "tests/corpus/native-worker-references.ts",
+          "tests/corpus/port-listener-bookkeeping.mjs",
+          "tests/corpus/port-handler-attribute.mjs",
+          "tests/corpus/port-listeners-typed.ts",
+          "tests/corpus/port-event-name-coercion.mjs",
+          "tests/corpus/port-listener-order-cycle.mjs",
+          "tests/corpus/port-add-listener-order.mjs"
         ]
       },
       "anchorSource": "exact"

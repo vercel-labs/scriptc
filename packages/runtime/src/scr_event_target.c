@@ -541,7 +541,14 @@ static bool scr_et_symbol_type_fail(const ScrDyn *type) {
   return true;
 }
 
-ScrDyn *scr_et_add_listener(ScrEventTargetCore *core, ScrDyn *const *args, size_t argc) {
+/* addEventListener's DOM steps. `type_out` (may be NULL) receives the
+ * converted type's name (+1) when the listener was registered, so an owner
+ * that keeps a listener order can record the exact name the registration
+ * used without converting it a second time; it stays NULL when nothing was
+ * registered (an aborted signal, a null listener, a refused argument). */
+static ScrDyn *scr_et_add_listener_core(ScrEventTargetCore *core, ScrDyn *const *args, size_t argc,
+                                        ScrStr **type_out) {
+  if (type_out) *type_out = NULL;
   if (argc < 2) {
     scr_et_type_error("The \"type\" and \"listener\" arguments must be specified", "ERR_MISSING_ARGS");
     return NULL;
@@ -594,8 +601,18 @@ ScrDyn *scr_et_add_listener(ScrEventTargetCore *core, ScrDyn *const *args, size_
   bool duplicate;
   ScrEtListener *l = scr_et_append(core, type, args[1], flags, &duplicate);
   if (l) scr_et_new_listener(core, l->root);
-  scr_str_release(type);
+  if (type_out) *type_out = type;
+  else scr_str_release(type);
   return scr_dyn_retain(scr_dyn_undefined());
+}
+
+ScrDyn *scr_et_add_listener(ScrEventTargetCore *core, ScrDyn *const *args, size_t argc) {
+  return scr_et_add_listener_core(core, args, argc, NULL);
+}
+
+ScrDyn *scr_et_add_listener_named(ScrEventTargetCore *core, ScrDyn *const *args, size_t argc,
+                                  ScrStr **type) {
+  return scr_et_add_listener_core(core, args, argc, type);
 }
 
 ScrDyn *scr_et_remove_listener(ScrEventTargetCore *core, ScrDyn *const *args, size_t argc) {
@@ -957,11 +974,23 @@ void scr_et_handler_set(ScrEventTargetCore *core, const char *type, const ScrDyn
     ScrDyn *old = h->handler;
     h->handler = next;
     scr_dyn_release(old);
-    if (root) {
-      if (was) root->size--;
-      if (now) {
+    if (was && root) root->size--;
+    if (now) {
+      if (root) {
         root->size++;
         scr_et_new_listener(core, root);
+      } else {
+        /* removeAllListeners() cleared the attribute's registration and kept
+         * its value; assigning the attribute again registers the wrapper
+         * anew, as Node's setter does. */
+        bool duplicate;
+        ScrEtListener *l = scr_et_append(core, h->type, NULL, 0, &duplicate);
+        h->rc++;
+        l->native = scr_et_handler_fire;
+        l->native_kind = SCR_ET_VALUE_HANDLER;
+        l->ctx = h;
+        l->ctx_release = scr_et_handler_release;
+        scr_et_new_listener(core, l->root);
       }
     }
     return;
@@ -2223,12 +2252,54 @@ static double scr_et_broadcast_listener_count(ScrEventTargetCore *core, const ch
   return root ? (double)root->size : 0;
 }
 
+/* Every listener of `root` leaves, the on<type> attribute's registration
+ * with them; the attribute's stored value stays (Node keeps answering it
+ * from the property). The owner hears one change for the type. */
+static void scr_et_clear_root(ScrEventTargetCore *core, ScrEtRoot *root) {
+  scr_et_root_retain(root);
+  while (root->head) {
+    ScrEtListener *l = root->head;
+    scr_et_listener_remove(l);
+    root->size--;
+  }
+  scr_et_root_unmap(core, root);
+  scr_et_changed(core, root->type);
+  scr_et_root_release(root);
+}
+
+static void scr_et_broadcast_remove_all(ScrEventTargetCore *core, const char *type) {
+  if (type) {
+    ScrStr *name = scr_str_new(type, strlen(type));
+    ScrEtRoot *root = scr_et_root_find(core, name);
+    scr_str_release(name);
+    if (root) scr_et_clear_root(core, root);
+    return;
+  }
+  /* Every type, in the map's order; each root leaves the map as it is
+   * cleared, so its `next` is read first. */
+  ScrEtRoot *root = core->roots;
+  while (root) {
+    ScrEtRoot *next = root->map_next;
+    scr_et_clear_root(core, root);
+    root = next;
+  }
+}
+
+static bool scr_et_broadcast_has_type(ScrEventTargetCore *core, const char *type) {
+  ScrStr *name = scr_str_new(type, strlen(type));
+  bool has = scr_et_root_find(core, name) != NULL;
+  scr_str_release(name);
+  return has;
+}
+
 static const ScrEtBroadcastOps scr_et_broadcast_table = {
     &scr_et_broadcast_core_new,  &scr_et_broadcast_core_free, &scr_et_broadcast_dispatch,
     &scr_et_broadcast_dispatch_type, &scr_et_broadcast_listener_count,
     &scr_et_broadcast_watch,
     &scr_et_target_method,       &scr_et_broadcast_method_value,
     &scr_et_handler_get,         &scr_et_handler_set,
+    &scr_et_broadcast_remove_all, &scr_et_broadcast_has_type,
+    &scr_et_add_listener_named,
 };
 
 void scr_et_broadcast_install(void) {

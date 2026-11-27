@@ -204,10 +204,14 @@ describe.skipIf(skip)("Node island handles", () => {
       expect(result.ok, name).toBe(false);
       if (result.ok) continue;
       const sc8002 = result.diagnostics.filter((d) => d.code === "SC8002");
-      expect(sc8002, name).toHaveLength(1);
-      expect(sc8002[0]!.message).toContain("outside the native subset");
-      if (typeof pkg === "string") expect(sc8002[0]!.message).toContain(`'${pkg}'`);
-      else expect(sc8002[0]!.message).toMatch(pkg);
+      // A package the other one carries is outside the subset too, so the
+      // esm-named case reports both; every report names its package.
+      expect(sc8002.length, name).toBeGreaterThan(0);
+      for (const d of sc8002) expect(d.message).toContain("outside the native subset");
+      if (typeof pkg === "string") {
+        expect(sc8002, name).toHaveLength(1);
+        expect(sc8002[0]!.message).toContain(`'${pkg}'`);
+      } else for (const d of sc8002) expect(d.message).toMatch(pkg);
     }
   }, 300_000);
 

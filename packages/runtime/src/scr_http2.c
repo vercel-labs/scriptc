@@ -4784,12 +4784,20 @@ static bool scr_h2_srv_socket_timeout(void *ctx) {
    * the server's: its own listeners fire below and the server does nothing. */
   if (s == NULL || s->destroyed || s->srv == NULL) return true;
   if (!s->srv_timeout_forward) return true;
+  /* The server's idle timeout is one timer per session (Node fires it once
+   * and does not re-arm): the decision is consumed here, so a timer the
+   * SESSION arms afterwards (session.setTimeout) reaches only its own
+   * listeners and never the server again. */
+  s->srv_timeout_forward = false;
   ScrH2SrvCtx *srv = s->srv;
   size_t n = srv->timeout_ls.n;
   if (n > 0) {
     ScrNetL *snap;
     size_t count = scr_net_ls_snapshot(&srv->timeout_ls, &snap);
-    scr_dyn_this_push(s, SCR_DYNH_H2_SESSION);
+    /* Node emits the event on the SERVER (a normal-function listener sees
+     * the server as `this`) and hands it the session as the argument. */
+    ScrNetServer *server = s->sock != NULL ? scr_net_sock_server(s->sock) : NULL;
+    scr_dyn_this_push(server, SCR_DYNH_NET_SERVER);
     for (size_t i = 0; i < count; i++) {
       if (!scr_exc_pending())
         ((ScrH2SessionFn)snap[i].fn)(snap[i].cb, scr_http2_session_retain(s));

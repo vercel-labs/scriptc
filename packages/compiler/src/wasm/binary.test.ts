@@ -140,6 +140,83 @@ describe("analyzeWasm", () => {
     expect(isTranslatableFeature(feature)).toBe(true);
   });
 
+  test("types SIMD instructions and reports the subopcodes a body uses", () => {
+    // (func (param v128 v128) (result v128) local.get 0 local.get 1 i8x16.add)
+    const s = check(
+      module(
+        types(funcType([V128, V128], [V128])),
+        funcs(0),
+        code(body([0x20, 0x00, 0x20, 0x01, 0xfd, 0x6e])),
+      ),
+    );
+    expect(s.status).toBe("unsupported");
+    expect(s.unsupported).toEqual(["simd"]);
+    expect(s.simdOps).toEqual([0x6e]);
+  });
+
+  test("reports a relaxed-SIMD instruction as the relaxed-simd proposal", () => {
+    // v128.const . v128.const . i8x16.relaxed_swizzle drop
+    const s = check(
+      module(
+        types(funcType([], [])),
+        funcs(0),
+        code(
+          body([
+            0xfd,
+            0x0c,
+            ...Array.from({ length: 16 }, () => 0),
+            0xfd,
+            0x0c,
+            ...Array.from({ length: 16 }, () => 0),
+            0xfd,
+            0x80,
+            0x02,
+            0x1a,
+          ]),
+        ),
+      ),
+    );
+    expect(s.features).toEqual(["simd", "relaxed-simd"]);
+    expect(s.unsupported).toEqual(["simd", "relaxed-simd"]);
+    expect(s.simdOps).toEqual([12, 256]);
+  });
+
+  test("rejects SIMD modules V8 rejects instead of only scanning them", () => {
+    // i8x16.add over a v128 and an i32.
+    const wrongOperand = check(
+      module(
+        types(funcType([V128, I32], [V128])),
+        funcs(0),
+        code(body([0x20, 0x00, 0x20, 0x01, 0xfd, 0x6e])),
+      ),
+    );
+    expect(wrongOperand.status).toBe("invalid");
+    // i8x16.extract_lane_s lane 16: the lanes are 0 through 15.
+    const wrongLane = check(
+      module(types(funcType([V128], [I32])), funcs(0), code(body([0x20, 0x00, 0xfd, 0x15, 0x10]))),
+    );
+    expect(wrongLane.status).toBe("invalid");
+    // i8x16.shuffle lane 32: the lanes are 0 through 31.
+    const wrongShuffle = check(
+      module(
+        types(funcType([V128, V128], [V128])),
+        funcs(0),
+        code(body([0x20, 0x00, 0x20, 0x01, 0xfd, 0x0d, ...Array(16).fill(32)])),
+      ),
+    );
+    expect(wrongShuffle.status).toBe("invalid");
+    // v128.load declaring 32-byte alignment.
+    const wrongAlignment = check(
+      module(
+        types(funcType([I32], [V128])),
+        funcs(0),
+        memory([0x00, 0x01]),
+        code(body([0x20, 0x00, 0xfd, 0x00, 0x05, 0x00])),
+      ),
+    );
+    expect(wrongAlignment.status).toBe("invalid");
+  });
+
   test.each([
     [
       "simd",

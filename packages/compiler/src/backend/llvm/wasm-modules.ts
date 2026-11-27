@@ -70,6 +70,7 @@ export function emitWasmModules(
   mod: IrModule,
   declared: ReadonlySet<string>,
   boundsChecks: boolean,
+  targetAttributes = "",
 ): string[] {
   const modules = mod.wasmModules;
   if (modules === undefined) return [];
@@ -85,6 +86,7 @@ export function emitWasmModules(
       translation = translateWasmModule(bytes, hexBytes(module.sha256), {
         boundsChecks,
         customSections: mod.wasmCustomSections === true,
+        targetAttributes,
       });
     } catch (error) {
       if (!(error instanceof WasmTranslateError)) throw error;

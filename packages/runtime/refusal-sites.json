@@ -1345,6 +1345,12 @@
  },
  {
   "file": "scr_json.c",
+  "function": "scr_dyn_for_in_keys",
+  "message": "for-in over this checked-dynamic kind is not supported yet",
+  "code": "SC1090"
+ },
+ {
+  "file": "scr_json.c",
   "function": "scr_dyn_reflect_construct_with",
   "message": "Reflect.construct with a distinct newTarget for this target is not supported yet",
   "code": "SC2020"

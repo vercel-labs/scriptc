@@ -10,6 +10,7 @@ import { lowerArrayClassInstanceOf } from "../builtins/array-classes.js";
 import { dateRootOf } from "../builtins/date-classes.js";
 import { keyedHelperName } from "../stable-names.js";
 import { lowerWebStreamInstanceof } from "../builtins/web-streams-dyn.js";
+import { COMPRESSION_STREAM_CLASSES, WEB_STREAM_CLASSES } from "../../../ir/webstream-classes.js";
 import * as ts from "../../ts7/adapter.js";
 import { builtinClassInstanceOfAny, builtinClassKind } from "../builtins/builtin-class-dyn.js";
 import {
@@ -468,8 +469,18 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
   // runtime's generic walk stops at the object that terminates the value's
   // prototype chain, so that one answer is folded here too. The operand
   // still runs, as Node evaluates it before the test.
-  if (hostGlobalNameOfRead(lowerer, expr.right) !== null)
-    return hostGlobalInstanceOfAnswer(lowerer, expr, false, loc);
+  {
+    // The web compression streams' class values stand for native handles
+    // that DO have instances, so the brand test below answers them; every
+    // other listed host global is a constructor whose instances native code
+    // never makes, and folds false.
+    const hostGlobal = hostGlobalNameOfRead(lowerer, expr.right);
+    if (
+      hostGlobal !== null &&
+      !((WEB_STREAM_CLASSES as readonly string[]).indexOf(hostGlobal) >= COMPRESSION_STREAM_CLASSES)
+    )
+      return hostGlobalInstanceOfAnswer(lowerer, expr, false, loc);
+  }
   if (lowerer.isStdlibGlobal(expr.right, "Function")) {
     // A function a Node island made is a Function instance, as it is in
     // Node, where the package and the program share one realm.
@@ -1233,6 +1244,39 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
         loc,
       };
     }
+    // A certificate is the X509Certificate record: Node's class test answers
+    // true for a certificate value — but an indexed read of one can be absent
+    // at run time (the checker's type drops the undefined the storage holds),
+    // and Node answers false for that, so the test reads the value's own tag
+    // instead of folding the checker's type.
+    if (rhsBuiltin?.module === "crypto" && rhsBuiltin.member === "X509Certificate") {
+      const value = lowerer.lowerExpr(expr.left);
+      if (value.type.kind === "record" && isX509Type(lowerer, value.type)) {
+        return {
+          kind: "seqExpr",
+          stmts: [{ kind: "exprStmt", expr: value, loc }],
+          result: { kind: "boolLit", value: true, type: BOOL, loc },
+          type: BOOL,
+          loc,
+        };
+      }
+      if (value.type.kind === "union") {
+        const def = lowerer.unions.get(value.type.unionId);
+        const tag =
+          def?.arms.findIndex((arm) => arm.kind === "record" && isX509Type(lowerer, arm)) ?? -1;
+        if (def !== undefined && tag >= 0) {
+          return {
+            kind: "unionIsTag",
+            unionId: value.type.unionId,
+            tag,
+            value,
+            negated: false,
+            type: BOOL,
+            loc,
+          };
+        }
+      }
+    }
     // A built-in class that has no test of its own above: name it, and
     // what a program can test instead.
     const builtinClass =
@@ -1468,6 +1512,11 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
         (arm) =>
           arm.kind === "object" ||
           arm.kind === "promise" ||
+          // No program class can extend Map or Set (lower-classes.ts
+          // refuses the built-in base), so such an arm never holds an
+          // instance of the tested class: the helper answers false for it.
+          arm.kind === "map" ||
+          arm.kind === "set" ||
           arm.kind === "record" ||
           arm.kind === "array" ||
           arm.kind === "f64" ||

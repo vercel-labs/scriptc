@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/compression-streams-read-before-close.ts"
+ ],
+ "diags": []
+}

@@ -584,10 +584,14 @@ declare module "node:fs" {
     readonly ctime: Date;
     readonly birthtime: Date;
   }
-  /* throwIfNoEntry: false answers undefined for a missing entry (ENOENT or
-   * ENOTDIR) instead of throwing. bigint: true answers BigIntStats. */
-  export interface StatSyncOptions {
+  /* The stat family's option record, shared by the callback and promise
+   * forms: bigint: true answers BigIntStats. */
+  export interface StatOptions {
     bigint?: boolean;
+  }
+  /* The synchronous forms add throwIfNoEntry: false, which answers undefined
+   * for a missing entry (ENOENT or ENOTDIR) instead of throwing. */
+  export interface StatSyncOptions extends StatOptions {
     throwIfNoEntry?: boolean;
   }
   export function statSync(path: string | URL, options?: undefined): Stats;

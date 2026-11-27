@@ -213,6 +213,7 @@ ScrPromise *scr_fetch_response_json(ScrDyn *response); /* +1 promise<dyn> */
 ScrPromise *scr_fetch_response_text(ScrDyn *response); /* +1 promise<dyn> */
 ScrPromise *scr_fetch_response_array_buffer(ScrDyn *response); /* +1 promise<dyn> */
 ScrPromise *scr_fetch_response_bytes(ScrDyn *response); /* +1 promise<dyn> */
+ScrPromise *scr_fetch_response_blob(ScrDyn *response); /* +1 promise<Blob> */
 ScrDyn *scr_fetch_abort_controller_new(void); /* +1 AbortController handle */
 bool scr_dyn_abort_signal_is(const ScrDyn *value); /* `value instanceof AbortSignal` */
 /* Borrowed number; +1 AbortSignal handle or NULL pending. */
@@ -308,5 +309,45 @@ ScrDyn *scr_webstream_from(ScrDyn *iterable);
  * a structuredClone of each chunk when cloneForBranch2 is truthy; an array
  * of the two streams (+1), or NULL with Node's argument TypeError pending. */
 ScrDyn *scr_ws_tee_call(ScrDyn *stream, ScrDyn *clone);
+/* A TransformStream whose transformer callbacks are native: the web
+ * compression streams' zlib transform, flush and cancel (scr_webstreams.c).
+ * Each callback runs with `state` (a box made with retain/release/trace) as
+ * its capture. `resume`, when given, runs on the readable side's pull: the
+ * point a native transformer may enqueue its next output chunk. A NULL
+ * cancel leaves Node's default; +1 box, or NULL with the exception pending. */
+ScrDyn *scr_webstream_native_transform(ScrDynThunk transform, ScrDynThunk flush, ScrDynThunk cancel,
+                                       void *state, void *(*retain)(void *), void (*release)(void *),
+                                       void (*trace)(void *, ScrTraceVisit, void *),
+                                       bool (*resume)(void *));
+/* The transform box's readable and writable streams (+1). */
+ScrDyn *scr_webstream_transform_readable(ScrDyn *transform);
+ScrDyn *scr_webstream_transform_writable(ScrDyn *transform);
+/* Enqueues `chunk` on the controller argument a transformer callback
+ * received. False with the exception pending when it is not a
+ * TransformStreamDefaultController. */
+bool scr_webstream_controller_enqueue(ScrDyn *controller, ScrDyn *chunk);
+/* Whether the transform's readable side has an outstanding read request,
+ * which a native transformer's next chunk can satisfy. */
+bool scr_webstream_controller_has_request(ScrDyn *controller);
+/* Settles the pull a native transformer's enqueue satisfied directly (the
+ * chunk went to a waiting reader instead of the readable queue). */
+void scr_webstream_controller_pull_done(ScrDyn *controller);
+/* The transform's readable queue size in the strategy's units (the queued
+ * chunk count for a strategy without a size function). */
+double scr_webstream_controller_queue_size(ScrDyn *controller);
+/* A native transformer enqueued output with no pending read: the writable
+ * side must not park the next write for a reader that may never come (Node's
+ * compression streams keep their two sides independent). */
+void scr_webstream_controller_clear_write_backpressure(ScrDyn *controller);
+/* Errors both sides of the transform with `error`, the way a rejecting
+ * transform callback does; for a native transformer's asynchronous
+ * failure. */
+void scr_webstream_controller_fail(ScrDyn *controller, ScrDyn *error);
+/* CompressionStream and DecompressionStream (scr_webstream_compress.c):
+ * the class constructor webstream.compressClass reads, and the brand test
+ * webstream.compressInstanceOf runs. Their kinds are the last two in the
+ * frontend's WEB_STREAM_CLASSES order. */
+ScrDyn *scr_webstream_compress_class(double kind);
+bool scr_webstream_compress_instanceof(ScrDyn *value, double kind);
 
 #endif /* SCR_GENERATOR_H */

@@ -8974,6 +8974,15 @@ void scr_net_sock_on_close(ScrNetSocket *s, ScrClosure *cb /*moves*/, bool once)
   scr_net_ls_add(&s->close_ls, cb, NULL, once);
 }
 
+/* Takes one specific close registration back: a listener that must not
+ * outlive its purpose (the deferred-close watch) leaves the socket's list
+ * when its deferral resolves, instead of accumulating until the socket
+ * closes. */
+void scr_net_sock_off_close(ScrNetSocket *s, ScrClosure *cb /*borrowed*/) {
+  if (s == NULL || s->close_emitted) return;
+  scr_net_ls_remove_last(&s->close_ls, cb);
+}
+
 void scr_net_sock_on_error(ScrNetSocket *s, ScrClosure *cb /*moves*/, ScrChildErrFn fn,
                             bool once) {
   if (s->close_emitted) {

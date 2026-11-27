@@ -21,6 +21,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import ts5 from "typescript5";
 import { oracleEnvKey } from "./oracle-env.js";
+import { legacyDecoratorTypescriptVersion } from "./tsc-legacy-decorators.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -92,8 +93,11 @@ export function createNodeOracleCache(options: NodeOracleCacheOptions) {
         .update(stdout)
         .update("\0")
         // Decorator programs run tsc's downlevel on the Node side — its
-        // emitter version is part of the verdict.
+        // emitter version is part of the verdict, for the standard oracle's
+        // TypeScript 5 and the legacy oracle's TypeScript 7 alike.
         .update(ts5.version)
+        .update("\0")
+        .update(legacyDecoratorTypescriptVersion)
         .update("\0")
         .update(readFileSync(fileURLToPath(comptimeShim)))
         .update("\0")

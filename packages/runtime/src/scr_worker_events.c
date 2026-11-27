@@ -128,7 +128,8 @@ static bool scr_worker_batch_next(void) {
 static const char *const scr_worker_method_names[] = {
   "ref", "unref", "hasRef", "terminate", "postMessage", "on", "once", "addListener",
   "prependListener", "prependOnceListener", "off", "removeListener", "removeAllListeners",
-  "listenerCount", "close", "start", "cpuUsage", "addEventListener", "removeEventListener",
+  "listenerCount", "close", "start", "cpuUsage", "getHeapStatistics", "addEventListener",
+  "removeEventListener",
   "dispatchEvent",
 };
 static SCR_TL ScrDyn *scr_worker_methods[sizeof scr_worker_method_names / sizeof scr_worker_method_names[0]];
@@ -725,6 +726,45 @@ static bool scr_worker_cpu_settle(ScrWorkerView *view, int seq, double user, dou
 
 /* worker.cpuUsage([prev]): the worker's thread measures its own CPU usage,
  * which Node reads from the worker's isolate. */
+/* worker.getHeapStatistics(): the runtime's heap figures in V8's field
+ * names and order. A compiled program has one heap for every thread, so the
+ * numbers describe the process's runtime heap (the same sample
+ * v8.getHeapStatistics() takes) rather than a per-thread V8 isolate. */
+ScrPromise *scr_worker_heap_statistics(ScrDyn *value) {
+  ScrPromise *promise = scr_promise_new();
+  ScrWorkerView *view = NULL;
+  if (value != NULL && value->kind == SCR_DYN_HANDLE && value->v.handle.tag == SCR_DYNH_WORKER)
+    view = value->v.handle.ptr;
+  if (view == NULL || !view->online || view->closed) {
+    static const char message[] = "Worker instance not running";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "ERR_WORKER_NOT_RUNNING");
+    scr_promise_reject_pending(promise);
+    return promise;
+  }
+  double heap_total = 0, heap_used = 0;
+  scr_heap_stats(&heap_total, &heap_used);
+  double limit = scr_available_memory() + heap_used;
+  ScrDyn *stats = scr_dyn_new_obj();
+  scr_dyn_obj_set(stats, "total_heap_size", 15, scr_dyn_new_num(heap_total));
+  scr_dyn_obj_set(stats, "total_heap_size_executable", 26, scr_dyn_new_num(0));
+  scr_dyn_obj_set(stats, "total_physical_size", 19, scr_dyn_new_num(heap_total));
+  scr_dyn_obj_set(stats, "total_available_size", 20,
+                  scr_dyn_new_num(limit > heap_used ? limit - heap_used : 0));
+  scr_dyn_obj_set(stats, "used_heap_size", 14, scr_dyn_new_num(heap_used));
+  scr_dyn_obj_set(stats, "heap_size_limit", 15, scr_dyn_new_num(limit));
+  scr_dyn_obj_set(stats, "malloced_memory", 15, scr_dyn_new_num(0));
+  scr_dyn_obj_set(stats, "peak_malloced_memory", 20, scr_dyn_new_num(0));
+  scr_dyn_obj_set(stats, "does_zap_garbage", 16, scr_dyn_new_bool(false));
+  scr_dyn_obj_set(stats, "number_of_native_contexts", 25, scr_dyn_new_num(1));
+  scr_dyn_obj_set(stats, "number_of_detached_contexts", 27, scr_dyn_new_num(0));
+  scr_dyn_obj_set(stats, "total_global_handles_size", 25, scr_dyn_new_num(0));
+  scr_dyn_obj_set(stats, "used_global_handles_size", 24, scr_dyn_new_num(0));
+  scr_dyn_obj_set(stats, "external_memory", 15, scr_dyn_new_num(0));
+  /* The promise keeps the sample's reference (the cpuUsage pattern). */
+  scr_promise_fulfill_ref(promise, stats, scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
+  return promise;
+}
+
 static ScrDyn *scr_worker_cpu_usage(ScrWorkerView *view, ScrDyn *prev) {
   double prev_user = 0;
   double prev_system = 0;
@@ -766,6 +806,13 @@ static ScrDyn *scr_worker_view_invoke(void *ptr, ScrDyn *self, const char *metho
     return scr_dyn_new_bool(view->referenced && (!view->closed || (view->channel && view->closing)));
   if (!view->port && method_is(method, "cpuUsage"))
     return scr_worker_cpu_usage(view, argc ? args[0] : scr_dyn_undefined());
+  if (!view->port && method_is(method, "getHeapStatistics")) {
+    /* The dyn view retains the promise; the sample's reference is dropped. */
+    ScrPromise *promise = scr_worker_heap_statistics(self);
+    ScrDyn *result = scr_dyn_new_promise(promise);
+    scr_promise_release(promise);
+    return result;
+  }
   if (!view->port && method_is(method, "terminate")) {
     /* Node's terminate() returns a fresh promise per call. It refs the worker
      * before stopping the thread, so the loop stays up until the exit event

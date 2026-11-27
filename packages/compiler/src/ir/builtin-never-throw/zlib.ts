@@ -7,4 +7,7 @@ export const zlibNeverThrow: readonly IrLibFn[] = [
   // out of memory ends the process, so no error escapes the call.
   "zlib.infoPromise",
   "zlib.infoPromiseDyn",
+  // The compression streams' link marker (scr_zlib_compression_stream): it
+  // answers void and runs no code.
+  "zlib.compressionStream",
 ];

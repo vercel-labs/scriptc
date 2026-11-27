@@ -209,6 +209,7 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // `scriptc build --large-pages`: executable code on transparent huge pages (Linux).
   ["scr_text_pages.c", "largePages"],
   ["scr_webstreams.c", "webStreams"],
+  ["scr_webstream_compress.c", all("webStreams", "zlib", "brotli")],
   ["scr_fs_web_stream.c", "fsWebStream"],
   ["scr_fs_utf8_stream.c", "fsUtf8Stream"],
   // The class installs (scr_dyn_handle_class_install) that web streams and

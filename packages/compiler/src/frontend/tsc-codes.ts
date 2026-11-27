@@ -1195,6 +1195,8 @@ const IMPLICIT_ANY =
   "a JavaScript value with no annotation is whatever the caller passes: Node has no types to check, and the lowering maps the value dynamically";
 const NULLISH_DEMAND =
   "strict-null's demand is an inference, not a rule: Node reads whatever the value is, and the use site re-checks or throws as Node does";
+const NULLISH_REACHABILITY =
+  "the checker's nullish reachability claim is dead-code analysis, not a rule: Node evaluates the chain left to right, and the ?? lowering tests every operand at run time";
 const DYNAMIC_SHAPE =
   "assignability, arity and callability of an inferred shape are checker opinions: Node calls the value, and the lowering re-checks every lowered form per site";
 const JSDOC_CLAIM =
@@ -1831,6 +1833,14 @@ const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
   // never that it is illegal JavaScript: Node gives it a defined runtime
   // meaning and the lowerer already builds it. TypeScript input keeps every
   // one of them.
+  //
+  // 2869, the right operand of a `??` chain the checker calls unreachable:
+  // the reachability answer is dead-code analysis, not a rule. `files.get(k)`
+  // on an untyped Map answers `any`, and a middle arm spelled `void 0`
+  // makes the checker report the LAST operand as unreachable; Node evaluates
+  // the chain left to right and the `??` lowering tests each operand at run
+  // time, so the fallback's side effects stay Node's.
+  [2869, CHECKER(NULLISH_REACHABILITY, ["tests/corpus/js-nullish-coalesce-unreachable.js"])],
   //
   // 2695, an unused comma-operand left side (`(0, fn)`, `(0, [[x]] = [])`):
   // the operator evaluates the left operand for its effects and yields the
@@ -2732,13 +2742,6 @@ const TRIAGE_ROWS: readonly (readonly [number, JsTscCodeTriage])[] = [
     ),
   ],
   [2855, KEEP(KEEP_GRAMMAR)],
-  [
-    2869,
-    REFUSE(
-      "the right operand of '??' the checker proves unreachable",
-      "the construct is legal JavaScript: admitting it needs a differential proof that the lowering is Node-exact — the checker's refusal stands until then",
-    ),
-  ],
   [
     2871,
     REFUSE(

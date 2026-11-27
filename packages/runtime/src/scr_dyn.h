@@ -1502,6 +1502,9 @@ ScrDyn *scr_dyn_async_iterator_symbol_value(void);
 /* True when key is Symbol.asyncDispose (registered by the symbol unit when
  * the program names it); handle symbol_get ops outside that unit use it. */
 bool scr_dyn_is_async_dispose_symbol(const ScrDyn *key);
+/* Symbol.asyncDispose as the symbol unit installed it (borrowed), or NULL
+ * before the program names it. */
+ScrDyn *scr_dyn_async_dispose_symbol_value(void);
 /* Whether key is Symbol.dispose (registered by the symbol unit when the
  * program names it). */
 bool scr_dyn_is_dispose_symbol(const ScrDyn *key);

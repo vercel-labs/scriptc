@@ -454,6 +454,7 @@ const char *scr_crypto_asymmetric_key_type(const ScrDyn *value);
 ScrBytes *scr_crypto_x509_raw(ScrBytes *data);
 ScrBytes *scr_crypto_x509_raw_der(ScrBytes *der);
 ScrBytes *scr_crypto_x509_raw_str(ScrStr *pem);
+ScrBytes *scr_crypto_x509_raw_dyn(ScrDyn *data);
 ScrStr *scr_crypto_x509_subject(ScrBytes *der);
 ScrStr *scr_crypto_x509_issuer(ScrBytes *der);
 ScrStr *scr_crypto_x509_subject_alt_name(ScrBytes *der);

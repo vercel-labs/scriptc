@@ -2879,6 +2879,7 @@ const RUNTIME_FEATURE_RULES = {
       "crypto.x509Raw",
       "crypto.x509RawDer",
       "crypto.x509RawStr",
+      "crypto.x509RawDyn",
       "crypto.x509SerialNumber",
       "crypto.x509SignatureAlgorithm",
       "crypto.x509SignatureAlgorithmOid",

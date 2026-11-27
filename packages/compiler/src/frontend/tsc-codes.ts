@@ -1222,6 +1222,25 @@ const UNDECLARED_NAME_READ = THROW(
 );
 
 const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
+  // 1320, `await` on a value with a callable `then` (JavaScript): Node
+  // calls it. The lowering adopts the thenable through the checked-dynamic
+  // path (the result is checked into the awaited type where it is used),
+  // and refuses by name when the value has no checked-dynamic form. A
+  // checked project keeps the diagnostic: it asked tsc to judge the await.
+  [
+    1320,
+    inCheckedJs(
+      CHECKER(
+        "Node awaits a thenable by calling its 'then'; the lowering adopts it and checks what it hands over, and a thenable with no checked-dynamic form is refused by name",
+        [
+          "tests/corpus/js-await-class-thenable/main.mjs",
+          "tests/corpus/js-await-function-thenable/main.mjs",
+          "tests/corpus/js-await-object-thenable/main.mjs",
+          "tests/corpus/js-await-thenable-errors/main.mjs",
+        ],
+      ),
+    ),
+  ],
   // legacy decimal escapes in non-Unicode regex literals
   [1533, LEGACY_REGEX_ESCAPE],
   [1534, LEGACY_REGEX_ESCAPE],
@@ -2431,13 +2450,6 @@ const TRIAGE_ROWS: readonly (readonly [number, JsTscCodeTriage])[] = [
   [1260, KEEP(KEEP_GRAMMAR)],
   [1262, KEEP(KEEP_GRAMMAR)],
   [1312, KEEP(KEEP_GRAMMAR)],
-  [
-    1320,
-    REWRITE(
-      "an 'await' operand the checker cannot prove is a promise",
-      "Node awaits any value and ignores a non-callable 'then'; the await lowering needs the hostile-'then' path",
-    ),
-  ],
   [1329, KEEP(KEEP_GRAMMAR)],
   [1341, KEEP(KEEP_GRAMMAR)],
   // The 1345 opinion row admits the sites whose truthiness is known; any

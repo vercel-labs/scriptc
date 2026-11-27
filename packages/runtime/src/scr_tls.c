@@ -957,6 +957,10 @@ typedef struct ScrTlsCli {
    * what it cannot decode. */
   bool has_resume;
   mbedtls_ssl_session resume;
+  /* the verification result the offered session was captured with: a resumed
+   * handshake verifies no certificate, so this verdict stands, and a session
+   * captured unverified is not offered to a connection that now verifies */
+  uint32_t resume_verify;
 } ScrTlsCli;
 
 /* The default trust anchors when no `ca` option is given: the host trust
@@ -1176,6 +1180,15 @@ static void scr_tls_cli_set_session(ScrTlsCli *c, const ScrBytes *session) {
     c->has_resume = false;
     return;
   }
+  if (c->resume.MBEDTLS_PRIVATE(tls_version) == MBEDTLS_SSL_VERSION_TLS1_3) {
+    /* the 1.3 format carries no verification result: the marker an
+     * unverified origin set is the only trace of it */
+    c->resume_verify = (c->resume.MBEDTLS_PRIVATE(ticket_flags) & 0x80u)
+                           ? MBEDTLS_X509_BADCERT_NOT_TRUSTED
+                           : 0;
+  } else {
+    c->resume_verify = c->resume.MBEDTLS_PRIVATE(verify_result);
+  }
   c->has_resume = true;
 }
 
@@ -1201,9 +1214,16 @@ typedef struct ScrTlsSock {
    * tls.connect starts it at once — and when the driver first runs): a
    * session set after this point is not offered */
   bool handshake_started;
-  /* the standing handshake presented a certificate: a resumed handshake
-   * presents none, which is how a client knows its offered session was
-   * taken (the engine keeps the resumed session's certificate) */
+  /* the verification result that describes the standing handshake, captured
+   * when it completes (a later ticket exchange replaces the engine's session
+   * object, whose own field is then 'not available') */
+  uint32_t standing_verify;
+  /* the connection's handshake presented a certificate: a resumed handshake
+   * presents none, which is how a client knows its offered session was taken
+   * (the engine keeps the resumed session's certificate). Set when the chain
+   * is parsed and never cleared for the connection — the handshake driver
+   * runs step by step, so clearing per call would lose the fact after the
+   * final step. */
   bool peer_cert_parsed;
   /* the client 'session' event: listeners + the fired-once latch (Node
    * fires per received ticket; this surface fires once per socket) */
@@ -2043,6 +2063,7 @@ static void scr_tls_drain_unread(ScrTlsSock *t) {
 
 static void scr_tls_fire_session(ScrTlsSock *t);
 static void scr_tls_fire_ticket_session(ScrTlsSock *t);
+static uint32_t scr_tls_read_verdict(const ScrTlsSock *t);
 
 static ssize_t scr_tls_xread(void *tctx, char *buf, size_t n) {
   ScrTlsSock *t = (ScrTlsSock *)tctx;
@@ -2080,6 +2101,15 @@ static ssize_t scr_tls_xwrite(void *tctx, const char *buf, size_t n) {
   ScrTlsSock *t = (ScrTlsSock *)tctx;
   int r = mbedtls_ssl_write(&t->ssl, (const unsigned char *)buf, n);
   if (r >= 0) return r;
+#if defined(MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET)
+  if (r == MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET) {
+    /* a ticket read while writing: its 'session' event fires now, and the
+     * write retries once the engine is ready */
+    if (!scr_exc_pending()) scr_tls_fire_ticket_session(t);
+    errno = EAGAIN;
+    return -1;
+  }
+#endif
   if (r == MBEDTLS_ERR_SSL_WANT_READ || r == MBEDTLS_ERR_SSL_WANT_WRITE) {
     errno = EAGAIN;
     return -1;
@@ -2625,7 +2655,6 @@ static void scr_tls_hold_until_immediate(ScrTlsSock *t) {
 static int scr_tls_handshake(void *tctx) {
   ScrTlsSock *t = (ScrTlsSock *)tctx;
   t->handshake_started = true;
-  t->peer_cert_parsed = false;
   if (t->cli != NULL && t->cli->no_protocols) {
     /* OpenSSL's reason without its per-process prefix (SEMANTICS.md
      * divergence 55); scr_error_message_code gives Node's code. */
@@ -2645,6 +2674,15 @@ static int scr_tls_handshake(void *tctx) {
               ? scr_tls_handshake_requiring_cert(t)
               : mbedtls_ssl_handshake(&t->ssl);
   scr_tls_current = NULL;
+#if defined(MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET)
+  if (r == MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET) {
+    /* a TLS 1.3 ticket that rode the final handshake flight: its 'session'
+     * event is owed now (the read path was not the caller that saw it, and
+     * waiting for another read stalls when nothing more arrives) */
+    if (!scr_exc_pending()) scr_tls_fire_ticket_session(t);
+    r = MBEDTLS_ERR_SSL_WANT_READ;
+  }
+#endif
   if (r == 0) {
     scr_tls_hold_until_immediate(t);
   } else {
@@ -2819,6 +2857,12 @@ static void scr_tls_drain(void *tctx) {
  * emits it. */
 static void scr_tls_after_established(void *tctx) {
   ScrTlsSock *t = (ScrTlsSock *)tctx;
+  /* the verdict this handshake stands on: recorded now, before a TLS 1.3
+   * ticket exchange swaps the engine's session object. A resumed handshake
+   * verified nothing, so the verdict the offered session carries stands. */
+  t->standing_verify = t->cli != NULL && t->cli->has_resume && !t->peer_cert_parsed
+                           ? t->cli->resume_verify
+                           : mbedtls_ssl_get_verify_result(&t->ssl);
   /* The 1.2 session arrives after secureConnect and before 'secure', as
    * Node emits it. A 1.3 ticket comes after the handshake, so a listener
    * added during secureConnect still sees that session. */
@@ -3016,8 +3060,13 @@ static void scr_tls_cli_wrap(ScrNetSocket *sock, void *ctx) {
   if (!t) scr_tls_oom();
   mbedtls_ssl_init(&t->ssl);
   if (mbedtls_ssl_setup(&t->ssl, &cli->conf) != 0) scr_tls_oom();
-  /* the session option: offered for resumption from the first handshake */
-  if (cli->has_resume) (void)mbedtls_ssl_set_session(&t->ssl, &cli->resume);
+  /* the session option: offered for resumption from the first handshake. A
+   * session captured before its peer verified is not offered under settings
+   * that now verify: the full handshake re-checks the chain and fails the way
+   * the original verification did (Node/OpenSSL does not carry an unverified
+   * session into a verifying connection). */
+  if (cli->has_resume && !(cli->reject && cli->resume_verify != 0))
+    (void)mbedtls_ssl_set_session(&t->ssl, &cli->resume);
   t->handshake_started = true; /* tls.connect starts the handshake at once */
   mbedtls_ssl_set_export_keys_cb(&t->ssl, &scr_tls_keylog_cb, t);
   /* NULL sends no SNI and skips mbedTLS's name check; the verify callback
@@ -3117,8 +3166,13 @@ static ScrTlsSock *scr_tls_cli_sock(ScrNetSocket *sock, ScrTlsCli *cli) {
   if (!t) scr_tls_oom();
   mbedtls_ssl_init(&t->ssl);
   if (mbedtls_ssl_setup(&t->ssl, &cli->conf) != 0) scr_tls_oom();
-  /* the session option: offered for resumption from the first handshake */
-  if (cli->has_resume) (void)mbedtls_ssl_set_session(&t->ssl, &cli->resume);
+  /* the session option: offered for resumption from the first handshake. A
+   * session captured before its peer verified is not offered under settings
+   * that now verify: the full handshake re-checks the chain and fails the way
+   * the original verification did (Node/OpenSSL does not carry an unverified
+   * session into a verifying connection). */
+  if (cli->has_resume && !(cli->reject && cli->resume_verify != 0))
+    (void)mbedtls_ssl_set_session(&t->ssl, &cli->resume);
   t->handshake_started = true; /* tls.connect starts the handshake at once */
   mbedtls_ssl_set_export_keys_cb(&t->ssl, &scr_tls_keylog_cb, t);
   (void)mbedtls_ssl_set_hostname(&t->ssl, cli->hostname);
@@ -5812,12 +5866,33 @@ ScrDyn *scr_tls_check_server_identity(ScrStr *hostname /*borrowed*/, const ScrDy
 
 /* ── the checked-dynamic TLSSocket members (scr_net.c's hook table) ──── */
 
+/* The verdict the socket's authorization answers read: the standing
+ * handshake's own result, or, for a resumed handshake (which verifies no
+ * certificate and reads as success from the engine), the verdict the offered
+ * session was captured with. */
+static uint32_t scr_tls_read_verdict(const ScrTlsSock *t) {
+  if (t->established && t->cli != NULL && t->cli->has_resume && !t->peer_cert_parsed)
+    return t->cli->resume_verify;
+  return mbedtls_ssl_get_verify_result(&t->ssl);
+}
+
+/* The verdict a saved session carries. A TLS 1.3 ticket exchange swaps the
+ * engine's session object after the handshake, so the engine's live result
+ * no longer describes it: the value recorded when the handshake completed
+ * stands instead. */
+static uint32_t scr_tls_saved_verdict(const ScrTlsSock *t) {
+  if (t->cli != NULL && t->cli->has_resume && !t->peer_cert_parsed)
+    return t->cli->resume_verify;
+  if (!t->established) return mbedtls_ssl_get_verify_result(&t->ssl);
+  return t->standing_verify;
+}
+
 /* Node's authorizationError: the verify-failure CODE string (null when
  * authorized). Chain errors dominate the identity check — Node records
  * ssl.verifyError() first and only reaches checkServerIdentity's
  * ERR_TLS_CERT_ALTNAME_INVALID on a VERIFIED chain. */
 static const char *scr_tls_auth_code(ScrTlsSock *t) {
-  uint32_t vr = mbedtls_ssl_get_verify_result(&t->ssl);
+  uint32_t vr = scr_tls_read_verdict(t);
   if (t->vrfy_blocked) return "CERT_REVOKED";
   if (t->vrfy_crl_revoked) return "CERT_REVOKED";
   if (t->vrfy_crl_missing) return "UNABLE_TO_GET_CRL";
@@ -5889,6 +5964,14 @@ static ScrBytes *scr_tls_session_bytes(ScrTlsSock *t) {
     memcpy(tk->data, sess.MBEDTLS_PRIVATE(ticket), sess.MBEDTLS_PRIVATE(ticket_len));
     t->ticket_cached = tk;
   }
+  /* the session carries the connection's verdict, so a later connection can
+   * tell whether resuming it is safe under its own settings. mbedTLS's TLS
+   * 1.3 session format has no verification field: an unverified origin rides
+   * a ticket flag bit the engine's own mask ignores. */
+  sess.MBEDTLS_PRIVATE(verify_result) = scr_tls_saved_verdict(t);
+  if (sess.MBEDTLS_PRIVATE(tls_version) == MBEDTLS_SSL_VERSION_TLS1_3 &&
+      scr_tls_saved_verdict(t) != 0)
+    sess.MBEDTLS_PRIVATE(ticket_flags) |= 0x80u;
   size_t need = 0;
   (void)mbedtls_ssl_session_save(&sess, NULL, 0, &need);
   ScrBytes *buf = scr_bytes_new(SCR_BYTES_U8, (double)need);
@@ -6033,10 +6116,13 @@ static void scr_tls_fire_session(ScrTlsSock *t) {
 static void scr_tls_fire_ticket_session(ScrTlsSock *t) {
   if (t->cli == NULL) return;
   bool resumed = t->cli->has_resume && !t->peer_cert_parsed;
-  if (t->session_ls.n > 0) {
-    scr_bytes_release(t->session_cached);
-    t->session_cached = NULL;
-  }
+  /* the newest ticket replaces both caches whether or not a listener is
+   * there: getSession()/getTLSTicket() answer it on the next call (Node's
+   * getters read the connection's current session) */
+  scr_bytes_release(t->session_cached);
+  t->session_cached = NULL;
+  scr_bytes_release(t->ticket_cached);
+  t->ticket_cached = NULL;
   if (resumed || t->session_ls.n == 0) return;
   scr_tls_session_emit(t);
 }
@@ -6331,12 +6417,12 @@ ScrDyn *scr_tls_sock_dyn_member(ScrNetSocket *s, double which) {
 
 bool scr_tls_sock_authorized(ScrNetSocket *s) {
   ScrTlsSock *t = scr_tls_sock_of(s);
-  return t != NULL && scr_tls_sock_verifies(t) && mbedtls_ssl_get_verify_result(&t->ssl) == 0;
+  return t != NULL && scr_tls_sock_verifies(t) && scr_tls_read_verdict(t) == 0;
 }
 
 ScrStr *scr_tls_sock_auth_error(ScrNetSocket *s) {
   ScrTlsSock *t = scr_tls_sock_of(s);
-  if (t == NULL || !scr_tls_sock_verdict(t) || mbedtls_ssl_get_verify_result(&t->ssl) == 0) {
+  if (t == NULL || !scr_tls_sock_verdict(t) || scr_tls_read_verdict(t) == 0) {
     return NULL; /* the null arm — authorized, or never verified */
   }
   const char *code = t->srv != NULL ? scr_tls_client_cert_code(t) : scr_tls_auth_code(t);

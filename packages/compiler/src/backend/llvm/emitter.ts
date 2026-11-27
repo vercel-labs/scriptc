@@ -475,6 +475,8 @@ import {
   boxReleaseSym,
   computeCyclic,
   computeTraced,
+  expandedForcedArrayKinds,
+  prototypeShapeIds,
   emitInlineRcHelpers,
   emitNullableRetainWrappers,
   emitShapeUnionHelpers,
@@ -484,6 +486,7 @@ import {
   llFieldType,
   mapFlagsOffset,
   type MapKeyAccess,
+  recordPrototypeIndex,
   releaseSym,
   retainSym,
   traceArg,
@@ -2090,6 +2093,16 @@ export class LlEmitter {
   readonly recordCloneShapes = new Set<string>();
   readonly tracedShapes: Set<string>;
   readonly tracedUnions: Set<string>;
+  /** The array element kinds the program gives a prototype
+   * (IrModule.prototypeOverrideArrayKinds): emit-module stamps them before
+   * %main, so arrays of them always carry the collector header and their
+   * type is traced (shapes.ts traceAdapter). */
+  readonly forcedCyclicArrayKinds: ReadonlySet<number>;
+  /** The record shapes the program gives a prototype
+   * (prototypeOverrides(mod).shapes): each carries a hidden prototype slot
+   * the collector traces, so these shapes are traced (shapes.ts
+   * recordPrototypeIndex). */
+  readonly prototypeOverrideShapes: ReadonlySet<string>;
   /** The types traced only for the weak analysis whose trace visits
    * something (ShapeHost.weakOnly): the entries of scr_weak_traces. */
   readonly weakTraces: WeakTrace[] = [];
@@ -2891,15 +2904,38 @@ export class LlEmitter {
     this.stackCaptures = new StackCaptures(this.fnByName, this.callLifetimes, this.stackCallbacks);
     this.lazyCaptures = new LazyCaptures(this.fnByName, this.nodeIndex);
     this.valueCaptures = new ValueCaptures(this.fnByName, this.debug === null);
-    const traced = computeTraced(mod, dynamicStores, cycleMutability);
+    // The prototype-bearing shapes the analysis seeds before it starts: a
+    // receiver of Object.setPrototypeOf holds the prototype in a hidden slot
+    // the field walk does not see, so the analysis treats the shape as able
+    // to reference anything and every class or union that holds it inherits
+    // that answer. A checked-dynamic receiver can be any record, so every
+    // shape then carries the slot.
+    this.prototypeOverrideShapes = prototypeShapeIds(mod);
+    this.forcedCyclicArrayKinds = expandedForcedArrayKinds(mod.prototypeOverrideArrayKinds);
+    const traced = computeTraced(
+      mod,
+      dynamicStores,
+      cycleMutability,
+      this.prototypeOverrideShapes,
+      this.forcedCyclicArrayKinds,
+    );
     // The shapes the collector must nominate and walk when weak-collection
     // keys give more of them the header (ShapeHost.weakOnly). A library
     // keeps every traced type the collector's: scr_weak_traces is the
     // executable's.
-    const cyclic =
-      mod.lib === undefined ? computeCyclic(mod, dynamicStores, cycleMutability) : null;
     this.tracedShapes = traced.shapes;
     this.tracedUnions = traced.unions;
+    const weakCyclic =
+      mod.lib === undefined
+        ? computeCyclic(
+            mod,
+            dynamicStores,
+            cycleMutability,
+            this.prototypeOverrideShapes,
+            this.forcedCyclicArrayKinds,
+          )
+        : null;
+    const cyclic = weakCyclic;
     // A shape union's value is whichever record it holds, and the collector
     // visits it as that record: when one arm carries a collector header,
     // every arm must (nullable-unions.ts). Unions that share an arm pass a
@@ -2955,6 +2991,8 @@ export class LlEmitter {
       cycleBufOffset: this.cycleBufOffset,
       tracedShapes: this.tracedShapes,
       tracedUnions: this.tracedUnions,
+      forcedCyclicArrayKinds: this.forcedCyclicArrayKinds,
+      prototypeOverrideShapes: this.prototypeOverrideShapes,
       ...(cyclic !== null
         ? {
             weakOnly: {
@@ -9137,6 +9175,10 @@ export class LlEmitter {
         return nullable === null || nullable.repr === "single" ? null : pointerTagFn(nullable);
       },
       fieldBase: (shapeId) => this.nullableUnions.fieldBase(shapeId),
+      recordPrototypeIndex: (shapeId) => {
+        const shape = this.recordsById.get(shapeId);
+        return shape === undefined ? -1 : recordPrototypeIndex(this.shapeHost, shape);
+      },
       classInfo: (className) => {
         const meta = this.classMetaOf(className);
         const tail = this.inlineTailOf(className);

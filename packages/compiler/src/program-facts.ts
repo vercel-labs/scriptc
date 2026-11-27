@@ -1077,9 +1077,9 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
   ),
   scan(
     "frontend/pipeline.ts#detectAutoPackages",
-    2,
+    3,
     "discovery",
-    "the packages the program requires; the text test skips files without `require`",
+    "the packages the program requires and the ones a literal import() names; the text tests skip files without `require` or `import`",
   ),
   scan("frontend/pipeline.ts#scanDroppedPackages", 1, "discovery", "the packages a load dropped"),
   scan(

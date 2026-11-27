@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/object-prototype-of-materialized-record-cycle.ts"
+ ],
+ "diags": []
+}

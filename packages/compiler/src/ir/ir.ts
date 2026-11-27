@@ -1349,6 +1349,11 @@ export interface IrModule {
    * modules keep their custom sections (otherwise they carry none, and
    * debug sections cost nothing). */
   wasmCustomSections?: boolean;
+  /** Element kinds (SCR_ELEM_* numbers) whose arrays the program can give a
+   * prototype: those arrays are allocated with the collector header, so a
+   * prototype whose closure captures the array forms a cycle the collector
+   * can reclaim. Only programs that prototype an array of the kind pay. */
+  prototypeOverrideArrayKinds?: number[];
 }
 
 /** A WebAssembly module whose bytes the build saw, validated within the

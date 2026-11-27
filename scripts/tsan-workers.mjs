@@ -27,12 +27,60 @@ import {
 import { availableParallelism } from "node:os";
 import { delimiter, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { programDefines } from "../tests/harness/define-directive.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const corpus = join(root, "tests", "corpus");
 const suppressions = join(root, "tests", "harness", "tsan.supp");
 /** The exit status ThreadSanitizer gives a process that reported a race. */
 const raceStatus = 66;
+
+/** The entry file's directive head: its first TWO lines, the window the
+ * differential harness reads (differential.test.ts's directiveHead), so a
+ * program can combine directives one per line. */
+function directiveHead(file) {
+  return readFileSync(file, "utf8").split("\n", 2);
+}
+
+/** The runtime packs answer `Intl` through ICU only on Linux x64 in this
+ * slice; every other lane skips a `// @requires-icu` program instead of
+ * failing it on the compiler's SC3002 refusal (differential.test.ts). */
+export function icuAvailable(platform = process.platform, arch = process.arch) {
+  return platform === "linux" && arch === "x64";
+}
+
+/** Whether a corpus program's source asks for ICU through its directive
+ * head. */
+export function requiresIcu(source) {
+  return /^\/\/ @requires-icu\s*$/m.test(source);
+}
+
+/** The `scriptc build` argv for a program, with the arguments its directive
+ * head asks for: `--define` values (`// @define: process.env.NAME="value"`)
+ * and `--optimization=speed` (`// @optimization: speed`), exactly as the
+ * differential harness builds the same program. Without them a program that
+ * reads a defined variable refuses at SC1090 instead of running. */
+export function buildArguments(program, binary) {
+  const head = directiveHead(program);
+  const args = [
+    join(root, "packages", "cli", "dist", "main.js"),
+    "build",
+    program,
+    "--sanitize",
+    "-o",
+    binary,
+  ];
+  const defines = programDefines(head);
+  if (defines !== null) {
+    for (const [name, value] of Object.entries(defines.define)) {
+      args.push(`--define=${name}=${JSON.stringify(value)}`);
+    }
+  }
+  if (head.some((line) => /^\/\/ @optimization:\s*speed\s*$/.test(line))) {
+    args.push("--optimization=speed");
+  }
+  return args;
+}
 
 /** Corpus programs that import worker_threads and need nothing this lane does not provide. */
 export function workerPrograms() {
@@ -45,6 +93,8 @@ export function workerPrograms() {
     if (!/["'](?:node:)?worker_threads["']/.test(source)) continue;
     // A Node island program loads Node from a libnode pack, which is not built with ThreadSanitizer.
     if (/^\/\/ @requires-libnode\s*$/m.test(source)) continue;
+    // ICU forms refuse at SC3002 where the runtime pack has no ICU.
+    if (requiresIcu(source) && !icuAvailable()) continue;
     // WebAssembly traps (an out-of-bounds access, a stack overflow) arrive as signals unless the runtime is
     // built for AddressSanitizer, which checks explicitly (SCR_WASM_ASAN in scr_wasm.c). ThreadSanitizer's own
     // handler reports such a signal as fatal.
@@ -168,18 +218,10 @@ async function main() {
     for (let item = queue.shift(); item !== undefined; item = queue.shift()) {
       const name = relative(root, item.program);
       const binary = join(out, `program-${item.index}`);
-      const build = await run(
-        process.execPath,
-        [
-          join(root, "packages", "cli", "dist", "main.js"),
-          "build",
-          item.program,
-          "--sanitize",
-          "-o",
-          binary,
-        ],
-        { env: buildEnv, timeout: 900_000 },
-      );
+      const build = await run(process.execPath, buildArguments(item.program, binary), {
+        env: buildEnv,
+        timeout: 900_000,
+      });
       let reason = build.status === 0 ? null : `build failed\n${build.stderr.slice(-4000)}`;
       if (reason === null) {
         const result = await run(binary, [], { env: runEnv, timeout: 300_000 });

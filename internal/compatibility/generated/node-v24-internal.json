@@ -64101,6 +64101,7 @@
           "tests/corpus/http2-respond-with-file/main.ts",
           "tests/corpus/http2-server-close-late-stream.ts",
           "tests/corpus/http2-server-close.ts",
+          "tests/corpus/http2-session-controls.ts",
           "tests/corpus/http2-session-error.ts",
           "tests/corpus/http2-session-local-window.ts",
           "tests/corpus/http2-session-properties.ts",
@@ -64531,10 +64532,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:http2.http2session.goaway",
         "tests": [
-          "tests/diagnostics/compat-absent-http2-members.ts"
+          "tests/corpus/http2-session-controls.ts"
         ]
       },
       "anchorSource": "exact"
@@ -64632,10 +64633,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:http2.http2session.setTimeout",
         "tests": [
-          "tests/diagnostics/compat-absent-http2-members.ts"
+          "tests/corpus/http2-session-controls.ts"
         ]
       },
       "anchorSource": "exact"
@@ -64684,10 +64685,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:http2.http2session.unref",
         "tests": [
-          "tests/diagnostics/compat-absent-http2-members.ts"
+          "tests/corpus/http2-session-controls.ts"
         ]
       },
       "anchorSource": "exact"
@@ -65254,10 +65255,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:http2.'timeout'",
         "tests": [
-          "tests/diagnostics/compat-absent-http2-members.ts"
+          "tests/corpus/http2-session-controls.ts"
         ]
       },
       "anchorSource": "exact"
@@ -72597,7 +72598,8 @@
           "tests/corpus/cjs-module-alias-values/main.cjs",
           "tests/corpus/cjs-module-object-metadata/main.cjs",
           "tests/corpus/module-children-dynamic-fields/main.cjs",
-          "tests/corpus/module-class-instance/main.cjs"
+          "tests/corpus/module-class-instance/main.cjs",
+          "tests/corpus/module-require-esm/main.cjs"
         ]
       },
       "anchorSource": "chapter"
@@ -72630,7 +72632,8 @@
           "tests/corpus/2880-cjs-module-graph/main.cjs",
           "tests/corpus/2923-cjs-factory-export/main.cjs",
           "tests/corpus/cjs-module-object-metadata/main.cjs",
-          "tests/corpus/cjs-module-alias-values/main.cjs"
+          "tests/corpus/cjs-module-alias-values/main.cjs",
+          "tests/corpus/module-require-esm/main.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -72686,7 +72689,8 @@
           "tests/corpus/2880-cjs-module-graph/main.cjs",
           "tests/corpus/2923-cjs-factory-export/main.cjs",
           "tests/corpus/cjs-module-object-metadata/main.cjs",
-          "tests/corpus/cjs-module-alias-values/main.cjs"
+          "tests/corpus/cjs-module-alias-values/main.cjs",
+          "tests/corpus/module-require-esm/main.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -72719,7 +72723,8 @@
           "tests/corpus/2880-cjs-module-graph/main.cjs",
           "tests/corpus/2923-cjs-factory-export/main.cjs",
           "tests/corpus/cjs-module-object-metadata/main.cjs",
-          "tests/corpus/cjs-module-alias-values/main.cjs"
+          "tests/corpus/cjs-module-alias-values/main.cjs",
+          "tests/corpus/module-require-esm/main.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -72752,7 +72757,8 @@
           "tests/corpus/2880-cjs-module-graph/main.cjs",
           "tests/corpus/2923-cjs-factory-export/main.cjs",
           "tests/corpus/cjs-module-object-metadata/main.cjs",
-          "tests/corpus/cjs-module-alias-values/main.cjs"
+          "tests/corpus/cjs-module-alias-values/main.cjs",
+          "tests/corpus/module-require-esm/main.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -72812,7 +72818,8 @@
           "tests/corpus/2880-cjs-module-graph/main.cjs",
           "tests/corpus/2923-cjs-factory-export/main.cjs",
           "tests/corpus/cjs-module-object-metadata/main.cjs",
-          "tests/corpus/cjs-module-alias-values/main.cjs"
+          "tests/corpus/cjs-module-alias-values/main.cjs",
+          "tests/corpus/module-require-esm/main.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -72953,7 +72960,8 @@
           "tests/corpus/2880-cjs-module-graph/main.cjs",
           "tests/corpus/2923-cjs-factory-export/main.cjs",
           "tests/corpus/cjs-module-object-metadata/main.cjs",
-          "tests/corpus/cjs-module-alias-values/main.cjs"
+          "tests/corpus/cjs-module-alias-values/main.cjs",
+          "tests/corpus/module-require-esm/main.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -73013,7 +73021,8 @@
           "tests/corpus/2880-cjs-module-graph/main.cjs",
           "tests/corpus/2923-cjs-factory-export/main.cjs",
           "tests/corpus/cjs-module-object-metadata/main.cjs",
-          "tests/corpus/cjs-module-alias-values/main.cjs"
+          "tests/corpus/cjs-module-alias-values/main.cjs",
+          "tests/corpus/module-require-esm/main.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -73075,7 +73084,8 @@
           "tests/corpus/2880-cjs-module-graph/main.cjs",
           "tests/corpus/2923-cjs-factory-export/main.cjs",
           "tests/corpus/cjs-module-object-metadata/main.cjs",
-          "tests/corpus/cjs-module-alias-values/main.cjs"
+          "tests/corpus/cjs-module-alias-values/main.cjs",
+          "tests/corpus/module-require-esm/main.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -73108,7 +73118,8 @@
           "tests/corpus/2880-cjs-module-graph/main.cjs",
           "tests/corpus/2923-cjs-factory-export/main.cjs",
           "tests/corpus/cjs-module-object-metadata/main.cjs",
-          "tests/corpus/cjs-module-alias-values/main.cjs"
+          "tests/corpus/cjs-module-alias-values/main.cjs",
+          "tests/corpus/module-require-esm/main.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -73141,7 +73152,8 @@
           "tests/corpus/2880-cjs-module-graph/main.cjs",
           "tests/corpus/2923-cjs-factory-export/main.cjs",
           "tests/corpus/cjs-module-object-metadata/main.cjs",
-          "tests/corpus/cjs-module-alias-values/main.cjs"
+          "tests/corpus/cjs-module-alias-values/main.cjs",
+          "tests/corpus/module-require-esm/main.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -74903,9 +74915,16 @@
           "tests/corpus/module-compile-cache-entry.mjs",
           "tests/corpus/module-compile-cache-require.cjs",
           "tests/corpus/module-compile-cache-values.mjs",
+          "tests/corpus/module-create-require-args/main.cjs",
+          "tests/corpus/module-create-require-shapes/main.cjs",
           "tests/corpus/module-find-package-json/main.ts",
           "tests/corpus/module-function-values/main.ts",
+          "tests/corpus/module-source-map-class-values.mjs",
+          "tests/corpus/module-source-map-class.ts",
+          "tests/corpus/module-source-maps-values.mjs",
+          "tests/corpus/module-source-maps.ts",
           "tests/harness/module-compile-cache.test.ts",
+          "tests/harness/module-source-maps.test.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -74949,7 +74968,9 @@
           "tests/corpus/2637-create-require-bare/main.ts",
           "tests/corpus/2675-create-require-nested-esm.js",
           "tests/corpus/2932-create-require-program/main.ts",
-          "tests/harness/npm-static.test.ts"
+          "tests/harness/npm-static.test.ts",
+          "tests/corpus/module-create-require-args/main.cjs",
+          "tests/corpus/module-create-require-shapes/main.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -75312,8 +75333,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:module"
+        "status": "supported",
+        "evidence": "compiler-feature:module.module.SourceMap",
+        "tests": [
+          "tests/corpus/module-source-map-class.ts",
+          "tests/corpus/module-source-map-class-values.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -75335,8 +75360,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:module"
+        "status": "supported",
+        "evidence": "compiler-feature:module.sourceMap.findEntry",
+        "tests": [
+          "tests/corpus/module-source-map-class.ts",
+          "tests/corpus/module-source-map-class-values.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -75358,8 +75387,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:module"
+        "status": "supported",
+        "evidence": "compiler-feature:module.sourceMap.findOrigin",
+        "tests": [
+          "tests/corpus/module-source-map-class.ts",
+          "tests/corpus/module-source-map-class-values.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -75381,8 +75414,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:module"
+        "status": "supported",
+        "evidence": "compiler-feature:module.payload",
+        "tests": [
+          "tests/corpus/module-source-map-class.ts",
+          "tests/corpus/module-source-map-class-values.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -75404,8 +75441,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:module"
+        "status": "supported",
+        "evidence": "compiler-feature:module.module.getSourceMapsSupport",
+        "tests": [
+          "tests/corpus/module-source-maps.ts",
+          "tests/corpus/module-source-maps-values.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -75427,8 +75468,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:module"
+        "status": "partial",
+        "evidence": "compiler-feature:module.module.findSourceMap",
+        "tests": [
+          "tests/corpus/module-source-maps.ts",
+          "tests/corpus/module-source-maps-values.mjs",
+          "tests/harness/module-source-maps.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -75450,8 +75496,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:module"
+        "status": "supported",
+        "evidence": "compiler-feature:module.module.setSourceMapsSupport",
+        "tests": [
+          "tests/corpus/module-source-maps.ts",
+          "tests/corpus/module-source-maps-values.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -77220,6 +77270,7 @@
           "tests/corpus/net-socket-construct-dyn.cjs",
           "tests/corpus/net-socket-construct.ts",
           "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-encodings.ts",
           "tests/corpus/net-socket-method-values.cjs",
           "tests/corpus/net-socket-set-encoding-names.ts",
           "tests/corpus/net-socket-tos-keepalive.ts",
@@ -77874,6 +77925,7 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-encodings.ts",
           "tests/corpus/net-socket-construct.ts",
           "tests/corpus/net-socket-construct-dyn.cjs"
         ]
@@ -77996,6 +78048,7 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-encodings.ts",
           "tests/corpus/net-socket-construct.ts",
           "tests/corpus/net-socket-construct-dyn.cjs"
         ]
@@ -78474,6 +78527,7 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-encodings.ts",
           "tests/corpus/net-socket-construct.ts",
           "tests/corpus/net-socket-construct-dyn.cjs"
         ]
@@ -78526,6 +78580,7 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-encodings.ts",
           "tests/corpus/net-socket-construct.ts",
           "tests/corpus/net-socket-construct-dyn.cjs"
         ]
@@ -78556,6 +78611,7 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-encodings.ts",
           "tests/corpus/net-socket-construct.ts",
           "tests/corpus/net-socket-construct-dyn.cjs"
         ]
@@ -78629,6 +78685,7 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-encodings.ts",
           "tests/corpus/net-socket-construct.ts",
           "tests/corpus/net-socket-construct-dyn.cjs"
         ]
@@ -78659,6 +78716,7 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-encodings.ts",
           "tests/corpus/net-socket-construct.ts",
           "tests/corpus/net-socket-construct-dyn.cjs"
         ]
@@ -78779,6 +78837,7 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-encodings.ts",
           "tests/corpus/net-socket-construct.ts",
           "tests/corpus/net-socket-construct-dyn.cjs"
         ]
@@ -78872,6 +78931,7 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-encodings.ts",
           "tests/corpus/net-socket-construct.ts",
           "tests/corpus/net-socket-construct-dyn.cjs"
         ]
@@ -81583,6 +81643,7 @@
           "tests/corpus/net-socket-construct-dyn.cjs",
           "tests/corpus/net-socket-construct.ts",
           "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-encodings.ts",
           "tests/corpus/net-socket-method-values.cjs",
           "tests/corpus/net-socket-set-encoding-names.ts",
           "tests/corpus/net-socket-write-rejected.cjs",
@@ -81920,6 +81981,7 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-encodings.ts",
           "tests/corpus/net-socket-construct.ts",
           "tests/corpus/net-socket-construct-dyn.cjs"
         ]
@@ -94322,6 +94384,7 @@
           "tests/corpus/stream-duplex-pair.ts",
           "tests/corpus/stream-duplex-to-web.ts",
           "tests/corpus/stream-erased-data-listener.ts",
+          "tests/corpus/stream-lifecycle-state.mjs",
           "tests/corpus/stream-operators-option-values.ts",
           "tests/corpus/stream-predicate-values.ts",
           "tests/corpus/stream-readable-to-web-chunks.mjs",
@@ -96199,11 +96262,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.destroyed",
         "tests": [
-          "tests/corpus/compat-stream-state.mjs",
-          "tests/corpus/compat-stream-state.ts"
+          "tests/corpus/stream-lifecycle-state.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -97620,10 +97682,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.destroyed",
         "tests": [
-          "tests/corpus/compat-stream-classes.ts"
+          "tests/corpus/stream-lifecycle-state.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -97760,10 +97822,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.readableEnded",
         "tests": [
-          "tests/corpus/compat-stream-classes.ts"
+          "tests/corpus/stream-lifecycle-state.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -97786,10 +97848,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.errored",
         "tests": [
-          "tests/corpus/compat-stream-classes.ts"
+          "tests/corpus/stream-lifecycle-state.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -97865,10 +97927,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.readableLength",
         "tests": [
-          "tests/corpus/compat-stream-classes.ts"
+          "tests/corpus/stream-lifecycle-state.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -104221,6 +104283,7 @@
           "tests/corpus/tls-check-server-identity-malformed.ts",
           "tests/corpus/tls-check-server-identity.ts",
           "tests/corpus/tls-connect-forms.ts",
+          "tests/corpus/tls-ephemeral-key-and-fragment.ts",
           "tests/corpus/tls-export-keying-material-context-types.ts",
           "tests/corpus/tls-export-keying-material-context.ts",
           "tests/corpus/tls-export-keying-material.ts",
@@ -105393,8 +105456,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "partial",
+        "evidence": "compiler-feature:tls.tlsSocket.getEphemeralKeyInfo",
+        "tests": [
+          "tests/corpus/tls-ephemeral-key-and-fragment.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -105841,8 +105907,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "partial",
+        "evidence": "compiler-feature:tls.tlsSocket.setMaxSendFragment",
+        "tests": [
+          "tests/corpus/tls-ephemeral-key-and-fragment.ts"
+        ]
       },
       "anchorSource": "exact"
     },

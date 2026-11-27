@@ -49,6 +49,18 @@ truncated.length = 1;
 truncated.length = 3;
 console.log(truncated, truncatedView.length);
 
+// A metadata write commits the dynamic view; a foreign value written out of
+// range afterwards is the array's own, and a slice copies it as the slice's
+// own reference. Replacing the source slot and dropping the view must leave
+// the slice's value intact (the sanitized lane proves no dangling pointer).
+const carried: number[] = [1];
+const carriedView: any = carried;
+carriedView.extra = 1;
+carriedView[4] = { kept: "slice" };
+const carriedSlice: any[] = carried.slice();
+carriedView[4] = undefined;
+console.log("carried", carried.length, JSON.stringify(carriedSlice[4]), carriedSlice[0]);
+
 // string[] holds values of other types the same way.
 const words: string[] = ["a"];
 const wordsView: unknown[] = words;

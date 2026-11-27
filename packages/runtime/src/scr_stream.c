@@ -11294,7 +11294,11 @@ static void scr_pl_on_end(ScrClosure *c) {
  * program's unhandled 'error'. A for-await loop or a finished()/pipeline
  * watcher on the destination takes the error instead, as the error tick
  * decides for a stream without listeners. */
-static void scr_pl_on_error(ScrClosure *c, ScrError *err) {
+/* The emitter's fixed-arity shim calls every one-argument listener through
+ * void (*)(ScrClosure *, void *), so the listener takes that type and reads
+ * its stream arguments from it. */
+static void scr_pl_on_error(ScrClosure *c, void *reason) {
+  ScrError *err = reason;
   scr_closure_retain(c);
   scr_pl_unpipe(c);
   if (!scr_exc_pending()) scr_pl_off(c, SCR_PL_ERROR);
@@ -11310,7 +11314,8 @@ static void scr_pl_on_error(ScrClosure *c, ScrError *err) {
   scr_closure_release(c);
 }
 
-static void scr_pl_on_unpipe(ScrClosure *c, ScrStream *readable) {
+static void scr_pl_on_unpipe(ScrClosure *c, void *source) {
+  ScrStream *readable = source;
   ScrStream *src = scr_box_get_ref(c->caps[SCR_PL_SRC]);
   bool mine = src == readable;
   scr_stream_release(src);

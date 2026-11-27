@@ -12,6 +12,7 @@ import {
   shapeOverlayReport,
 } from "./shape-inference/index.js";
 import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
+import { isImportFence } from "./import-fences.js";
 import { startupFailureDiag } from "../diagnostics/diagnostic.js";
 import type { IrModule } from "../ir/ir.js";
 import type { SrcLoc } from "../ir/ir.js";
@@ -1128,7 +1129,8 @@ function loadFrontend(
     // (program.ts), and lowering and the program-source classification read
     // that state after this function returns. A load opened here with a
     // probe's set therefore has to be followed by one reload of the set the
-    // retained program keeps, unless a culprit reload already reset it.
+    // retained program keeps, unless a culprit reload already reset it or the
+    // preflight has already stopped the build (the reload below).
     let probeStateStale = false;
     const programOwnsDiagnostic = (): boolean => {
       if (baselineKeys === null) {
@@ -1209,7 +1211,14 @@ function loadFrontend(
         probeStateStale = false;
       }
     }
-    if (probeStateStale) {
+    // The reload restores the retained program's package set as npm-static's
+    // live state, which lowering and the program-source classification read
+    // after this function returns. A preflight holding a diagnostic outside
+    // the import fences stops both before they read it: the analysis stops
+    // before lowering and a build fails on the diagnostic. Then the program
+    // that reported the blockers stands and the reload is skipped, because it
+    // would rebuild the whole graph for a state nothing reads.
+    if (probeStateStale && !preflight.some((d) => !isImportFence(d.code))) {
       load.dispose();
       load = loadProgram(entryPath, { npmStatic: [...effective], externalTypes });
       preflight = checkPreflight(load);

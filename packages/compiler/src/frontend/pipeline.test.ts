@@ -173,12 +173,13 @@ test("keeps the whole set when no probe can attribute the diagnostic", () => {
     .mockReturnValueOnce([]) // the no-opt-in baseline: the program itself is clean
     .mockReturnValue([typeError]); // dropping the whole set reproduces the load's error
   const frontend = runFrontend("/main.ts", loader, ["alpha", "beta"]);
-  // The last load is the reload of the retained program: the probe installed
-  // its own package set as npm-static's live state, and lowering reads that
-  // state after runFrontend returns.
-  expect(opened).toHaveLength(5);
+  // The probe installed its own package set as npm-static's live state, but the
+  // preflight still holds the error the attribution could not clear, so the
+  // build stops before lowering and reads no live state: the program that
+  // reported the error stands, without a reload.
+  expect(opened).toHaveLength(4);
   const retained = retainedLoad();
-  expect(retained).toBe(opened.at(-1));
+  expect(retained).toBe(opened[1]);
   expect(loadPackages.get(retained)).toEqual(["alpha", "beta"]);
   expect(frontend.npmStatic).toEqual([
     { package: "alpha", status: "static" },
@@ -195,10 +196,11 @@ test("one program diagnostic does not refuse every package in the set", () => {
   // refusal per package hides the one diagnostic that is real.
   preflight.mockReturnValue([typeError]);
   const frontend = runFrontend("/main.ts", loader, ["alpha", "beta"]);
-  // The no-opt-in baseline load left its empty set live; the retained program
-  // is reloaded so lowering reads the set it was compiled with.
+  // The no-opt-in baseline load left its empty set live, and the diagnostic
+  // stopped the build before lowering, so the retained program stands without
+  // a reload.
   const retained = retainedLoad();
-  expect(retained).toBe(opened.at(-1));
+  expect(retained).toBe(opened[1]);
   expect(loadPackages.get(retained)).toEqual(["alpha", "beta"]);
   expect(frontend.npmStatic).toEqual([
     { package: "alpha", status: "static" },

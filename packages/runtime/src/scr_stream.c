@@ -809,17 +809,23 @@ static void scr_stream_emit_stream(ScrStream *s, const char *name, ScrStream *pa
      * program holds for the source (a comparison against it holds, capsule
      * to capsule by stream identity), and its members read live through the
      * stream's ref hooks instead of freezing at the emission. */
-    char key[64];
-    int key_len =
+    /* The longest class name the runtime records is 63 bytes (BcsRec.cls in
+     * scr_dyn_builtin_stream.c), so the key holds the prefix and that name.
+     * snprintf answers the length it WOULD write, which is longer than the
+     * buffer when a caller names a longer class: the answer is clamped
+     * before it is used as a length. */
+    char key[80];
+    int wanted =
         snprintf(key, sizeof key, "object:%%%s", payload->cls != NULL ? payload->cls : "Readable");
+    size_t key_len =
+        wanted < 0 ? 0 : (size_t)wanted < sizeof key ? (size_t)wanted : sizeof key - 1;
     /* The capsule keeps the key pointer it is given, so the stack buffer is
      * interned: a listener that keeps the stream value reads a key that
      * outlives this frame (a later pipe of the same stream compares it). */
-    const char *interned =
-        key_len > 0 ? scr_dyn_type_key_intern(key, (size_t)key_len) : key;
+    const char *interned = key_len > 0 ? scr_dyn_type_key_intern(key, key_len) : key;
     ScrDyn *arg = scr_dyn_new_typed_ref_traced(
-        payload, scr_stream_retain_v, scr_stream_release_v, interned,
-        key_len > 0 ? (size_t)key_len : 0, scr_stream_ref_view, NULL);
+        payload, scr_stream_retain_v, scr_stream_release_v, interned, key_len,
+        scr_stream_ref_view, NULL);
     bool had = scr_emitter_emit_mixed(em, n, &arg, 1, payload);
     scr_dyn_release(arg);
     (void)had;

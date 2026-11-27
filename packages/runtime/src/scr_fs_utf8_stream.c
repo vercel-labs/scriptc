@@ -939,6 +939,20 @@ static bool scr_u8_parse_mode(const ScrDyn *value, double *out) {
   return false;
 }
 
+/* One of the constructor's numeric options, validated as Node's
+ * validateUint32 does: the value must BE a number. Nothing is coerced, so no
+ * valueOf or toString the conversion would call can run — Node refuses the
+ * object with ERR_INVALID_ARG_TYPE before any conversion. False with the
+ * error thrown. */
+static bool scr_u8_option_number(const ScrDyn *value, const char *name, double *out) {
+  if (value->kind != SCR_DYN_NUM) {
+    scr_dyn_arg_type_fail(name, "of type number", value);
+    return false;
+  }
+  *out = value->v.num;
+  return true;
+}
+
 static void scr_u8_option_bool(const ScrDyn *options, const char *key, size_t key_len, bool *out) {
   const ScrDyn *v = scr_dyn_obj_get(options, key, key_len);
   if (v != NULL && v->kind != SCR_DYN_UNDEF) *out = scr_dyn_truthy(v);
@@ -970,12 +984,28 @@ ScrDyn *scr_fs_utf8_stream_new(ScrDyn *options) {
     if ((v = scr_dyn_obj_get(options, "contentMode", 11)) != NULL && v->kind == SCR_DYN_STR) {
       s->content_mode = v->v.str->len == 6 && memcmp(v->v.str->data, "buffer", 6) == 0 ? 1 : 0;
     }
-    if ((v = scr_dyn_obj_get(options, "maxLength", 9)) != NULL && v->kind != SCR_DYN_UNDEF)
-      s->max_length = (size_t)scr_dyn_number_coerce(v);
-    if ((v = scr_dyn_obj_get(options, "minLength", 9)) != NULL && v->kind != SCR_DYN_UNDEF)
-      s->min_length = (size_t)scr_dyn_number_coerce(v);
-    if ((v = scr_dyn_obj_get(options, "periodicFlush", 13)) != NULL && v->kind != SCR_DYN_UNDEF)
-      s->periodic_flush = scr_dyn_number_coerce(v);
+    double option = 0;
+    if ((v = scr_dyn_obj_get(options, "maxLength", 9)) != NULL && v->kind != SCR_DYN_UNDEF) {
+      if (!scr_u8_option_number(v, "options.maxLength", &option)) {
+        scr_u8_release(s);
+        return NULL;
+      }
+      s->max_length = (size_t)option;
+    }
+    if ((v = scr_dyn_obj_get(options, "minLength", 9)) != NULL && v->kind != SCR_DYN_UNDEF) {
+      if (!scr_u8_option_number(v, "options.minLength", &option)) {
+        scr_u8_release(s);
+        return NULL;
+      }
+      s->min_length = (size_t)option;
+    }
+    if ((v = scr_dyn_obj_get(options, "periodicFlush", 13)) != NULL && v->kind != SCR_DYN_UNDEF) {
+      if (!scr_u8_option_number(v, "options.periodicFlush", &option)) {
+        scr_u8_release(s);
+        return NULL;
+      }
+      s->periodic_flush = option;
+    }
     if (scr_exc_pending()) {
       scr_u8_release(s);
       return NULL;

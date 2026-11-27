@@ -21,6 +21,7 @@ import { writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { Ts7Api } from "./api.js";
 import { Ts7FrameLimitError } from "./rpc-wire.js";
+import { checkedFileDiagnosticDataBatched } from "./session.js";
 import type { Ts7TimingInfo } from "./session-timing.js";
 import type { Ts7FileSystem } from "./rpc-filesystem.js";
 import type { Diagnostic, SourceFileMetadata } from "./semantic-types.js";
@@ -697,18 +698,6 @@ function fullProgramDiagnostics(
   }
 }
 
-/** Files named in one getDiagnosticsOfCheckedFiles request. The response
- * carries those files' diagnostics as one frame; on a large program the
- * whole set overflows the frame limit, so it is asked for in batches of
- * this size and a batch that overflows is halved. */
-const DIAGNOSTIC_FILES_PER_REQUEST = 64;
-
-/** Whether an error is the wire's frame-limit refusal, which a smaller
- * batch can answer. */
-function isFrameLimitError(error: unknown): boolean {
-  return error instanceof Ts7FrameLimitError;
-}
-
 /** The semantic diagnostics of the kept files, in the full check's order,
  * and the global diagnostics of checking them; null when the server cannot
  * check only some files. */
@@ -716,30 +705,10 @@ function keptFileDiagnostics(
   program: Ts7Program,
   kept: readonly string[],
 ): { semantic: Ts7DiagnosticData[]; global: Ts7DiagnosticData[] } | null {
-  const byFile = new Map<string, Ts7DiagnosticData[]>();
-  const global: Ts7DiagnosticData[] = [];
-  for (let start = 0; start < kept.length;) {
-    let end = Math.min(start + DIAGNOSTIC_FILES_PER_REQUEST, kept.length);
-    let checked: ReturnType<typeof program.project.program.checkedFileDiagnosticData>;
-    for (;;) {
-      try {
-        checked = program.project.program.checkedFileDiagnosticData(kept.slice(start, end));
-        break;
-      } catch (error) {
-        // One file's own response can still overflow; only batching can
-        // shrink the frame, so a single file's refusal is not answered here.
-        if (!isFrameLimitError(error) || end - start === 1) throw error;
-        end = start + Math.max(1, Math.floor((end - start) / 2));
-      }
-    }
-    if (checked === null) return null;
-    kept.slice(start, end).forEach((name, index) => {
-      byFile.set(name, checked.files[index] ?? []);
-    });
-    for (const diagnostic of checked.global) global.push(diagnostic);
-    start = end;
-  }
-  return { semantic: inFileOrder(byFile), global };
+  const checked = checkedFileDiagnosticDataBatched(program.project.program, kept);
+  if (checked === null) return null;
+  const byFile = new Map(kept.map((name, index) => [name, checked.files[index] ?? []]));
+  return { semantic: inFileOrder(byFile), global: checked.global };
 }
 
 /** ts.findConfigFile: nearest configName walking up from searchPath. */

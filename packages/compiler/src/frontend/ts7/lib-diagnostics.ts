@@ -44,7 +44,7 @@ import { readFileSync, statSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { Node, SourceFile } from "./ast-types.js";
 import type { Ts7DiagnosticData } from "./session-schema.generated.js";
-import type { Ts7SessionProgram } from "./session.js";
+import { checkedFileDiagnosticDataBatched, type Ts7SessionProgram } from "./session.js";
 import { NodeFlags, SyntaxKind } from "./enums.js";
 import { walkPreorder } from "./ast.js";
 
@@ -311,7 +311,7 @@ function reuse(
   }
   if (stored !== null && (scripts.length === 0 || (globals !== null && !collides(globals)))) {
     const checkedNames = storedOnly ? own.filter(keep) : own;
-    const checked = program.checkedFileDiagnosticData(checkedNames);
+    const checked = checkedFileDiagnosticDataBatched(program, checkedNames);
     if (checked === null) return null;
     const byFile = new Map<string, Ts7DiagnosticData[]>(
       storedOnly ? [...stored.files].filter(([name]) => keep(name)) : stored.files,
@@ -333,7 +333,7 @@ function reuse(
       : null;
   if (shared !== null) {
     const checkedNames = [...own, ...libs.filter((name) => !shared.files.has(name))];
-    const checked = program.checkedFileDiagnosticData(checkedNames);
+    const checked = checkedFileDiagnosticDataBatched(program, checkedNames);
     if (checked !== null) {
       const byFile = new Map(shared.files);
       checkedNames.forEach((name, index) => byFile.set(name, checked.files[index] ?? []));

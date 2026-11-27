@@ -182,20 +182,17 @@ describe.skipIf(skip)("Node island handles", () => {
     ]);
   }, 300_000);
 
-  test("without islands, a package's deferred refusals refuse at run time", async () => {
-    // With --node-islands=off, packages whose native builds have deferred
-    // refusals compile natively and report them when they run: orderkit's
-    // createRequire call with a computed specifier (SC2020), and the first
-    // one cjs-esm-named reaches in its packages (esmbridge, cjszoo).
+  test("without islands, a package outside the native subset fails the build", async () => {
+    // With --node-islands=off a package whose native build would carry a
+    // deferred refusal must not compile: the build names the package with
+    // SC8002 instead of emitting a program that throws when that code runs
+    // (orderkit's computed createRequire, and the packages cjs-esm-named
+    // reaches).
     const cases = [
-      ["order-off", "tests/fixtures/node-island/order/main.ts", /\[SC2020 at [^\]]*\/orderkit\//],
-      [
-        "esm-named-off",
-        "tests/fixtures/npm/cases/cjs-esm-named/main.ts",
-        /\[SC\d{4} at [^\]]*\/node_modules\/(?:esmbridge|cjszoo)\//,
-      ],
+      ["order-off", "tests/fixtures/node-island/order/main.ts", "orderkit"],
+      ["esm-named-off", "tests/fixtures/npm/cases/cjs-esm-named/main.ts", /esmbridge|cjszoo/],
     ] as const;
-    for (const [name, entry, code] of cases) {
+    for (const [name, entry, pkg] of cases) {
       const dir = join(outDir, name);
       mkdirSync(dir, { recursive: true });
       const result = await compile(join(repoRoot, entry), {
@@ -204,10 +201,13 @@ describe.skipIf(skip)("Node island handles", () => {
         sanitize,
         nodeIslands: { mode: "off" },
       });
-      expect(result.ok, name).toBe(true);
-      if (!result.ok) continue;
-      expect((result.warnings ?? []).map((d) => d.code)).not.toContain("SC8001");
-      expect(await refusal(result.binaryPath), name).toMatch(code);
+      expect(result.ok, name).toBe(false);
+      if (result.ok) continue;
+      const sc8002 = result.diagnostics.filter((d) => d.code === "SC8002");
+      expect(sc8002, name).toHaveLength(1);
+      expect(sc8002[0]!.message).toContain("outside the native subset");
+      if (typeof pkg === "string") expect(sc8002[0]!.message).toContain(`'${pkg}'`);
+      else expect(sc8002[0]!.message).toMatch(pkg);
     }
   }, 300_000);
 

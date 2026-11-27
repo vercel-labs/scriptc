@@ -134,6 +134,26 @@ describe("runtime feature snapshots", () => {
     });
   });
 
+  test("links the Blob unit for a body read whose member name is invisible", () => {
+    // A checked-dynamic read with a run-time key may name `blob` on a fetch
+    // handle; the handle's dispatch answers it and the Blob it builds needs
+    // the unit, so a fetch program selects it.
+    const computed = module();
+    computed.functions[0]!.body.push(call("fetch.input"));
+    computed.functions[0]!.body.push({
+      kind: "exprStmt",
+      loc,
+      expr: {
+        kind: "dynKeyGet",
+        value: { kind: "varRef", localId: "body", type: DYN, loc },
+        key: { kind: "varRef", localId: "name", type: DYN, loc },
+        type: DYN,
+        loc,
+      },
+    });
+    expect(moduleRuntimeFeatures(computed)).toMatchObject({ fetch: true, webBodies: true });
+  });
+
   test("gates the call-time parameter bind unit on a barriered generator", () => {
     const mod = module();
     const generator = (bindAtCall: boolean): IrModule["functions"][number] => ({

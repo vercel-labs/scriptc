@@ -213,6 +213,7 @@ ScrPromise *scr_fetch_response_json(ScrDyn *response); /* +1 promise<dyn> */
 ScrPromise *scr_fetch_response_text(ScrDyn *response); /* +1 promise<dyn> */
 ScrPromise *scr_fetch_response_array_buffer(ScrDyn *response); /* +1 promise<dyn> */
 ScrPromise *scr_fetch_response_bytes(ScrDyn *response); /* +1 promise<dyn> */
+ScrPromise *scr_fetch_response_blob(ScrDyn *response); /* +1 promise<Blob> */
 ScrDyn *scr_fetch_abort_controller_new(void); /* +1 AbortController handle */
 bool scr_dyn_abort_signal_is(const ScrDyn *value); /* `value instanceof AbortSignal` */
 /* Borrowed number; +1 AbortSignal handle or NULL pending. */

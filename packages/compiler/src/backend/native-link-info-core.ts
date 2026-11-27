@@ -498,6 +498,10 @@ export const LINK_FEATURE_REQUIREMENTS: readonly LinkFeatureRequirement[] = [
   { feature: "eventTarget", requires: ["emitter", "symbol"] },
   { feature: "abortSignal", requires: ["emitter", "symbol"] },
   { feature: "fetch", requires: ["emitter", "symbol"] },
+  // A Blob (built, or produced by a body read) is a native handle of the
+  // blob unit, which the checked-dynamic tier links; the fetch unit's
+  // SCR_WEB_BODIES build reads its bytes through that unit.
+  { feature: "webBodies", requires: ["dynAsync"] },
   // scr_sqlite.c interns DatabaseSync's Symbol(sqlite-type) brand through
   // the symbol unit's registry, and reflection and util.inspect show it
   // whatever the program does with symbols.

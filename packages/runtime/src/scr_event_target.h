@@ -150,6 +150,19 @@ typedef struct {
   ScrDyn *(*method_value)(const char *name, size_t length);
   ScrDyn *(*handler_get)(ScrEventTargetCore *core, const char *type);
   void (*handler_set)(ScrEventTargetCore *core, const char *type, const ScrDyn *value);
+  /* NodeEventTarget's listenerCount/removeAllListeners walk one map for the
+   * EventTarget and EventEmitter spellings, so the owner removes through the
+   * core too: every listener of `type` leaves, the on<type> attribute's
+   * registration with them (its stored value stays, as Node's does); a null
+   * `type` removes every listener of every type. The core's changed hook
+   * runs for each type that lost its last listener. */
+  void (*remove_all)(ScrEventTargetCore *core, const char *type);
+  /* Whether the type still has a map entry. A root outlives its last
+   * listener when that listener was consumed by firing (a `{ once: true }`
+   * listener) or the on<type> attribute was cleared by assignment, so
+   * eventNames() keeps reporting it until an explicit removal deletes the
+   * type, as Node's map does. */
+  bool (*has_type)(ScrEventTargetCore *core, const char *type);
 } ScrEtBroadcastOps;
 extern SCR_TL const ScrEtBroadcastOps *scr_et_broadcast_ops;
 void scr_et_broadcast_install(void);

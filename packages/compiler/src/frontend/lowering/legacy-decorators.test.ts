@@ -361,3 +361,17 @@ test("a dynamic legacy class decorator on a base with subclasses is refused", as
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("class decorators on a factory-base class with static members are refused", async () => {
+  const source = [
+    'function makeBase() { return class { static base(): string { return "b"; } }; }',
+    "function patch(target: any): void { (target as any).m = function (): number { return 2; }; }",
+    "@patch",
+    "class C extends makeBase() {",
+    "  static m(): number { return 1; }",
+    "}",
+    "console.log(C.m());",
+    "",
+  ].join("\n");
+  expect(await refusalCodes(source, legacyTsconfig)).toContain("SC1090");
+});

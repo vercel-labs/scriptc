@@ -1328,10 +1328,12 @@ static void *scr_stream_read_n_kind(ScrStream *s, double size, ScrEntryKind *kin
                                    "ERR_OUT_OF_RANGE");
           return NULL;
         }
-        /* Node grows hwm to the next power of two above n (readable.js's
-         * computeNewHighWaterMark). The growth starts at 1: a highWaterMark
-         * of 0 still grows, and starting from 0 would never reach n. */
-        size_t h = st->r.hwm > 1 ? st->r.hwm : 1;
+        /* Node grows hwm to the smallest power of two at least n
+         * (readable.js's computeNewHighWaterMark), computed from the request
+         * rather than from the current watermark — which may be 0 (a
+         * highWaterMark: 0 is legal) or not a power of two. The growth starts
+         * at 1: a highWaterMark of 0 still grows. */
+        size_t h = 1;
         while (h < n) {
           if (h > SIZE_MAX / 2) {
             h = n;

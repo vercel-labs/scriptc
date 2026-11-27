@@ -24,7 +24,6 @@ const fetchInit: RequestInit = {
 fetch("https://example.invalid/", fetchInit);
 async function inspectResponse(url: string): Promise<void> {
   const response = await fetch(url);
-  console.log(response.type);
   response.formData();
 }
 void inspectResponse;
@@ -104,8 +103,6 @@ async function encapsulatedWithWebCrypto(key: import("node:crypto").webcrypto.Cr
   await crypto.subtle.encapsulateBits("ML-KEM-768", key);
 }
 void encapsulatedWithWebCrypto;
-/* Node's navigator global: navigator.locks (the Web Locks API) fences
- * by name. */
-const locks = navigator.locks;
-void locks;
+/* Node's navigator global: navigator.locks (the Web Locks API) lowers now,
+ * together with the LockManager type its answer declares. */
 // End of the declared-but-not-lowered surface.

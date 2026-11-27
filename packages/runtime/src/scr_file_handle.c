@@ -22,6 +22,12 @@
 #ifndef O_BINARY
 #define O_BINARY 0
 #endif
+/* A non-blocking open is a POSIX FIFO guarantee the callers below rely on
+ * (the flag has no effect on a regular file or a directory); the Windows
+ * CRT, which has no O_NONBLOCK, keeps the plain flag. */
+#ifndef O_NONBLOCK
+#define O_NONBLOCK 0
+#endif
 #ifndef O_SYNC
 #define O_SYNC 0
 #endif
@@ -237,6 +243,28 @@ ScrFileHandle *scr_file_handle_open(ScrStr *path, ScrStr *flags, double mode) {
   if (of < 0) return NULL;
   if (!scr_file_handle_mode_valid(mode)) return NULL;
   int fd = open(path->data, of | O_BINARY, (mode_t)mode);
+  if (fd < 0) {
+    scr_fs_throw(errno, "open", path);
+    return NULL;
+  }
+  ScrFileHandle *h = calloc(1, sizeof(ScrFileHandle));
+  if (!h) scr_trap("scriptc: out of memory\n");
+  h->rc = 1;
+  h->fd = fd;
+  h->refs = 1;
+  return h;
+}
+
+/* A read-only open that cannot park the event loop on a FIFO's writer. The
+ * caller only stats the descriptor (fs.openAsBlob's creation stat) and
+ * closes it, so the non-blocking flag needs no clearing: opening a FIFO
+ * without a writer answers at once instead of waiting, as Node's open does
+ * off the event loop. A regular file, a directory and a device open the
+ * same way. */
+ScrFileHandle *scr_file_handle_open_read_only_nonblocking(ScrStr *path) {
+  scr_file_handle_dyn_install();
+  if (!scr_file_handle_path_valid(path)) return NULL;
+  int fd = open(path->data, O_RDONLY | O_NONBLOCK | O_BINARY);
   if (fd < 0) {
     scr_fs_throw(errno, "open", path);
     return NULL;

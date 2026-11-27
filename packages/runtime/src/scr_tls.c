@@ -3255,6 +3255,22 @@ void scr_tls_fetch_tunnel_wrap(ScrNetSocket *sock, void *vctx) {
   scr_net_sock_set_transport(sock, &SCR_TLS_TUNNEL_OPS, tun);
 }
 
+/* A fetch transport context the request never wrapped: the fetch unit owns
+ * it until the socket takes it in the wrap hook, and gives it back here when
+ * the request stops before wrapping. */
+void scr_tls_fetch_ctx_release(void *vctx) {
+  if (vctx != NULL) scr_tls_cli_free(vctx);
+}
+
+void scr_tls_fetch_tunnel_ctx_release(void *vctx) {
+  ScrTlsTunnelCtx *ctx = vctx;
+  if (ctx == NULL) return;
+  if (ctx->proxy != NULL) scr_tls_cli_free(ctx->proxy);
+  if (ctx->target != NULL) scr_tls_cli_free(ctx->target);
+  free(ctx->req);
+  free(ctx);
+}
+
 ScrHttpClientReq *scr_https_request(ScrStr *host /*borrowed*/, double port,
                                      ScrStr *path /*borrowed*/, ScrStr *method /*borrowed*/,
                                      double timeout_ms, ScrArr *header_pairs /*borrowed*/,
@@ -5573,6 +5589,12 @@ ScrDyn *scr_tls_check_server_identity(ScrStr *hostname /*borrowed*/, const ScrDy
       scr_str_utf8_end(alt_owned);
       scr_tls_ident_list_free(&ctx.dns);
       scr_tls_ident_list_free(&ctx.ips);
+      /* The certificate's altnames, subject and CN may have been
+       * materialized from typed references at the top of this function;
+       * the malformed-SAN answer must let them go like every other path. */
+      scr_dyn_release(owned_alt);
+      scr_dyn_release(owned_subject);
+      scr_dyn_release(owned_cn);
       scr_dyn_release(owned);
       scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "ERR_TLS_CERT_ALTNAME_FORMAT");
       /* the caller boxes the answer before its pending check: a valid
@@ -6099,6 +6121,39 @@ ScrDyn *scr_tls_sock_get_tls_ticket(ScrNetSocket *s) {
   ScrDyn *d = scr_dyn_new_bytes(copy);
   scr_bytes_release(copy);
   return d;
+}
+
+/* tlsSocket.getEphemeralKeyInfo(): Node answers the negotiated ephemeral
+ * key's facts (null on a server-side socket, before the handshake and
+ * after destroy). The bundled provider does not surface the negotiated
+ * group, so a client answers an empty object — Node's shape without the
+ * provider-specific members. */
+ScrDyn *scr_tls_sock_ephemeral_key_info(ScrNetSocket *s) {
+  ScrTlsSock *t = scr_tls_sock_of(s);
+  if (t == NULL || scr_net_sock_destroyed(s)) return scr_dyn_new_null();
+  if (!t->established || t->srv != NULL) return scr_dyn_new_null();
+  return scr_dyn_new_obj();
+}
+
+/* tlsSocket.setMaxSendFragment(size): Node's ladder over the C++ call.
+ * NaN, an infinity or a fraction throws ERR_OUT_OF_RANGE with Node's text;
+ * an integer answers true inside 512..16384 and false outside it (what the
+ * native call answers when the provider refuses the size). The bundled
+ * provider cannot change the record size after setup, so the accepted
+ * value's effect on fragments is a documented divergence. */
+bool scr_tls_sock_set_max_fragment(ScrNetSocket *s, double size) {
+  if (!(isfinite(size) && trunc(size) == size)) {
+    char received[48];
+    scr_num_received(size, received);
+    char text[192];
+    int n = snprintf(text, sizeof text,
+                     "The value of \"size\" is out of range. It must be an integer. Received %s",
+                     received);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, text, n < 0 ? 0 : (size_t)n, "ERR_OUT_OF_RANGE");
+    return false;
+  }
+  if (s == NULL || scr_net_sock_destroyed(s)) return false;
+  return size >= 512 && size <= 16384;
 }
 
 /* tlsSocket.disableRenegotiation(): TLS renegotiation is off in this

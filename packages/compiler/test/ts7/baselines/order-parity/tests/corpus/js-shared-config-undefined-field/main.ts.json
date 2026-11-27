@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/js-shared-config-undefined-field/browser.js",
+  "<repo>/tests/corpus/js-shared-config-undefined-field/config.js",
+  "<repo>/tests/corpus/js-shared-config-undefined-field/main.ts"
+ ],
+ "diags": []
+}

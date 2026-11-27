@@ -2428,7 +2428,10 @@ ScrNetServer *scr_net_create_server_opts(const ScrDyn *options /*borrowed*/,
     goto fail;
   }
   s = scr_net_server_new();
-  if (o->kind == SCR_DYN_OBJ) {
+  {
+    /* Node reads the option properties off any object it accepts, an array
+     * included: a blockList set on an array-backed options value must still
+     * drop blocked connections (keys are not skipped by shape). */
     ScrDyn *m = scr_net_server_opt_read(o, "allowHalfOpen", 13);
     s->opts_allow_half_open = m != NULL && scr_net_dyn_truthy(m);
     scr_dyn_release(m);
@@ -6120,6 +6123,54 @@ void scr_net_sock_end_bytes(ScrNetSocket *s, ScrBytes *data /*borrowed*/) {
   scr_net_sock_end(s);
 }
 
+/* socket.write(data, encoding): Node encodes the string like Buffer.from's
+ * (its encoding ladder; an unknown name throws ERR_UNKNOWN_ENCODING
+ * catchably), then the bytes take the ordinary write path. */
+bool scr_net_sock_write_encoded(ScrNetSocket *s, ScrStr *data /*borrowed*/,
+                                ScrStr *enc /*borrowed*/) {
+  ScrBytes *b = scr_bytes_from_str_checked(data, enc); /* +1, or NULL with the exception pending */
+  if (b == NULL) return false;
+  bool ok = scr_net_sock_write_bytes(s, b);
+  scr_bytes_release(b);
+  return ok;
+}
+
+/* socket.end(data, encoding): the same encoding ladder, then the end. */
+void scr_net_sock_end_encoded(ScrNetSocket *s, ScrStr *data /*borrowed*/,
+                              ScrStr *enc /*borrowed*/) {
+  ScrBytes *b = scr_bytes_from_str_checked(data, enc);
+  if (b == NULL) return;
+  scr_net_sock_end_bytes(s, b);
+  scr_bytes_release(b);
+}
+
+/* The encoding beside a Buffer chunk: Writable validates it ("Buffer.isEncoding,
+ * plus the exact 'buffer' spelling") and then ignores it. An unknown name
+ * throws Node's ERR_UNKNOWN_ENCODING catchably. */
+static bool scr_net_write_encoding_ok(const ScrStr *enc) {
+  if (enc->len == 0) return true; /* an empty name reads as utf8 */
+  if (enc->len == 6 && memcmp(enc->data, "buffer", 6) == 0) return true;
+  if (scr_bytes_is_encoding(enc)) return true;
+  /* unknown: Node's ERR_UNKNOWN_ENCODING (the throw is pending) */
+  ScrStr *norm = scr_bytes_normalize_encoding(enc);
+  if (norm != NULL) scr_str_release(norm);
+  return false;
+}
+
+/* socket.write(data, encoding) with a Buffer chunk: validated, ignored. */
+bool scr_net_sock_write_bytes_encoded(ScrNetSocket *s, ScrBytes *data /*borrowed*/,
+                                      ScrStr *enc /*borrowed*/) {
+  if (!scr_net_write_encoding_ok(enc)) return false;
+  return scr_net_sock_write_bytes(s, data);
+}
+
+/* socket.end(data, encoding) with a Buffer chunk. */
+void scr_net_sock_end_bytes_encoded(ScrNetSocket *s, ScrBytes *data /*borrowed*/,
+                                    ScrStr *enc /*borrowed*/) {
+  if (!scr_net_write_encoding_ok(enc)) return;
+  scr_net_sock_end_bytes(s, data);
+}
+
 /* socket.pause(): reads stay off — the kernel buffer (and TCP flow
  * control) holds arrived bytes. Delivery restarts on
  * resume(), always from the poller/sweep, never this stack. Answers the
@@ -8921,6 +8972,15 @@ void scr_net_sock_on_close(ScrNetSocket *s, ScrClosure *cb /*moves*/, bool once)
     return;
   }
   scr_net_ls_add(&s->close_ls, cb, NULL, once);
+}
+
+/* Takes one specific close registration back: a listener that must not
+ * outlive its purpose (the deferred-close watch) leaves the socket's list
+ * when its deferral resolves, instead of accumulating until the socket
+ * closes. */
+void scr_net_sock_off_close(ScrNetSocket *s, ScrClosure *cb /*borrowed*/) {
+  if (s == NULL || s->close_emitted) return;
+  scr_net_ls_remove_last(&s->close_ls, cb);
 }
 
 void scr_net_sock_on_error(ScrNetSocket *s, ScrClosure *cb /*moves*/, ScrChildErrFn fn,

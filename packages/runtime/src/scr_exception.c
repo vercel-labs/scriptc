@@ -694,6 +694,19 @@ void scr_exc_suppressed_forget(const void *error_object) {
   }
 }
 
+/* The collector's teardown: the snapshots are traced edges of the
+ * SuppressedError (scr_error.c's scr_suppressed_trace), so the entry leaves
+ * the table without releasing them — the collector releases exactly the
+ * ones that are dead with the error, and a snapshot an outside reference
+ * still holds survives. */
+void scr_exc_suppressed_detach(const void *error_object) {
+  for (size_t i = 0; i < scr_suppressed_len; i++) {
+    if (scr_suppressed_entries[i].error_object != error_object) continue;
+    scr_suppressed_entries[i] = scr_suppressed_entries[--scr_suppressed_len];
+    return;
+  }
+}
+
 void scr_exc_keep_first(ScrCaught *first) {
   if (first->kind == SCR_EXC_GENRET) {
     scr_caught_release(first);

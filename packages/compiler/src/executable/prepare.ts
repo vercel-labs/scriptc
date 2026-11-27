@@ -303,9 +303,11 @@ function prepareRounds(
     foldFenceGrowth: roundOptions.foldFenceGrowth !== false,
     round: 1,
   };
-  // The island decision reads the detector's scan unless islands are off,
-  // and so does the check of the command line's --native and --npm-static
-  // marks (node-islands/package-marks.ts).
+  // The island decision reads the detector's scan, and so does the check of
+  // the command line's --native and --npm-static marks
+  // (node-islands/package-marks.ts) and the off-mode SC8002 check: a package
+  // outside the native subset under `--node-islands=off` fails the build, so
+  // that mode needs the scan too.
   const loadPolicy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands, entryPath);
   const packageMarks = commandLinePackageMarks(loadPolicy, opts.npmStatic);
   const inputs: PrepareInputs = {
@@ -315,7 +317,7 @@ function prepareRounds(
     buildPlatform,
     createFrontend,
     timing,
-    islandScan: loadPolicy.mode !== "off" || packageMarks.length > 0,
+    islandScan: true,
     packageMarks,
   };
   // The island rounds run one at a time. A round whose preflight, lowering
@@ -760,6 +762,10 @@ function prepareRound(
     if (validation.length > 0) {
       return fail(validation.map((v) => iceDiag(v.message, v.loc)));
     }
+    // Islands off: a package outside the native subset fails here, before a
+    // program with its deferred fences can be emitted.
+    const outsideSubset = offModeOutsideSubset(entryPath, opts, fe, lowered);
+    if (outsideSubset.length > 0) return fail(outsideSubset);
     if (buildPlatform === "wasi") {
       const entryLoc: SrcLoc = { file: entryPath, start: 0, end: 0 };
       if (opts.sanitize) {
@@ -979,6 +985,33 @@ function moduleIslands(
   for (const mark of unmatched.values())
     markProblems.push(nodeIslandUnmatchedMarkDiag(mark, start(entryPath)));
   return { modules, markProblems, entryPatch, stripProblems };
+}
+
+/** SC8002 failures for a build with islands off: a package (or marked
+ * module) outside the native subset cannot compile natively, and a native-only
+ * build must not carry its deferred fences to run time. Decided from the same
+ * report coverage prints, over the lowering this round produced: refusals and
+ * runtime fences inside npm modules, plus the pre-scan reasons. */
+function offModeOutsideSubset(
+  entryPath: string,
+  opts: CompileRequestOptions,
+  fe: Frontend,
+  lowered: {
+    diagnostics: readonly ScrDiagnostic[];
+    runtimeFences: readonly ScrDiagnostic[];
+  },
+): ScrDiagnostic[] {
+  if (fe.nodeIslandScan === undefined) return [];
+  const policy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands, entryPath);
+  if (policy.mode !== "off") return [];
+  return buildNodeIslandReport({
+    entry: entryPath,
+    scan: fe.nodeIslandScan({ userJs: false }),
+    npm: fe.npmStatic,
+    diagnostics: lowered.diagnostics,
+    fences: lowered.runtimeFences,
+    policy,
+  }).violations;
 }
 
 /** The packages and modules a build runs in Node islands, or null for none:

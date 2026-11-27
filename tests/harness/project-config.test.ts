@@ -484,7 +484,7 @@ test("indexed-loose: the project's own (less strict) knobs are adopted — compi
   expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
   if (!result.ok) return;
   const { stdout } = await execFileAsync(result.binaryPath);
-  expect(stdout).toBe("21\n");
+  expect(stdout).toBe("21\n20.00 14\ntrue undefined\n12.35 true\n2.50 true\n");
 });
 
 test("indexed-strict: the project's EXTRA strictness is honored — preflight fails", async () => {
@@ -499,6 +499,8 @@ test("indexed-strict: the project's EXTRA strictness is honored — preflight fa
   // The SAME program compiles in indexed-loose; only the tsconfig differs.
   expect(result.diagnostics.map((d) => d.code)).toContain("SC0001");
   expect(result.diagnostics.some((d) => d.message.includes("possibly 'undefined'"))).toBe(true);
+  // The checker's own diagnostic, never scriptc's standard-library fence.
+  expect(result.diagnostics.map((d) => d.code)).not.toContain("SC2012");
 });
 
 test("spi-off-union-field: a union-typed field with an initializer compiles under strictPropertyInitialization OFF", async () => {

@@ -1209,8 +1209,14 @@ static void scr_h2_settings_pending_push(ScrH2Session *s, const ScrH2Settings *a
   s->npending++;
 }
 
-static void scr_h2_send_settings(ScrH2Session *s) {
-  scr_h2_settings_pending_push(s, &s->local_settings, NULL, NULL);
+/* Send this side's SETTINGS frame. `max_concurrent_streams` is an advertised
+ * limit from the handshake options (0xffffffff = none). The frame's record
+ * is the pending entry's `after`: localSettings keeps answering the ACKED
+ * record until the peer acknowledges the frame, as Node's does. */
+static void scr_h2_send_settings(ScrH2Session *s, uint32_t max_concurrent_streams) {
+  ScrH2Settings after = s->local_settings;
+  if (max_concurrent_streams != 0xffffffffu) after.max_concurrent_streams = max_concurrent_streams;
+  scr_h2_settings_pending_push(s, &after, NULL, NULL);
   uint8_t payload[12];
   size_t n = 0;
   /* An advertised limit from the handshake options: MAX_CONCURRENT_STREAMS
@@ -1218,8 +1224,8 @@ static void scr_h2_send_settings(ScrH2Session *s) {
    * SETTINGS frame carries ENABLE_PUSH=1, as Node's client leaves push
    * enabled. (A pushed stream is still declined here — the receive-side push
    * surface is not modeled.) */
-  if (s->local_settings.max_concurrent_streams != 0xffffffffu) {
-    uint32_t v = s->local_settings.max_concurrent_streams;
+  if (after.max_concurrent_streams != 0xffffffffu) {
+    uint32_t v = after.max_concurrent_streams;
     payload[n++] = 0x0;
     payload[n++] = 0x3;
     payload[n++] = (uint8_t)(v >> 24);
@@ -1227,7 +1233,7 @@ static void scr_h2_send_settings(ScrH2Session *s) {
     payload[n++] = (uint8_t)(v >> 8);
     payload[n++] = (uint8_t)v;
   }
-  if (s->local_settings.enable_connect_protocol) {
+  if (after.enable_connect_protocol) {
     payload[n++] = 0x0;
     payload[n++] = 0x8;
     payload[n++] = 0;
@@ -4861,7 +4867,7 @@ static void scr_h2_on_connection(void *ctx, ScrNetSocket *sock) {
   sess->srv_timeout_forward = server_idle_ms > 0;
   if (server_idle_ms > 0) scr_net_sock_set_timeout(sock, server_idle_ms);
   scr_net_sock_set_h2_bound(sock);
-  scr_h2_send_settings(sess);
+  scr_h2_send_settings(sess, 0xffffffffu);
   /* 'session' fires in the connection callback, before the connection's
    * first frame. Node's server listens to its own 'connection' (cleartext)
    * or 'secureConnection' (TLS) from its construction and creates the
@@ -5158,11 +5164,10 @@ static ScrH2Session *scr_h2_handshake_with(ScrNetSocket *sock /*borrowed*/,
   if (server_idle_ms > 0) scr_net_sock_set_timeout(sock, server_idle_ms);
   scr_net_sock_set_h2_bound(sock);
   /* The options' settings: the advertised limit goes out with the first
-   * SETTINGS frame, and a peer stream past it is refused below. */
-  if (max_concurrent_streams != 0xffffffffu) {
-    sess->local_settings.max_concurrent_streams = max_concurrent_streams;
-  }
-  scr_h2_send_settings(sess);
+   * SETTINGS frame and is what the peer sees; localSettings takes it when
+   * the peer ACKs the frame (the ACKED record is what Node answers), and a
+   * peer stream past it is refused below from the pending frame's record. */
+  scr_h2_send_settings(sess, max_concurrent_streams);
   /* Node resumes the socket it takes over: a paused one would never read the
    * preface */
   scr_net_sock_release(scr_net_sock_resume(sock));
@@ -5190,7 +5195,8 @@ ScrH2Session *scr_http2_perform_server_handshake_opts(ScrNetSocket *sock /*borro
   uint32_t max_concurrent_streams = 0xffffffffu;
   if (opts != NULL && opts->kind == SCR_DYN_OBJ) {
     const ScrDyn *memory = scr_dyn_obj_get(opts, "maxSessionMemory", 16);
-    if (memory != NULL && memory->kind == SCR_DYN_NUM && memory->v.num != 10240.0) {
+    /* The option is in megabytes; 10 is Node's default, which states nothing. */
+    if (memory != NULL && memory->kind == SCR_DYN_NUM && memory->v.num != 10.0) {
       static const char text[] = "http2 maxSessionMemory is not supported yet";
       scr_throw_error_msg_code(SCR_ERR_ERROR, text, sizeof text - 1, "SC2020");
       return NULL;
@@ -5283,7 +5289,7 @@ ScrH2Session *scr_http2_connect(ScrStr *url /*borrowed*/, bool reject_unauthoriz
   scr_net_sock_set_h2_bound(sock);
   scr_net_sock_set_native_established(sock, &scr_h2_on_established);
   scr_net_sock_write_native(sock, SCR_H2_PREFACE, 24);
-  scr_h2_send_settings(s);
+  scr_h2_send_settings(s, 0xffffffffu);
   /* TWO owners now: the socket's native ctx and the returned handle. */
   return scr_http2_session_retain(s);
 }

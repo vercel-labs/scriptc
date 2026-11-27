@@ -125948,6 +125948,7 @@
           "tests/corpus/5879-worker-stdin.ts",
           "tests/corpus/5990-worker-uncloneable.mjs",
           "tests/corpus/5991-worker-async-dispose.mjs",
+          "tests/corpus/broadcast-channel-messageerror.ts",
           "tests/corpus/native-worker-clone-errors.ts",
           "tests/corpus/native-worker-commonjs.cjs",
           "tests/corpus/native-worker-delayed-messages.ts",
@@ -125967,6 +125968,8 @@
           "tests/corpus/worker-cpu-usage-quiet/main.ts",
           "tests/corpus/worker-cpu-usage.ts",
           "tests/corpus/worker-env-option.ts",
+          "tests/corpus/worker-messageerror-events.ts",
+          "tests/corpus/worker-messageerror-surface.ts",
           "tests/corpus/worker-performance.ts",
           "tests/corpus/worker-resource-limits-echo.ts",
           "tests/corpus/worker-share-env.ts"
@@ -126066,7 +126069,8 @@
         "tests": [
           "tests/corpus/5800-broadcast-channel.ts",
           "tests/corpus/5801-broadcast-channel.cjs",
-          "tests/corpus/5802-broadcast-channel-workers.ts"
+          "tests/corpus/5802-broadcast-channel-workers.ts",
+          "tests/corpus/broadcast-channel-messageerror.ts"
         ]
       },
       "anchorSource": "exact"
@@ -126094,7 +126098,8 @@
         "tests": [
           "tests/corpus/5800-broadcast-channel.ts",
           "tests/corpus/5801-broadcast-channel.cjs",
-          "tests/corpus/5802-broadcast-channel-workers.ts"
+          "tests/corpus/5802-broadcast-channel-workers.ts",
+          "tests/corpus/broadcast-channel-messageerror.ts"
         ]
       },
       "anchorSource": "exact"
@@ -126122,7 +126127,8 @@
         "tests": [
           "tests/corpus/5800-broadcast-channel.ts",
           "tests/corpus/5801-broadcast-channel.cjs",
-          "tests/corpus/5802-broadcast-channel-workers.ts"
+          "tests/corpus/5802-broadcast-channel-workers.ts",
+          "tests/corpus/broadcast-channel-messageerror.ts"
         ]
       },
       "anchorSource": "exact"
@@ -126150,7 +126156,8 @@
         "tests": [
           "tests/corpus/5800-broadcast-channel.ts",
           "tests/corpus/5801-broadcast-channel.cjs",
-          "tests/corpus/5802-broadcast-channel-workers.ts"
+          "tests/corpus/5802-broadcast-channel-workers.ts",
+          "tests/corpus/broadcast-channel-messageerror.ts"
         ]
       },
       "anchorSource": "exact"
@@ -126178,7 +126185,8 @@
         "tests": [
           "tests/corpus/5800-broadcast-channel.ts",
           "tests/corpus/5801-broadcast-channel.cjs",
-          "tests/corpus/5802-broadcast-channel-workers.ts"
+          "tests/corpus/5802-broadcast-channel-workers.ts",
+          "tests/corpus/broadcast-channel-messageerror.ts"
         ]
       },
       "anchorSource": "exact"
@@ -126206,7 +126214,8 @@
         "tests": [
           "tests/corpus/5800-broadcast-channel.ts",
           "tests/corpus/5801-broadcast-channel.cjs",
-          "tests/corpus/5802-broadcast-channel-workers.ts"
+          "tests/corpus/5802-broadcast-channel-workers.ts",
+          "tests/corpus/broadcast-channel-messageerror.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -126229,8 +126238,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.onmessageerror",
+        "tests": [
+          "tests/corpus/5800-broadcast-channel.ts",
+          "tests/corpus/5801-broadcast-channel.cjs",
+          "tests/corpus/5802-broadcast-channel-workers.ts",
+          "tests/corpus/broadcast-channel-messageerror.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -126518,7 +126533,8 @@
         "evidence": "compiler-feature:worker_threads.'close'",
         "tests": [
           "tests/corpus/native-worker-port-lifetime.ts",
-          "tests/corpus/native-worker-messages.ts"
+          "tests/corpus/native-worker-messages.ts",
+          "tests/corpus/worker-messageerror-surface.ts"
         ]
       },
       "anchorSource": "exact"
@@ -126545,7 +126561,8 @@
         "evidence": "compiler-feature:worker_threads.'message'",
         "tests": [
           "tests/corpus/native-worker-port-lifetime.ts",
-          "tests/corpus/native-worker-messages.ts"
+          "tests/corpus/native-worker-messages.ts",
+          "tests/corpus/worker-messageerror-surface.ts"
         ]
       },
       "anchorSource": "exact"
@@ -126568,8 +126585,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.'messageerror'",
+        "tests": [
+          "tests/corpus/native-worker-port-lifetime.ts",
+          "tests/corpus/native-worker-messages.ts",
+          "tests/corpus/worker-messageerror-surface.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -127102,7 +127124,8 @@
           "tests/corpus/native-worker-error.ts",
           "tests/corpus/native-worker-exit-listeners.ts",
           "tests/corpus/5807-worker-error-values.ts",
-          "tests/corpus/5808-worker-unhandled-rejections.ts"
+          "tests/corpus/5808-worker-unhandled-rejections.ts",
+          "tests/corpus/worker-messageerror-events.ts"
         ]
       },
       "anchorSource": "exact"
@@ -127132,7 +127155,8 @@
           "tests/corpus/native-worker-error.ts",
           "tests/corpus/native-worker-exit-listeners.ts",
           "tests/corpus/5807-worker-error-values.ts",
-          "tests/corpus/5808-worker-unhandled-rejections.ts"
+          "tests/corpus/5808-worker-unhandled-rejections.ts",
+          "tests/corpus/worker-messageerror-events.ts"
         ]
       },
       "anchorSource": "exact"
@@ -127162,7 +127186,8 @@
           "tests/corpus/native-worker-error.ts",
           "tests/corpus/native-worker-exit-listeners.ts",
           "tests/corpus/5807-worker-error-values.ts",
-          "tests/corpus/5808-worker-unhandled-rejections.ts"
+          "tests/corpus/5808-worker-unhandled-rejections.ts",
+          "tests/corpus/worker-messageerror-events.ts"
         ]
       },
       "anchorSource": "exact"
@@ -127185,8 +127210,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.'messageerror'",
+        "tests": [
+          "tests/corpus/native-worker-references.ts",
+          "tests/corpus/native-worker-error.ts",
+          "tests/corpus/native-worker-exit-listeners.ts",
+          "tests/corpus/5807-worker-error-values.ts",
+          "tests/corpus/5808-worker-unhandled-rejections.ts",
+          "tests/corpus/worker-messageerror-events.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -127215,7 +127248,8 @@
           "tests/corpus/native-worker-error.ts",
           "tests/corpus/native-worker-exit-listeners.ts",
           "tests/corpus/5807-worker-error-values.ts",
-          "tests/corpus/5808-worker-unhandled-rejections.ts"
+          "tests/corpus/5808-worker-unhandled-rejections.ts",
+          "tests/corpus/worker-messageerror-events.ts"
         ]
       },
       "anchorSource": "exact"

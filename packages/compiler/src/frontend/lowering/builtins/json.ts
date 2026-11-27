@@ -10,13 +10,19 @@ import * as ts from "../../ts7/adapter.js";
 import { withoutParentheses } from "../../outer-expressions.js";
 import { type Lowerer } from "../lowerer.js";
 
-/** Whether `node`, seen through parentheses and a non-null assertion, reads
- * a runtime-optional origin (an element or index-signature read): the value
- * can be absent at run time even when the checker names the present type. */
-function runtimeOptionalRead(lowerer: Lowerer, node: ts.Expression): boolean {
+/** Whether `node`, seen through parentheses and a non-null assertion, is an
+ * ELEMENT read whose lowered value keeps an absent (undefined) arm the
+ * checker's type does not name: the read whose runtime value the JSON
+ * lowering serializes (undefined at the root, dropped in an object). A call
+ * or a plain property read keeps its declared type and its fence. */
+function runtimeOptionalRead(lowerer: Lowerer, node: ts.Expression, value: IrExpr): boolean {
   let read = node;
   while (ts.isParenthesizedExpression(read) || ts.isNonNullExpression(read)) read = read.expression;
-  return lowerer.isRuntimeOptionalOrigin(read);
+  return (
+    ts.isElementAccessExpression(read) &&
+    lowerer.isRuntimeOptionalOrigin(read) &&
+    lowerer.bareUndefinedArmedUnion(value.type)
+  );
 }
 import { locOf } from "../../program.js";
 import {
@@ -120,7 +126,7 @@ export function lowerJsonMethodCall(
         // A runtime-optional read (an absent dictionary key, an empty array
         // slot) can still BE the absent arm at run time: narrowing to the
         // checker's type would throw where Node serializes the absence.
-        !runtimeOptionalRead(lowerer, argNode) &&
+        !runtimeOptionalRead(lowerer, argNode, value) &&
         !widensReducedRecords(lowerer, narrowed, value.type)
       ) {
         const helper =
@@ -294,7 +300,7 @@ export function lowerJsonMethodCall(
         // A runtime-optional read (an absent dictionary key) can BE the
         // undefined arm: the runtime walker answers Node's undefined for a
         // dropped root and the text for every other value.
-        if (runtimeOptionalRead(lowerer, argNode)) {
+        if (runtimeOptionalRead(lowerer, argNode, value)) {
           const boxed: IrExpr = { kind: "dynFrom", value, type: DYN, loc };
           const raw: IrExpr = {
             kind: "libCall",

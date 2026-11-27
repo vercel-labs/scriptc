@@ -77304,7 +77304,6 @@
           "tests/corpus/net-socket-construct-dyn.cjs",
           "tests/corpus/net-socket-construct.ts",
           "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/net-socket-encodings.ts",
           "tests/corpus/net-socket-method-values.cjs",
           "tests/corpus/net-socket-set-encoding-names.ts",
           "tests/corpus/net-socket-tos-keepalive.ts",
@@ -77959,7 +77958,6 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/net-socket-encodings.ts",
           "tests/corpus/net-socket-construct.ts",
           "tests/corpus/net-socket-construct-dyn.cjs"
         ]
@@ -78082,7 +78080,6 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/net-socket-encodings.ts",
           "tests/corpus/net-socket-construct.ts",
           "tests/corpus/net-socket-construct-dyn.cjs"
         ]
@@ -78561,7 +78558,6 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/net-socket-encodings.ts",
           "tests/corpus/net-socket-construct.ts",
           "tests/corpus/net-socket-construct-dyn.cjs"
         ]
@@ -78614,7 +78610,6 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/net-socket-encodings.ts",
           "tests/corpus/net-socket-construct.ts",
           "tests/corpus/net-socket-construct-dyn.cjs"
         ]
@@ -78645,7 +78640,6 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/net-socket-encodings.ts",
           "tests/corpus/net-socket-construct.ts",
           "tests/corpus/net-socket-construct-dyn.cjs"
         ]
@@ -78719,7 +78713,6 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/net-socket-encodings.ts",
           "tests/corpus/net-socket-construct.ts",
           "tests/corpus/net-socket-construct-dyn.cjs"
         ]
@@ -78750,7 +78743,6 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/net-socket-encodings.ts",
           "tests/corpus/net-socket-construct.ts",
           "tests/corpus/net-socket-construct-dyn.cjs"
         ]
@@ -78871,7 +78863,6 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/net-socket-encodings.ts",
           "tests/corpus/net-socket-construct.ts",
           "tests/corpus/net-socket-construct-dyn.cjs"
         ]
@@ -78965,7 +78956,6 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/net-socket-encodings.ts",
           "tests/corpus/net-socket-construct.ts",
           "tests/corpus/net-socket-construct-dyn.cjs"
         ]
@@ -81677,7 +81667,6 @@
           "tests/corpus/net-socket-construct-dyn.cjs",
           "tests/corpus/net-socket-construct.ts",
           "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/net-socket-encodings.ts",
           "tests/corpus/net-socket-method-values.cjs",
           "tests/corpus/net-socket-set-encoding-names.ts",
           "tests/corpus/net-socket-write-rejected.cjs",
@@ -82015,7 +82004,6 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/net-socket-encodings.ts",
           "tests/corpus/net-socket-construct.ts",
           "tests/corpus/net-socket-construct-dyn.cjs"
         ]
@@ -94418,6 +94406,7 @@
           "tests/corpus/stream-duplex-pair.ts",
           "tests/corpus/stream-duplex-to-web.ts",
           "tests/corpus/stream-erased-data-listener.ts",
+          "tests/corpus/stream-flow-control.mjs",
           "tests/corpus/stream-lifecycle-state.mjs",
           "tests/corpus/stream-operators-option-values.ts",
           "tests/corpus/stream-predicate-values.ts",
@@ -96927,21 +96916,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:readable.isPaused",
+        "status": "supported",
+        "evidence": "compiler-feature:stream.readable.isPaused",
         "tests": [
-          "tests/corpus/1685-stream-readable-basics.ts",
-          "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs",
-          "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs",
-          "tests/corpus/5425-pipeline-generator-stage.ts",
-          "tests/corpus/5428-pipeline-generator-stages.cjs",
-          "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs",
-          "tests/corpus/writable-error-callbacks.ts",
-          "tests/corpus/stream-erased-data-listener.ts",
-          "tests/corpus/fs-stream-erased-open-listener.ts"
+          "tests/corpus/stream-flow-control.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -96964,21 +96942,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:readable.pause",
+        "status": "supported",
+        "evidence": "compiler-feature:stream.readable.pause",
         "tests": [
-          "tests/corpus/1685-stream-readable-basics.ts",
-          "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs",
-          "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs",
-          "tests/corpus/5425-pipeline-generator-stage.ts",
-          "tests/corpus/5428-pipeline-generator-stages.cjs",
-          "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs",
-          "tests/corpus/writable-error-callbacks.ts",
-          "tests/corpus/stream-erased-data-listener.ts",
-          "tests/corpus/fs-stream-erased-open-listener.ts"
+          "tests/corpus/stream-flow-control.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -97075,21 +97042,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:readable.resume",
+        "status": "supported",
+        "evidence": "compiler-feature:stream.readable.resume",
         "tests": [
-          "tests/corpus/1685-stream-readable-basics.ts",
-          "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs",
-          "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs",
-          "tests/corpus/5425-pipeline-generator-stage.ts",
-          "tests/corpus/5428-pipeline-generator-stages.cjs",
-          "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs",
-          "tests/corpus/writable-error-callbacks.ts",
-          "tests/corpus/stream-erased-data-listener.ts",
-          "tests/corpus/fs-stream-erased-open-listener.ts"
+          "tests/corpus/stream-flow-control.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -97689,11 +97645,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.closed",
         "tests": [
-          "tests/corpus/compat-stream-state.mjs",
-          "tests/corpus/compat-stream-state.ts"
+          "tests/corpus/stream-flow-control.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -97742,11 +97697,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.readable",
         "tests": [
-          "tests/corpus/compat-stream-state.mjs",
-          "tests/corpus/compat-stream-state.ts"
+          "tests/corpus/stream-flow-control.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -97908,10 +97862,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.readableFlowing",
         "tests": [
-          "tests/corpus/compat-stream-classes.ts"
+          "tests/corpus/stream-flow-control.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -97934,11 +97888,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.readableHighWaterMark",
         "tests": [
-          "tests/corpus/compat-stream-state.mjs",
-          "tests/corpus/compat-stream-state.ts"
+          "tests/corpus/stream-flow-control.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -97987,11 +97940,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.readableObjectMode",
         "tests": [
-          "tests/corpus/compat-stream-state.mjs",
-          "tests/corpus/compat-stream-state.ts"
+          "tests/corpus/stream-flow-control.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -98118,10 +98070,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.'pause'",
         "tests": [
-          "tests/corpus/compat-stream-classes.ts"
+          "tests/corpus/stream-flow-control.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -98144,11 +98096,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.'readable'",
         "tests": [
-          "tests/corpus/compat-stream-state.mjs",
-          "tests/corpus/compat-stream-state.ts"
+          "tests/corpus/stream-flow-control.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -98171,10 +98122,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.'resume'",
         "tests": [
-          "tests/corpus/compat-stream-classes.ts"
+          "tests/corpus/stream-flow-control.mjs"
         ]
       },
       "anchorSource": "exact"

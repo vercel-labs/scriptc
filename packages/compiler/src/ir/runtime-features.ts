@@ -2432,7 +2432,17 @@ const RUNTIME_FEATURE_RULES = {
     // A runtime key can name signal, so every dynamic member read selects
     // the unit the handle's dispatch needs.
     expr: (node) =>
-      node.kind === "dynKeyGet" && (node.key.kind !== "strLit" || node.key.value === "signal"),
+      (node.kind === "dynKeyGet" && (node.key.kind !== "strLit" || node.key.value === "signal")) ||
+      // Readable.from(iterable, options): its `signal` option adds the abort
+      // listener through this unit. A literal options value is read here; an
+      // opaque one may carry the member, so it selects the unit too.
+      (node.kind === "libCall" &&
+        node.fn === "readable.fromDyn" &&
+        node.args[1] !== undefined &&
+        (node.args[1]!.kind !== "dynObjLit" ||
+          (node.args[1]!.fields ?? []).some(
+            (f) => f.key.kind === "strLit" && f.key.value === "signal",
+          ))),
   }),
   /** IncomingMessage.signal: the message's abort signal is an
    * AbortController, so a program that reads it links the signal unit

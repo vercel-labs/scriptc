@@ -57,6 +57,21 @@ ScrDyn *scr_sc_blob_value(ScrBytes *all) __attribute__((weak));
  * linked, so a program that reads the member without calling it links
  * without the unit. */
 ScrDyn *(*scr_stream_promise_box_hook)(ScrPromise *) = NULL;
+/* Readable.from's `signal` option adds its abort listener through the events
+ * unit. The program links that unit when the option is present (a feature
+ * rule), and the weak reference keeps a stream program that never passes one
+ * from needing it. Mach-O refuses an undefined weak reference in an
+ * executable, so Apple gets a weak definition here; the events unit's strong
+ * definition replaces it whenever that unit is linked. */
+#if defined(__APPLE__)
+__attribute__((weak)) ScrDyn *scr_events_add_abort_listener(ScrDyn *signal, ScrDyn *listener) {
+  (void)signal;
+  (void)listener;
+  return NULL;
+}
+#else
+extern ScrDyn *scr_events_add_abort_listener(ScrDyn *signal, ScrDyn *listener) __attribute__((weak));
+#endif
 
 #include <math.h>
 #include <stdio.h>
@@ -2165,7 +2180,8 @@ static ScrStream *scr_from_dyn_ex(ScrDyn *src, ScrDyn *opts, bool duplex) {
       ScrStr *name = k->v.str;
       if ((name->len == 10 && memcmp(name->data, "objectMode", 10) == 0) ||
           (name->len == 13 && memcmp(name->data, "highWaterMark", 13) == 0) ||
-          (name->len == 8 && memcmp(name->data, "encoding", 8) == 0)) {
+          (name->len == 8 && memcmp(name->data, "encoding", 8) == 0) ||
+          (name->len == 6 && memcmp(name->data, "signal", 6) == 0)) {
         continue;
       }
       char m[200];
@@ -2246,6 +2262,17 @@ static ScrStream *scr_from_dyn_ex(ScrDyn *src, ScrDyn *opts, bool duplex) {
   }
   scr_str_release(encoding);
   scr_str_release(encoding_name);
+  if (fout && opts && opts->kind == SCR_DYN_OBJ) {
+    /* from.js's `signal`: addAbortSignal over the stream it builds, so an
+     * abort before or after the first read destroys it with AbortError. */
+    ScrDyn *signal = scr_dyn_obj_get(opts, "signal", 6);
+    if (signal && scr_dyn_truthy(signal) && scr_events_add_abort_listener != NULL) {
+      ScrStream *with_signal =
+          scr_stream_add_abort_signal(fout, signal, true, scr_events_add_abort_listener);
+      scr_stream_release(fout);
+      fout = with_signal;
+    }
+  }
   return fout;
 }
 

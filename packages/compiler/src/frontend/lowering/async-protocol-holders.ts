@@ -82,6 +82,48 @@ function isIteratorCallShape(expression: ts.Expression): boolean {
   return iteratorMemberKey(withoutParenthesesNonNull(call.expression)) !== null;
 }
 
+/** Whether `member`'s first declaration belongs to a stdlib `Readable` or
+ * `ReadableStream` class or interface: the member a stream itself declares
+ * (`values` on a web stream, `iterator` on a node stream). */
+function declaredByStdlibStream(
+  isStdlibFile: (sf: ts.SourceFile) => boolean,
+  member: ts.Symbol | undefined,
+): boolean {
+  const declaration = member?.declarations?.[0];
+  if (declaration === undefined || !isStdlibFile(ts.getSourceFileOfNode(declaration))) return false;
+  let owner: ts.Node | undefined = declaration.parent;
+  while (owner !== undefined && !ts.isInterfaceDeclaration(owner) && !ts.isClassDeclaration(owner))
+    owner = owner.parent;
+  if (owner === undefined) return false;
+  const name = owner.name?.text;
+  return name === "ReadableStream" || name === "Readable";
+}
+
+/** Whether a receiver typed `type` is a stream's: a `Readable`/`ReadableStream`,
+ * a class deriving from one (its inherited `iterator`/`values` member says
+ * so), or a value nothing types — a call on one then proves the value
+ * answers the protocol, which the checked-dynamic slot holds. */
+function stdlibStreamReceiver(
+  checker: ts.TypeChecker,
+  isStdlibFile: (sf: ts.SourceFile) => boolean,
+  type: ts.Type,
+  depth = 0,
+): boolean {
+  if ((type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown | ts.TypeFlags.TypeParameter)) !== 0)
+    return true;
+  if (type.isUnionType())
+    return ts
+      .constituentTypes(type)
+      .some((part) => stdlibStreamReceiver(checker, isStdlibFile, part, depth + 1));
+  if (depth > 4 || (type.flags & ts.TypeFlags.Object) === 0) return false;
+  return ["iterator", "values"].some((name) =>
+    declaredByStdlibStream(
+      isStdlibFile,
+      attempt(() => checker.getPropertyOfType(type, name)),
+    ),
+  );
+}
+
 /** Whether `node` is a call of a stdlib stream's async-iterator member: a
  * web stream's `values()`, or a node stream's `iterator()` /
  * `[Symbol.asyncIterator]()`. The runtime answers each with its own
@@ -97,15 +139,20 @@ function iteratorCallOfStdlibStream(
   const callee = withoutParenthesesNonNull(call.expression);
   const key = iteratorMemberKey(callee);
   if (key === null) return false;
-  const member = attempt(() => checker.getSymbolAtLocation(key));
-  const declaration = member?.declarations?.[0];
-  if (declaration === undefined || !isStdlibFile(ts.getSourceFileOfNode(declaration))) return false;
-  let owner: ts.Node | undefined = declaration.parent;
-  while (owner !== undefined && !ts.isInterfaceDeclaration(owner) && !ts.isClassDeclaration(owner))
-    owner = owner.parent;
-  if (owner === undefined) return false;
-  const name = owner.name?.text;
-  return name === "ReadableStream" || name === "Readable";
+  if (
+    declaredByStdlibStream(
+      isStdlibFile,
+      attempt(() => checker.getSymbolAtLocation(key)),
+    )
+  )
+    return true;
+  // `Symbol.asyncIterator`'s declaration is the language's (SymbolConstructor,
+  // or the AsyncIterable interface every async iterable inherits), never a
+  // stream's: the receiver's type decides whether this call is a stream's
+  // own member.
+  if (!ts.isPropertyAccessExpression(key) || !ts.isElementAccessExpression(callee)) return false;
+  const receiver = attempt(() => checker.getTypeAtLocation(callee.expression));
+  return receiver !== undefined && stdlibStreamReceiver(checker, isStdlibFile, receiver);
 }
 
 /** A place a value flows into a slot. */

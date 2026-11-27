@@ -1805,7 +1805,7 @@ export function lowerObjectAssignIndexShape(
   // copies. Bind the target and each source to hidden locals in that order,
   // then chain the merges over the locals.
   const prelude: IrStmt[] = [];
-  const target = lowerer.declareHiddenLocal("%assignTarget", targetIr);
+  const target = lowerer.declareHiddenLocal("%assignTarget", targetIr, true);
   prelude.push({
     kind: "varDecl",
     localId: target.id,
@@ -1850,12 +1850,16 @@ export function lowerObjectAssignIndexShape(
     });
     sources.push({ plan, ref: (): IrExpr => varRef(source.id, recordT, loc) });
   }
-  let acc: IrExpr = targetRef();
+  // Each merge step assigns ONE accumulator local. A ternary over the
+  // accumulated expression would copy it into both branches, so N optional
+  // sources would grow the emitted IR exponentially; a statement per step
+  // keeps it linear (a 30-source merge compiles fast).
+  const steps: IrStmt[] = [];
   for (const { plan, ref } of sources) {
     if (plan.kind === "record" && plan.optional !== undefined) {
       const { unionId, tag } = plan.optional;
-      acc = {
-        kind: "ternary",
+      steps.push({
+        kind: "if",
         cond: {
           kind: "unionIsTag",
           unionId,
@@ -1865,33 +1869,50 @@ export function lowerObjectAssignIndexShape(
           type: BOOL,
           loc,
         },
-        then: {
-          kind: "call",
-          callee: helperFor(plan),
-          args: [
-            acc,
-            {
-              kind: "unionNarrow",
-              unionId,
-              tag,
-              value: ref(),
-              type: { kind: "record", shapeId: plan.fromId },
+        then: [
+          {
+            kind: "assign",
+            localId: target.id,
+            value: {
+              kind: "call",
+              callee: helperFor(plan),
+              args: [
+                targetRef(),
+                {
+                  kind: "unionNarrow",
+                  unionId,
+                  tag,
+                  value: ref(),
+                  type: { kind: "record", shapeId: plan.fromId },
+                  loc,
+                },
+              ],
+              type: targetIr,
               loc,
             },
-          ],
-          type: targetIr,
-          loc,
-        },
-        else_: acc,
-        type: targetIr,
+            loc,
+          },
+        ],
+        else_: null,
         loc,
-      };
+      });
       continue;
     }
     const callee = plan.kind === "dyn" ? dynHelperFor() : helperFor(plan);
-    acc = { kind: "call", callee, args: [acc, ref()], type: targetIr, loc };
+    steps.push({
+      kind: "assign",
+      localId: target.id,
+      value: { kind: "call", callee, args: [targetRef(), ref()], type: targetIr, loc },
+      loc,
+    });
   }
-  return { kind: "seqExpr", stmts: prelude, result: acc, type: targetIr, loc };
+  return {
+    kind: "seqExpr",
+    stmts: [...prelude, ...steps],
+    result: targetRef(),
+    type: targetIr,
+    loc,
+  };
 }
 
 /** One contributor of a pure-index-record MERGE literal: a full spread of

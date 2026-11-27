@@ -38,6 +38,7 @@ function copyDeclarations(destination: string): string {
     "scriptc-overrides.d.ts",
     "scriptc-node-fallback.d.ts",
     "scriptc-dom-exception.d.ts",
+    "scriptc-web-streams.d.ts",
   ])
     cpSync(join(repoRoot, "packages/compiler/ambient", name), join(destination, name));
   cpSync(

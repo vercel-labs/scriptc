@@ -262,13 +262,15 @@ export function isFallbackModuleDtsPath(file: string): boolean {
   return tsgoPath(file).startsWith(fallbackModuleRoot() + "/");
 }
 
-/** True for the fallback declarations: the core file, the module files, and
- * the DOMException declaration that stands beside an older @types/node. */
+/** True for the fallback declarations: the core file, the module files, the
+ * DOMException declaration that stands beside an older @types/node, and the
+ * web stream globals the fallback carries. */
 export function isFallbackDtsPath(file: string): boolean {
   const path = tsgoPath(file);
   return (
     path === fallbackDtsPath() ||
     path === domExceptionDtsPath() ||
+    path === webStreamsDtsPath() ||
     path.startsWith(fallbackModuleRoot() + "/")
   );
 }

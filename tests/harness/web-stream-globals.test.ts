@@ -37,6 +37,20 @@ function projectWithoutWebStreamGlobals(name: string): string {
   expect(index).toContain(reference);
   writeFileSync(join(types, "index.d.ts"), index.replace(reference, ""));
   rmSync(join(types, "web-globals/streams.d.ts"));
+  // 24.13.3 also declares the globals from stream/web.d.ts's `global`
+  // augmentation; 20.11 has no such block, so an older project has none.
+  // Strip it to model that world.
+  const web = join(types, "stream/web.d.ts");
+  const webText = readFileSync(web, "utf8");
+  const augmentation = webText.indexOf("    global {");
+  expect(augmentation).toBeGreaterThan(0);
+  let depth = 0;
+  let end = webText.indexOf("{", augmentation);
+  for (; end < webText.length; end++) {
+    if (webText[end] === "{") depth++;
+    else if (webText[end] === "}" && --depth === 0) break;
+  }
+  writeFileSync(web, webText.slice(0, augmentation) + webText.slice(end + 1));
   writeFileSync(
     join(dir, "tsconfig.json"),
     JSON.stringify(
@@ -90,6 +104,32 @@ describe("web stream globals beside an older @types/node", () => {
     );
     const expected = await nodeOutput(dir);
     expect(expected).toBe("true true true true true true\n");
+    const out = join(dir, ".scriptc");
+    mkdirSync(out);
+    const result = await compile(join(dir, "main.ts"), {
+      outPath: join(out, "program"),
+      outDir: out,
+      sanitize,
+    });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code} ${d.message}`).join("\n"));
+    const { stdout } = await execFileAsync(result.binaryPath, [], { cwd: dir, encoding: "utf8" });
+    expect(stdout).toBe(expected);
+  }, 180_000);
+
+  test("a project naming only the compression streams compiles and matches Node", async () => {
+    const dir = projectWithoutWebStreamGlobals("named-compression-streams");
+    writeFileSync(
+      join(dir, "main.ts"),
+      [
+        "let compress: CompressionStream | null = null;",
+        "let decompress: DecompressionStream | null = null;",
+        "console.log(compress === null, decompress === null);",
+        "",
+      ].join("\n"),
+    );
+    const expected = await nodeOutput(dir);
+    expect(expected).toBe("true true\n");
     const out = join(dir, ".scriptc");
     mkdirSync(out);
     const result = await compile(join(dir, "main.ts"), {

@@ -1,5 +1,3 @@
-/// <reference path="./scriptc-web-streams.d.ts" />
-
 /* The FALLBACK Node-ish declarations — shipped into the program ONLY when
  * the target project has no @types/node (see loadProgram): console, the
  * process global, and the "node:fs" module, typed as exactly the supported

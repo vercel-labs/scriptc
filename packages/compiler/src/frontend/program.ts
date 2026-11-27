@@ -1189,7 +1189,7 @@ function programDeclaresWebStreamGlobals7(program: ts.Program, host: ts.Ts7Host)
  * letter, digit, `$` or `_`, or any code unit outside ASCII, on neither
  * side. */
 const WEB_STREAM_GLOBAL_WORD =
-  /(?<![0-9A-Za-z$_\u0080-\uffff])(?:ReadableStream|ReadableStreamDefaultReader|ReadableStreamBYOBReader|ReadableStreamBYOBRequest|ReadableStreamDefaultController|ReadableByteStreamController|WritableStream|WritableStreamDefaultWriter|WritableStreamDefaultController|TransformStream|TransformStreamDefaultController|CountQueuingStrategy|ByteLengthQueuingStrategy|TextEncoderStream|TextDecoderStream)(?![0-9A-Za-z$_\u0080-\uffff])/;
+  /(?<![0-9A-Za-z$_\u0080-\uffff])(?:ReadableStream|ReadableStreamDefaultReader|ReadableStreamBYOBReader|ReadableStreamBYOBRequest|ReadableStreamDefaultController|ReadableByteStreamController|WritableStream|WritableStreamDefaultWriter|WritableStreamDefaultController|TransformStream|TransformStreamDefaultController|CompressionStream|DecompressionStream|CountQueuingStrategy|ByteLengthQueuingStrategy|TextEncoderStream|TextDecoderStream)(?![0-9A-Za-z$_\u0080-\uffff])/;
 
 /** True when a program source (user code or compiled npm JavaScript) names a
  * web stream global. Like programNamesTemporal7, a cheap syntactic scan of
@@ -1967,8 +1967,15 @@ function loadProgram7(
   const coreRoots = [
     entryPath,
     ambientDtsPath(),
+    // Without @types/node the fallback stands in; the web stream globals it
+    // carried through a reference path join as their own root (a declaration
+    // file cannot reference a sibling without a triple-slash directive).
     ...(nodeTypes === null
-      ? [fallbackDtsPath(), ...fallbackModulesNamedIn(host.sourceText(entryPath) ?? "")]
+      ? [
+          fallbackDtsPath(),
+          webStreamsDtsPath(),
+          ...fallbackModulesNamedIn(host.sourceText(entryPath) ?? ""),
+        ]
       : [nodeTypes]),
     ...(config.declarations ?? []),
   ];

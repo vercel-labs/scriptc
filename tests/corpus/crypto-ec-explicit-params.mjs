@@ -84,3 +84,47 @@ show("null", () => crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1", 
 show("unknown", () => crypto.generateKeyPairSync("ec", { namedCurve: "nope", paramEncoding: "explicit" }));
 show("ed25519", () => crypto.generateKeyPairSync("ed25519", { paramEncoding: "explicit" }).publicKey.asymmetricKeyType);
 show("x25519", () => crypto.generateKeyPairSync("x25519", { paramEncoding: "explicit" }).publicKey.asymmetricKeyType);
+
+
+// The same P-256 key encoded twice: once with the curve OID (named) and
+// once with its explicit ECParameters. equals() compares the key, not the
+// encoding, as Node's EVP_PKEY_eq does.
+const NAMED_SPKI = Buffer.from("3059301306072a8648ce3d020106082a8648ce3d0301070342000411f58064e52c4bb236827becfd998c6fbe8e10bd58d780107cc3b6a3c3c48c7e632d6889ba6ce71afae39c793d668fc10f50c337196d1dfd3687e969d7de7087", "hex");
+const NAMED_PKCS8 = Buffer.from("308187020100301306072a8648ce3d020106082a8648ce3d030107046d306b020101042073882961b7c063c4b9c12587b05f4d9067c6e9bc8094bde08eb087f852934d3ba1440342000411f58064e52c4bb236827becfd998c6fbe8e10bd58d780107cc3b6a3c3c48c7e632d6889ba6ce71afae39c793d668fc10f50c337196d1dfd3687e969d7de7087", "hex");
+const EXPL_SPKI = Buffer.from("3082014b3082010306072a8648ce3d02013081f7020101302c06072a8648ce3d0101022100ffffffff00000001000000000000000000000000ffffffffffffffffffffffff305b0420ffffffff00000001000000000000000000000000fffffffffffffffffffffffc04205ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604b031500c49d360886e704936a6678e1139d26b7819f7e900441046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5022100ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc6325510201010342000411f58064e52c4bb236827becfd998c6fbe8e10bd58d780107cc3b6a3c3c48c7e632d6889ba6ce71afae39c793d668fc10f50c337196d1dfd3687e969d7de7087", "hex");
+const EXPL_PKCS8 = Buffer.from("308201790201003082010306072a8648ce3d02013081f7020101302c06072a8648ce3d0101022100ffffffff00000001000000000000000000000000ffffffffffffffffffffffff305b0420ffffffff00000001000000000000000000000000fffffffffffffffffffffffc04205ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604b031500c49d360886e704936a6678e1139d26b7819f7e900441046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5022100ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551020101046d306b020101042073882961b7c063c4b9c12587b05f4d9067c6e9bc8094bde08eb087f852934d3ba1440342000411f58064e52c4bb236827becfd998c6fbe8e10bd58d780107cc3b6a3c3c48c7e632d6889ba6ce71afae39c793d668fc10f50c337196d1dfd3687e969d7de7087", "hex");
+const namedPubKey = crypto.createPublicKey({ key: NAMED_SPKI, format: "der", type: "spki" });
+const explPubKey = crypto.createPublicKey({ key: EXPL_SPKI, format: "der", type: "spki" });
+const namedPrivKey = crypto.createPrivateKey({ key: NAMED_PKCS8, format: "der", type: "pkcs8" });
+const explPrivKey = crypto.createPrivateKey({ key: EXPL_PKCS8, format: "der", type: "pkcs8" });
+show("same key details", () => [JSON.stringify(namedPubKey.asymmetricKeyDetails),
+  JSON.stringify(explPubKey.asymmetricKeyDetails)]);
+show("equals across encodings", () => [namedPubKey.equals(explPubKey), explPubKey.equals(namedPubKey),
+  namedPrivKey.equals(explPrivKey), explPrivKey.equals(namedPrivKey)]);
+show("equals across halves", () => [namedPubKey.equals(explPrivKey), explPrivKey.equals(explPubKey)]);
+
+// An explicit key decrypts after an encrypted export, in the SEC1 PEM form
+// (whose decoder needs the explicit parameters) and in PKCS#8.
+const encryptedSec1 = pair.privateKey.export({
+  format: "pem", type: "sec1", cipher: "aes-256-cbc", passphrase: "secret",
+});
+show("encrypted sec1 label", () => Buffer.from(encryptedSec1).subarray(0, 27).toString("utf8"));
+show("encrypted sec1 reimport", () => {
+  const k = crypto.createPrivateKey({ key: encryptedSec1, format: "pem", passphrase: "secret" });
+  return [k.asymmetricKeyType, JSON.stringify(k.asymmetricKeyDetails), k.equals(pair.privateKey)];
+});
+show("encrypted sec1 as public", () => crypto.createPublicKey({
+  key: encryptedSec1, format: "pem", passphrase: "secret",
+}).equals(pair.publicKey));
+show("encrypted sec1 wrong pass", () => crypto.createPrivateKey({ key: encryptedSec1, format: "pem", passphrase: "nope" }));
+show("encrypted sec1 no pass", () => crypto.createPrivateKey({ key: encryptedSec1, format: "pem" }));
+const encryptedPkcs8 = pair.privateKey.export({
+  format: "pem", type: "pkcs8", cipher: "aes-256-cbc", passphrase: "secret",
+});
+show("encrypted pkcs8 reimport", () => {
+  const k = crypto.createPrivateKey({ key: encryptedPkcs8, format: "pem", passphrase: "secret" });
+  return [k.asymmetricKeyType, JSON.stringify(k.asymmetricKeyDetails), k.equals(pair.privateKey)];
+});
+show("encrypted pkcs8 as public", () => crypto.createPublicKey({
+  key: encryptedPkcs8, format: "pem", passphrase: "secret",
+}).equals(pair.publicKey));

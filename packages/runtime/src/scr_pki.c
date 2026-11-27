@@ -1770,9 +1770,19 @@ static void sp_throw_bad_decrypt(int form) {
                        form == 0 ? 4 : 2);
 }
 
+/* One hexadecimal digit, or -1. */
+static int sp_hex_value(unsigned char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return -1;
+}
+
 /* The cipher name of an encrypted traditional PEM key's DEK-Info header
- * into `name` (NUL-terminated), or false for other input. */
-static bool sp_pem_dek_info(const unsigned char *data, size_t len, char *name, size_t cap) {
+ * into `name` (NUL-terminated), and when `iv` is not NULL the IV its hex
+ * carries, or false for other input. */
+static bool sp_pem_dek_info(const unsigned char *data, size_t len, char *name, size_t cap,
+                            unsigned char *iv, size_t *iv_len) {
   const char *text = (const char *)data;
   const char *begin = NULL;
   for (size_t i = 0; i + 11 <= len && !begin; i++)
@@ -1794,6 +1804,18 @@ static bool sp_pem_dek_info(const unsigned char *data, size_t len, char *name, s
       size_t o = 0;
       while (i < n && line[i] != ',' && o + 1 < cap) name[o++] = line[i++];
       name[o] = 0;
+      if (iv == NULL) return true;
+      if (i >= n || line[i] != ',') return false;
+      i++;
+      size_t got = 0;
+      while (i + 1 < n && got < 16) {
+        int hi = sp_hex_value(line[i]), lo = sp_hex_value(line[i + 1]);
+        if (hi < 0 || lo < 0) return false;
+        iv[got++] = (unsigned char)((hi << 4) | lo);
+        i += 2;
+      }
+      if (got == 0 || i != n) return false;
+      *iv_len = got;
       return true;
     } else if (n == 0 || memchr(line, ':', n) == NULL) {
       return false;
@@ -1809,7 +1831,7 @@ static bool sp_pem_dek_info(const unsigned char *data, size_t len, char *name, s
  * for a cipher mbedTLS does not decrypt; true for other input. */
 static bool sp_pem_dek_check(const unsigned char *data, size_t len, const ScrBytes *pass) {
   char name[64];
-  if (!sp_pem_dek_info(data, len, name, sizeof name)) return true;
+  if (!sp_pem_dek_info(data, len, name, sizeof name, NULL, NULL)) return true;
   size_t n = strlen(name);
   static const char *const known[] = {SCR_CIPHER_KNOWN_NAMES};
   static const struct {
@@ -3411,6 +3433,80 @@ static bool sp_dh_spki_shape(const unsigned char *der, size_t len) {
   return oid_len == sizeof sp_dh_oid && memcmp(p, sp_dh_oid, oid_len) == 0;
 }
 
+/* The DER payload of a traditional encrypted PEM (the base64 body after
+ * its Proc-Type/DEK-Info headers and their blank line), +1 malloc'd. */
+static unsigned char *sp_pem_encrypted_der(const unsigned char *data, size_t len, size_t *out_len) {
+  const char *text = (const char *)data;
+  const char *begin = NULL;
+  for (size_t i = 0; i + 11 <= len && !begin; i++)
+    if (memcmp(text + i, "-----BEGIN ", 11) == 0) begin = text + i;
+  if (!begin) return NULL;
+  const char *end = text + len, *line = memchr(begin, '\n', (size_t)(end - begin));
+  if (!line) return NULL;
+  line++;
+  for (;;) {
+    const char *eol = memchr(line, '\n', (size_t)(end - line));
+    size_t n = (size_t)((eol ? eol : end) - line);
+    if (n && line[n - 1] == '\r') n--;
+    if (n == 0) {
+      line = eol ? eol + 1 : end;
+      break;
+    }
+    if (!eol) return NULL;
+    line = eol + 1;
+  }
+  size_t room = (size_t)(end - line) + 1;
+  unsigned char *b64 = malloc(room), *raw = malloc(room);
+  if (!b64 || !raw) scr_trap("scriptc: out of memory\n");
+  size_t m = 0;
+  for (const char *p = line; p < end && *p != '-'; p++)
+    if (*p != '\n' && *p != '\r' && *p != ' ' && *p != '\t') b64[m++] = (unsigned char)*p;
+  size_t raw_len = 0;
+  bool ok = mbedtls_base64_decode(raw, room, &raw_len, b64, m) == 0;
+  free(b64);
+  if (!ok) {
+    free(raw);
+    return NULL;
+  }
+  *out_len = raw_len;
+  return raw;
+}
+
+/* A traditional encrypted PEM key mbedTLS decrypted but could not parse,
+ * which is how an explicit-parameter EC key arrives: decrypt it here and
+ * run the whole parse again, so the explicit reader sees the DER. NULL
+ * with the error pending (a passphrase that does not decrypt) or with
+ * nothing pending (the plaintext is not a key this unit reads). */
+static SpKey *sp_parse_encrypted_pem(const unsigned char *data, size_t len, const ScrBytes *pass,
+                                     bool private_key) {
+  char name[64];
+  unsigned char iv[16];
+  size_t iv_len = 0;
+  if (!sp_pem_dek_info(data, len, name, sizeof name, iv, &iv_len)) return NULL;
+  ScrStr *cipher_name = scr_str_new(name, strlen(name));
+  const SpKeyCipher *ci = NULL;
+  bool known = sp_key_cipher(cipher_name, &ci);
+  scr_str_release(cipher_name);
+  if (!known || ci == NULL || ci->type == MBEDTLS_CIPHER_NONE || ci->ecb || iv_len != ci->iv_len) return NULL;
+  size_t ct_len = 0;
+  unsigned char *ct = sp_pem_encrypted_der(data, len, &ct_len);
+  if (!ct) return NULL;
+  unsigned char key[32];
+  sp_bytes_to_key(pass->data, (size_t)scr_bytes_byte_len(pass), iv, key, ci->key_len);
+  size_t plain_len = 0;
+  unsigned char *plain = sp_key_cipher_run(ci, false, key, iv, ct, ct_len, &plain_len);
+  mbedtls_platform_zeroize(key, sizeof key);
+  free(ct);
+  if (!plain) {
+    sp_throw_bad_decrypt(2);
+    return NULL;
+  }
+  SpKey *k = sp_parse_with(plain, plain_len, private_key, NULL);
+  mbedtls_platform_zeroize(plain, plain_len);
+  free(plain);
+  return k;
+}
+
 /* sp_parse with a passphrase for an encrypted private key (NULL: none). */
 static SpKey *sp_parse_with(const unsigned char *data, size_t len, bool private_key, const ScrBytes *pass) {
   {
@@ -3537,7 +3633,17 @@ static SpKey *sp_parse_with(const unsigned char *data, size_t len, bool private_
     /* An encrypted traditional PEM key mbedTLS read. */
     if (private_rc == MBEDTLS_ERR_PK_PASSWORD_REQUIRED) sp_throw_passphrase_missing(false);
     else if (private_rc == MBEDTLS_ERR_PK_PASSWORD_MISMATCH) sp_throw_bad_decrypt(2);
-    else sp_unsupported_key_input(data, len);
+    else {
+      /* An encrypted traditional PEM key whose plaintext only this unit's
+       * explicit-parameter reader can read: mbedTLS decrypted it and its
+       * own parser (named curves only) failed. */
+      if (pem && pass) {
+        SpKey *again = sp_parse_encrypted_pem(data, len, pass, private_key);
+        if (again) return again;
+        if (scr_exc_pending()) return NULL;
+      }
+      sp_unsupported_key_input(data, len);
+    }
     return NULL;
   }
   if (!sp_key_supported(k)) {
@@ -4181,7 +4287,15 @@ static ScrDyn *sp_key_details(SpKey *k) {
 static int sp_identity_der(SpKey *k, unsigned char *buf, size_t size) {
   if (sp_is_okp(k) || sp_is_mlkem(k) || sp_is_dh(k))
     return k->private_key ? sp_write_pkcs8_der(k, buf, size) : sp_write_spki_der(k, buf, size);
-  return k->private_key ? sp_write_private_der(k, buf, size) : sp_write_spki_der(k, buf, size);
+  /* equals() compares the key, not its parameter encoding: an explicit and
+   * a named key of the same curve and point are equal, as Node's
+   * EVP_PKEY_eq compares them, so the named encoding is the canonical one
+   * here. */
+  bool explicit_params = sp_is_ec(k) && k->ec_explicit;
+  if (explicit_params) k->ec_explicit = false;
+  int n = k->private_key ? sp_write_private_der(k, buf, size) : sp_write_spki_der(k, buf, size);
+  if (explicit_params) k->ec_explicit = true;
+  return n;
 }
 
 static ScrDyn *sp_key_invoke(void *h, ScrDyn *self, const char *method, ScrDyn *const *args,

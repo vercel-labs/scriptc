@@ -1522,7 +1522,12 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   if (fnDefs.length === 0) out.push("");
   out.push(PARTITION_GROUP_END, "");
   // WebAssembly modules translated into this program, and the registry.
-  for (const line of emitWasmModules(emitter.mod, flushedDecls, emitter.wasmBoundsChecks))
+  for (const line of emitWasmModules(
+    emitter.mod,
+    flushedDecls,
+    emitter.wasmBoundsChecks,
+    targetCpuAttribute(emitter.targetCpu),
+  ))
     out.push(line);
   // The traces the weak analysis reads; overrides the runtime's weak, empty
   // default (scr_json.c).

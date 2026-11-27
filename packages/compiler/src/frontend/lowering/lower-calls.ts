@@ -255,7 +255,12 @@ import {
   perfEntryTag,
 } from "./builtins/performance.js";
 import { lowerSlidingWindowMethodCall } from "./builtins/sliding-histogram.js";
-import { fenceX509KeyWalk, isX509Type } from "./builtins/x509.js";
+import {
+  fenceX509KeyWalk,
+  isX509Type,
+  lowerX509OwnKeyWalk,
+  x509OwnKeyWalkAnswer,
+} from "./builtins/x509.js";
 import {
   lowerProcStreamMethodCall,
   lowerProcessBuiltinModuleNamespace,
@@ -375,6 +380,7 @@ import { fenceExpandoRead } from "./lower-expando.js";
 import {
   fenceNodeModuleMutationCall,
   isCjsRequireGlobal,
+  lowerModuleClassStaticCall,
   lowerRequireCacheKeys,
 } from "./lower-node-module.js";
 import { builtinConstantsObject, pathModuleValue } from "./lower-builtin-values.js";
@@ -610,6 +616,9 @@ export function refuseWrittenBuiltin(
 }
 
 export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
+  // `Module.isBuiltin(...)`: the class's statics are the module surface.
+  const moduleStatic = lowerModuleClassStaticCall(lowerer, expr);
+  if (moduleStatic) return moduleStatic;
   // `fs.readFileSync(…)` where `fs` is a require binding the file
   // reassigns: the binding's storage holds whatever the program stored, so
   // the method is read and called through that checked-dynamic value.
@@ -4189,7 +4198,14 @@ function lowerObjectOwnCall(
   } else if (type.kind === "record") {
     const shape = lowerer.shapes.get(type.shapeId);
     fencePerfEntryKeyWalk(lowerer, type, receiverNode ?? call, `Object.prototype.${method}`);
-    fenceX509KeyWalk(lowerer, type, receiverNode ?? call, `Object.prototype.${method}`);
+    if (isX509Type(lowerer, type)) {
+      /* The receiver and the arguments were lowered above; only the answer
+       * is left, so nothing here evaluates them a second time. */
+      const answer = x509OwnKeyWalkAnswer(lowerer, method, call, loc);
+      if (answer) return { kind: "seqExpr", stmts, result: answer, type: answer.type, loc };
+      if (receiverNode !== undefined)
+        fenceX509KeyWalk(lowerer, type, receiverNode, `Object.prototype.${method}`);
+    }
     if (!shape || shape.tuple || shapeHasAccessorSlots(shape)) {
       lowerer.noLowering(
         "Object.prototype." + method + " over this record shape",
@@ -11424,7 +11440,18 @@ function lowerObjectStaticCall(
     const shape = lowerer.shapes.get(recordT.shapeId);
     if (!shape || shape.tuple) return null; // tuple → the fence
     fencePerfEntryKeyWalk(lowerer, recordT, call, "Object.getOwnPropertyNames");
-    fenceX509KeyWalk(lowerer, recordT, call, "Object.getOwnPropertyNames");
+    if (isX509Type(lowerer, recordT)) {
+      const x509 = lowerX509OwnKeyWalk(
+        lowerer,
+        lowerer.lowerExpr(node),
+        "getOwnPropertyNames",
+        call.arguments.nodes.slice(1),
+        call,
+        locOf(call),
+      );
+      if (x509) return x509;
+      fenceX509KeyWalk(lowerer, recordT, call, "Object.getOwnPropertyNames");
+    }
     if (shapeHasAccessorSlots(shape)) {
       lowerer.unsupported(
         "SC1090",
@@ -11778,7 +11805,18 @@ function lowerObjectStaticCall(
   // RESULTS, invoked in key order. The static field walk models neither
   // (accessor slots live outside declaredOrder), so the surface fences.
   fencePerfEntryKeyWalk(lowerer, argIr, call, `Object.${member}`);
-  fenceX509KeyWalk(lowerer, argIr, call, `Object.${member}`);
+  if (isX509Type(lowerer, argIr)) {
+    const x509 = lowerX509OwnKeyWalk(
+      lowerer,
+      lowerer.lowerExpr(argNode),
+      member,
+      call.arguments.nodes.slice(1),
+      call,
+      locOf(call),
+    );
+    if (x509) return x509;
+    fenceX509KeyWalk(lowerer, argIr, call, `Object.${member}`);
+  }
   if (shapeHasAccessorSlots(shape)) {
     lowerer.unsupported(
       "SC1090",

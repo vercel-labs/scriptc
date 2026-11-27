@@ -41,7 +41,13 @@ import { boxedHandleReceiver, lowerHandlePropertyWrite } from "../handle-propert
 import { heldEnvValueType } from "../builtins/environment.js";
 import { hasOptionalChainGuard, isOptionalChainTail } from "./optional-chains.js";
 import { lowerEnumAccess } from "../lower-enums.js";
-import { fenceNodeModuleMutation, lowerRequireCacheElement } from "../lower-node-module.js";
+import {
+  fenceNodeModuleMutation,
+  isModuleClassValue,
+  lowerModuleClassDynamicStatic,
+  lowerRequireCacheElement,
+  withModuleClassReceiverLoad,
+} from "../lower-node-module.js";
 import { lowerModuleNamespaceElement } from "../module-namespace-elements.js";
 import { type CompoundOp, stdlibGlobalNameOf } from "../surfaces.js";
 import { globalSymbolKey } from "./global-symbols.js";
@@ -199,6 +205,18 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
       type: DYN,
       loc: locOf(expr),
     };
+  }
+
+  // `Module["isBuiltin"]` / `Module[name]`: the class's statics are the
+  // module surface, identical to the namespace's exports.
+  if (expr.questionDotToken === undefined && isModuleClassValue(lowerer, expr.expression)) {
+    const name = lowerer.foldedStringKeyOf(expr.argumentExpression);
+    if (name !== null) {
+      const value = lowerer.lowerBuiltinMemberDynValue("module", name, locOf(expr));
+      if (value) return withModuleClassReceiverLoad(lowerer, expr.expression, value, locOf(expr));
+    }
+    const dynamic = lowerModuleClassDynamicStatic(lowerer, expr);
+    if (dynamic) return dynamic;
   }
 
   // `a?.[i]`: the guard lowers as an optional-chain step around the

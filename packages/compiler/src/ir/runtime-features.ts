@@ -403,6 +403,7 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.duplexFromGenNoSource",
   "stream.duplexFromDyn",
   "stream.composeStageDyn",
+  "stream.composeTailDyn",
   "stream.duplexFromPromise",
   "stream.duplexFromAsyncFn",
   "stream.duplexFromAsyncFnNoSource",
@@ -505,6 +506,7 @@ const READABLE_DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.duplexFromGenNoSource",
   "stream.duplexFromDyn",
   "stream.composeStageDyn",
+  "stream.composeTailDyn",
   "stream.duplexFromPromise",
   "stream.duplexFromAsyncFn",
   "stream.duplexFromAsyncFnNoSource",
@@ -1326,6 +1328,28 @@ function computedBufferMemberScan(mod: IrModule): RuleScan {
   };
 }
 
+/** A body read whose member name the compiler cannot see — a checked-dynamic
+ * read with a key computed at run time, or the `blob` member read as a value
+ * to invoke later — in a module that uses fetch. The fetch handle's dispatch
+ * answers `blob` for such a read, and the Blob it builds needs the blob unit,
+ * which the webBodies feature links. */
+function computedBlobBodyScan(_mod: IrModule): RuleScan {
+  let computed = false;
+  let fetch = false;
+  return {
+    expr: (node) => {
+      if (
+        !computed &&
+        node.kind === "dynKeyGet" &&
+        (node.key.kind !== "strLit" || node.key.value === "blob")
+      )
+        computed = true;
+      else if (!fetch && node.kind === "libCall" && node.fn.startsWith("fetch.")) fetch = true;
+    },
+    result: () => computed && fetch,
+  };
+}
+
 /** Whether the module calls WebCrypto and a string literal in it names one
  * of the asymmetric algorithms (matched without regard to case, as
  * normalizeAlgorithm matches names): scr_webcrypto_pki.c and the pki unit
@@ -1778,6 +1802,14 @@ function functionShadowsMember(fn: IrFunction): boolean {
   });
   return found;
 }
+
+/** The class-table entries for the compression streams: a program that can
+ * read the classes through the global object emits these without naming the
+ * classes, and the unit that answers them links the zlib and Brotli engines. */
+const COMPRESSION_CLASS_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
+  "webstream.compressClass",
+  "webstream.compressInstanceOf",
+]);
 
 /** One rule per runtime feature, sorted by name. A new feature is an
  * entry here and its line in noRuntimeFeatures; RuntimeFeatures, the scan
@@ -2338,11 +2370,23 @@ const RUNTIME_FEATURE_RULES = {
   webStreams: rule({ prefixes: ["webstream."] }),
   /** A program that builds a Blob or File can hand one to fetch: selects
    * scr_fetch.c's SCR_WEB_BODIES build, which sends the blob's bytes and
-   * type as Node does. An fs.openAsBlob result is such a Blob, and handing
-   * it to fetch straight from the promise is the ordinary use, so its call
-   * selects the build too. Every other program keeps the default fetch
-   * unit, byte for byte. */
-  webBodies: rule({ prefixes: ["blob."], fns: ["fs.openAsBlob"] }),
+   * type as Node does. A body read that produces a Blob (Response.blob and
+   * Request.blob, the lowered call or the member-table dispatch) builds one
+   * too, and the value it hands back is a body the same way. An
+   * fs.openAsBlob result is such a Blob, and handing it to fetch straight
+   * from the promise is the ordinary use, so its call selects the build
+   * too. Every other program keeps the default fetch unit, byte for byte. */
+  webBodies: rule({
+    scan: computedBlobBodyScan,
+    prefixes: ["blob."],
+    fns: ["fetch.responseBlob", "fs.openAsBlob"],
+    expr: (node) =>
+      (node.kind === "dynInvoke" && node.method === "blob") ||
+      (node.kind === "dynCall" &&
+        node.callee.kind === "dynKeyGet" &&
+        node.callee.key.kind === "strLit" &&
+        node.callee.key.value === "blob"),
+  }),
   /** AbortController and AbortSignal (scr_abort.c, or the fetch unit).
    * A WritableStream controller's signal is one (scr_webstreams.c), and
    * util.transferableAbortSignal/Controller are the util face of the same
@@ -2464,6 +2508,10 @@ const RUNTIME_FEATURE_RULES = {
       // ERR_ARG_NOT_ITERABLE renders the value as util.format's %s does.
       "webstream.class",
       "webstream.from",
+      // The compression streams' class and brand test link the web stream
+      // unit too.
+      "webstream.compressClass",
+      "webstream.compressInstanceOf",
       // Readable.toWeb links the web stream unit, which renders a
       // non-iterable source (and a thrown member) through inspect.
       "webstream.toWebReadable",
@@ -2845,6 +2893,7 @@ const RUNTIME_FEATURE_RULES = {
       "crypto.x509Raw",
       "crypto.x509RawDer",
       "crypto.x509RawStr",
+      "crypto.x509RawDyn",
       "crypto.x509SerialNumber",
       "crypto.x509SignatureAlgorithm",
       "crypto.x509SignatureAlgorithmOid",
@@ -2953,10 +3002,10 @@ const RUNTIME_FEATURE_RULES = {
       "process.stdinIsRaw",
     ],
   }),
-  zlib: rule({ prefixes: ["zlib."] }),
+  zlib: rule({ prefixes: ["zlib."], fns: [...COMPRESSION_CLASS_FNS] }),
   /** node:zlib's Brotli forms: zlib.brotliInstall, which %main calls when
    * the program uses Brotli (scr_brotli.c). */
-  brotli: rule({ fns: ["zlib.brotliInstall"] }),
+  brotli: rule({ fns: ["zlib.brotliInstall", "zlib.compressionStream", ...COMPRESSION_CLASS_FNS] }),
   /** node:zlib's zstd forms: zlib.zstdInstall, which %main calls when the
    * program uses zstd (scr_zstd.c). */
   zstd: rule({ fns: ["zlib.zstdInstall"] }),

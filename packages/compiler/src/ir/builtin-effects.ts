@@ -598,6 +598,12 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "net.sockEndBytesEnc",
   "http.resWriteDyn",
   "http.resEndDyn",
+  // write/end with extra arguments throw Node's chunk TypeError, the
+  // unknown-encoding error, and run the flush callback (user code).
+  "http.resWriteArgs",
+  "http.resEndArgs",
+  "http.clientWriteArgs",
+  "http.clientEndArgs",
   // setHeaders walks the argument (a Map's entries) and throws Node's
   // ERR_INVALID_ARG_TYPE for anything else, ERR_HTTP_HEADERS_SENT once the
   // head is out, and the header name/value checks. pipe() emits
@@ -777,6 +783,7 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "stream.duplexFromGenNoSource",
   "stream.duplexFromDyn",
   "stream.composeStageDyn",
+  "stream.composeTailDyn",
   "stream.duplexFromPromise",
   "stream.duplexFromAsyncFn",
   "stream.duplexFromAsyncFnNoSource",
@@ -1941,6 +1948,7 @@ const MAY_THROW_LIB_FNS_PART_6: readonly IrLibFn[] = [
   "crypto.x509Raw",
   "crypto.x509RawDer",
   "crypto.x509RawStr",
+  "crypto.x509RawDyn",
   // Node's argument errors (name, options, pkey) and the key parse.
   "crypto.x509CheckHost",
   "crypto.x509CheckEmail",

@@ -191,6 +191,96 @@ export function narrowClassUnion(
   return { kind: "call", callee: helper, args: [value], type: target, loc };
 }
 
+/** A read the checker narrowed from a union that also holds non-class arms
+ * (a Map beside node classes) to the class arms it kept. The storage still
+ * holds the wide union; a runtime tag switch re-tags the kept arms into the
+ * narrowed union and traps on an arm the checker ruled out (a stranded
+ * value). Null unless every kept class is a literal arm of the source union
+ * and the source has a non-class arm, so union-to-union reads that already
+ * convert keep their path. */
+export function narrowUnionToClassUnion(
+  lowerer: Lowerer,
+  value: IrExpr,
+  target: IrType & { kind: "union" },
+): IrExpr | null {
+  if (value.type.kind !== "union") return null;
+  const sourceArms = lowerer.unions.get(value.type.unionId)?.arms;
+  const targetArms = lowerer.unions.get(target.unionId)?.arms;
+  if (!sourceArms?.length || !targetArms?.length) return null;
+  if (!targetArms.every((arm) => arm.kind === "object")) return null;
+  if (sourceArms.every((arm) => arm.kind === "object")) return null;
+  const plan: { sourceTag: number; targetTag: number; arm: IrType & { kind: "object" } }[] = [];
+  for (let targetTag = 0; targetTag < targetArms.length; targetTag++) {
+    const arm = targetArms[targetTag]!;
+    if (arm.kind !== "object") return null;
+    const sourceTag = sourceArms.findIndex(
+      (source) => source.kind === "object" && source.className === arm.className,
+    );
+    if (sourceTag < 0) return null;
+    plan.push({ sourceTag, targetTag, arm });
+  }
+  const loc = value.loc;
+  const key = `union.classUnion:${value.type.unionId}:${target.unionId}`;
+  let helper = lowerer.valueHelpers.get(key);
+  if (!helper) {
+    helper = keyedHelperName(lowerer, "%union.class", key);
+    lowerer.valueHelpers.set(key, helper);
+    const input = varRef("value.0", value.type, loc);
+    const body: IrStmt[] = [];
+    for (const { sourceTag, targetTag, arm } of plan) {
+      body.push({
+        kind: "if",
+        cond: {
+          kind: "unionIsTag",
+          unionId: value.type.unionId,
+          tag: sourceTag,
+          negated: false,
+          value: input,
+          type: BOOL,
+          loc,
+        },
+        then: [
+          {
+            kind: "return",
+            value: {
+              kind: "unionWrap",
+              unionId: target.unionId,
+              tag: targetTag,
+              value: {
+                kind: "unionNarrow",
+                unionId: value.type.unionId,
+                tag: sourceTag,
+                value: input,
+                type: arm,
+                loc,
+              },
+              type: target,
+              loc,
+            },
+            loc,
+          },
+        ],
+        else_: null,
+        loc,
+      });
+    }
+    body.push({
+      kind: "return",
+      value: nodeThrowExpr(1, "", "Class value does not match the narrowed union", target, loc),
+      loc,
+    });
+    lowerer.liftedFns.push({
+      name: helper,
+      params: [{ localId: "value.0", name: "value", type: value.type }],
+      locals: [{ id: "value.0", name: "value", type: value.type, mutable: false }],
+      returnType: target,
+      body,
+      loc,
+    });
+  }
+  return { kind: "call", callee: helper, args: [value], type: target, loc };
+}
+
 /** Recover a class refinement from optional storage without treating the
  * checker's non-optional array element type as proof of presence. Only a
  * stricter class view qualifies; the stored tag and class are validated. */

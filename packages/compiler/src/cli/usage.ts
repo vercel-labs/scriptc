@@ -566,9 +566,10 @@ export const CLI_OPTION_DOCS: Readonly<Record<string, CliOptionDoc>> = {
         help: [
           "Node island policy (default: auto): npm packages outside",
           "the native subset run in Node automatically; explicit",
-          "allows only marked islands; off allows none. REPORT-ONLY",
-          "in this version: coverage reports the islands a build",
-          "would choose; builds compile as before",
+          "allows only marked islands; off allows none, and a package",
+          "outside the native subset then fails the build (SC8002).",
+          "REPORT-ONLY in this version: coverage reports the islands a",
+          "build would choose; builds compile as before",
         ],
       },
     ],

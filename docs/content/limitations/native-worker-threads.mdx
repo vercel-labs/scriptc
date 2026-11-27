@@ -25,9 +25,9 @@ The `MessageChannel` global constructs the channel `new MessageChannel()` builds
 Port messages arrive in Node's order: each port's queued messages as one batch before `setImmediate` callbacks, a port's own `'close'` after the poll phase, and the other port's `'close'` after its queued messages while the loop keeps running.
 A worker's messages to its parent, and the parent's messages in the worker, also arrive as one batch before `setImmediate` callbacks, each followed by its microtasks, as in Node: the messages queued when delivery starts, and those that arrive meanwhile until the batch holds 1000.
 `receiveMessageOnPort(parentPort)` in a worker takes the parent's next message.
-A port's `onmessage` property and `addEventListener` are unsupported.
+A port delivers each message to its `onmessage` handler and its `addEventListener` listeners as a `'message'` `MessageEvent`, and holds an `onmessageerror` handler the way Node does.
 `BroadcastChannel` delivers each message to every other open channel with the same name, in any thread, as a `'message'` `MessageEvent` through `onmessage` and `addEventListener`; an open channel keeps the process alive until `close()` or `unref()`.
-A `messageerror` event is never dispatched.
+A `messageerror` event is never dispatched: every message is produced by the same encoder that reads it, so one cannot arrive that the receiver fails to deserialize; a Worker accepts a `'messageerror'` listener, and a port or channel holds an `onmessageerror` handler, as in Node.
 The parent port supports message listeners, `postMessage`, `close`, `start`, `ref`, `unref`, and `hasRef`.
 Messages clone primitives, plain object graphs, arrays, errors, Maps, Sets, Blobs, Files, ArrayBuffers, typed arrays, and DataViews, preserving cycles and aliases.
 A primitive wrapper object (from `new String`, `new Number`, `new Boolean` or `Object(primitive)`) cannot cross a message yet: it throws a catchable error naming the limitation, where Node clones it; `structuredClone` copies one.

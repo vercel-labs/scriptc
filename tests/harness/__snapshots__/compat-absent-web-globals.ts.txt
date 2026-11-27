@@ -1,20 +1,6 @@
-compat-absent-web-globals.ts:7:20 - error SC0001: Cannot find name 'WebSocket'. Did you mean 'socket'?
+compat-absent-web-globals.ts:8:20 - error SC0001: Cannot find name 'WebSocket'. Did you mean 'socket'?
 
-  6 | // does not have the name at all.)
-  7 | const socket = new WebSocket("ws://localhost:1");
+  7 | // all: neither is an absence this ledger can cite.)
+  8 | const socket = new WebSocket("ws://localhost:1");
     |                    ^~~~~~~~~
-  8 | socket.close();
-
-compat-absent-web-globals.ts:10:18 - error SC0001: Cannot find name 'CompressionStream'.
-
-   9 | 
-  10 | const gzip = new CompressionStream("gzip");
-     |                  ^~~~~~~~~~~~~~~~~
-  11 | const gunzip = new DecompressionStream("gzip");
-
-compat-absent-web-globals.ts:11:20 - error SC0001: Cannot find name 'DecompressionStream'.
-
-  10 | const gzip = new CompressionStream("gzip");
-  11 | const gunzip = new DecompressionStream("gzip");
-     |                    ^~~~~~~~~~~~~~~~~~~
-  12 | console.log(typeof gzip.readable, typeof gunzip.writable);
+  9 | socket.close();

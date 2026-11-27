@@ -8,26 +8,8 @@
    "message": "Cannot find name 'WebSocket'. Did you mean 'socket'?",
    "loc": {
     "file": "<repo>/tests/diagnostics/compat-absent-web-globals.ts",
-    "start": 413,
-    "end": 422
-   }
-  },
-  {
-   "code": "SC0001",
-   "message": "Cannot find name 'CompressionStream'.",
-   "loc": {
-    "file": "<repo>/tests/diagnostics/compat-absent-web-globals.ts",
-    "start": 478,
-    "end": 495
-   }
-  },
-  {
-   "code": "SC0001",
-   "message": "Cannot find name 'DecompressionStream'.",
-   "loc": {
-    "file": "<repo>/tests/diagnostics/compat-absent-web-globals.ts",
-    "start": 524,
-    "end": 543
+    "start": 510,
+    "end": 519
    }
   }
  ]

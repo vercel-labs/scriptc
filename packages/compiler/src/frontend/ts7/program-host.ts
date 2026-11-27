@@ -20,6 +20,7 @@ import { InternalCompilerError } from "../../errors.js";
 import { writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { Ts7Api } from "./api.js";
+import { Ts7FrameLimitError } from "./rpc-wire.js";
 import type { Ts7TimingInfo } from "./session-timing.js";
 import type { Ts7FileSystem } from "./rpc-filesystem.js";
 import type { Diagnostic, SourceFileMetadata } from "./semantic-types.js";
@@ -625,16 +626,25 @@ export class Ts7Program {
  * stored diagnostics of the supplied declaration files, and their
  * diagnostics come in the full check's order. A global diagnostic can come
  * from checking any file, so when that partial check reports one, the full
- * check answers. */
+ * check answers.
+ *
+ * A large program asks for its semantic diagnostics in batches: one
+ * getDiagnosticsOfCheckedFiles response for every file can exceed the
+ * transport's frame limit before the first diagnostic is read (nitro's
+ * 3500-file program does). A batch that overflows is halved and retried;
+ * the merged file map restores the checker's file order, and the global
+ * diagnostics still come from getGlobalDiagnostics, so the answer matches
+ * the single full check. */
 export function getPreEmitDiagnostics(
   program: Ts7Program,
   keep?: (fileName: string) => boolean,
 ): readonly Diagnostic[] {
   const config = program.getConfigFileParsingDiagnostics();
   const options = program.getProgramDiagnostics();
+  const all = program.getSourceFileNames();
   if (keep !== undefined) {
-    const kept = program.getSourceFileNames().filter((name) => keep(name));
-    if (kept.length < program.getSourceFileNames().length) {
+    const kept = all.filter((name) => keep(name));
+    if (kept.length < all.length) {
       const partial =
         program.reusedKeptLibDiagnostics(new Set(kept)) ?? keptFileDiagnostics(program, kept);
       if (partial !== null && partial.global.length === 0)
@@ -655,13 +665,48 @@ export function getPreEmitDiagnostics(
       ...program.getSyntacticDiagnostics(),
       ...reused.semantic.map(ts7Diagnostic),
     ];
-  return [
-    ...config,
-    ...options,
-    ...program.getGlobalDiagnostics(),
-    ...program.getSyntacticDiagnostics(),
-    ...program.getSemanticDiagnostics(),
-  ];
+  return fullProgramDiagnostics(program, config, options);
+}
+
+/** The full check, and the batched answer when its one response is over
+ * the frame limit: the caller cannot tell which produced it. */
+function fullProgramDiagnostics(
+  program: Ts7Program,
+  config: readonly Diagnostic[],
+  options: readonly Diagnostic[],
+): readonly Diagnostic[] {
+  try {
+    return [
+      ...config,
+      ...options,
+      ...program.getGlobalDiagnostics(),
+      ...program.getSyntacticDiagnostics(),
+      ...program.getSemanticDiagnostics(),
+    ];
+  } catch (error) {
+    if (!(error instanceof Ts7FrameLimitError)) throw error;
+    const partial = keptFileDiagnostics(program, program.getSourceFileNames());
+    if (partial === null) throw error;
+    return [
+      ...config,
+      ...options,
+      ...program.getGlobalDiagnostics(),
+      ...program.getSyntacticDiagnostics(),
+      ...partial.semantic.map(ts7Diagnostic),
+    ];
+  }
+}
+
+/** Files named in one getDiagnosticsOfCheckedFiles request. The response
+ * carries those files' diagnostics as one frame; on a large program the
+ * whole set overflows the frame limit, so it is asked for in batches of
+ * this size and a batch that overflows is halved. */
+const DIAGNOSTIC_FILES_PER_REQUEST = 64;
+
+/** Whether an error is the wire's frame-limit refusal, which a smaller
+ * batch can answer. */
+function isFrameLimitError(error: unknown): boolean {
+  return error instanceof Ts7FrameLimitError;
 }
 
 /** The semantic diagnostics of the kept files, in the full check's order,
@@ -671,10 +716,30 @@ function keptFileDiagnostics(
   program: Ts7Program,
   kept: readonly string[],
 ): { semantic: Ts7DiagnosticData[]; global: Ts7DiagnosticData[] } | null {
-  const checked = program.project.program.checkedFileDiagnosticData(kept);
-  if (checked === null) return null;
-  const byFile = new Map(kept.map((name, index) => [name, checked.files[index] ?? []]));
-  return { semantic: inFileOrder(byFile), global: checked.global };
+  const byFile = new Map<string, Ts7DiagnosticData[]>();
+  const global: Ts7DiagnosticData[] = [];
+  for (let start = 0; start < kept.length;) {
+    let end = Math.min(start + DIAGNOSTIC_FILES_PER_REQUEST, kept.length);
+    let checked: ReturnType<typeof program.project.program.checkedFileDiagnosticData>;
+    for (;;) {
+      try {
+        checked = program.project.program.checkedFileDiagnosticData(kept.slice(start, end));
+        break;
+      } catch (error) {
+        // One file's own response can still overflow; only batching can
+        // shrink the frame, so a single file's refusal is not answered here.
+        if (!isFrameLimitError(error) || end - start === 1) throw error;
+        end = start + Math.max(1, Math.floor((end - start) / 2));
+      }
+    }
+    if (checked === null) return null;
+    kept.slice(start, end).forEach((name, index) => {
+      byFile.set(name, checked.files[index] ?? []);
+    });
+    for (const diagnostic of checked.global) global.push(diagnostic);
+    start = end;
+  }
+  return { semantic: inFileOrder(byFile), global };
 }
 
 /** ts.findConfigFile: nearest configName walking up from searchPath. */

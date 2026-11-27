@@ -8754,6 +8754,17 @@ export function lowerClassExpressionInfo(
     }
   }
   const local = perEvaluationClass(expr);
+  // Parameter decorators ride a member's decoration event; a function-local
+  // class has none, so they would silently never run. Count them with the
+  // member decorators the refusal below covers.
+  const memberHasParameterDecorators = (member: ts.ClassElement): boolean =>
+    (
+      (member as { parameters?: ts.NodeArray<ts.ParameterDeclaration> }).parameters?.nodes ?? []
+    ).some((parameter) =>
+      ((parameter as { modifiers?: ts.NodeArray<ts.Node> }).modifiers?.nodes ?? []).some(
+        (modifier) => modifier.kind === ts.SyntaxKind.Decorator,
+      ),
+    );
   if (
     local &&
     expr.members.nodes.some((member) => member.name && ts.isPrivateIdentifier(member.name)) &&
@@ -8768,6 +8779,7 @@ export function lowerClassExpressionInfo(
       expr.members.nodes.some(
         (member) =>
           decoratorNodesOf(member).length ||
+          memberHasParameterDecorators(member) ||
           (!isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
             ts.isClassStaticBlockDeclaration(member)) ||
           (ts.isMethodDeclaration(member) && member.typeParameters?.nodes.length),

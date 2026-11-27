@@ -1948,6 +1948,10 @@ static void scr_x509_dyn_trace(void *ptr, ScrTraceVisit visit, void *ctx) {
 
 static void scr_x509_dyn_gcfree(void *ptr) {
   ScrX509Dyn *h = ptr;
+  /* The handle-property unit's slot for this handle goes with it (the table
+   * is ours), as the fetch classes report. */
+  if (scr_dyn_handle_props_hooks && scr_dyn_handle_props_hooks->released)
+    scr_dyn_handle_props_hooks->released(h);
   if (h->der) scr_bytes_release(h->der);
   h->der = NULL;
   scr_cyc_free(h);

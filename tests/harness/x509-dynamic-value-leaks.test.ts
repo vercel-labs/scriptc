@@ -56,23 +56,23 @@ describe.skipIf(!sanitize || process.platform !== "linux")(
             "",
             "const PEM = `" + PEM + "`;",
             "",
-            "// The Date write makes the program add properties to handles, which",
-            "// installs the handle-property unit: the certificate's own table is",
-            "// then the side table this checks.",
-            "const clock = new Date(0);",
-            "clock.marker = 1;",
-            "let annotated = 0;",
+            "// A property written on a typed handle makes the program add",
+            "// properties to handles, which installs the handle-property unit:",
+            "// the certificate's own table is then the side table this checks.",
+            'const res = new Response("x");',
+            "res.custom = 1;",
+            "let frozen = 0;",
             "for (let i = 0; i < 50; i++) {",
             "  const cert = new X509Certificate(PEM);",
             "  const held = cert;",
             "  try {",
             "    Object.freeze(held);",
             "  } catch (e) {",
-            "    // a refused freeze still went through the table",
+            "    // a refused freeze still went through the integrity path",
             "  }",
-            "  annotated++;",
+            "  frozen++;",
             "}",
-            'console.log("annotated", annotated, "clock", clock.getTime());',
+            'console.log("frozen", frozen, "res", res.custom);',
             "",
           ].join("\n"),
         );
@@ -94,11 +94,56 @@ describe.skipIf(!sanitize || process.platform !== "linux")(
           env: { ...process.env, ASAN_OPTIONS: "detect_leaks=1" },
           maxBuffer: 16 * 1024 * 1024,
         });
-        expect(run.stdout).toBe("annotated 50 clock 0\n");
+        expect(run.stdout).toBe("frozen 50 res 1\n");
         expect(run.stderr).toBe("");
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }
     });
+
+    test(
+      "a dynamic certificate links without reading publicKey",
+      { timeout: 300_000 },
+      async () => {
+        const dir = mkdtempSync(join(tmpdir(), "scriptc-x509-dyn-link-"));
+        try {
+          const entry = join(dir, "main.mjs");
+          writeFileSync(
+            entry,
+            [
+              'import { X509Certificate } from "node:crypto";',
+              "",
+              "const PEM = `" + PEM + "`;",
+              "const cert = new X509Certificate(PEM);",
+              "const held = cert;",
+              'console.log("keys", JSON.stringify(Object.keys(held)), "subject", typeof held.subject);',
+              "",
+            ].join("\n"),
+          );
+          const outDir = join(cacheDir, "x509-dynamic-value-link");
+          mkdirSync(outDir, { recursive: true });
+          const result = await compile(entry, {
+            outPath: join(outDir, "program"),
+            outDir,
+            sanitize: true,
+            backend: "llvm",
+          });
+          if (!result.ok) {
+            throw new Error(
+              "program failed to compile:\n" +
+                result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"),
+            );
+          }
+          const run = await execFileAsync(result.binaryPath, [], {
+            env: { ...process.env, ASAN_OPTIONS: "detect_leaks=1" },
+            maxBuffer: 16 * 1024 * 1024,
+          });
+          expect(run.stdout).toBe("keys [] subject string\n");
+          expect(run.stderr).toBe("");
+        } finally {
+          rmSync(dir, { recursive: true, force: true });
+        }
+      },
+    );
   },
 );

@@ -405,14 +405,19 @@ static ScrDyn *hp_props_of_box(const ScrDyn *handle) {
   size_t i = hp_bucket(h);
   while (hp_slots[i].ptr) i = (i + 1) & (hp_capacity - 1);
   props = scr_dyn_new_obj_null_proto();
-  hp_slots[i].ptr = hp_fetch_tag(tag) ? h : hp_orig[tag]->retain(h);
+  /* A class whose native object adopts and traces the table (ScrDynHandleOps
+   * .adopt_props: the fetch classes and the X509 certificate) holds it
+   * itself; the slot keeps a weak pointer and the handle releases the table
+   * with itself, so a dropped handle — and the graph behind it — is
+   * reclaimed. Otherwise the slot owns the table and retains the handle
+   * until the thread exits. */
+  const ScrDynHandleOps *ops = hp_orig[tag];
+  bool adopts = ops != NULL && ops->adopt_props != NULL;
+  hp_slots[i].ptr = adopts ? h : ops->retain(h);
   hp_slots[i].tag = tag;
   hp_slots[i].props = props;
-  /* The fetch unit's native object holds and traces the table, so a
-   * property that refers back to its handle is an edge the cycle collector
-   * can follow. Otherwise the slot owns it. */
-  hp_slots[i].owns_props = !(hp_fetch_tag(tag) && hp_orig[tag]->adopt_props);
-  if (!hp_slots[i].owns_props) hp_orig[tag]->adopt_props(h, props);
+  hp_slots[i].owns_props = !adopts;
+  if (adopts) ops->adopt_props(h, props);
   hp_count++;
   return props;
 }

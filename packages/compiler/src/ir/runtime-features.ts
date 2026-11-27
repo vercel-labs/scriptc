@@ -2161,7 +2161,15 @@ const RUNTIME_FEATURE_RULES = {
   }),
   /** Own properties JavaScript adds to runtime handles (scr_dyn_handle_props.c):
    * a Date, RegExp, Map, Set, weak collection, buffer or child. */
-  handleProps: rule({ fns: ["handle.propsInstall", "handle.propsGrant"] }),
+  handleProps: rule({
+    fns: [
+      "handle.propsInstall",
+      "handle.propsGrant",
+      /* The certificate's dynamic handle adopts the table this unit builds
+       * and reports its release to it. */
+      "crypto.x509Dyn",
+    ],
+  }),
   /** Adoption (scr_decl_adopt.c): a dynamic object or array converted to a
    * record or array becomes a live capsule of the converted value. Linked
    * by the declaration-typed boundary's casts (and its boxed closures,

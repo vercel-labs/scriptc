@@ -25492,7 +25492,8 @@ static int scr_weak_key(const ScrDyn *key, void **ptr, unsigned *kind) {
         key->v.handle.tag != SCR_DYNH_FETCH_REQUEST && key->v.handle.tag != SCR_DYNH_FETCH_RESPONSE &&
         key->v.handle.tag != SCR_DYNH_WEB_STREAM &&
         key->v.handle.tag != SCR_DYNH_MAP && key->v.handle.tag != SCR_DYNH_SET &&
-        key->v.handle.tag != SCR_DYNH_NET_SOCKET && key->v.handle.tag != SCR_DYNH_NET_SERVER) return -1;
+        key->v.handle.tag != SCR_DYNH_NET_SOCKET && key->v.handle.tag != SCR_DYNH_NET_SERVER &&
+        key->v.handle.tag != SCR_DYNH_BLOB && key->v.handle.tag != SCR_DYNH_FILE) return -1;
     *ptr = key->v.handle.ptr; *kind = 4 + key->v.handle.tag; return 1;
   case SCR_DYN_TYPED_REF:
     if (!key->v.typed_ref.observed) return -1;
@@ -26312,14 +26313,24 @@ size_t scr_weak_collect_entries(void) { return scr_weak_judge_all(); }
  * its cleanup), so the registry keeps neither the callback nor the held
  * values. A token with a weak lifetime is a key of an internal WeakMap
  * counting its registrations, so it is not kept alive. A token the weak
- * tables cannot key (a handle kind without a weak entry, a copied native
- * value) is held here instead, compared by value, so unregister still
- * answers for the registration the program made; the registry releases
- * those tokens with itself. */
+ * tables cannot key (a handle kind without a weak entry, a typed reference,
+ * a copied native value) is remembered here instead, so unregister still
+ * answers for the registration the program made: by the identity the token
+ * answers with (a handle's native object, a reference's target) and without
+ * a reference to the token — a discarded token, with whatever payload its
+ * handle carries, is freed with the program's last reference to it. Only a
+ * value that is compared by its own copy is kept. */
+typedef struct {
+  bool by_value;   /* compare `value` with strict equality */
+  ScrDyn *value;   /* +1 when by_value, else NULL */
+  int64_t kind;    /* a handle tag, or -1 for a typed reference */
+  void *identity;  /* the native object the token stands for */
+} ScrFinalizationHeld;
+
 typedef struct {
   size_t rc;
   ScrDyn *tokens; /* WeakMap: token -> registration count */
-  ScrDyn **held_tokens; /* tokens with no weak lifetime, compared by value */
+  ScrFinalizationHeld *held_tokens; /* tokens with no weak map entry */
   size_t held_len, held_cap;
 } ScrFinalizationRegistry;
 
@@ -26334,7 +26345,9 @@ static void scr_finalization_registry_release(void *ptr) {
   /* Weak collections keyed by the registry drop their entries. */
   scr_weak_dispose(registry);
   scr_dyn_release(registry->tokens);
-  for (size_t i = 0; i < registry->held_len; i++) scr_dyn_release(registry->held_tokens[i]);
+  for (size_t i = 0; i < registry->held_len; i++) {
+    if (registry->held_tokens[i].value) scr_dyn_release(registry->held_tokens[i].value);
+  }
   /* The token array grows through scr_mem_realloc, whose block belongs to
    * the small-object allocator: it goes back through scr_mem_free (which
    * also takes a system block), never through the C library's free. */
@@ -26342,28 +26355,60 @@ static void scr_finalization_registry_release(void *ptr) {
   free(registry);
 }
 
+/* The identity a token with no weak map entry answers unregister with: a
+ * handle's native object (with its tag), a typed reference's target. False
+ * for a value that has only its own copy to compare. */
+static bool scr_finalization_identity(const ScrDyn *token, int64_t *kind, void **identity) {
+  if (token->kind == SCR_DYN_HANDLE) {
+    *kind = (int64_t)token->v.handle.tag;
+    *identity = token->v.handle.ptr;
+    return true;
+  }
+  if (token->kind == SCR_DYN_TYPED_REF) {
+    *kind = -1;
+    *identity = token->v.typed_ref.ptr;
+    return true;
+  }
+  return false;
+}
+
 /* The position of a token the weak tables cannot key, compared the way
- * JavaScript compares the token it is handed back (a handle's own identity,
- * a copied value's own), or -1. */
+ * JavaScript compares the token it is handed back: by the identity it
+ * answers with, or by its own copy for a value that has none, else -1. */
 static long scr_finalization_held_index(const ScrFinalizationRegistry *registry,
                                         const ScrDyn *token) {
-  for (size_t i = 0; i < registry->held_len; i++)
-    if (scr_dyn_strict_eq(registry->held_tokens[i], token)) return (long)i;
+  int64_t kind = 0;
+  void *identity = NULL;
+  bool has_identity = scr_finalization_identity(token, &kind, &identity);
+  for (size_t i = 0; i < registry->held_len; i++) {
+    const ScrFinalizationHeld *held = &registry->held_tokens[i];
+    if (!held->by_value) {
+      if (has_identity && held->kind == kind && held->identity == identity) return (long)i;
+    } else if (!has_identity && held->value && scr_dyn_strict_eq(held->value, token)) {
+      return (long)i;
+    }
+  }
   return -1;
 }
 
-/* Keep a token with no weak lifetime, once (one entry answers every
- * registration with it, as the count does for a weak key). */
-static void scr_finalization_hold(ScrFinalizationRegistry *registry, ScrDyn *token) {
+/* Remember a token with no weak map entry once (one entry answers every
+ * registration with it, as the count does for a weak key), by identity and
+ * not by reference. */
+static void scr_finalization_hold(ScrFinalizationRegistry *registry, const ScrDyn *token) {
   if (scr_finalization_held_index(registry, token) >= 0) return;
   if (registry->held_len == registry->held_cap) {
     size_t cap = registry->held_cap ? registry->held_cap * 2 : 4;
-    ScrDyn **grown = scr_mem_realloc(registry->held_tokens, cap * sizeof *grown);
+    ScrFinalizationHeld *grown =
+        scr_mem_realloc(registry->held_tokens, cap * sizeof *grown);
     if (!grown) scr_json_oom();
     registry->held_tokens = grown;
     registry->held_cap = cap;
   }
-  registry->held_tokens[registry->held_len++] = scr_dyn_retain(token);
+  ScrFinalizationHeld *entry = &registry->held_tokens[registry->held_len++];
+  entry->kind = 0;
+  entry->identity = NULL;
+  entry->by_value = !scr_finalization_identity(token, &entry->kind, &entry->identity);
+  entry->value = entry->by_value ? scr_dyn_retain((ScrDyn *)token) : NULL;
 }
 
 static void scr_finalization_type_error(const char *message) {
@@ -26482,10 +26527,10 @@ static ScrDyn *scr_finalization_registry_invoke(void *ptr, ScrDyn *self, const c
     if (kind == SCR_WEAK_UNTRACKED_KIND) {
       long at = scr_finalization_held_index(registry, first);
       if (at < 0) return scr_dyn_new_bool(false);
-      ScrDyn *held = registry->held_tokens[at];
+      ScrFinalizationHeld *held = &registry->held_tokens[at];
+      if (held->value) scr_dyn_release(held->value);
       registry->held_len--;
       registry->held_tokens[at] = registry->held_tokens[registry->held_len];
-      scr_dyn_release(held);
       return scr_dyn_new_bool(true);
     }
     ScrWeakEntry *entry = scr_weak_find(tokens, identity, kind);

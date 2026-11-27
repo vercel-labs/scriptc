@@ -1,0 +1,85 @@
+name: Merge guard sweep
+
+# When canary moves, every pull request that is ready to merge was last
+# guarded against a canary that no longer exists. This workflow re-checks them:
+# scripts/ci/merge-guard.mjs --plan selects the open, non-draft pull requests
+# into canary that GitHub already calls ready to merge and that have not passed
+# the guard since the current canary tip, and each is merged with that tip and
+# run through the merge guard's checks (the same action merge-guard.yml uses).
+#
+# It reports the same `merge with canary` commit status on each head as the
+# pull request's own guard, so a required check cannot go stale behind canary.
+# It never runs a pull request's full tier. The push to canary covers the
+# normal case; the schedule is the backstop for a stalled queue when nothing
+# is landing. Scheduled workflows run from the default branch, so that trigger
+# starts once this file reaches main; until then pushes to canary drive the
+# sweep, and a maintainer can run it by hand.
+on:
+  push:
+    branches: [canary]
+  schedule:
+    - cron: "23,53 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # A newer canary tip supersedes the sweep for an older one; a manual run
+  # stays with its own tip.
+  group: merge-guard-sweep-${{ github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
+
+jobs:
+  plan:
+    name: select pull requests to re-check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+      # The plan reads the `merge with canary` status each head already carries.
+      statuses: read
+    outputs:
+      pulls: ${{ steps.plan.outputs.pulls }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: canary
+          fetch-depth: 1
+          persist-credentials: false
+      - id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/ci/merge-guard.mjs --plan --github-output
+
+  sweep:
+    name: guard (pull request ${{ matrix.pull.number }})
+    needs: plan
+    if: matrix.pull.number != 0
+    strategy:
+      fail-fast: false
+      # Bounded so a sweep stays a backstop: a burst of ready pull requests
+      # runs six at a time, and the plan logs any past the sweep limit.
+      max-parallel: 6
+      matrix:
+        pull: ${{ fromJSON(needs.plan.outputs.pulls) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      # The canary tier runs its suites with four workers; the guard matches it so a suite that is
+      # parallel-sensitive fails here as it does there.
+      SCRIPTC_TEST_WORKERS: "4"
+    permissions:
+      contents: read
+      # The guard reports `merge with canary` on the head; nothing else is written.
+      statuses: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: canary
+          fetch-depth: 0
+      - uses: ./.github/actions/merge-guard
+        with:
+          pr: ${{ matrix.pull.number }}
+          head: ${{ matrix.pull.head }}

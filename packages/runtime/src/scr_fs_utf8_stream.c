@@ -1105,13 +1105,23 @@ static ScrDyn *scr_u8_on(ScrUtf8Stream *s, ScrDyn *self, ScrDyn *const *args, si
   return scr_dyn_retain(self);
 }
 
+/* Whether two listener values are the same JavaScript function. A typed
+ * callback arrives as a checked-dynamic box, and separate call sites box the
+ * same function separately; Node's EventEmitter compares the function, so the
+ * comparison is the closure identity the boxes share. */
+static bool scr_u8_same_listener(const ScrDyn *a, const ScrDyn *b) {
+  if (a == b) return true;
+  if (a == NULL || b == NULL || a->kind != SCR_DYN_FUNC || b->kind != SCR_DYN_FUNC) return false;
+  return scr_closure_identity_equal(a->v.fn.clo, b->v.fn.clo);
+}
+
 static ScrDyn *scr_u8_off(ScrUtf8Stream *s, ScrDyn *self, ScrDyn *const *args, size_t argc) {
   if (argc < 2) return scr_dyn_retain(self);
   int event = scr_u8_event_of(args[0]);
   ScrU8Listener **link = &s->listeners;
   while (*link != NULL) {
     ScrU8Listener *l = *link;
-    if (l->event == event && l->fn == args[1]) {
+    if (l->event == event && scr_u8_same_listener(l->fn, args[1])) {
       *link = l->next;
       l->next = NULL;
       scr_u8_listener_drop(l);

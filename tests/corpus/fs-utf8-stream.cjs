@@ -473,9 +473,28 @@ function asyncMkdirError(dir) {
       log.push("write:" + err.code);
     }
     console.log(log.join(","));
-    finish(dir);
+    offIdentity(dir);
   });
   console.log("constructed", s.fd);
+}
+
+// off()/removeListener() match the function Node registered, not the box a
+// typed call site made for it: a callback removed before its event fires
+// never runs, however many call sites boxed it.
+function offIdentity(dir) {
+  const file = join(dir, "off.log");
+  const s = new fs.Utf8Stream({ dest: file, sync: true });
+  let ready = 0;
+  const listener = () => { ready++; };
+  s.on("ready", listener);
+  s.off("ready", listener);
+  s.on("skip", listener);
+  s.off("skip", listener);
+  s.on("close", () => {
+    console.log("off ready", ready);
+    finish(dir);
+  });
+  s.end();
 }
 
 function finish(dir) {

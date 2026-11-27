@@ -486,6 +486,9 @@ void scr_net_sock_pipe(ScrNetSocket *src, ScrNetSocket *dst);
 void scr_net_sock_on_data(ScrNetSocket *s, ScrClosure *cb /*moves*/, ScrNetDataFn fn, bool once);
 void scr_net_sock_on_end(ScrNetSocket *s, ScrClosure *cb /*moves*/, bool once);
 void scr_net_sock_on_close(ScrNetSocket *s, ScrClosure *cb /*moves*/, bool once);
+/* Unregisters a specific close callback again (the deferred-close watch is
+ * removed when its deferral resolves). A closed socket ignores it. */
+void scr_net_sock_off_close(ScrNetSocket *s, ScrClosure *cb /*borrowed*/);
 void scr_net_sock_on_error(ScrNetSocket *s, ScrClosure *cb /*moves*/, ScrChildErrFn fn, bool once);
 void scr_net_sock_on_connect(ScrNetSocket *s, ScrClosure *cb /*moves*/, bool once);
 /* The paused-mode surface (the demux path: once('readable') + read(1) +

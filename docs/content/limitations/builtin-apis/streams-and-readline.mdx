@@ -7,7 +7,7 @@
   It may also be a source function, which the pipeline calls with `{ signal }` and whose iterable result it pumps, or a `{ readable, writable }` pair, whose readable side it pumps.
   Later `pipeline` stages that arrive as untyped values may be native streams, `Cipheriv` and `Decipheriv` values, functions, and iterables.
   A function is called with the previous stage and `{ signal }` as a function stage: before the last stage it must return an async iterable, and as the last stage it may return a promise, whose value resolves the pipeline, or an async iterable, which feeds the PassThrough that `pipeline()` returns.
-  An untyped source function that returns a stream is unsupported.
+  A source function's result is pumped as Node pumps it — a readable stream, an iterable, or an async iterable; a function stage or destination that returns a stream throws a not-supported error, where Node answers `ERR_INVALID_RETURN_VALUE`.
   An iterable becomes `Duplex.from` of it, which the next stage reads from while the stages before it are not read, as in Node.
   A pipeline branches at run time on whether each of its first three untyped stages after the first is a function; a function in a later untyped stage, an untyped web stream, and a `{ readable, writable }` pair after the first stage throw a not-supported error.
   `for await` sources that arrive as untyped values must be native streams, or `Cipheriv` and `Decipheriv` values, at run time; other values throw a not-supported error.

@@ -186,6 +186,7 @@ import { lowerSqliteCall, lowerSqliteNew } from "./builtins/sqlite.js";
 import { lowerSourceMapNew } from "./builtins/source-map.js";
 import { lowerPerfNew } from "./builtins/performance.js";
 import {
+  installCompressionStreamZlib,
   installFetchBodyWebStreams,
   lowerWebStreamNew,
   lowerWebStreamStaticCall,
@@ -6073,6 +6074,9 @@ export class Lowerer {
   /** web-streams-dyn.ts's answer: whether a TypeScript source uses a web
    * stream operation the native streams lack; undefined until asked. */
   typedWebStreams: boolean | undefined = undefined;
+  /** web-streams-dyn.ts's answer: whether the program names CompressionStream
+   * or DecompressionStream; undefined until asked. */
+  compressionStreams: boolean | undefined = undefined;
   /** The first lifted function of each name (liftedFnNamed), for the first
    * liftedFnsIndexed entries of liftedFns, and the last of those entries.
    * liftedFns mostly grows; the unit journal cuts it back and record-links.ts
@@ -6972,6 +6976,7 @@ export class Lowerer {
     "nodeObjectValueReads",
     "namesWebStreamClass",
     "typedWebStreams",
+    "compressionStreams",
     "timeValueDateDecisions",
     "timeValueDateWrites",
     "dynamicOverloadAnswers",
@@ -15702,6 +15707,9 @@ export class Lowerer {
     // exists, so every buffer in it is detachable from the start.
     const buffersMutable = this.buffersMutable && installMutableBuffersArm(functions);
     this.timedPass("installFetchBodyWebStreams", () => installFetchBodyWebStreams(this, functions));
+    this.timedPass("installCompressionStreamZlib", () =>
+      installCompressionStreamZlib(this, functions),
+    );
     this.timedPass("returnDispatchReceivers", () =>
       returnDispatchReceivers(this, functions, census),
     );

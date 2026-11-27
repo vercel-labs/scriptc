@@ -7650,6 +7650,7 @@ static const char *sp_type_name(const SpKey *k) {
          : sp_is_x(k)   ? "x25519"
          : k->rsa_pss   ? "rsa-pss"
          : sp_is_rsa(k) ? "rsa"
+         : sp_is_dh(k)  ? "dh"
                         : "ec";
 }
 
@@ -7682,7 +7683,175 @@ static void sp_dh_failed(bool props) {
                    props);
 }
 
+/* Whether two DH keys carry the same domain parameters: OpenSSL's
+ * derivation refuses a pair whose groups differ. */
+static bool sp_dh_params_equal(const SpKey *a, const SpKey *b) {
+  return a->dh_p_len == b->dh_p_len && memcmp(a->dh_p, b->dh_p, a->dh_p_len) == 0 &&
+         a->dh_g_len == b->dh_g_len && memcmp(a->dh_g, b->dh_g, a->dh_g_len) == 0;
+}
+
+/* Two DH KeyObjects over those parameters: y^x mod p, padded to the
+ * modulus size, the secret Node derives. A peer value outside [2, p - 2],
+ * or a secret of 0, 1 or p - 1, fails as OpenSSL's derivation does. NULL
+ * with the error pending. */
+/* The DH parameter sets OpenSSL recognizes by their p and g. The
+ * safe-prime groups it recognizes at 1536 bits and above (modp5, modp14
+ * through modp18 and the ffdhe sets) derive with the generator 2: a peer
+ * outside [2, p - 2] (the only elements of their small counter-subgroup)
+ * fails with Node's uncoded derivation error, and every value inside the
+ * range derives. The RFC 5114 sets carry a q because their primes are not
+ * safe, and their peers face OpenSSL's coded range and subgroup
+ * check-pubkey errors. Parameters matching neither (modp1 and modp2,
+ * which OpenSSL keeps as explicit parameters, and an explicit prime) get
+ * the coded range errors and no subgroup test, as OpenSSL without a q
+ * does. */
+typedef struct {
+  const unsigned char *p;
+  size_t p_len;
+  const unsigned char *g;
+  size_t g_len;
+  const unsigned char *q; /* NULL for the safe-prime groups */
+  size_t q_len;
+} SpDhKnownGroup;
+
+static const unsigned char sp_dh_two[] = {2};
+
+static const SpDhKnownGroup sp_dh_known_groups[] = {
+  {scr_dh_modp5_p, sizeof scr_dh_modp5_p, sp_dh_two, sizeof sp_dh_two, NULL, 0},
+  {scr_dh_modp14_p, sizeof scr_dh_modp14_p, sp_dh_two, sizeof sp_dh_two, NULL, 0},
+  {scr_dh_modp15_p, sizeof scr_dh_modp15_p, sp_dh_two, sizeof sp_dh_two, NULL, 0},
+  {scr_dh_modp16_p, sizeof scr_dh_modp16_p, sp_dh_two, sizeof sp_dh_two, NULL, 0},
+  {scr_dh_modp17_p, sizeof scr_dh_modp17_p, sp_dh_two, sizeof sp_dh_two, NULL, 0},
+  {scr_dh_modp18_p, sizeof scr_dh_modp18_p, sp_dh_two, sizeof sp_dh_two, NULL, 0},
+  {scr_dh_ffdhe2048_p, sizeof scr_dh_ffdhe2048_p, sp_dh_two, sizeof sp_dh_two, NULL, 0},
+  {scr_dh_ffdhe3072_p, sizeof scr_dh_ffdhe3072_p, sp_dh_two, sizeof sp_dh_two, NULL, 0},
+  {scr_dh_ffdhe4096_p, sizeof scr_dh_ffdhe4096_p, sp_dh_two, sizeof sp_dh_two, NULL, 0},
+  {scr_dh_ffdhe6144_p, sizeof scr_dh_ffdhe6144_p, sp_dh_two, sizeof sp_dh_two, NULL, 0},
+  {scr_dh_ffdhe8192_p, sizeof scr_dh_ffdhe8192_p, sp_dh_two, sizeof sp_dh_two, NULL, 0},
+  {scr_dh_dh_1024_160_p, sizeof scr_dh_dh_1024_160_p, scr_dh_dh_1024_160_g,
+   sizeof scr_dh_dh_1024_160_g, scr_dh_dh_1024_160_q, sizeof scr_dh_dh_1024_160_q},
+  {scr_dh_dh_2048_224_p, sizeof scr_dh_dh_2048_224_p, scr_dh_dh_2048_224_g,
+   sizeof scr_dh_dh_2048_224_g, scr_dh_dh_2048_224_q, sizeof scr_dh_dh_2048_224_q},
+  {scr_dh_dh_2048_256_p, sizeof scr_dh_dh_2048_256_p, scr_dh_dh_2048_256_g,
+   sizeof scr_dh_dh_2048_256_g, scr_dh_dh_2048_256_q, sizeof scr_dh_dh_2048_256_q},
+};
+
+static const SpDhKnownGroup *sp_dh_known_group(const SpKey *k) {
+  for (size_t i = 0; i < sizeof sp_dh_known_groups / sizeof sp_dh_known_groups[0]; i++) {
+    const SpDhKnownGroup *g = &sp_dh_known_groups[i];
+    if (g->p_len == k->dh_p_len && memcmp(g->p, k->dh_p, k->dh_p_len) == 0 &&
+        g->g_len == k->dh_g_len && memcmp(g->g, k->dh_g, k->dh_g_len) == 0)
+      return g;
+  }
+  return NULL;
+}
+
+/* DH_check_pub_key's subgroup test for the RFC 5114 sets: y^q = 1 (mod p).
+ * A group without a q passes; its range and secret checks stand. */
+static bool sp_dh_peer_in_subgroup(const SpKey *k, const mbedtls_mpi *Y, const mbedtls_mpi *P) {
+  const SpDhKnownGroup *known = sp_dh_known_group(k);
+  if (!known || known->q_len == 0) return true;
+  mbedtls_mpi Q, R;
+  mbedtls_mpi_init(&Q);
+  mbedtls_mpi_init(&R);
+  bool ok = mbedtls_mpi_read_binary(&Q, known->q, known->q_len) == 0 &&
+            mbedtls_mpi_exp_mod(&R, (mbedtls_mpi *)Y, &Q, (mbedtls_mpi *)P, NULL) == 0 &&
+            mbedtls_mpi_cmp_int(&R, 1) == 0;
+  mbedtls_mpi_free(&Q);
+  mbedtls_mpi_free(&R);
+  return ok;
+}
+
+static ScrDyn *sp_dh_agree(SpKey *priv, SpKey *pub, bool props) {
+  if (!sp_dh_params_equal(priv, pub)) {
+    sp_throw_openssl("1C8000CB", "Provider routines", "mismatching domain parameters",
+                     "ERR_OSSL_MISMATCHING_DOMAIN_PARAMETERS", props);
+    return NULL;
+  }
+  unsigned char *peer = pub->dh_y;
+  size_t peer_len = pub->dh_y_len;
+  bool owned = false;
+  if (!peer) {
+    if (!sp_dh_public_from_private(pub, &peer, &peer_len)) {
+      sp_dh_failed(props);
+      return NULL;
+    }
+    owned = true;
+  }
+  mbedtls_mpi P, X, Y, S, bound;
+  mbedtls_mpi_init(&P);
+  mbedtls_mpi_init(&X);
+  mbedtls_mpi_init(&Y);
+  mbedtls_mpi_init(&S);
+  mbedtls_mpi_init(&bound);
+  bool ok = mbedtls_mpi_read_binary(&P, priv->dh_p, priv->dh_p_len) == 0 &&
+            mbedtls_mpi_read_binary(&X, priv->dh_x, priv->dh_x_len) == 0 &&
+            mbedtls_mpi_read_binary(&Y, peer, peer_len) == 0 &&
+            mbedtls_mpi_sub_int(&bound, &P, 1) == 0;
+  /* DH_check_pub_key as OpenSSL reports it for each parameter set: a
+   * named safe-prime group answers a peer outside [2, p - 2] with the
+   * uncoded derivation error, the RFC 5114 sets answer the coded
+   * too-small, too-large and (inside the range) outside-the-subgroup
+   * errors, and an explicit prime answers the coded range errors; then
+   * the shared secret itself must not be 0, 1 or p - 1. */
+  const SpDhKnownGroup *known = sp_dh_known_group(priv);
+  const char *check_code = NULL, *check_reason = NULL, *check_node = NULL;
+  bool uncoded_failure = false;
+  if (ok && (mbedtls_mpi_cmp_int(&Y, 1) <= 0 || mbedtls_mpi_cmp_mpi(&Y, &bound) >= 0)) {
+    ok = false;
+    if (known && known->q_len == 0) {
+      uncoded_failure = true;
+    } else if (mbedtls_mpi_cmp_int(&Y, 1) <= 0) {
+      check_code = "0280007C";
+      check_reason = "check pubkey too small";
+      check_node = "ERR_OSSL_DH_CHECK_PUBKEY_TOO_SMALL";
+    } else {
+      check_code = "0280007B";
+      check_reason = "check pubkey too large";
+      check_node = "ERR_OSSL_DH_CHECK_PUBKEY_TOO_LARGE";
+    }
+  } else if (ok && !sp_dh_peer_in_subgroup(priv, &Y, &P)) {
+    check_code = "0280007A";
+    check_reason = "check pubkey invalid";
+    check_node = "ERR_OSSL_DH_CHECK_PUBKEY_INVALID";
+    ok = false;
+  }
+  if (ok && !(mbedtls_mpi_exp_mod(&S, &Y, &X, &P, NULL) == 0 &&
+              mbedtls_mpi_cmp_int(&S, 1) > 0 && mbedtls_mpi_cmp_mpi(&S, &bound) < 0))
+    ok = false;
+  ScrDyn *secret = NULL;
+  if (ok) {
+    size_t n = mbedtls_mpi_size(&P);
+    unsigned char *out = malloc(n ? n : 1);
+    if (!out) scr_trap("scriptc: out of memory\n");
+    if (mbedtls_mpi_write_binary(&S, out, n) == 0) secret = sp_dyn_buffer(out, n);
+    mbedtls_platform_zeroize(out, n);
+    free(out);
+  }
+  if (X.MBEDTLS_PRIVATE(p))
+    mbedtls_platform_zeroize(X.MBEDTLS_PRIVATE(p), X.MBEDTLS_PRIVATE(n) * sizeof(mbedtls_mpi_uint));
+  mbedtls_mpi_free(&P);
+  mbedtls_mpi_free(&X);
+  mbedtls_mpi_free(&Y);
+  mbedtls_mpi_free(&S);
+  mbedtls_mpi_free(&bound);
+  if (owned) {
+    mbedtls_platform_zeroize(peer, peer_len);
+    free(peer);
+  }
+  if (!secret) {
+    if (uncoded_failure)
+      scr_throw_error_msg(SCR_ERR_ERROR, "Deriving bits failed", 20);
+    else if (check_node)
+      sp_throw_openssl(check_code, "Diffie-Hellman routines", check_reason, check_node, props);
+    else
+      sp_dh_failed(props);
+  }
+  return secret;
+}
+
 static ScrDyn *sp_dh_compute(SpKey *priv, SpKey *pub, bool props) {
+  if (sp_is_dh(priv) && sp_is_dh(pub)) return sp_dh_agree(priv, pub, props);
   if (sp_is_x448(priv) && sp_is_x448(pub)) {
     uint8_t out[56];
     if (!sp_x448(priv->x448_seed, pub->x448_pub, out)) {
@@ -7768,7 +7937,7 @@ ScrDyn *scr_crypto_diffie_hellman(ScrDyn *options, ScrDyn *callback) {
   SpKey *a = sp_key_of(private_value), *b = sp_key_of(public_value);
   if (a && b && a->private_key) {
     const char *ta = sp_type_name(a), *tb = sp_type_name(b);
-    if (strcmp(ta, tb) != 0 || (!sp_is_ec(a) && !sp_is_x(a) && !sp_is_x448(a))) {
+    if (strcmp(ta, tb) != 0 || (!sp_is_ec(a) && !sp_is_x(a) && !sp_is_x448(a) && !sp_is_dh(a))) {
       scr_pki_throw_fmt(SCR_ERR_ERROR, "ERR_CRYPTO_INCOMPATIBLE_KEY",
                         "Incompatible key types for Diffie-Hellman: %s and %s", ta, tb);
       goto done;

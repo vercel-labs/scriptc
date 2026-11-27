@@ -3,6 +3,7 @@ import { widensReducedRecords } from "../function-returns.js";
 import { keyedHelperName } from "../stable-names.js";
 import { isDateJsonSource } from "./dates.js";
 import { isPerfEntryType } from "./performance.js";
+import { isX509Type, x509ToString } from "./x509.js";
 import { dynUndefinedExpr, varRef } from "../../../ir/build.js";
 import { InternalCompilerError } from "../../../errors.js";
 import * as ts from "../../ts7/adapter.js";
@@ -177,6 +178,11 @@ export function lowerJsonMethodCall(
         loc,
       };
     }
+    // An X509Certificate serializes through its toJSON, which answers its
+    // PEM: the JSON text is that string's (a root string takes no
+    // indentation).
+    if (isX509Type(lowerer, value.type))
+      return { kind: "jsonStringify", value: x509ToString(value, loc), type: STRING, loc };
     const optionalString = lowerOptionalStringifyRoot(lowerer, value, indent, loc);
     if (optionalString) return optionalString;
     // A program class instance whose class (or a base) declares toJSON:

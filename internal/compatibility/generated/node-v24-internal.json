@@ -72606,7 +72606,8 @@
           "tests/corpus/module-class-dynamic-statics/main.cjs",
           "tests/corpus/module-class-instance/main.cjs",
           "tests/corpus/module-class-statics/main.cjs",
-          "tests/corpus/module-require-esm/main.cjs"
+          "tests/corpus/module-require-esm/main.cjs",
+          "tests/corpus/module-require-extensions/main.cjs"
         ]
       },
       "anchorSource": "chapter"
@@ -72937,8 +72938,11 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:modules.extensions"
+        "status": "partial",
+        "evidence": "compiler-feature:modules.extensions",
+        "tests": [
+          "tests/corpus/module-require-extensions/main.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -125968,6 +125972,7 @@
           "tests/corpus/worker-cpu-usage-quiet/main.ts",
           "tests/corpus/worker-cpu-usage.ts",
           "tests/corpus/worker-env-option.ts",
+          "tests/corpus/worker-heap-statistics.ts",
           "tests/corpus/worker-messageerror-events.ts",
           "tests/corpus/worker-messageerror-surface.ts",
           "tests/corpus/worker-performance.ts",
@@ -126694,8 +126699,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.worker.getHeapStatistics",
+        "tests": [
+          "tests/corpus/worker-heap-statistics.ts"
+        ]
       },
       "anchorSource": "exact"
     },

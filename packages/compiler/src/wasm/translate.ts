@@ -69,9 +69,14 @@ export const TRAP_SIGNATURE = 8;
 export const TRAP_NULL = 9;
 /** scr_wasm_abi.h SCR_WASM_TRAP_EXHAUSTION. */
 export const TRAP_EXHAUSTION = 100;
+/** scr_wasm_abi.h SCR_WASM_TRAP_HOST: a JavaScript exception is pending. */
+export const TRAP_HOST = 101;
 
 /** The descriptor ABI version both sides agree on. */
-export const WASM_ABI_VERSION = 2;
+/** The descriptor version: 2 for scalar modules (unchanged), 3 when a
+ * module carries v128 in a signature or global. The runtime accepts both. */
+export const WASM_ABI_VERSION = 3;
+export const WASM_ABI_VERSION_SCALAR = 2;
 
 /** Instance slot offsets (bytes). */
 const OFF_MEMBASE = 8;
@@ -340,6 +345,11 @@ class ModuleTranslator {
   /** Attributes on the boundary thunks and the init function, which the
    * runtime calls directly. */
   thunkAttrs: string;
+  /** The descriptor ABI version this module's descriptor carries. */
+  abiVersion: number;
+  /** Whether a v128 import needs scr_wasm_import_funcref. */
+  needsImportFuncref = false;
+
   /** LLVM intrinsic declarations the translated code calls. */
   intrinsics = new Set<string>();
 
@@ -358,10 +368,14 @@ class ModuleTranslator {
     this.typeHashes = m.types.map((t) => signatureHash(sigString(t)));
     this.memoryCount = m.memories.length;
     if (m.memories.length > 1) throw new WasmTranslateError("multiple memories are not supported");
-    for (const global of m.globals) {
-      if (global.type === VAL_V128)
-        throw new WasmTranslateError("v128 globals are not supported yet");
+    let vectors = false;
+    for (const t of m.types) {
+      if (hasV128(t.params) || hasV128(t.results)) vectors = true;
     }
+    for (const global of m.globals) {
+      if (global.type === VAL_V128) vectors = true;
+    }
+    this.abiVersion = vectors ? WASM_ABI_VERSION : WASM_ABI_VERSION_SCALAR;
     this.stackChecked = stackCheckedFunctions(m);
   }
 
@@ -400,7 +414,8 @@ class ModuleTranslator {
   importStub(index: number): void {
     const ft = this.funcType(index);
     if (hasV128(ft.params) || hasV128(ft.results)) {
-      throw new WasmTranslateError("v128 in an imported function signature is not supported yet");
+      this.importVecStub(index, ft);
+      return;
     }
     const out: string[] = [];
     out.push(`define internal ${this.signature(ft, this.fn(index))} ${this.thunkAttrs} {`);
@@ -417,6 +432,42 @@ class ModuleTranslator {
     out.push(`  %host = load ptr, ptr %inst`);
     out.push(`  call void @scr_wasm_import_call(ptr %host, i32 ${index}, ptr %args, ptr %res)`);
     emitSlotReturn(out, ft.results, "%res");
+    out.push(`}`);
+    this.text.push(out.join("\n"));
+  }
+
+  /** A v128-carrying import: call the imported WebAssembly function's code
+   * directly, with the vectors in registers. The runtime resolves the
+   * import to its function reference and throws Node's TypeError when the
+   * import is a plain JavaScript function. */
+  importVecStub(index: number, ft: WasmFuncType): void {
+    this.needsImportFuncref = true;
+    const out: string[] = [];
+    out.push(`define internal ${this.signature(ft, this.fn(index))} ${this.thunkAttrs} {`);
+    out.push(`entry:`);
+    const args: string[] = [];
+    for (let i = 0; i < ft.params.length; i++) args.push(`${llType(ft.params[i]!)} %p${i}`);
+    out.push(`  %host = load ptr, ptr %inst`);
+    out.push(`  %ref = call ptr @scr_wasm_import_funcref(ptr %host, i32 ${index})`);
+    out.push(`  %missing = icmp eq ptr %ref, null`);
+    out.push(`  br i1 %missing, label %missing${index}, label %call${index}`);
+    out.push(`missing${index}:`);
+    out.push(`  call void @scr_wasm_trap(i32 ${TRAP_HOST})`);
+    out.push(`  unreachable`);
+    out.push(`call${index}:`);
+    out.push(`  %code.p = getelementptr inbounds i8, ptr %ref, i64 0`);
+    out.push(`  %code = load ptr, ptr %code.p, align 8`);
+    out.push(`  %cinst.p = getelementptr inbounds i8, ptr %ref, i64 16`);
+    out.push(`  %cinst = load ptr, ptr %cinst.p, align 8`);
+    const call = `%code(ptr %cinst${args.length > 0 ? ", " + args.join(", ") : ""})`;
+    const ret = retType(ft.results);
+    if (ft.results.length === 0) {
+      out.push(`  call void ${call}`);
+      out.push(`  ret void`);
+    } else {
+      out.push(`  %r = call ${ret} ${call}`);
+      out.push(`  ret ${ret} %r`);
+    }
     out.push(`}`);
     this.text.push(out.join("\n"));
   }
@@ -520,6 +571,8 @@ class ModuleTranslator {
         // A defined externref global starts as null or another global's
         // value; the runtime's setter retains it.
         body.add(`  call void @scr_wasm_global_set_ref(ptr ${cell}, ptr ${v})`);
+      } else if (global.type === VAL_V128) {
+        body.add(`  store ${llType(global.type)} ${v}, ptr ${cell}, align 8`);
       } else {
         body.add(`  store ${llType(global.type)} ${v}, ptr ${cell}`);
       }
@@ -626,13 +679,18 @@ class ModuleTranslator {
       let type = "";
       let call = "null";
       if (ex.kind === KIND_FUNC) {
-        type = sigString(this.funcType(ex.index));
-        let thunk = thunks.get(ex.index);
-        if (thunk === undefined) {
-          thunk = this.exportThunk(ex.index);
-          thunks.set(ex.index, thunk);
+        const ft = this.funcType(ex.index);
+        type = sigString(ft);
+        // A v128 export has no 64-bit-slot thunk; the runtime's JavaScript
+        // wrapper rejects the call before converting anything.
+        if (!hasV128(ft.params) && !hasV128(ft.results)) {
+          let thunk = thunks.get(ex.index);
+          if (thunk === undefined) {
+            thunk = this.exportThunk(ex.index);
+            thunks.set(ex.index, thunk);
+          }
+          call = thunk;
         }
-        call = thunk;
       } else if (ex.kind === KIND_TABLE) {
         type = sigChar(m.tables[ex.index]!.elemType);
       } else if (ex.kind === KIND_GLOBAL) {
@@ -662,7 +720,13 @@ class ModuleTranslator {
       codes.push(referenced ? `ptr ${this.fn(f)}` : "ptr null");
       // Referenced functions the module does not export reach JavaScript
       // through their signature's call thunk.
-      if (referenced && !thunks.has(f)) {
+      const referencedFt = this.funcType(f);
+      if (
+        referenced &&
+        !thunks.has(f) &&
+        !hasV128(referencedFt.params) &&
+        !hasV128(referencedFt.results)
+      ) {
         const type = m.funcTypes[f]!;
         let thunk = callThunkSyms.get(type);
         if (thunk === undefined) {
@@ -786,7 +850,7 @@ class ModuleTranslator {
     const fields = [
       `[32 x i8] [${sha.join(", ")}]`,
       `i64 ${m.bytes.length}`,
-      `i64 ${WASM_ABI_VERSION}`,
+      `i64 ${this.abiVersion}`,
       `i64 ${this.opts.boundsChecks ? 1 : 0}`,
       `i64 ${m.imports.length}`,
       `ptr ${importsSym}`,
@@ -1142,7 +1206,9 @@ class FunctionTranslator {
         case 0x23: {
           const g = c.u32();
           const cell = this.loadPtrSlot(this.mt.globalSlot(g));
-          stack.push(this.emit(`load ${llType(this.m.globals[g]!.type)}, ptr ${cell}`));
+          const t = this.m.globals[g]!.type;
+          const align = t === VAL_V128 ? ", align 8" : "";
+          stack.push(this.emit(`load ${llType(t)}, ptr ${cell}${align}`));
           break;
         }
         case 0xd0:
@@ -2003,6 +2069,10 @@ class FunctionTranslator {
       this.simdInteger(sub);
       return;
     }
+    if (sub >= 0x100 && sub <= 0x113) {
+      this.simdRelaxed(sub);
+      return;
+    }
     throw new WasmTranslateError(`SIMD instruction 0xfd ${sub} is not supported yet`);
   }
 
@@ -2773,6 +2843,86 @@ class FunctionTranslator {
     throw new WasmTranslateError(`SIMD instruction 0xfd ${sub} is not supported yet`);
   }
 
+  /** Relaxed SIMD. Each instruction lowers to one deterministic outcome of
+   * the spec's allowed set, so native and Node agree on ordinary inputs. */
+  simdRelaxed(sub: number): void {
+    if (sub === 256) {
+      this.simdSwizzle();
+      return;
+    }
+    if (sub === 257 || sub === 258) {
+      this.simdConvert(sub === 257 ? 248 : 249);
+      return;
+    }
+    if (sub === 259 || sub === 260) {
+      this.simdConvert(sub === 259 ? 252 : 253);
+      return;
+    }
+    if (sub >= 261 && sub <= 264) {
+      // relaxed_madd/nmadd: a*b + c, or -(a*b) + c, with two roundings.
+      const shape = sub <= 262 ? SHAPE_F32 : SHAPE_F64;
+      const negate = sub === 262 || sub === 264;
+      const c = this.popShape(shape, "relaxed_madd");
+      const b = this.popShape(shape, "relaxed_madd");
+      const a = this.popShape(shape, "relaxed_madd");
+      const product = this.emit(`fmul ${shape.type} ${a}, ${b}`);
+      const sum = this.emit(
+        negate ? `fsub ${shape.type} ${c}, ${product}` : `fadd ${shape.type} ${product}, ${c}`,
+      );
+      this.push(this.canon(sum, shape), VAL_V128);
+      return;
+    }
+    if (sub >= 265 && sub <= 268) {
+      this.simdBitwise(82); // relaxed_laneselect is bitselect
+      return;
+    }
+    if (sub >= 269 && sub <= 272) {
+      const mapped = sub === 269 ? 234 : sub === 270 ? 235 : sub === 271 ? 246 : 247;
+      this.simdFloat(mapped); // relaxed_min/max as pmin/pmax
+      return;
+    }
+    if (sub === 273) {
+      this.simdQ15(); // relaxed q15mulr as the saturating rounding form
+      return;
+    }
+    if (sub === 274) {
+      this.push(this.canon(this.relaxedDot(), SHAPE_I16), VAL_V128);
+      return;
+    }
+    if (sub === 275) {
+      const c = this.popType(VAL_V128, "relaxed_dot_add");
+      const dot = this.relaxedDot();
+      const widened = this.emit(`sext ${V8I16} ${dot} to <8 x i32>`);
+      const evens = this.emit(
+        `shufflevector <8 x i32> ${widened}, <8 x i32> undef, <4 x i32> <i32 0, i32 2, i32 4, i32 6>`,
+      );
+      const odds = this.emit(
+        `shufflevector <8 x i32> ${widened}, <8 x i32> undef, <4 x i32> <i32 1, i32 3, i32 5, i32 7>`,
+      );
+      const sums = this.emit(`add ${V4I32} ${evens}, ${odds}`);
+      this.push(this.emit(`add ${V4I32} ${sums}, ${c.v}`), VAL_V128);
+      return;
+    }
+    throw new WasmTranslateError(`SIMD instruction 0xfd ${sub} is not supported yet`);
+  }
+
+  /** The i8x16 x i7x16 dot product, both operands sign-extended, pairwise
+   * summed into eight i16 lanes. */
+  relaxedDot(): string {
+    const b = this.popShape(SHAPE_I8, "relaxed_dot");
+    const a = this.popShape(SHAPE_I8, "relaxed_dot");
+    const wa = this.emit(`sext ${V16I8} ${a} to <16 x i16>`);
+    const wb = this.emit(`sext ${V16I8} ${b} to <16 x i16>`);
+    const product = this.emit(`mul <16 x i16> ${wa}, ${wb}`);
+    const evens = this.emit(
+      `shufflevector <16 x i16> ${product}, <16 x i16> undef, <8 x i32> <i32 0, i32 2, i32 4, i32 6, i32 8, i32 10, i32 12, i32 14>`,
+    );
+    const odds = this.emit(
+      `shufflevector <16 x i16> ${product}, <16 x i16> undef, <8 x i32> <i32 1, i32 3, i32 5, i32 7, i32 9, i32 11, i32 13, i32 15>`,
+    );
+    return this.emit(`add ${V8I16} ${evens}, ${odds}`);
+  }
+
   /** Float/integer conversions, including the saturating truncations. */
   simdConvert(sub: number): void {
     if (sub === 94) {
@@ -3326,6 +3476,7 @@ export function translateWasmModule(
   const descriptor = mt.descriptor(sha256);
   const decls = RUNTIME_DECLS.slice();
   for (const decl of mt.intrinsics) decls.push(decl);
+  if (mt.needsImportFuncref) decls.push("declare ptr @scr_wasm_import_funcref(ptr, i32)");
   // Initial-exec: executables and their static runtime define it, so the
   // check is one thread-pointer-relative load, not a TLS lookup call.
   if (opts.boundsChecks)

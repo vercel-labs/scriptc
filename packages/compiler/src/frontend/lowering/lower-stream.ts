@@ -3771,6 +3771,20 @@ function lowerDynStagePipeline(
   for (let j = src !== null ? 1 : 0; j < stageArgs.length; j++) {
     const arg = stageArgs[j]!;
     if (pipelineStageFunction(lowerer, arg) !== null) continue;
+    const webElem =
+      j === 0 && pipelineStageFunction(lowerer, arg) === null
+        ? staticReadableStreamElementType(lowerer, arg)
+        : null;
+    if (webElem !== null) {
+      /* Same one binding: the web adapter the pipeline reads and the value a
+       * plain stage is handed both build from it. */
+      const sourceValue = bind(lowerer.lowerExprExpecting(arg, DYN));
+      const lowered = lowerWebStreamSourceValue(lowerer, sourceValue, webElem!, loc);
+      if (lowered === null) lowerer.noLowering("pipeline over this source", arg);
+      preSource = { closure: bind(lowered!.closure), out: lowered!.out };
+      preValue = sourceValue;
+      continue;
+    }
     if (j === 0 && iterableSourceType(lowerer, arg) !== null) {
       /* The source expression runs once: the generator the pipeline reads
        * and the value a plain stage is handed both build from this binding. */
@@ -6127,12 +6141,20 @@ function lowerPipelineStages(
   // before all stages, so when a stage precedes a stream the arguments
   // are bound to locals first, keeping JavaScript's evaluation order.
   const argOrder: { list: IrExpr[]; index: number }[] = [];
+  /* A source value that is handed to a plain stage as well as read by the
+   * generator: bound once, so an effectful source expression runs once. */
+  const sourceValueDecls: IrStmt[] = [];
   // An untyped stage followed by an untyped function stage hands its value
   // over through one cell per call (DynStageHandoff).
   let handoffCell: IrLocal | null = null;
   const cellRef = (): IrExpr => {
     handoffCell ??= lowerer.declareHiddenLocal("%pipelineHandoff", DYN);
     return varRef(handoffCell.id, DYN, loc);
+  };
+  const bindSourceValue = (init: IrExpr): IrExpr => {
+    const local = lowerer.declareHiddenLocal("%pipelineSrcValue", init.type);
+    sourceValueDecls.push({ kind: "varDecl", localId: local.id, init, loc: init.loc });
+    return varRef(local.id, init.type, init.loc);
   };
   let takes = false;
   // Whether the j-th argument is a plain function stage (the branch below
@@ -6233,11 +6255,13 @@ function lowerPipelineStages(
       } else if (plan?.preSource !== undefined) {
         source = plan.preSource;
       } else if (webElem !== null) {
-        const value: IrExpr = lowerer.lowerExprExpecting(arg, DYN);
+        let value: IrExpr = lowerer.lowerExprExpecting(arg, DYN);
+        if (givesToNext) value = bindSourceValue(value);
         source = lowerWebStreamSourceValue(lowerer, value, webElem, loc);
         if (givesToNext) handed = value;
       } else {
-        const value = lowerer.lowerExpr(arg);
+        let value = lowerer.lowerExpr(arg);
+        if (givesToNext) value = bindSourceValue(value);
         source = lowerIterableSourceValue(lowerer, value, loc);
         if (givesToNext) handed = value;
       }
@@ -6285,6 +6309,33 @@ function lowerPipelineStages(
       argOrder.push({ list: streams, index: streams.length });
       streams.push(stream);
       srcT = stream.type;
+      continue;
+    }
+    // A synchronous source function: pipeline calls it with { signal } and
+    // pumps what it returns — a stream, an iterable or an async iterable — so
+    // the first stage is the checked-dynamic source stage, whose runtime
+    // answers Node's invalid-return error for anything else.
+    const sourceIsAsync = (fn.modifiers?.nodes ?? []).some(
+      (m) => m.kind === ts.SyntaxKind.AsyncKeyword,
+    );
+    const sourceIsGen = !ts.isArrowFunction(fn) && fn.asteriskToken !== undefined;
+    if (j === 0 && srcT === null && !sourceIsAsync && !sourceIsGen) {
+      const value = lowerer.lowerExpr(arg);
+      const dynValue: IrExpr =
+        value.type.kind === "dyn" ? value : { kind: "dynFrom", value, type: DYN, loc };
+      const source = lowerDynSourceStage(
+        lowerer,
+        dynValue,
+        loc,
+        givesToNext ? cellRef() : undefined,
+      );
+      if (source === null) lowerer.noLowering("a pipeline source function with this result", arg);
+      takes = givesToNext;
+      mask |= 1 << stages.length;
+      positions += 1;
+      argOrder.push({ list: stages, index: stages.length });
+      stages.push(source!.closure);
+      srcT = source!.out;
       continue;
     }
     const isLast = j === stageArgs.length - 1;
@@ -6417,7 +6468,7 @@ function lowerPipelineStages(
   } else if (dest === 3) {
     helperArgs.push(dynStageIterHelper(lowerer, loc));
   }
-  const argDecls: IrStmt[] = [];
+  const argDecls: IrStmt[] = [...sourceValueDecls];
   const firstStage = argOrder.findIndex((a) => a.list === stages);
   if (firstStage >= 0 && argOrder.slice(firstStage).some((a) => a.list === streams)) {
     for (const a of argOrder) {

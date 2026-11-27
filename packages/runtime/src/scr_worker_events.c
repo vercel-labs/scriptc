@@ -543,36 +543,16 @@ void scr_worker_mark_untransferable(ScrDyn *value) {
 
 /* postMessage's transfer argument: an array, or { transfer } (+1, or NULL
  * when empty) */
-/* Node reports the self-post warning on the next tick, so its process
- * 'warning' listeners run after postMessage returned: each message waits in
- * this queue for one next-tick callback. */
-typedef struct ScrPostWarning {
-  ScrStr *message; /* owned */
-  struct ScrPostWarning *next;
-} ScrPostWarning;
-
-static SCR_TL ScrPostWarning *scr_post_warnings;
-static SCR_TL ScrPostWarning *scr_post_warnings_tail;
-
-static void scr_post_warning_tick(void) {
-  while (scr_post_warnings != NULL) {
-    ScrPostWarning *warning = scr_post_warnings;
-    scr_post_warnings = warning->next;
-    if (scr_post_warnings == NULL) scr_post_warnings_tail = NULL;
-    scr_emit_warning("Warning", NULL, warning->message);
-    scr_str_release(warning->message);
-    free(warning);
-  }
-}
-
+/* Node reports the self-post warning through process.emitWarning(message):
+ * a replacement installed at the call sees it there with the arguments the
+ * call passes (type undefined), and the default report and the 'warning'
+ * listeners run on the next tick, one tick per warning. */
 static void scr_post_warning(ScrStr *message /* moves in */) {
-  ScrPostWarning *warning = calloc(1, sizeof *warning);
-  if (warning == NULL) scr_trap("out of memory");
-  warning->message = message;
-  if (scr_post_warnings_tail != NULL) scr_post_warnings_tail->next = warning;
-  else scr_post_warnings = warning;
-  scr_post_warnings_tail = warning;
-  scr_next_tick_raw(scr_post_warning_tick);
+  ScrDyn *args = scr_dyn_new_arr();
+  scr_dyn_arr_push(args, scr_dyn_new_str(message));
+  scr_process_emit_warning(args);
+  scr_dyn_release(args);
+  scr_str_release(message);
 }
 
 /* The three shapes Node reads a transfer list in: postMessage's second

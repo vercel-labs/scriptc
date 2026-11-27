@@ -9293,7 +9293,16 @@ static bool scr_http_proxy_target_valid(const ScrStr *host, double port, const S
       if (!is_host) continue;
       ScrStr *value = (ScrStr *)scr_arr_borrow_ref(header_pairs, (double)(i + 1));
       if (value == NULL) continue;
-      if (marked && array_valued) {
+      /* The elements of one array are adjacent and spell the pair name the
+       * same way; a later property that only differs in case is a new value,
+       * which replaces the earlier array (Node's setHeader). */
+      bool continues = false;
+      if (marked && array_valued && i >= 2) {
+        ScrStr *prev = (ScrStr *)scr_arr_borrow_ref(header_pairs, (double)(i - 2));
+        continues = prev != NULL && prev->len == raw->len &&
+                    memcmp(prev->data, raw->data, raw->len) == 0;
+      }
+      if (continues) {
         values = realloc(values, (nvalues + 1) * sizeof *values);
         if (values == NULL) scr_http_oom();
         values[nvalues++] = value;
@@ -9619,14 +9628,23 @@ static ScrHttpClientReq *scr_http_request_impl(ScrStr *host /*borrowed*/, double
    * compares the given value against the authority instead. */
   if (!proxied) {
     size_t pair_count = (size_t)scr_arr_len(header_pairs);
+    bool have_host = false;
+    bool host_is_array = false;
     for (size_t i = 0; i + 1 < pair_count; i += 2) {
       ScrStr *raw = (ScrStr *)scr_arr_borrow_ref(header_pairs, (double)i);
       if (raw == NULL) continue;
-      ScrStr *name = scr_http_pairs_array_name(raw);
-      if (name == NULL) continue;
+      ScrStr *array_name = scr_http_pairs_array_name(raw);
+      ScrStr *name = array_name != NULL ? array_name : raw;
+      bool marked = array_name != NULL;
       bool is_host = scr_http_name_is(name, "host");
-      scr_str_release(name);
+      scr_str_release(array_name);
       if (!is_host) continue;
+      /* the value set last is the one Node keeps: an array replaces an
+       * earlier scalar and a later scalar replaces an array */
+      have_host = true;
+      host_is_array = marked;
+    }
+    if (have_host && host_is_array) {
       static const char msg[] = "The \"options.headers.host\" property must be of type string. "
                                 "Received an instance of Array";
       scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "ERR_INVALID_ARG_TYPE");
@@ -9657,17 +9675,25 @@ static ScrHttpClientReq *scr_http_request_impl(ScrStr *host /*borrowed*/, double
     c->hraw = malloc((npairs / 2) * sizeof *c->hraw);
     if (!c->hnames || !c->hvalues || !c->hraw) scr_http_oom();
     for (size_t i = 0; i + 1 < npairs; i += 2) {
-      ScrStr *name = (ScrStr *)scr_arr_get_ref(header_pairs, (double)i);
+      ScrStr *raw = (ScrStr *)scr_arr_borrow_ref(header_pairs, (double)i);
       ScrStr *value = (ScrStr *)scr_arr_get_ref(header_pairs, (double)(i + 1));
-      bool array_valued = false;
-      bool empty_array = false;
-      ScrStr *array_name = scr_http_pairs_array_name(name);
-      if (array_name != NULL) {
-        empty_array = scr_http_pairs_empty_array(value);
-        scr_str_release(name);
-        name = array_name;
-        array_valued = true;
+      if (raw == NULL) {
+        scr_str_release(value);
+        continue;
       }
+      ScrStr *array_name = scr_http_pairs_array_name(raw);
+      bool array_valued = array_name != NULL;
+      bool empty_array = array_valued && scr_http_pairs_empty_array(value);
+      /* The elements of one array are adjacent pairs spelling the name the
+       * same way; a later property differing only in case starts its own
+       * array, which replaces this one as Node's setHeader does. */
+      bool continues = false;
+      if (array_valued && i >= 2) {
+        ScrStr *prev = (ScrStr *)scr_arr_borrow_ref(header_pairs, (double)(i - 2));
+        continues = prev != NULL && prev->len == raw->len &&
+                    memcmp(prev->data, raw->data, raw->len) == 0;
+      }
+      ScrStr *name = array_valued ? array_name : scr_str_retain(raw);
       if (empty_array) {
         /* an empty array keeps its entry (getHeader(s) answer []) without a
          * wire line; the value itself is the marker, never sent */
@@ -9698,7 +9724,8 @@ static ScrHttpClientReq *scr_http_request_impl(ScrStr *host /*borrowed*/, double
        * pairs follow one another and append to it), and the entry keeps the
        * last spelling of the name. */
       if (array_valued) {
-        if (c->hraw[pos] == NULL) {
+        if (c->hraw[pos] == NULL || !continues) {
+          if (c->hraw[pos] != NULL) scr_dyn_release(c->hraw[pos]);
           ScrDyn *arr = scr_dyn_new_arr();
           if (!empty_array) scr_dyn_arr_push(arr, scr_dyn_new_str(value));
           scr_str_release(c->hvalues[pos]);

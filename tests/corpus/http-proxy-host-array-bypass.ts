@@ -17,7 +17,10 @@ const proxy = net.createServer((socket) => {
   });
 });
 
-const server = http.createServer((req, res) => res.end("direct"));
+const server = http.createServer((req, res) => {
+  console.log("server host", req.headers.host);
+  res.end("direct");
+});
 
 let normalize = (text: string): string => text;
 
@@ -40,6 +43,35 @@ server.listen(0, "127.0.0.1", () => {
     console.log("direct array accepted");
   } catch (error) {
     report("direct array", error);
+  }
+
+  // a later scalar spelling replaces the array, so this one is allowed
+  const replaced = http.request(
+    {
+      port,
+      host: "127.0.0.1",
+      headers: { host: [auth], Host: "127.0.0.1" },
+    },
+    (res) => {
+      res.resume();
+      res.on("end", () => console.log("array then scalar", res.statusCode));
+    },
+  );
+  replaced.on("error", (error) => console.log("array then scalar error", (error as NodeJS.ErrnoException).code));
+  replaced.end();
+
+  // the other way round the array is the value kept, and it is refused
+  try {
+    const request = http.request({
+      port,
+      host: "127.0.0.1",
+      headers: { Host: "127.0.0.1", host: [auth] },
+    });
+    request.on("error", () => {});
+    request.end();
+    console.log("scalar then array accepted");
+  } catch (error) {
+    report("scalar then array", error);
   }
 
   proxy.listen(0, "127.0.0.1", () => {

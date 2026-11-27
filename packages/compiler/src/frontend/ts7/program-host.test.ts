@@ -11,6 +11,7 @@ import {
   type Ts7ProjectLineage,
 } from "./program-host.js";
 import { ModuleDetectionKind, ModuleKind, ModuleResolutionKind, ScriptTarget } from "./enums.js";
+import { Ts7FrameLimitError } from "./rpc-wire.js";
 import { tsgoPath } from "./session-path.js";
 
 const directories: string[] = [];
@@ -101,11 +102,15 @@ test("pre-emit diagnostics for kept files check only those, unless a global diag
         .map((diagnostic) => [diagnostic.fileName, diagnostic.code]),
     );
     expect(kept).toHaveLength(2);
-    expect(checked).toHaveBeenCalledTimes(1);
-    expect(checked.mock.calls[0]![0]).not.toContain(tsgoPath(other));
+    const partialCalls = checked.mock.calls.length;
+    expect(partialCalls).toBeGreaterThanOrEqual(1);
+    for (const [files] of checked.mock.calls) {
+      expect(files).not.toContain(tsgoPath(other));
+      expect(files.length).toBeLessThanOrEqual(64);
+    }
     // Keeping every file is the full check.
     expect(getPreEmitDiagnostics(program, () => true)).toEqual(full);
-    expect(checked).toHaveBeenCalledTimes(1);
+    expect(checked.mock.calls.length).toBe(partialCalls);
     // A global diagnostic from the partial check, or a server without it: the full check.
     for (const answer of [
       {
@@ -119,6 +124,82 @@ test("pre-emit diagnostics for kept files check only those, unless a global diag
       );
       expect(getPreEmitDiagnostics(program, keep)).toEqual(full);
     }
+  } finally {
+    program.dispose();
+  }
+});
+
+function largeFixture(): { directory: string; entry: string } {
+  const { directory, entry } = fixture();
+  const imports: string[] = [];
+  for (let index = 0; index < 65; index++) {
+    writeFileSync(
+      join(directory, `part-${index}.ts`),
+      `export const value${index}: number = "s";\n`,
+    );
+    imports.push(`import "./part-${index}.js";`);
+  }
+  writeFileSync(entry, `${imports.join("\n")}\nexport const answer = 42;\n`);
+  return { directory, entry };
+}
+
+function singleFullCheckDiagnostics(
+  program: ReturnType<Ts7Host["createProgram"]>,
+): readonly ReturnType<ReturnType<Ts7Host["createProgram"]>["getSemanticDiagnostics"]>[number][] {
+  return [
+    ...program.getConfigFileParsingDiagnostics(),
+    ...program.getProgramDiagnostics(),
+    ...program.getGlobalDiagnostics(),
+    ...program.getSyntacticDiagnostics(),
+    ...program.getSemanticDiagnostics(),
+  ];
+}
+
+test("a frame-limited full check answers in ordered batches", () => {
+  const { directory, entry } = largeFixture();
+  const { host } = makeHost(directory);
+  const program = host.createProgram([entry], options);
+  try {
+    const expected = singleFullCheckDiagnostics(program);
+    const checked = vi.spyOn(program.project.program, "checkedFileDiagnosticData");
+    const full = vi
+      .spyOn(program.project.program, "getSemanticDiagnostics")
+      .mockImplementation(() => {
+        throw new Ts7FrameLimitError("payload exceeds 536870912 bytes (got 591404361)");
+      });
+    expect(getPreEmitDiagnostics(program)).toEqual(expected);
+    full.mockRestore();
+    expect(checked.mock.calls.length).toBeGreaterThan(1);
+    for (const [files] of checked.mock.calls) expect(files.length).toBeLessThanOrEqual(64);
+  } finally {
+    program.dispose();
+  }
+});
+
+test("a frame-limited batch is halved until the server answers", () => {
+  const { directory, entry } = largeFixture();
+  const { host } = makeHost(directory);
+  const program = host.createProgram([entry], options);
+  try {
+    const expected = singleFullCheckDiagnostics(program);
+    const full = vi
+      .spyOn(program.project.program, "getSemanticDiagnostics")
+      .mockImplementation(() => {
+        throw new Ts7FrameLimitError("payload exceeds 536870912 bytes (got 591404361)");
+      });
+    const original = program.project.program.checkedFileDiagnosticData.bind(
+      program.project.program,
+    );
+    const checked = vi.spyOn(program.project.program, "checkedFileDiagnosticData");
+    checked.mockImplementation((files) => {
+      if (files.length > 1)
+        throw new Ts7FrameLimitError("payload exceeds 1048576 bytes (got 2097152)");
+      return original(files);
+    });
+    expect(getPreEmitDiagnostics(program)).toEqual(expected);
+    full.mockRestore();
+    expect(checked.mock.calls.some(([files]) => files.length === 1)).toBe(true);
+    expect(checked.mock.calls.some(([files]) => files.length > 1)).toBe(true);
   } finally {
     program.dispose();
   }

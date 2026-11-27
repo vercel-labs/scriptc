@@ -29,6 +29,16 @@ export class Ts7ProtocolError extends Error {
   }
 }
 
+/** A response frame larger than the channel limit. The frame was read and
+ * dropped, so the channel stays open: the caller can ask again in smaller
+ * pieces. Any other protocol error poisons the stream. */
+export class Ts7FrameLimitError extends Ts7ProtocolError {
+  constructor(message: string) {
+    super(message);
+    this.name = "Ts7FrameLimitError";
+  }
+}
+
 function binHeaderSize(length: number): number {
   return length < 256 ? 2 : length < 65536 ? 3 : 5;
 }
@@ -113,7 +123,7 @@ export class Ts7Wire {
     return this.input[this.inputOffset++]!;
   }
 
-  private readLength(limit: number, label: string): number {
+  private readLength(label: string): number {
     const marker = this.readByte();
     let length = 0;
     if (marker === 0xc4) {
@@ -130,8 +140,32 @@ export class Ts7Wire {
     } else {
       this.fail(`expected binary ${label}, got marker ${marker}`);
     }
-    if (length > limit) this.fail(`${label} exceeds ${limit} bytes`);
     return length;
+  }
+
+  /** Consume `length` bytes without allocating them: a frame over the limit
+   * is read and dropped so the channel stays usable for a smaller request.
+   * The peer already serialized the frame; the client keeps its memory
+   * bounded instead of closing the connection. */
+  private discardBytes(length: number): void {
+    let offset = 0;
+    while (offset < length) {
+      const buffered = this.inputLength - this.inputOffset;
+      if (buffered > 0) {
+        const take = Math.min(buffered, length - offset);
+        this.inputOffset += take;
+        offset += take;
+        continue;
+      }
+      // The buffered input is empty, so the input buffer is free as a
+      // scratch destination; the next fill resets its offsets.
+      const take = Math.min(this.input.length, length - offset);
+      const count = this.io.read(this.input, 0, take);
+      if (!Number.isSafeInteger(count) || count < 0 || count > take)
+        this.fail("invalid read count");
+      if (count === 0) this.fail("unexpected end of stream");
+      offset += count;
+    }
   }
 
   private readBytes(length: number): Uint8Array {
@@ -175,14 +209,31 @@ export class Ts7Wire {
       let kind = this.readByte();
       if (kind === 0xcc) kind = this.readByte();
       if (kind < TS7_REQUEST || kind > TS7_CALLBACK) this.fail(`invalid message kind ${kind}`);
-      const name = this.readBytes(this.readLength(this.maxMethodBytes, "method"));
-      const payload = this.readBytes(this.readLength(this.maxPayloadBytes, "payload"));
+      const nameLength = this.readLength("method");
+      if (nameLength > this.maxMethodBytes)
+        this.fail(`method exceeds ${this.maxMethodBytes} bytes`);
+      const name = this.readBytes(nameLength);
+      const payloadLength = this.readLength("payload");
+      if (payloadLength > this.maxPayloadBytes) {
+        // Read past the frame so the next request on this channel can be
+        // answered, then tell the caller a smaller request is needed. A
+        // length far beyond the limit is a broken peer, not a large
+        // answer: close instead of reading gigabytes of nothing.
+        if (payloadLength > this.maxPayloadBytes * 4)
+          this.fail(`payload exceeds ${this.maxPayloadBytes} bytes`);
+        this.discardBytes(payloadLength);
+        throw new Ts7FrameLimitError(
+          `payload exceeds ${this.maxPayloadBytes} bytes (got ${payloadLength})`,
+        );
+      }
+      const payload = this.readBytes(payloadLength);
       return {
         kind,
         method: Buffer.from(name.buffer, name.byteOffset, name.byteLength).toString("utf8"),
         payload,
       };
     } catch (error) {
+      if (error instanceof Ts7FrameLimitError) throw error;
       try {
         this.close();
       } catch {

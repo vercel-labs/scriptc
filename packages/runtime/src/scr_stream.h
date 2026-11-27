@@ -813,6 +813,11 @@ ScrStream *scr_stream_duplex_from_dyn(struct ScrDyn *body);
  * (object mode), as the pipeline's stages do; any other body is Duplex.from's
  * (borrowed). +1. */
 ScrStream *scr_stream_duplex_stage_dyn(struct ScrDyn *body);
+/* Duplex.from over a checked-dynamic compose stage in the last position: a
+ * web stream pair answers duplexify's byte-for-byte sides (the composed Duplex
+ * reads them as Buffers), and a lone web WritableStream answers a writable
+ * Duplex that keeps the chunks the stage before it writes (borrowed). +1. */
+ScrStream *scr_stream_duplex_tail_dyn(struct ScrDyn *body);
 /* Readable.fromWeb(readableStream, { objectMode, highWaterMark, encoding })
  * (scr_stream_from_web.c): hwm < 0 is the mode's default, encoding NULL or
  * a known name; web and encoding borrowed. +1, or NULL with the error. */

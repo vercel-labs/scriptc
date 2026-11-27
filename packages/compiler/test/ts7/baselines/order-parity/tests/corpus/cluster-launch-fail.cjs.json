@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/cluster-launch-fail.cjs"
+ ],
+ "diags": []
+}

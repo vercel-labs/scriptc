@@ -16,47 +16,11 @@ compat-absent-http2-members.ts:9:15 - error SC2020: 'ServerHttp2Stream.pushAllow
 
   hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
 
-compat-absent-http2-members.ts:12:1 - error SC2020: 'session.setTimeout' is part of the standard library types but has no scriptc lowering yet
+compat-absent-http2-members.ts:13:12 - error SC2020: 'stream.on("push", ...)' is part of the standard library types but has no scriptc lowering yet
 
-  11 | const client = http2.connect("http://127.0.0.1:1");
-  12 | client.setTimeout(1000);
-     | ^~~~~~~~~~~~~~~~~~~~~~~
-  13 | client.unref();
-
-  hint: close/destroy/request/settings/ping and on(...) are the lowered session members
-
-compat-absent-http2-members.ts:13:1 - error SC2020: 'session.unref' is part of the standard library types but has no scriptc lowering yet
-
-  12 | client.setTimeout(1000);
-  13 | client.unref();
-     | ^~~~~~~~~~~~~~
-  14 | client.goaway(0);
-
-  hint: close/destroy/request/settings/ping and on(...) are the lowered session members
-
-compat-absent-http2-members.ts:14:1 - error SC2020: 'session.goaway' is part of the standard library types but has no scriptc lowering yet
-
-  13 | client.unref();
-  14 | client.goaway(0);
-     | ^~~~~~~~~~~~~~~~
-  15 | client.on("timeout", () => {});
-
-  hint: close/destroy/request/settings/ping and on(...) are the lowered session members
-
-compat-absent-http2-members.ts:15:11 - error SC2020: 'session.on("timeout", ...)' is part of the standard library types but has no scriptc lowering yet
-
-  14 | client.goaway(0);
-  15 | client.on("timeout", () => {});
-     |           ^~~~~~~~~
-  16 | const request = client.request({ ":path": "/" });
-
-  hint: "close", "error", "connect", "stream", "goaway", "ping", "localSettings", and "remoteSettings" are the supported session events
-
-compat-absent-http2-members.ts:17:12 - error SC2020: 'stream.on("push", ...)' is part of the standard library types but has no scriptc lowering yet
-
-  16 | const request = client.request({ ":path": "/" });
-  17 | request.on("push", () => {});
+  12 | const request = client.request({ ":path": "/" });
+  13 | request.on("push", () => {});
      |            ^~~~~~
-  18 | 
+  14 | 
 
   hint: "data", "end", "close", "aborted", "error", "response", "trailers", "wantTrailers", "headers", "continue", "ready", and "timeout" are the supported stream events

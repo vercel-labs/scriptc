@@ -1,5 +1,6 @@
 /** Native codegen helper protocol shared by compiler hosts. */
-import { availableParallelism, totalmem } from "node:os";
+import { readFileSync } from "node:fs";
+import { availableParallelism, freemem, totalmem } from "node:os";
 
 import type { NativeOptimization } from "./optimization.js";
 import type { NativeHelperSpec, NativeTargetSpec } from "./targets.js";
@@ -85,16 +86,100 @@ export interface NativeCodegenJobsOptions {
   unoptimized?: boolean;
 }
 
+/** Reads a file for the memory measurement below; undefined when it cannot
+ * be read. */
+export type MemoryFileReader = (path: string) => string | undefined;
+
+function readMemoryFile(path: string): string | undefined {
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    return undefined;
+  }
+}
+
+/** One field of a cgroup memory.stat, in bytes, or 0. */
+function memoryStat(stat: string, field: string): number {
+  const match = new RegExp(`^${field} (\\d+)$`, "m").exec(stat);
+  return match === null ? 0 : Number(match[1]);
+}
+
+/** The reclaimable cache a cgroup v2 memory.stat reports, or undefined
+ * when the cgroup's file cannot be read. */
+function cgroupV2Reclaimable(read: MemoryFileReader, path: string): number | undefined {
+  const stat = read(`/sys/fs/cgroup/${path}/memory.stat`) ?? read("/sys/fs/cgroup/memory.stat");
+  if (stat === undefined) return undefined;
+  return Math.max(
+    0,
+    memoryStat(stat, "inactive_file") -
+      memoryStat(stat, "file_dirty") -
+      memoryStat(stat, "file_writeback"),
+  );
+}
+
+/** The reclaimable cache a cgroup v1 memory controller reports, or undefined
+ * when its file cannot be read. */
+function cgroupV1Reclaimable(read: MemoryFileReader, path: string): number | undefined {
+  const stat =
+    read(`/sys/fs/cgroup/memory/${path}/memory.stat`) ?? read("/sys/fs/cgroup/memory/memory.stat");
+  if (stat === undefined) return undefined;
+  return Math.max(
+    0,
+    memoryStat(stat, "total_inactive_file") -
+      memoryStat(stat, "total_dirty") -
+      memoryStat(stat, "total_writeback"),
+  );
+}
+
+/** The page cache the process's cgroup can drop on demand: its inactive file
+ * pages, less those still dirty or under writeback. A v1 memory controller
+ * named in /proc/self/cgroup is the one that accounts the process's memory,
+ * even on a hybrid host that also lists the v2 hierarchy (`0::`); otherwise
+ * the v2 hierarchy does. 0 when the process is in no memory cgroup the files
+ * describe. */
+export function cgroupReclaimableBytes(read: MemoryFileReader = readMemoryFile): number {
+  const cgroups = read("/proc/self/cgroup");
+  if (cgroups === undefined) return 0;
+  const v1 = /^\d+:[^:\n]*\bmemory\b[^:\n]*:\/(.*)$/m.exec(cgroups);
+  const v2 = /^0::\/(.*)$/m.exec(cgroups);
+  if (v1 !== null) {
+    const reclaimable = cgroupV1Reclaimable(read, v1[1]!);
+    if (reclaimable !== undefined) return reclaimable;
+  }
+  if (v2 !== null) return cgroupV2Reclaimable(read, v2[1]!) ?? 0;
+  return 0;
+}
+
+/** What nativeCodegenAvailableBytes reads on Linux, given in tests. */
+export interface LinuxMemoryMeasurement {
+  /** cgroupReclaimableBytes. */
+  reclaimableBytes?: number;
+  /** What the host reports available (MemAvailable). */
+  hostAvailableBytes?: number;
+}
+
 /** The memory a build measures its lanes against. macOS counts only free and
  * inactive pages as available, which on a Mac that has been up for a while is
  * a small share of its RAM even when the rest is page cache the kernel
- * reclaims on demand, so physical memory is the floor there. */
+ * reclaims on demand, so physical memory is the floor there. Inside a
+ * memory-limited cgroup on Linux, process.availableMemory() is the limit less
+ * the cgroup's usage, and that usage counts the page cache the build fills
+ * itself (the sources it read, the LLVM text it wrote) though the kernel
+ * drops it on demand: a build on a warm cache measured 0.26 GB where
+ * /proc/meminfo reported 7.8 GB available. The cgroup's reclaimable cache
+ * counts as available there, up to what the host reports available. */
 export function nativeCodegenAvailableBytes(
   measuredBytes: number,
   totalBytes: number = totalmem(),
   platform: NodeJS.Platform = process.platform,
+  linux: LinuxMemoryMeasurement = {},
 ): number {
-  return platform === "darwin" ? Math.max(measuredBytes, totalBytes) : measuredBytes;
+  if (platform === "darwin") return Math.max(measuredBytes, totalBytes);
+  if (platform !== "linux") return measuredBytes;
+  const reclaimable = linux.reclaimableBytes ?? cgroupReclaimableBytes();
+  if (reclaimable === 0) return measuredBytes;
+  const host = linux.hostAvailableBytes ?? freemem();
+  return Math.max(measuredBytes, Math.min(measuredBytes + reclaimable, host));
 }
 
 /** The partitions one build compiles at once: its partitions, the host's

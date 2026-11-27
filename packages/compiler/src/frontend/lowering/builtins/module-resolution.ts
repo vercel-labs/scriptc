@@ -46,6 +46,7 @@ import {
   STRING,
   type SrcLoc,
   UNDEFINED_T,
+  VOID,
   arrayOf,
   funcOf,
 } from "../../../ir/ir.js";
@@ -208,6 +209,68 @@ function findPackageJsonBaseHref(lowerer: Lowerer, node: ts.Expression): string 
   return null;
 }
 
+/** node:module's source-map support calls and the runtime entry point of
+ * each (scr_lib.c). `params` is how many leading arguments the runtime
+ * reads; the rest are evaluated and dropped, as Node ignores them. */
+const SOURCE_MAP_CALLS = {
+  getSourceMapsSupport: { fn: "module.sourceMapsSupport", params: 0, result: DYN },
+  setSourceMapsSupport: { fn: "module.setSourceMapsSupport", params: 2, result: VOID },
+  findSourceMap: { fn: "module.findSourceMap", params: 1, result: DYN },
+} as const;
+type SourceMapMember = keyof typeof SOURCE_MAP_CALLS;
+
+/** getSourceMapsSupport(), setSourceMapsSupport(enabled[, options]) and
+ * findSourceMap(path): a compiled program registers no source map, so the
+ * support record answers the flags the program set exactly as Node's frozen
+ * { enabled, nodeModules, generatedCode } does, and findSourceMap answers
+ * undefined — what Node answers for a file whose map was never parsed. Every
+ * argument is evaluated in source order before the runtime validates any, and
+ * a trailing argument the call omits arrives as undefined (Node's own
+ * defaults). */
+function lowerSourceMapsCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  member: SourceMapMember,
+  loc: SrcLoc,
+): IrExpr {
+  const row = SOURCE_MAP_CALLS[member];
+  const args = expr.arguments.nodes;
+  if (args.some(ts.isSpreadElement)) {
+    lowerer.noLowering(
+      `module.${member} with spread arguments`,
+      expr,
+      "pass the arguments themselves; the runtime reads at most two",
+    );
+  }
+  const stmts: IrStmt[] = [];
+  const lowered: IrExpr[] = [];
+  args.forEach((arg, i) => {
+    const value = lowerer.lowerExpr(arg);
+    const argLoc = locOf(arg);
+    if (i >= row.params) {
+      stmts.push({ kind: "exprStmt", expr: value, loc: argLoc });
+      return;
+    }
+    const boxed = lowerer.coerceInto(arg, value, DYN);
+    if (i === args.length - 1 && stmts.length === 0) {
+      lowered.push(boxed);
+      return;
+    }
+    // Later arguments run before the runtime looks at this one.
+    const slot = lowerer.declareHiddenLocal(`%sourceMapsArg${i}`, DYN);
+    stmts.push({ kind: "varDecl", localId: slot.id, init: boxed, loc: argLoc });
+    lowered.push(varRef(slot.id, DYN, argLoc));
+  });
+  for (let i = args.length; i < row.params; i++) lowered.push(dynUndefinedExpr(loc));
+  const call: IrExpr = { kind: "libCall", fn: row.fn, args: lowered, type: row.result, loc };
+  const declared = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  const result =
+    declared === null || declared.kind === "dyn" || declared.kind === "void"
+      ? call
+      : lowerer.coerceToExpected(call, declared);
+  return stmts.length === 0 ? result : { kind: "seqExpr", stmts, result, type: result.type, loc };
+}
+
 /** node:module's two compiler-only calls. isBuiltin compares one evaluated
  * string against the pinned Node 24 list (bare builtins also accept their
  * node: spelling; prefix-only entries do not gain a bare alias).
@@ -226,6 +289,9 @@ export function lowerNodeModuleCall(
     return lowerCompileCacheCall(lowerer, expr, bi.member as CompileCacheMember, loc);
   }
   if (bi.member === "findPackageJSON") return lowerFindPackageJsonCall(lowerer, expr, loc);
+  if (Object.hasOwn(SOURCE_MAP_CALLS, bi.member)) {
+    return lowerSourceMapsCall(lowerer, expr, bi.member as SourceMapMember, loc);
+  }
   if (bi.member === "syncBuiltinESMExports") {
     if (expr.arguments.nodes.length !== 0 || expr.arguments.nodes.some(ts.isSpreadElement)) {
       lowerer.noLowering(

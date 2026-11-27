@@ -572,6 +572,12 @@ static ScrDyn *scr_worker_transfer_list(ScrDyn *arg) {
        * duplicate, and a value that is no transferable at all is invalid. An
        * ArrayBuffer or SharedArrayBuffer keeps the documented refusal. */
       if (item && item->kind == SCR_DYN_HANDLE && item->v.handle.tag == SCR_DYNH_MESSAGE_PORT) {
+        const ScrWorkerView *port_view = item->v.handle.ptr;
+        if (port_view->detached || port_view->closed) {
+          scr_dyn_release(own);
+          scr_throw_domex("DataCloneError", "MessagePort in transfer list is already detached");
+          return NULL;
+        }
         for (size_t j = 0; j < i; j++) {
           const ScrDyn *earlier = value->v.arr.items[j];
           if (earlier && earlier->kind == SCR_DYN_HANDLE &&
@@ -985,15 +991,37 @@ static ScrDyn *scr_worker_view_invoke(void *ptr, ScrDyn *self, const char *metho
       scr_throw_domex("DataCloneError", "Transfer list contains source port");
       return NULL;
     }
+    /* Node's self-post case: the transfer list names this port's entangled
+     * other end, so the channel is lost. It reports a process warning and
+     * posts anyway. */
+    if (view->port && view->channel && transfer) {
+      for (size_t i = 0; i < transfer->v.arr.len; i++) {
+        ScrDyn *item = transfer->v.arr.items[i];
+        if (!item || item->kind != SCR_DYN_HANDLE || item->v.handle.tag != SCR_DYNH_MESSAGE_PORT)
+          continue;
+        ScrWorkerView *peer = item->v.handle.ptr;
+        if (peer->channel != view->channel || peer->side == view->side) continue;
+        static const char text[] =
+            "The target port was posted to itself, and the communication channel was lost";
+        ScrStr *message = scr_str_new(text, sizeof text - 1);
+        scr_emit_warning("Warning", NULL, message);
+        scr_str_release(message);
+        break;
+      }
+    }
     ScrMessage *message = scr_message_encode_transfer(args[0], transfer);
     scr_dyn_release(transfer);
     if (!message) return NULL;
-    if (view->closed) scr_message_free(message);
-    else if (view->channel)
+    if (view->closed) {
+      scr_message_free(message);
+      return scr_dyn_retain(scr_dyn_undefined());
+    }
+    if (view->channel)
       scr_channel_post(view->channel, view->side, message, SCR_WORKER_MESSAGE, SCR_WORKER_WAKE);
     else if (view->port) scr_worker_post_parent(message);
     else scr_worker_thread_post(view->thread, message);
-    return scr_dyn_retain(scr_dyn_undefined());
+    /* A MessagePort answers true, a Worker undefined, as in Node. */
+    return view->port ? scr_dyn_new_bool(true) : scr_dyn_retain(scr_dyn_undefined());
   }
   bool once = method_is(method, "once") || method_is(method, "prependOnceListener");
   bool prepend = method_is(method, "prependListener") || method_is(method, "prependOnceListener");

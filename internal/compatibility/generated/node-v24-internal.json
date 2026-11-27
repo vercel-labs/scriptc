@@ -126037,6 +126037,9 @@
           "tests/corpus/port-listener-bookkeeping.mjs",
           "tests/corpus/port-listener-order-cycle.mjs",
           "tests/corpus/port-listeners-typed.ts",
+          "tests/corpus/port-post-message-return.mjs",
+          "tests/corpus/port-post-self-warning.mjs",
+          "tests/corpus/port-transfer-detached.mjs",
           "tests/corpus/worker-cpu-usage-quiet/main.ts",
           "tests/corpus/worker-cpu-usage.ts",
           "tests/corpus/worker-env-option.ts",
@@ -126435,7 +126438,10 @@
           "tests/corpus/native-worker-message-graphs.ts",
           "tests/corpus/native-worker-shared-views.ts",
           "tests/corpus/native-worker-clone-errors.ts",
-          "tests/corpus/native-worker-delayed-messages.ts"
+          "tests/corpus/native-worker-delayed-messages.ts",
+          "tests/corpus/port-post-message-return.mjs",
+          "tests/corpus/port-transfer-detached.mjs",
+          "tests/corpus/port-post-self-warning.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -126805,7 +126811,10 @@
           "tests/corpus/native-worker-message-graphs.ts",
           "tests/corpus/native-worker-shared-views.ts",
           "tests/corpus/native-worker-clone-errors.ts",
-          "tests/corpus/native-worker-delayed-messages.ts"
+          "tests/corpus/native-worker-delayed-messages.ts",
+          "tests/corpus/port-post-message-return.mjs",
+          "tests/corpus/port-transfer-detached.mjs",
+          "tests/corpus/port-post-self-warning.mjs"
         ]
       },
       "anchorSource": "exact"

@@ -7711,15 +7711,11 @@ ScrStream *scr_stream_on_dyn(ScrStream *s, ScrStr *name, ScrDyn *cb, bool once, 
     return (ScrStream *)scr_emitter_on_dyn((ScrEmitter *)s, name, cb, adapter,
       error ? scr_ee_inv_fixed1 : scr_ee_inv_fixed0, once, prepend);
   }
-  /* The stream emits 'pipe' and 'unpipe' with its source stream; other
-   * names reach the listener only through emit calls, with every argument
-   * they pass. */
-  bool piping = (name->len == 4 && memcmp(name->data, "pipe", 4) == 0) ||
-    (name->len == 6 && memcmp(name->data, "unpipe", 6) == 0);
-  if (!piping) return (ScrStream *)scr_emitter_on_flex((ScrEmitter *)s, name, cb, once, prepend);
-  static const char message[] = "this stream event has no checked-dynamic listener adapter";
-  scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
-  return NULL;
+  /* 'pipe' and 'unpipe' reach their listeners as the source stream's
+   * checked-dynamic view (scr_stream_emit_stream passes it), the same
+   * flexible adapter every other named event uses; a listener registered
+   * through a typed value gets the stream itself. */
+  return (ScrStream *)scr_emitter_on_flex((ScrEmitter *)s, name, cb, once, prepend);
 }
 
 ScrDyn *scr_stream_read_dyn(ScrStream *s, ScrDyn *size) {

@@ -20,24 +20,6 @@
     "start": 481,
     "end": 491
    }
-  },
-  {
-   "code": "SC0001",
-   "message": "Cannot find name 'CompressionStream'.",
-   "loc": {
-    "file": "<repo>/tests/diagnostics/compat-absent-web-globals.ts",
-    "start": 594,
-    "end": 611
-   }
-  },
-  {
-   "code": "SC0001",
-   "message": "Cannot find name 'DecompressionStream'.",
-   "loc": {
-    "file": "<repo>/tests/diagnostics/compat-absent-web-globals.ts",
-    "start": 640,
-    "end": 659
-   }
   }
  ]
 }

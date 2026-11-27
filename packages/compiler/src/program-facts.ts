@@ -164,6 +164,20 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     lowererFields: ["namesWebStreamClass"],
   },
   {
+    name: "uses-compression-streams",
+    file: `${SRC}/frontend/lowering/builtins/web-streams-dyn.ts`,
+    symbol: "programUsesCompressionStreams",
+    source: "symbols",
+    scope: "runtime-build",
+    setBy:
+      "an identifier naming CompressionStream or DecompressionStream that resolves to the global",
+    gates:
+      "the compression streams' unit links with its zlib and Brotli engines; every construction, brand test and computed global read of the two classes lowers to its runtime entry",
+    narrower: "the construction or brand-test site",
+    tracked: null,
+    lowererFields: ["compressionStreams"],
+  },
+  {
     name: "reads-node-object-value",
     file: `${SRC}/frontend/lowering/node-value-reads.ts`,
     symbol: "programReadsGlobalValue",
@@ -819,6 +833,11 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "frontend/lowering/builtins/web-streams-dyn.ts#programUsesWebStreamOnlyMembers",
     1,
     "web-stream-only-members",
+  ),
+  decides(
+    "frontend/lowering/builtins/web-streams-dyn.ts#programUsesCompressionStreams",
+    1,
+    "uses-compression-streams",
   ),
   decides(
     "frontend/lowering/constant-conditions.ts#changesEnvironmentByComputedName",

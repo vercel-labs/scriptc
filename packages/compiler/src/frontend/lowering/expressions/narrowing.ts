@@ -2234,7 +2234,7 @@ export function lowerAsExpression(
   if (caughtLocal) {
     const loc = locOf(expr);
     const targetTs = lowerer.checker.getTypeFromTypeNode(expr.type);
-    const target = lowerer.mapTypeOf(targetTs);
+    const target = lowerer.mapAssertionTargetType(targetTs);
     if (target?.kind === "object") {
       const info = lowerer.classes.get(target.className);
       if (info && lowerer.inHierarchy(info)) {
@@ -2281,7 +2281,8 @@ export function lowerAsExpression(
     // by a type the checker keeps symbolic: the record the function built
     // takes the instance's result type (built-record-results.ts).
     const target =
-      lowerer.mapTypeOf(targetTs0) ?? builtRecordResultType(lowerer, expr, inner, targetTs0);
+      lowerer.mapAssertionTargetType(targetTs0) ??
+      builtRecordResultType(lowerer, expr, inner, targetTs0);
     // A static assertion ERASES in Node, but the claim it makes still
     // answers to the program: a slot this value reaches that no ordinary
     // conversion covers (SC2002/SC2003) converts it CHECKED instead of
@@ -2562,7 +2563,7 @@ export function lowerAsExpression(
   // extraction an unknown value gets wherever the checker admits it.
   if (expr.type.kind === ts.SyntaxKind.NeverKeyword) return inner;
   const targetTs = lowerer.checker.getTypeFromTypeNode(expr.type);
-  const mappedTarget = lowerer.mapTypeOf(targetTs);
+  const mappedTarget = lowerer.mapAssertionTargetType(targetTs);
   // A generic body's `return built as Result<T>` over a dictionary that
   // keeps checked identity: the object nothing else holds converts into the
   // instance's result type (built-record-results.ts), keys and order kept.

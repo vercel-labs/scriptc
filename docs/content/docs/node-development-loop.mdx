@@ -13,6 +13,12 @@ Run and test the program with Node.js while you work on it, and compile it with 
 $ npm install --save-dev scriptc @scriptc/experimental
 ```
 
+- The project marked as an ES module. A project created with `npm init -y` is CommonJS, and the program and test files below use `import` and top-level `await`, which need module mode. Mark the project as a module before running them, or Node.js reports a syntax error:
+
+```console
+$ npm pkg set type=module
+```
+
 ## Run with the load hook
 
 Create the program:

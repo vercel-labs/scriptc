@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/await-import-subtle-alias.ts"
+ ],
+ "diags": []
+}

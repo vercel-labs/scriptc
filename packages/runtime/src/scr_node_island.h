@@ -54,6 +54,23 @@ static inline bool scr_ni_main_thread(void) { return scr_context_is_main(); }
 static inline bool scr_ni_main_thread(void) { return true; }
 #endif
 
+/* The process-wide locks over the island's tables: a mutex on POSIX,
+ * a slim reader/writer lock on Windows, both usable as static
+ * initialization and never destroyed. */
+#if defined(_WIN32)
+#include <windows.h>
+typedef SRWLOCK ScrNiLock;
+#define SCR_NI_LOCK_INITIALIZER SRWLOCK_INIT
+static inline void scr_ni_lock_enter(ScrNiLock *lock) { AcquireSRWLockExclusive(lock); }
+static inline void scr_ni_lock_leave(ScrNiLock *lock) { ReleaseSRWLockExclusive(lock); }
+#elif !defined(__wasi__)
+#include <pthread.h>
+typedef pthread_mutex_t ScrNiLock;
+#define SCR_NI_LOCK_INITIALIZER PTHREAD_MUTEX_INITIALIZER
+static inline void scr_ni_lock_enter(ScrNiLock *lock) { pthread_mutex_lock(lock); }
+static inline void scr_ni_lock_leave(ScrNiLock *lock) { pthread_mutex_unlock(lock); }
+#endif
+
 /* Island operations from other threads. Node runs on the thread that
  * started it (the main thread), so an operation another thread reaches
  * through an island value posts itself to that thread and waits for the

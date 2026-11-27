@@ -525,7 +525,12 @@ static const SpCurve sp_curves[] = {
     {"prime256v1", "P-256", "P-256", MBEDTLS_ECP_DP_SECP256R1},
     {"secp384r1", "P-384", "P-384", MBEDTLS_ECP_DP_SECP384R1},
     {"secp521r1", "P-521", "P-521", MBEDTLS_ECP_DP_SECP521R1},
+    {"secp192k1", NULL, NULL, MBEDTLS_ECP_DP_SECP192K1},
+    {"secp224k1", NULL, NULL, MBEDTLS_ECP_DP_SECP224K1},
     {"secp256k1", NULL, "secp256k1", MBEDTLS_ECP_DP_SECP256K1},
+    {"brainpoolP256r1", NULL, NULL, MBEDTLS_ECP_DP_BP256R1},
+    {"brainpoolP384r1", NULL, NULL, MBEDTLS_ECP_DP_BP384R1},
+    {"brainpoolP512r1", NULL, NULL, MBEDTLS_ECP_DP_BP512R1},
 };
 
 static const SpCurve *sp_curve_by_id(mbedtls_ecp_group_id id) {

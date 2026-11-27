@@ -507,6 +507,7 @@ export function withClassInitFlag(lowerer: Lowerer, info: ClassInfo, stmts: IrSt
   // not before it.
   const decorationsFirst =
     info.classDecorators !== undefined &&
+    info.classDecorators.legacy !== true &&
     !info.classDecorators.poisoned &&
     info.classDecorators.shapes !== undefined;
   // A generic class's instantiations share the declaration; the family is
@@ -602,6 +603,19 @@ function setFlag(flag: CycleInitFlag, loc: SrcLoc): IrStmt {
     value: { kind: "boolLit", value: true, type: BOOL, loc },
     loc,
   };
+}
+
+/** The store of a class's initialization flag, for a statement that must
+ * expose the initialized binding before its trailing decoration calls
+ * (legacy decorators run after the class definition): a decorator body that
+ * reads a cycle module sees the class object, so the flag is already set. */
+export function classInitFlagStore(
+  lowerer: Lowerer,
+  className: string,
+  loc: SrcLoc,
+): IrStmt | null {
+  const flag = lowerer.classInitFlags.get(className);
+  return flag === undefined ? null : setFlag(flag, loc);
 }
 
 /** The declaring statement's IR with each flagged binding's flag set right

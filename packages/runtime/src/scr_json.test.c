@@ -636,6 +636,79 @@ static void checked_storage(void) {
   assert(!scr_exc_pending());
 }
 
+/* An Error's payload edges — the shared layout's cause, an
+ * AggregateError's errors list, a DOMException's cause — hold
+ * checked-dynamic values that can refer back to the error. The collector
+ * must visit them, or a self-referential error is never reclaimed; a
+ * replaced or deleted cause must publish the new slot before the old value
+ * is released, so a release that runs a pass never traces a dangling
+ * edge. Covers the collector path with and without an outside reference. */
+static void error_payload_cycles(void) {
+  scr_error_set_traced();
+  static const char key[] = "object:%Error";
+  for (int external = 0; external < 2; external++) {
+    for (int kind = 0; kind < 3; kind++) {
+#ifdef SCR_RC_AUDIT
+      long before_objects = scr_obj_live_count();
+      long before_dyns = scr_dyn_live_count();
+#endif
+      ScrError *e = kind == 1   ? scr_aggregate_alloc()
+                    : kind == 2 ? scr_domex_alloc()
+                                : scr_error_new(SCR_ERR_ERROR, NULL);
+      assert(e != NULL);
+      ScrDyn *ref = scr_dyn_new_typed_ref_traced(
+          e, &scr_error_retain_v, &scr_error_release_v, key, sizeof key - 1, NULL, NULL);
+      if (kind == 1) {
+        ScrDyn *list = scr_dyn_new_arr();
+        scr_dyn_arr_push(list, ref);
+        scr_aggregate_set_errors(e, list);
+        scr_dyn_release(list);
+      } else {
+        scr_error_set_cause(e, ref);
+        scr_dyn_release(ref);
+      }
+      ScrError *alias = external ? scr_error_retain(e) : NULL;
+      scr_error_release(e); /* the only outside reference goes away */
+      scr_collect_cycles();
+      if (alias != NULL) {
+        /* The outside reference plus the typed reference the cause holds. */
+        assert(alias->rc == 2);
+        scr_error_release(alias);
+        scr_collect_cycles();
+      }
+#ifdef SCR_RC_AUDIT
+      assert(scr_obj_live_count() == before_objects);
+      assert(scr_dyn_live_count() == before_dyns);
+#endif
+    }
+  }
+  /* Replacing and deleting a cause drops the old cycle: the slot is
+   * published first, then the old value released. */
+  for (int replace = 0; replace < 2; replace++) {
+#ifdef SCR_RC_AUDIT
+    long before_objects = scr_obj_live_count();
+    long before_dyns = scr_dyn_live_count();
+#endif
+    ScrError *e = scr_error_new(SCR_ERR_ERROR, NULL);
+    ScrDyn *ref = scr_dyn_new_typed_ref_traced(
+        e, &scr_error_retain_v, &scr_error_release_v, key, sizeof key - 1, NULL, NULL);
+    scr_error_set_cause(e, ref);
+    scr_dyn_release(ref);
+    if (replace) {
+      scr_error_set_cause(e, scr_dyn_undefined());
+    } else {
+      scr_error_delete_cause(e);
+    }
+    scr_collect_cycles();
+    scr_error_release(e);
+    scr_collect_cycles();
+#ifdef SCR_RC_AUDIT
+    assert(scr_obj_live_count() == before_objects);
+    assert(scr_dyn_live_count() == before_dyns);
+#endif
+  }
+}
+
 static void shared_property_keys(void) {
 #ifdef SCR_RC_AUDIT
   /* Layouts hold key references until the thread's state is torn down. */
@@ -1886,6 +1959,7 @@ int main(void) {
   shared_property_keys();
   named_record_assignment();
   checked_leaf_cycles();
+  error_payload_cycles();
   checked_number_storage();
   buffered_leaf_release();
   json_intact_regions();

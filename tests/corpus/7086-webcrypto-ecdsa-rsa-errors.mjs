@@ -1,3 +1,4 @@
+// @normalize-pid
 // WebCrypto ECDSA and RSA errors: Node's TypeErrors for missing algorithm
 // members, and its DOMExceptions for curves, usages, key types, formats,
 // extractability and JWK members, from generateKey, importKey, exportKey,
@@ -50,6 +51,10 @@ await t("import wrong curve", () => crypto.subtle.importKey("spki", spki, { name
 await t("import sign usage public", () => crypto.subtle.importKey("spki", spki, { name: "ECDSA", namedCurve: "P-256" }, true, ["sign"]));
 await t("import garbage", () => crypto.subtle.importKey("spki", new Uint8Array([1, 2, 3]), { name: "ECDSA", namedCurve: "P-256" }, true, ["verify"]));
 await t("pss no salt", () => crypto.subtle.sign({ name: "RSA-PSS" }, pss.privateKey, data));
+await t("ecdsa sign hash md5", () => crypto.subtle.sign({ name: "ECDSA", hash: "MD5" }, ec.privateKey, data));
+await t("ecdsa sign hash unknown", () => crypto.subtle.sign({ name: "ECDSA", hash: "FOO" }, ec.privateKey, data));
+await t("ecdsa sign hash number", () => crypto.subtle.sign({ name: "ECDSA", hash: 5 }, ec.privateKey, data));
+await t("ecdsa sign hash sha3", async () => (await crypto.subtle.sign({ name: "ECDSA", hash: "sha3-256" }, ec.privateKey, data)).byteLength);
 await t("verify bad sig len", () => crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, ec.publicKey, new Uint8Array(10), data));
 await t("verify with private", () => crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, ec.privateKey, new Uint8Array(64), data));
 await t("sign hmac with ec", () => crypto.subtle.sign("HMAC", ec.privateKey, data));

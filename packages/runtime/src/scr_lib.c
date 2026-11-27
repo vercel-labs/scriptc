@@ -10827,7 +10827,7 @@ static size_t scr_sha1_final(const ScrSha1Ctx *source, unsigned char out[32]) {
   return 20;
 }
 
-static size_t scr_sha1_digest(const unsigned char *data, size_t len, unsigned char out[32]) {
+size_t scr_sha1_digest(const unsigned char *data, size_t len, unsigned char out[32]) {
   ScrSha1Ctx ctx;
   scr_sha1_init(&ctx);
   scr_sha1_update(&ctx, data, len);

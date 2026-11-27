@@ -10460,7 +10460,10 @@ ScrDyn *scr_dyn_new_handle(void *h, ScrDynHandleTag tag) {
   d->v.handle.ptr = scr_dyn_handle_ops(tag)->retain(h);
   d->v.handle.tag = tag;
   d->v.handle.traced = tag == SCR_DYNH_CONSOLE_INSTANCE ||
-      tag == SCR_DYNH_WEAK_MAP || tag == SCR_DYNH_WEAK_SET ||
+      tag == SCR_DYNH_WEBSOCKET || tag == SCR_DYNH_EVENT ||
+      tag == SCR_DYNH_CUSTOM_EVENT || tag == SCR_DYNH_MESSAGE_EVENT ||
+      tag == SCR_DYNH_CLOSE_EVENT || tag == SCR_DYNH_WEAK_MAP ||
+      tag == SCR_DYNH_WEAK_SET ||
       tag == SCR_DYNH_WORKER || tag == SCR_DYNH_MESSAGE_PORT || tag == SCR_DYNH_DISPOSABLE_STACK ||
       tag == SCR_DYNH_ASYNC_RESOURCE ||
       /* node:sqlite objects are collector nodes: their traces reach the

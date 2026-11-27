@@ -535,6 +535,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "perf.histoMeanCI": "scr_histo_mean_ci",
   "perf.histoWelch": "scr_histo_welch",
   "perf.histoPercentileCI": "scr_histo_percentile_ci",
+  "websocket.new": "scr_websocket_new",
+  "websocket.is": "scr_websocket_is",
   "process.memoryUsageTake": "scr_process_memory_usage_take",
   "process.memoryUsageField": "scr_process_memory_usage_field",
   "process.rss": "scr_process_rss",

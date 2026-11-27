@@ -34,6 +34,8 @@ export interface NativeLinkFeatures {
   /** fs.Utf8Stream: scr_fs_utf8_stream.c, the buffered file writer. */
   fsUtf8Stream?: boolean;
   fetch: boolean;
+  /** The WebSocket client (the global WebSocket class): scr_websocket.c. */
+  webSocket?: boolean;
   eventTarget?: boolean;
   /** The WebAssembly API (scr_wasm.c). Absent when unused, so programs
    * without it keep their link identity. */
@@ -500,6 +502,10 @@ export const LINK_FEATURE_REQUIREMENTS: readonly LinkFeatureRequirement[] = [
   { feature: "eventTarget", requires: ["emitter", "symbol"] },
   { feature: "abortSignal", requires: ["emitter", "symbol"] },
   { feature: "fetch", requires: ["emitter", "symbol"] },
+  // scr_websocket.c dials through scr_net.c and sc_http.c's client, wraps
+  // wss connections with scr_tls.c, and dispatches its events through
+  // scr_event_target.c (with the emitter and symbol units that unit needs).
+  { feature: "webSocket", requires: ["net", "http", "tls", "emitter", "symbol", "dynAsync"] },
   // A Blob (built, or produced by a body read) is a native handle of the
   // blob unit, which the checked-dynamic tier links; the fetch unit's
   // SCR_WEB_BODIES build reads its bytes through that unit.

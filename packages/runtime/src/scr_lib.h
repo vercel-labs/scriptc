@@ -92,6 +92,9 @@ ScrStr *scr_process_platform(void); /* +1 interned ("darwin", "linux", ...) */
 /* Whether OpenSSL, as Node 24 links it, names a digest `name` (its names,
  * aliases and object identifiers, case-insensitively). */
 bool scr_digest_known(const char *name, size_t len);
+/* SHA-1 over `data` (the RFC 6455 Sec-WebSocket-Accept hash): writes the
+ * digest into `out` and answers its length, 20. */
+size_t scr_sha1_digest(const unsigned char *data, size_t len, unsigned char out[32]);
 ScrStr *scr_process_cwd(void);      /* +1 fresh (getcwd) */
 
 /* Adds (or removes) a 'resize' listener on the process output stream of

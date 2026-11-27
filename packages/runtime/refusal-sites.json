@@ -2136,6 +2136,18 @@
   "code": "SC2020"
  },
  {
+  "file": "scr_websocket.c",
+  "function": "scr_ws_invoke",
+  "message": "Sending a Blob has no lowering yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_websocket.c",
+  "function": "scr_ws_invoke",
+  "message": "This WebSocket method is not implemented",
+  "code": "SC2020"
+ },
+ {
   "file": "scr_webstreams.c",
   "function": "ws_readable_from",
   "message": "ReadableStream.from of a function that is not iterable is not supported yet",

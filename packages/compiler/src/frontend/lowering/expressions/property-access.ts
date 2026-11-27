@@ -249,6 +249,7 @@ import { lowerProtocolPropertyRead } from "../class-protocol-dispatch.js";
 import { lowerReadlineProperty } from "../builtins/readline.js";
 import { lowerAsyncLocalStorageProperty } from "../builtins/async-context.js";
 import { lowerDOMExceptionStaticProperty, lowerEventStaticProperty } from "../builtins/numbers.js";
+import { lowerWebSocketStaticProperty } from "../builtins/websocket.js";
 import { lowerStreamProperty, lowerStreamStateProperty, streamSidesOf } from "../lower-stream.js";
 import { lowerValueStreamProperty } from "../builtins/hash-stream.js";
 import { lowerEventObjectProperty } from "../lower-event-target.js";
@@ -1631,6 +1632,7 @@ export function lowerPropertyAccessExpr(
     lowerer.lowerNumberStaticProperty(expr) ??
     lowerEventStaticProperty(lowerer, expr) ??
     lowerDOMExceptionStaticProperty(lowerer, expr) ??
+    lowerWebSocketStaticProperty(lowerer, expr) ??
     lowerer.lowerMathProperty(expr) ??
     lowerer.lowerIntrinsicProperty(expr) ??
     // The _readableState/_writableState scalar READS (the suite's

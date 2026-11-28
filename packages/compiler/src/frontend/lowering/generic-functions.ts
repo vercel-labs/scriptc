@@ -439,6 +439,11 @@ export function genericCallInstance(
   lowerer: Lowerer,
   expr: ts.CallExpression,
   info: GenericFnInfo,
+  /** The call's resolved signature belongs to an INHERITED method the
+   * declaration overrides (`map<U>` over Array.map): its parameter list is
+   * the override's prefix, and the substituted types at those positions
+   * are the override's too. Base-typed Array dispatch passes this. */
+  allowShorterDeclaration = false,
 ): GenericInstance {
   if (info.refused !== undefined) reportRefusedMemberUse(lowerer, info.refused, expr);
   const rsig = lowerer.checker.getResolvedSignature(expr);
@@ -465,7 +470,12 @@ export function genericCallInstance(
       );
     }
   }
-  if (!rsig || rsig.getParameters().length !== info.decl.parameters.nodes.length) {
+  const declaredParams = info.decl.parameters.nodes.length;
+  if (
+    !rsig ||
+    (rsig.getParameters().length !== declaredParams &&
+      !(allowShorterDeclaration && declaredParams <= rsig.getParameters().length))
+  ) {
     lowerer.unsupported("SC1090", expr, "this call form");
   }
   const chosen = chosenBindingsInstance(lowerer, expr, info, rsig);

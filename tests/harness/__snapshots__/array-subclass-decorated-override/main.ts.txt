@@ -1,0 +1,6 @@
+array-subclass-decorated-override/main.ts:22:13 - error SC1090: calling 'push' on an array where a class that extends Array has a decorated 'push' (Node calls the prototype's wrapped method; a compiled direct call would bypass the decorator) is not supported yet
+
+  21 | const base: number[] = new Guarded();
+  22 | console.log(base.push(1));
+     |             ^~~~~~~~~
+  23 | 

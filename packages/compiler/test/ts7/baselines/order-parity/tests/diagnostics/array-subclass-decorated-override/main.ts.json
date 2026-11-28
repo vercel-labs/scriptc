@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/array-subclass-decorated-override/main.ts"
+ ],
+ "diags": []
+}

@@ -11044,6 +11044,9 @@ export function lowerClassGenericMethodCall(
   recvInfo: ClassInfo,
   found: { declarer: ClassInfo; info: GenericFnInfo },
   recvIr?: IrExpr,
+  /** The resolved signature covers an inherited parameter list the override
+   * shortens (see genericCallInstance). */
+  allowShorterDeclaration = false,
 ): IrExpr {
   const name = access.name.text;
   let { declarer, info } = found;
@@ -11065,7 +11068,7 @@ export function lowerClassGenericMethodCall(
   // resolution, the exactness rule above — is the generic story.
   const instance = info.implicitParams
     ? implicitCallInstance(lowerer, call, info)
-    : genericCallInstance(lowerer, call, info);
+    : genericCallInstance(lowerer, call, info, allowShorterDeclaration);
   const receiver = recvIr ?? lowerer.lowerExpr(access.expression);
   const loc = locOf(call);
   // The declarer sits at/above the receiver's static class on the plain
@@ -11082,14 +11085,40 @@ export function lowerClassGenericMethodCall(
           loc,
         }
       : upcastTo(lowerer, receiver, declarer.def.name);
-  const args = lowerer.completeArgs(call.arguments.nodes, instance.params, loc, call);
-  const result: IrExpr = {
+  // A base-typed Array call may supply the inherited parameters the override
+  // shortens (map's thisArg). The override ignores them, but Node evaluates
+  // them, so they are lowered in source order and only their effects remain.
+  const surplus = allowShorterDeclaration && call.arguments.nodes.length > instance.params.length;
+  const held: IrStmt[] = [];
+  const args: IrExpr[] =
+    surplus &&
+    instance.params.every((shape) => shape.mode === "required") &&
+    !call.arguments.nodes.some(ts.isSpreadElement)
+      ? (() => {
+          const values = call.arguments.nodes.map((node) => {
+            const value = lowerer.lowerExpr(node);
+            const local = lowerer.declareHiddenLocal("%genericArg", value.type);
+            held.push({ kind: "varDecl", localId: local.id, init: value, loc });
+            return { node, local, value };
+          });
+          return instance.params.map((shape, i) => {
+            const entry = values[i]!;
+            return lowerer.coerceInto(
+              entry.node,
+              varRef(entry.local.id, entry.value.type, loc),
+              shape.type,
+            );
+          });
+        })()
+      : lowerer.completeArgs(call.arguments.nodes, instance.params, loc, call);
+  let result: IrExpr = {
     kind: "call",
     callee: instance.name,
     args: [thisArg, ...args],
     type: instance.returnType,
     loc,
   };
+  if (held.length > 0) result = { kind: "seqExpr", stmts: held, result, type: result.type, loc };
   // A fluent JavaScript method (every return ends in `this`, jose's claim
   // setters) answers the receiver: the instance returns the declarer's
   // class, a used result's checker type is the receiver's subclass.
@@ -12965,6 +12994,15 @@ export function lowerSuperMethodCall(
       access,
       `'super.${memberName}' (Date.prototype does not declare it)`,
     );
+  }
+  // `super.splice(...)` in a class declared `extends Array`: the
+  // Array.prototype method over this instance as an array. `super`
+  // dispatches above the class, so its own overrides never answer.
+  if (cls?.extendsArray && ts.isPropertyAccessExpression(access)) {
+    const thisL = lowerer.resolveThis();
+    if (!thisL) lowerer.unsupported("SC1080", access);
+    const arraySuper = lowerer.lowerArraySuperMethodCall(call, access, thisL);
+    if (arraySuper !== null) return arraySuper;
   }
   if (!cls?.base) {
     // tsc rejects super outside derived-class bodies first; defensive.

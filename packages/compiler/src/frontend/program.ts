@@ -4256,6 +4256,105 @@ function undeclaredJsName7(
  * it throws Node's own catchable `ReferenceError` at the access
  * (lowering/expressions/identifiers.ts). TypeScript input never reaches
  * either path — an undeclared name is a compile error there. */
+/** The read of a void-typed call's result in a value position, refused by
+ * name. TypeScript's `void` says the result is not meant to be used, not
+ * that it is undefined: a callee whose body returns a value answers it in
+ * Node, and the compiled call carries no value, so the read would see a
+ * wrong one silently (a denylist predicate typed `(req) => void` would let
+ * every request through). Truthiness positions are TS1345's rule (admitted
+ * or refused there), and statement positions, `void e`, a discarded comma
+ * operand and a void-typed concise arrow body drop the value in Node too. */
+function voidCallResultReadDiags7(
+  program: ts.Program,
+  files: readonly ts.SourceFile[],
+): ScrDiagnostic[] {
+  const checker = program.getTypeChecker();
+  const diags: ScrDiagnostic[] = [];
+  const isVoid = (node: ts.Node): boolean =>
+    (checker.getTypeAtLocation(node).flags & ts.TypeFlags.Void) !== 0;
+  const truthinessPosition = (node: ts.Node): boolean => {
+    const parent = node.parent;
+    if (parent === undefined) return false;
+    if (
+      ts.isIfStatement(parent) ||
+      ts.isWhileStatement(parent) ||
+      ts.isDoStatement(parent) ||
+      ts.isForStatement(parent)
+    )
+      return parent.expression === node;
+    if (ts.isConditionalExpression(parent)) return parent.condition === node;
+    if (ts.isPrefixUnaryExpression(parent))
+      return parent.operator === ts.SyntaxKind.ExclamationToken;
+    if (ts.isBinaryExpression(parent)) {
+      const kind = parent.operatorToken.kind;
+      return kind === ts.SyntaxKind.AmpersandAmpersandToken || kind === ts.SyntaxKind.BarBarToken;
+    }
+    return false;
+  };
+  const discarded = (node: ts.Node): boolean => {
+    const parent = node.parent;
+    if (parent === undefined) return false;
+    if (ts.isExpressionStatement(parent) || ts.isVoidExpression(parent)) return true;
+    // A binding's initializer is the held-call shape the truthiness rule
+    // already judges (voidTruthinessHeldCall): the binding stores the value
+    // the lowering keeps checked-dynamic.
+    if (ts.isVariableDeclaration(parent) && parent.initializer === node) return true;
+    if (
+      ts.isBinaryExpression(parent) &&
+      parent.operatorToken.kind === ts.SyntaxKind.CommaToken &&
+      parent.left === node
+    )
+      return true;
+    if (truthinessPosition(node)) return true;
+    if ((ts.isArrowFunction(parent) || ts.isFunctionExpression(parent)) && parent.body === node) {
+      const signature = checker.getSignatureFromDeclaration(parent);
+      const type =
+        signature === undefined ? undefined : checker.getReturnTypeOfSignature(signature);
+      return type !== undefined && (type.flags & ts.TypeFlags.Void) !== 0;
+    }
+    return false;
+  };
+  for (const sf of files) {
+    if (sf.isDeclarationFile) continue;
+    const stack: ts.Node[] = [sf];
+    while (stack.length > 0) {
+      const node = stack.pop()!;
+      if (
+        ts.isCallExpression(node) &&
+        node.questionDotToken === undefined &&
+        isVoid(node) &&
+        // A member callee is the existing checked-dynamic member machinery's
+        // shape (the lowering reads the member's value); this rule covers
+        // the identifier callee whose function value a void ABI dropped.
+        !ts.isPropertyAccessExpression(node.expression) &&
+        !ts.isElementAccessExpression(node.expression) &&
+        // `super(...)` is not a value-producing call; its own lowering
+        // judges the construct.
+        node.expression.kind !== ts.SyntaxKind.SuperKeyword
+      ) {
+        // An awaited result is read where the await is: walk out of it, then
+        // judge that node's position.
+        let consumed: ts.Node = node;
+        while (consumed.parent !== undefined && ts.isAwaitExpression(consumed.parent))
+          consumed = consumed.parent;
+        if (!discarded(consumed))
+          diags.push(
+            unsupportedDiag(
+              "SC1090",
+              { file: sf.fileName, start: node.getStart(sf), end: node.end },
+              "the result of a void-typed call is read as a value (TypeScript types the call void; a callee that returns a value still answers it in Node, and a void-typed call carries no value here — return the value from the callee)",
+            ),
+          );
+      }
+      ts.forEachChild(node, (child) => {
+        stack.push(child);
+        return undefined;
+      });
+    }
+  }
+  return diags;
+}
+
 function jsUndeclaredWriteDiags(
   program: ts.Program,
   files: readonly ts.SourceFile[],
@@ -8571,6 +8670,9 @@ function preflightDiagnostics7(
   // §7.7 D-4): a JavaScript source the spec makes a SyntaxError fails here,
   // before any lowering, exactly where a tsc parse error fails.
   diags.push(...earlyErrorDiagnostics7(order, (sf) => isNodeEsmFile7(sf, program)));
+  // A void-typed call's result read as a value: Node answers the callee's
+  // value where the call carries none (the denylist-predicate class).
+  diags.push(...voidCallResultReadDiags7(program, order));
   return { diags, startupCrash: startupCrash ?? linkCrash };
 }
 

@@ -1,0 +1,17 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/void-call-result-in-value-position.mjs"
+ ],
+ "diags": [
+  {
+   "code": "SC1090",
+   "message": "the result of a void-typed call is read as a value (TypeScript types the call void; a callee that returns a value still answers it in Node, and a void-typed call carries no value here — return the value from the callee) is not supported yet",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/void-call-result-in-value-position.mjs",
+    "start": 457,
+    "end": 471
+   },
+   "milestone": "later"
+  }
+ ]
+}

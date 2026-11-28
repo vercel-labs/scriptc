@@ -1,0 +1,6 @@
+void-call-result-in-value-position.mjs:13:34 - error SC1090: the result of a void-typed call is read as a value (TypeScript types the call void; a callee that returns a value still answers it in Node, and a void-typed call carries no value here — return the value from the callee) is not supported yet
+
+  12 | function check(req) {
+  13 |   return req.path === "/admin" ? isBlocked(req) : false;
+     |                                  ^~~~~~~~~~~~~~
+  14 | }

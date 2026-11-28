@@ -1187,8 +1187,21 @@ export function voidTruthinessAwaitedCall(node: ts.Node, program: ts.Program): b
     ts.isCallExpression(inner) &&
     !undefinedAtRunTime(awaited, program) &&
     voidTruthinessNeedsRuntimeValue(inner, program) &&
-    memberKeepsValue(program, inner)
+    memberKeepsValue(program, inner) &&
+    // A member that answers a promise fulfills with the value its async body
+    // returns, and a void signature drops that fulfillment where the
+    // function is defined. The dynamic awaited call reads undefined there,
+    // so the test keeps the named refusal instead of admitting it.
+    !promiseReturning(program.getTypeChecker(), inner)
   );
+}
+
+/** Whether the call answers a promise (or another thenable): its awaited
+ * type differs from its own type. */
+function promiseReturning(checker: ts.TypeChecker, call: ts.CallExpression): boolean {
+  const type = checker.getTypeAtLocation(call);
+  const awaited = checker.getAwaitedType(type);
+  return awaited !== undefined && awaited !== type;
 }
 
 /** Whether the member an awaited call reads keeps the value its callee

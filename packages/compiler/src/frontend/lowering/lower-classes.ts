@@ -3061,6 +3061,22 @@ export function collectClassShapeInner(
         lowerer.pushDiag(nativeSubclassOfIslandDiag(locOf(t)));
         throw new PoisonError();
       }
+      // `class X extends ns.Base` (a class named through a module
+      // namespace, the form compiled CommonJS packages write): the property
+      // resolves to the class itself, so the base is that class — the same
+      // chain an identifier base takes.
+      if (
+        t &&
+        !t.typeArguments?.nodes &&
+        (ts.isPropertyAccessExpression(t.expression) || ts.isElementAccessExpression(t.expression))
+      ) {
+        const symbol = lowerer.checker.getSymbolAtLocation(t.expression);
+        const info = symbol === undefined ? undefined : lowerer.classBySymbol.get(symbol);
+        if (info !== undefined && info.decl !== null) {
+          base = info;
+          continue;
+        }
+      }
       if (!t || !ts.isIdentifier(t.expression)) {
         if (t && adoptCallableBase(t.expression)) continue;
         lowerer.unsupported("SC1090", clause, "extending computed expressions");

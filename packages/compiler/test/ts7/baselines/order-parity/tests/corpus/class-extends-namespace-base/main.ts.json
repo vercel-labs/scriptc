@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/class-extends-namespace-base/dep.ts",
+  "<repo>/tests/corpus/class-extends-namespace-base/main.ts"
+ ],
+ "diags": []
+}

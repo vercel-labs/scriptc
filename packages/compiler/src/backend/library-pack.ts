@@ -33,6 +33,9 @@ export function libraryArchiveFeatures(options: LibArchiveOptions): NativeLinkFe
     dynInvoke: options.dynInvoke ?? false,
     ...(options.dynBuffer === true ? { dynBuffer: true } : {}),
     ...(options.dynTier === true ? { dynTier: true } : {}),
+    // A computed global-object read names the host-absent unit and the
+    // SCR_GLOBAL_HOST_ABSENT build of the builtin lookup unit.
+    ...(options.hostAbsentGlobals === true ? { hostAbsentGlobals: true } : {}),
     ...(options.recordSourceGet === true ? { recordSourceGet: true } : {}),
     ...(options.arrJoinStr === true ? { arrJoinStr: true } : {}),
     // A program that resizes, grows or detaches a buffer names the views

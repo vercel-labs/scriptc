@@ -835,6 +835,32 @@ export function emitModuleParts(emitter: LlEmitter): TextPart[] {
   // Programs that read Symbol.toPrimitive install ToNumber's
   // Symbol.toPrimitive step; the others do not link it.
   const usesToPrimitiveNumber = runtimeFeatures.toPrimitiveNumber;
+  // A program that links the dynamic-invoke unit installs the handle
+  // `.constructor` hooks from main(). They used to ride an .init_array
+  // constructor, which kept Date, Map, Set and Weak* linked in every
+  // dynamic program; each constructor family is installed separately, and
+  // only when the program can reach it. The predicate matches the pack's
+  // selection of scr_dyn_invoke.c: any("dynInvoke", "nativeFetch",
+  // "nodeIsland") at runtime-pack-matrix.mjs:114, where the link feature
+  // dynInvoke is the fact OR fsWebStream OR fsOpenAsBlob
+  // (executable-features.ts). An island can hand any of these values across
+  // the bridge, so it enables every family.
+  const dynConstructorAny =
+    runtimeFeatures.dynConstructorAny === true || runtimeFeatures.nodeIsland === true;
+  const usesDynConstructors =
+    runtimeFeatures.dynInvoke === true ||
+    runtimeFeatures.fsWebStream === true ||
+    runtimeFeatures.fsOpenAsBlob === true ||
+    runtimeFeatures.fetch === true ||
+    runtimeFeatures.nodeIsland === true;
+  const usesDynCtorDate =
+    usesDynConstructors && (runtimeFeatures.date === true || dynConstructorAny);
+  const usesDynCtorCollections =
+    usesDynConstructors &&
+    (runtimeFeatures.mapSet === true ||
+      runtimeFeatures.dynCollections === true ||
+      runtimeFeatures.weakCollections === true ||
+      dynConstructorAny);
   const snapshotsTlsCa = runtimeFeatures.tls || runtimeFeatures.tlsCa;
   // The process verdict has the same precedence as the C reference
   // emitter: node:test owns the final status when present; otherwise an
@@ -915,6 +941,9 @@ export function emitModuleParts(emitter: LlEmitter): TextPart[] {
   if (usesDynBufferMembers) emitter.declare(`declare void @scr_bytes_buffer_members_install()`);
   if (usesSymbolFor) emitter.declare(`declare void @scr_sym_for_install()`);
   if (usesToPrimitiveNumber) emitter.declare(`declare void @scr_dyn_to_primitive_number_install()`);
+  if (usesDynConstructors) emitter.declare(`declare void @scr_dyn_global_constructor_install()`);
+  if (usesDynCtorDate) emitter.declare(`declare void @scr_dyn_ctor_date_install()`);
+  if (usesDynCtorCollections) emitter.declare(`declare void @scr_dyn_ctor_collections_install()`);
 
   if (usesNodeTest) {
     emitter.declare(`declare i32 @scr_test_exit_code()`);
@@ -1735,6 +1764,9 @@ export function emitModuleParts(emitter: LlEmitter): TextPart[] {
     ...(usesDynBufferMembers ? [`  call void @scr_bytes_buffer_members_install()`] : []),
     ...(usesSymbolFor ? [`  call void @scr_sym_for_install()`] : []),
     ...(usesToPrimitiveNumber ? [`  call void @scr_dyn_to_primitive_number_install()`] : []),
+    ...(usesDynConstructors ? [`  call void @scr_dyn_global_constructor_install()`] : []),
+    ...(usesDynCtorDate ? [`  call void @scr_dyn_ctor_date_install()`] : []),
+    ...(usesDynCtorCollections ? [`  call void @scr_dyn_ctor_collections_install()`] : []),
     ...(usesNet ? [`  call void @scr_net_install()`, `  call void @scr_net_dyn_install()`] : []),
     ...(usesWebSocket && !usesNet ? [`  call void @scr_net_install()`] : []),
     ...(usesNetLookup ? [`  call void @scr_net_lookup_install()`] : []),
@@ -2651,6 +2683,31 @@ export function emitLibDefs(
   stamps: string[],
 ): string[] {
   const lib = emitter.mod.lib!;
+  // The executable entry installs the dynamic constructor hooks before the
+  // program runs (the call block in the @main emission); a library has no
+  // @main, so the library initializer carries the same calls. A library
+  // entry that constructs through a stored global constructor
+  // (dyn.globalConstructor) needs them, or the NULL hooks answer the
+  // unsupported-constructor TypeError.
+  const libFeatures = emitter.runtimeFeatures;
+  const libDynConstructorAny =
+    libFeatures.dynConstructorAny === true || libFeatures.nodeIsland === true;
+  // The same reachability the executable entry uses: scr_dyn_invoke.c is in
+  // the link exactly when one of these facts selects it.
+  const libUsesDynConstructors =
+    libFeatures.dynInvoke === true ||
+    libFeatures.fsWebStream === true ||
+    libFeatures.fsOpenAsBlob === true ||
+    libFeatures.fetch === true ||
+    libFeatures.nodeIsland === true;
+  const libUsesDynCtorDate =
+    libUsesDynConstructors && (libFeatures.date === true || libDynConstructorAny);
+  const libUsesDynCtorCollections =
+    libUsesDynConstructors &&
+    (libFeatures.mapSet === true ||
+      libFeatures.dynCollections === true ||
+      libFeatures.weakCollections === true ||
+      libDynConstructorAny);
   const autoReset = lib.resultResetSymbol === null;
   const out: string[] = [``, `; ── library-mode entries (profile: ${lib.profileName}) ──`, ``];
   // Every entry's prologue records its external symbol in the funnel's
@@ -2735,6 +2792,9 @@ export function emitLibDefs(
     ...zeroStores,
     `  call void @scr_library_reset()`,
     ...stamps,
+    ...(libUsesDynConstructors ? [`  call void @scr_dyn_global_constructor_install()`] : []),
+    ...(libUsesDynCtorDate ? [`  call void @scr_dyn_ctor_date_install()`] : []),
+    ...(libUsesDynCtorCollections ? [`  call void @scr_dyn_ctor_collections_install()`] : []),
     `  call void @${mangleFunction(emitter.mod.entry)}()`,
     `  call void @scr_library_check_exc()`,
     `  ret void`,

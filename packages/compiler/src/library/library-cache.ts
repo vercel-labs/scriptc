@@ -69,6 +69,9 @@ export interface EarlyLibraryNativeFeatures {
   /** Buffer.prototype methods on checked-dynamic values (scr_bytes_dyn.c). */
   dynBuffer?: boolean;
   dynTier?: boolean;
+  /** A computed read of the global object (scr_global_host_absent.c and
+   * the SCR_GLOBAL_HOST_ABSENT build of scr_node_builtin.c). */
+  hostAbsentGlobals?: boolean;
   regex: boolean;
   assert: boolean;
   inspect: boolean;

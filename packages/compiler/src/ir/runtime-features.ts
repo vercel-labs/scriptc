@@ -1850,6 +1850,32 @@ const RUNTIME_FEATURE_RULES = {
    * scr_async_hooks_install is emitted — so timers, immediates and ticks
    * carry ids and enabled hooks dispatch. */
   asyncHooks: rule({ prefixes: ["ah."] }),
+  /** The Date constructor reached as a value (`dyn.globalConstructor("Date")`),
+   * a `date` IR type, or a `date.*` call: main() installs the dyn-invoke
+   * unit's Date constructor hook, so `new` through a stored global
+   * constructor builds one. */
+  date: rule({
+    prefixes: ["date."],
+    types: ["date"],
+    libCall: (node) => readsGlobalConstructor(node, "Date"),
+  }),
+  /** Map and Set the same way (their IR types, and the global constructors
+   * read as values). */
+  mapSet: rule({
+    types: ["map", "set"],
+    libCall: (node) => readsGlobalConstructor(node, "Map", "Set"),
+  }),
+  /** The weak collections: their values are checked-dynamic, so the
+   * libCalls that name one are the fact. */
+  weakCollections: rule({
+    prefixes: ["weakMap.", "weakSet.", "weakRef."],
+    libCall: (node) => readsGlobalConstructor(node, "WeakMap", "WeakSet", "WeakRef"),
+  }),
+  /** A `dyn.globalConstructor` whose name is not a literal can name any
+   * constructor, so every family's install call is emitted. */
+  dynConstructorAny: rule({
+    libCall: (node) => node.fn === "dyn.globalConstructor" && node.args[0]?.kind !== "strLit",
+  }),
   /** scr_wasm.c converts i64 values through BigInt, and BigIntStats reads
    * produce bigint values. */
   bigint: rule({
@@ -3087,6 +3113,10 @@ function noRuntimeFeatures(): RuntimeFeatures {
     hostAbsentGlobals: false,
     deferredFence: false,
     functionOwnWrite: false,
+    date: false,
+    mapSet: false,
+    weakCollections: false,
+    dynConstructorAny: false,
     dynInvoke: false,
     arrayLikeDispatch: false,
     builtinMethodValue: false,

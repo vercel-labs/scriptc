@@ -1,0 +1,21 @@
+{
+  "profile_format": 1,
+  "name": "conformance-dyn-constructors",
+  "entry": "lib.ts",
+  "emission": "llvm",
+  "abi": {
+    "prefix": "kd_",
+    "init_symbol": "kd_init",
+    "sink_register_symbol": "kd_set_panic_sink",
+    "collect_symbol": null,
+    "result_reset_symbol": null
+  },
+  "exports": [
+    {
+      "export": "domexCtorName",
+      "symbol": "kd_domex_ctor_name",
+      "params": [],
+      "returns": "string"
+    }
+  ]
+}

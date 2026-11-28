@@ -2683,6 +2683,7 @@ function libraryNativeFeatures(mod: IrModule, backend: "llvm"): EarlyLibraryNati
     ...(features.arrJoinStr ? { arrJoinStr: true } : {}),
     ...(features.dynBuffer ? { dynBuffer: true } : {}),
     ...(features.dynTier ? { dynTier: true } : {}),
+    ...(features.hostAbsentGlobals ? { hostAbsentGlobals: true } : {}),
     mutableBuffers: features.mutableBuffers,
     fnMemberProps: features.fnMemberProps,
     ...(mod.lib?.identity !== undefined ? { buildId: mod.lib.identity.buildId } : {}),
@@ -2784,6 +2785,7 @@ async function compileLibraryNative(
     ...(features.arrJoinStr === true ? { arrJoinStr: true } : {}),
     ...(features.dynBuffer === true ? { dynBuffer: true } : {}),
     ...(features.dynTier === true ? { dynTier: true } : {}),
+    ...(features.hostAbsentGlobals === true ? { hostAbsentGlobals: true } : {}),
     ...(features.mutableBuffers === true ? { mutableBuffers: true } : {}),
     ...(features.fnMemberProps === true ? { fnMemberProps: true } : {}),
   };

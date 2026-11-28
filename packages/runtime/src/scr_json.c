@@ -27463,6 +27463,41 @@ ScrDyn *scr_dyn_native_map_new(const ScrDyn *seed) {
   return NULL;
 }
 
+/* `new Map(...)` / `new Set(...)` / `new WeakMap(...)` / `new WeakSet(...)` /
+ * `new WeakRef(...)` through a stored global constructor: installed from
+ * main() only for programs whose features reach one of these families. */
+static const ScrDyn *dyn_ctor_first(const ScrDyn *args, size_t argc) {
+  return argc ? args->v.arr.items[0] : scr_dyn_undefined();
+}
+
+static ScrDyn *dyn_ctor_map(const ScrDyn *args, size_t argc) {
+  return scr_dyn_native_map_new(dyn_ctor_first(args, argc));
+}
+
+static ScrDyn *dyn_ctor_set(const ScrDyn *args, size_t argc) {
+  return scr_dyn_native_set_new(dyn_ctor_first(args, argc));
+}
+
+static ScrDyn *dyn_ctor_weak_map(const ScrDyn *args, size_t argc) {
+  return scr_weak_map_new((ScrDyn *)dyn_ctor_first(args, argc));
+}
+
+static ScrDyn *dyn_ctor_weak_set(const ScrDyn *args, size_t argc) {
+  return scr_weak_set_new((ScrDyn *)dyn_ctor_first(args, argc));
+}
+
+static ScrDyn *dyn_ctor_weak_ref(const ScrDyn *args, size_t argc) {
+  return scr_weak_ref_new((ScrDyn *)dyn_ctor_first(args, argc));
+}
+
+void scr_dyn_ctor_collections_vtable(ScrDynGlobalCtorFn *out) {
+  out[0] = dyn_ctor_map;
+  out[1] = dyn_ctor_set;
+  out[2] = dyn_ctor_weak_map;
+  out[3] = dyn_ctor_weak_set;
+  out[4] = dyn_ctor_weak_ref;
+}
+
 bool scr_dyn_native_map_is(const ScrDyn *value) {
   return value && value->kind == SCR_DYN_HANDLE && value->v.handle.tag == SCR_DYNH_MAP;
 }

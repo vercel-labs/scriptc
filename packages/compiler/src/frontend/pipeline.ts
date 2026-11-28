@@ -1346,6 +1346,7 @@ function loadFrontend(
           admittedOpinions: l.admittedOpinions,
           inlineRequireCycleCalls: l.inlineRequireCycleCalls,
           moduleEdges: l.moduleEdges,
+          unitOriginalTexts: l.elidedSources,
           dynamicImportRejections: l.dynamicImportRejections,
           projectCheckJs: l.typeWorld?.projectCheckJs ?? false,
           dependencyJs: l.dependencyJs,

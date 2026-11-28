@@ -105,6 +105,10 @@ import {
   type NativeArtifactDependency,
 } from "./backend/native-toolchain.js";
 import { buildCacheRoot, prepareBuildCacheRoot, pruneBuildCache } from "./backend/build-cache.js";
+import { frontendEnvironment } from "./frontend/environment.js";
+import { observeUnits } from "./units/observe.js";
+import { ffiProfileDigest } from "./units/key.js";
+import { unitsModeRefusal, unitsModeValue } from "./units/mode.js";
 import {
   CcCompileError,
   compileExternalC,
@@ -574,6 +578,26 @@ function clearCompileSessionCaches(): void {
   clearFenceEvalCaches();
 }
 
+/** Whether this build sets SCRIPTC_UNITS at all (a refused value still takes
+ * the full path, so its refusal is the one diagnostic). */
+function unitsObserving(): boolean {
+  const raw = unitsModeValue();
+  return raw !== undefined && raw !== "";
+}
+
+/** SCRIPTC_UNITS' gate: separate compilation is a development-build feature,
+ * and only M0's observe mode exists. A refused build reports one diagnostic
+ * before any load, so it costs nothing. */
+function unitsOptionRefusal(entryPath: string, opts: CompileRequestOptions): CompileFailure | null {
+  const refusal = unitsModeRefusal(opts.optimization);
+  if (refusal === null) return null;
+  return {
+    ok: false,
+    diagnostics: [nativeCodegenDiag("SC3002", refusal.message, entryPath, refusal.hint)],
+    sourceTexts: new Map(),
+  };
+}
+
 export function compile(
   entryPath: string,
   opts: CompileSourceOptions,
@@ -587,6 +611,8 @@ export async function compile(
   entryPath: string,
   opts: CompileRequestOptions,
 ): Promise<CompileRequestResult> {
+  const unitsRefusal = unitsOptionRefusal(entryPath, opts);
+  if (unitsRefusal !== null) return unitsRefusal;
   clearCompileSessionCaches();
   // `shapeOverlay` reaches the frontend (and its child process) through
   // the environment the overlay reads.
@@ -1223,6 +1249,43 @@ async function nodeUnitStore(
   return directoryUnitStore(directory, key);
 }
 
+/** SCRIPTC_UNITS=observe: report and store the unit graph, keys and
+ * summaries of a build that already lowered. Report-only: a failure here
+ * never fails the build. */
+async function finishObservedUnits(
+  observation: NonNullable<PreparedExecutableModule["unitObservation"]>,
+  opts: CompileRequestOptions,
+  ffi: FfiProfile | null,
+  buildPlatform: string,
+): Promise<void> {
+  const root = await prepareBuildCacheRoot(buildCacheRoot());
+  const storeRoot = root === null ? null : join(root, "units-v2");
+  let compilerIdentity: string | null = null;
+  if (storeRoot !== null) {
+    const implementation = await coverageCompilerIdentity(storeRoot);
+    compilerIdentity = implementation?.digest ?? null;
+  }
+  const protectedPaths = new Set<string>();
+  try {
+    observeUnits(
+      observation,
+      {
+        compilerIdentity,
+        target: nativeCodegenTarget()?.llvmTriple ?? buildPlatform,
+        optimization: opts.optimization ?? "release",
+        lowering: loweringOptions(opts),
+        ffiDigest: ffi === null ? null : ffiProfileDigest(ffi),
+        environment: frontendEnvironment().map(([name, value]) => [name, value ?? ""] as const),
+        storeRoot,
+      },
+      protectedPaths,
+    );
+  } catch {
+    /* the observation is a report, not a build step */
+  }
+  await pruneBuildCache(buildCacheRoot(), protectedPaths);
+}
+
 /** The paths an executable build writes, which the frontend's probes do not
  * observe (as the executable cache's exclusions name them). */
 function loweredBuildOutputs(entryPath: string, opts: CompileRequestOptions): string[] {
@@ -1319,6 +1382,8 @@ async function prepareExecutableInput(
     frontend,
   );
   if (!prepared.ok) return prepared;
+  if (prepared.unitObservation !== undefined)
+    await finishObservedUnits(prepared.unitObservation, opts, ffi, buildPlatform);
   const { mod, sourceTexts } = prepared;
   // The island steps (executable/islands.ts): the libnode record, the
   // deferral probe and the module tree.
@@ -2293,8 +2358,13 @@ async function compileTracked(
   }
   // A cache hit emits no module, so it would write no representation report,
   // and it runs no frontend, so it would write or read no lowered program.
+  // SCRIPTC_UNITS=observe reports from a lowering a hit would skip, so it
+  // never reads the cache (it still writes its own unit store entries).
   const cachedHit =
-    earlyCacheOptions === null || representationReportPath() !== null || usesLoweredProgram(opts)
+    earlyCacheOptions === null ||
+    representationReportPath() !== null ||
+    usesLoweredProgram(opts) ||
+    unitsObserving()
       ? null
       : await readEarlyExecutableCache(cacheRoot, earlyCacheOptions);
   // A --libnode=beside build that calls into Node places its island modules

@@ -86,6 +86,9 @@ async function tryFastPath(): Promise<number | null> {
   }
   const [command, inputArg] = positionals;
   if (command === "coverage") return coverageFastPath(values, inputArg, positionals.length);
+  // SCRIPTC_UNITS=observe reports from the lowering, which the routed
+  // executable cache below can skip; the full compiler owns it.
+  if ((process.env["SCRIPTC_UNITS"] ?? "") !== "") return null;
   const strict = values.strict === true || (inputArg !== undefined && strictFromConfig(inputArg));
   // Computed-access sites emit different code by default; an explicit value
   // other than "1" is an opt-out or one the full compiler validates

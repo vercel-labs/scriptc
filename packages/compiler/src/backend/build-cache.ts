@@ -95,8 +95,11 @@ export async function prepareBuildCacheRoot(root: string | null): Promise<string
 
 /** Register a successful compiler-level cache write with the shared bounded
  * LRU policy. */
-export async function pruneBuildCache(root: string | null): Promise<void> {
-  if (root !== null) await pruneCache(root).catch(() => undefined);
+export async function pruneBuildCache(
+  root: string | null,
+  protectedPaths?: ReadonlySet<string>,
+): Promise<void> {
+  if (root !== null) await pruneCache(root, protectedPaths).catch(() => undefined);
 }
 
 export function cacheRootDir(): string | null {

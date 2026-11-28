@@ -19,6 +19,11 @@ const FRONTEND_INDEPENDENT_VARIABLES = new Set([
   "SCRIPTC_INCR_VERIFY",
   // The backend's report of which module initializers it defers.
   "SCRIPTC_INITIALIZERS_TRACE",
+  // SCRIPTC_UNITS is NOT here. Its M0 mode, `observe`, changes no output, so
+  // it could be left out for that one value; the list has no way to say
+  // "only for one value", and later modes change output and must stay in the
+  // key. Observe builds therefore miss the frontend cache (they run the full
+  // lowering the observation reads), which is the cost of keeping one list.
   "SCRIPTC_TIMING",
 ]);
 

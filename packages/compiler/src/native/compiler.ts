@@ -86,6 +86,7 @@ import {
   prepareNativeExecutable,
   prepareNativeLibrary,
 } from "./prepare.js";
+import { unitsModeValue } from "../units/mode.js";
 import { usesLoweredProgram } from "../executable/lowered.js";
 import { readUnchangedBuild, recordUnchangedBuild, unchangedBuildKey } from "./unchanged.js";
 import { buildSanitizedRuntime, sanitizerDriver, sanitizerFlags } from "./sanitizer.js";
@@ -570,8 +571,11 @@ export class NativeCompiler {
       // An unchanged build keeps what the last build of the same inputs left
       // in place (native/unchanged.ts), before the frontend reads a source. A
       // build that writes or reads a lowered program always runs.
+      // SCRIPTC_UNITS reports from a lowering: an unchanged build returns the
+      // kept executable without one, and would also skip the mode check.
+      const observingUnits = (unitsModeValue() ?? "") !== "";
       const unchangedKey =
-        outputKind === "exe" && !usesLoweredProgram(options)
+        outputKind === "exe" && !usesLoweredProgram(options) && !observingUnits
           ? unchangedBuildKey({
               entry,
               options,

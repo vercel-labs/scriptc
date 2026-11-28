@@ -3559,7 +3559,10 @@ export function collectClassShapeInner(
         // as a module global beside the named statics: the read through the
         // class value (`C[kError]`) resolves the key to that name.
         const staticSymbol =
-          (ts.isPropertyDeclaration(member) || ts.isMethodDeclaration(member)) &&
+          (ts.isPropertyDeclaration(member) ||
+            ts.isMethodDeclaration(member) ||
+            ts.isGetAccessorDeclaration(member) ||
+            ts.isSetAccessorDeclaration(member)) &&
           ts.isComputedPropertyName(member.name)
             ? (classSymbolKeyOf(lowerer, member.name.expression)?.fieldName ?? null)
             : null;
@@ -3690,21 +3693,25 @@ export function collectClassShapeInner(
         // accessors in the constructor's property table (checkedStatics).
         if (
           (ts.isGetAccessorDeclaration(member) || ts.isSetAccessorDeclaration(member)) &&
-          ts.isIdentifier(member.name) &&
+          (ts.isIdentifier(member.name) || staticSymbol !== null) &&
           member.body &&
           !isJsSourceFile(ts.getSourceFileOfNode(member))
         ) {
           const isGet = ts.isGetAccessorDeclaration(member);
           // A setter takes its parameter's type, which may differ from the
           // getter's (tsc 5.1+ admits unrelated annotated halves): a write
-          // converts into it and a read answers the getter's type.
+          // converts into it and a read answers the getter's type. A
+          // computed symbol name reads its type from the accessor itself
+          // (the name node's type is the key, not the member).
           const parameter = isGet ? undefined : member.parameters.nodes[0];
+          const typeSite: ts.Node =
+            staticSymbol !== null && parameter === undefined ? member : member.name;
           const type = lowerer.mapTypeOf(
-            parameter ? lowerer.typeOf(parameter.name) : lowerer.typeOf(member.name),
+            parameter ? lowerer.typeOf(parameter.name) : lowerer.typeOf(typeSite),
           );
           if (type && type.kind !== "void" && (isGet || member.parameters.nodes.length === 1)) {
             staticMethods.set(
-              `${isGet ? "get" : "set"}:${member.name.text}`,
+              `${isGet ? "get" : "set"}:${staticSymbol ?? member.name.text}`,
               isGet
                 ? { params: [], ret: type, member }
                 : { params: [{ type, mode: "required" }], ret: VOID, member },
@@ -7995,10 +8002,11 @@ export function staticAccessorRead(
   const accessor = findStaticAccessorOn(receiver, name);
   if (!accessor) return null;
   if (!accessor.get) {
+    const display = name.startsWith("%symbol:") ? symbolFieldDisplayName(name) : name;
     lowerer.unsupported(
       "SC1090",
       site,
-      `reading the static '${name}' of class '${accessor.declarer.def.jsName ?? accessor.declarer.def.name}', which declares a setter and no getter (the read is undefined in JavaScript)`,
+      `reading the static '${display}' of class '${accessor.declarer.def.jsName ?? accessor.declarer.def.name}', which declares a setter and no getter (the read is undefined in JavaScript)`,
     );
   }
   const target = staticMethodFunctionFor(lowerer, site, receiver, `get:${name}`);

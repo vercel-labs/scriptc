@@ -89,7 +89,7 @@ import {
   lowerClassStaticRead,
   type ClassInfo,
 } from "../lower-classes.js";
-import { classSymbolKeyOf } from "../symbol-fields.js";
+import { classSymbolKeyOf, symbolFieldDisplayName } from "../symbol-fields.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
 import {
   assertedMemberRead,
@@ -459,11 +459,15 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
       const keyInfo = classSymbolKeyOf(lowerer, expr.argumentExpression);
       if (keyInfo !== null) {
         const name = keyInfo.fieldName;
-        let storage: "module" | "table" | null = null;
+        let storage: "module" | "table" | "declared" | null = null;
         for (let owner: ClassInfo | null = classInfo; owner !== null; owner = owner.base) {
+          const accessor =
+            owner.staticMethods?.has(`get:${name}`) === true ||
+            owner.staticMethods?.has(`set:${name}`) === true;
           if (
             owner.staticFields.some((field) => field.name === name) ||
-            owner.staticMethods?.has(name) === true
+            owner.staticMethods?.has(name) === true ||
+            accessor
           ) {
             storage = "module";
             break;
@@ -474,6 +478,13 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
           });
           if (inTable) {
             storage = "table";
+            break;
+          }
+          // The class declares the member but nothing lowered it: Node's
+          // class object has the property, so answering `undefined` would be
+          // a silent wrong value (an authorization getter, for instance).
+          if (owner.declaredStatics?.has(name) === true) {
+            storage = "declared";
             break;
           }
         }
@@ -499,6 +510,14 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
             expr,
           );
         }
+        // Declared, but the lowering has no storage for it: refuse by name
+        // rather than answer a value Node does not.
+        if (storage === "declared")
+          lowerer.unsupported(
+            "SC1090",
+            expr,
+            `reading the symbol-keyed static '${symbolFieldDisplayName(name)}' the class declares but the lowering cannot represent (the read would answer a value Node does not)`,
+          );
         // No class in the chain declares the key: `C[k]` reads a property
         // the class object does not have, and Node answers undefined. A
         // class value that could carry properties set outside the

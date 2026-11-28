@@ -2478,7 +2478,10 @@ static void scr_next_tick_raw_first(void (*fn)(void)) {
   if (scr_nt_tail == NULL) scr_nt_tail = t;
 }
 
-void (*scr_raw_tick_teardown_hook)(void) = NULL;
+/* Thread-local like every other piece of a script thread's loop state: the
+ * queues a hook releases belong to the exiting thread, so one thread's
+ * teardown must not disarm another's registration. */
+SCR_TL void (*scr_raw_tick_teardown_hook)(void) = NULL;
 
 void scr_nticks_teardown(void) {
   while (scr_nt_head != NULL) {

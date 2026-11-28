@@ -5011,7 +5011,6 @@ typedef ScrGen *(*ScrPipeIterFn)(ScrClosure *, ScrDyn *);
 static bool scr_stream_dyn_has_method(const ScrDyn *value, const char *key);
 static bool scr_stream_dyn_transform_like(const ScrDyn *value);
 static void scr_stream_throw_web_stage(void);
-static bool scr_stream_dyn_stage_returned_stream(const ScrDyn *value);
 static void scr_stream_throw_invalid_return(const char *expected, const char *name,
                                            const ScrDyn *got);
 static void scr_stream_throw_invalid_return_class(const char *expected, const char *name,
@@ -5043,11 +5042,13 @@ static int scr_pipe_dest_dyn_kind(const ScrPipeStages *fs, ScrDyn *r, void **out
   ScrStream *native = scr_stream_of_handle(r);
   if (!native) native = scr_stream_boxed(r);
   if (native) {
+    char cls[64];
+    snprintf(cls, sizeof cls, "%s", native->cls ? native->cls : "Stream");
     bool readable = native->st->has_r;
     scr_stream_release(native);
     if (!readable) {
       if (!scr_exc_pending())
-        scr_stream_throw_invalid_return("AsyncIterable or Promise", "destination", r);
+        scr_stream_throw_invalid_return_class("AsyncIterable or Promise", "destination", cls);
       return -1;
     }
     ScrGen *g = ((ScrPipeIterFn)fs->box->fn)(fs->box, scr_dyn_retain((ScrDyn *)r));
@@ -9945,6 +9946,21 @@ ScrDyn *scr_stream_dyn_view(ScrStream *stream) {
       scr_dyn_release(fn);
     }
   }
+  /* A stream answers its class through `constructor`, as Node's instances
+   * do: a checked-dynamic box of a 'pipe' payload, or of any member that
+   * hands the stream on, names the class the stream was built from. It is
+   * inherited from the prototype and non-enumerable there, as Node's is, so
+   * it stays out of Object.keys and object spreads. */
+  if (stream->cls != NULL) {
+    ScrClosure *cb = scr_closure_new((void *)scr_stream_view_call, 2);
+    cb->caps[0] = scr_box_new_obj(scr_stream_retain_v, scr_stream_release_v, scr_stream_trace);
+    cb->caps[1] = scr_box_new(SCR_BOX_STR);
+    scr_box_set_ref(cb->caps[0], scr_stream_retain(stream));
+    scr_box_set_ref(cb->caps[1], scr_str_new("constructor", 11));
+    scr_dyn_obj_set(prototype, "constructor", 11,
+                    scr_dyn_new_func(cb, scr_stream_view_call, 0, "()", stream->cls));
+    scr_dyn_obj_dict_entries(prototype)[prototype->v.obj.len - 1].enumerable = false;
+  }
   ScrDyn *attached = scr_dyn_set_prototype(view, prototype);
   scr_dyn_release(attached);
   scr_dyn_release(prototype);
@@ -10370,6 +10386,21 @@ bool scr_stream_dyn_iterable_source(const ScrDyn *value) {
   return scr_dyn_iterable_kind(value) > 0;
 }
 
+/* Whether the value a source stage pumped reaches the next function stage
+ * as itself: makeAsyncIterable answers an iterable, and a native readable
+ * stream answers its iterator (so Node passes the stream on); a stream-like
+ * JavaScript object, which is not iterable, goes as the generator over it. */
+bool scr_stream_dyn_hands_value(const ScrDyn *value) {
+  ScrStream *stream = scr_stream_of_handle(value);
+  if (!stream) stream = scr_stream_boxed(value);
+  if (stream) {
+    bool readable = stream->st->has_r;
+    scr_stream_release(stream);
+    return readable;
+  }
+  return scr_stream_dyn_iterable_source(value);
+}
+
 /* Untyped web streams as pipeline stages have no lowering. */
 static void scr_stream_throw_web_stage(void) {
   static const char msg[] = "pipeline stages that are untyped web streams are not supported yet";
@@ -10428,10 +10459,13 @@ ScrDyn *scr_stream_dyn_transform_result(const ScrDyn *value, const ScrStr *label
   ScrStream *native = scr_stream_of_handle(value);
   if (!native) native = scr_stream_boxed(value);
   if (native) {
+    char cls[64];
+    snprintf(cls, sizeof cls, "%s", native->cls ? native->cls : "Stream");
     bool readable = native->st->has_r;
     scr_stream_release(native);
     if (!readable) {
-      if (!scr_exc_pending()) scr_stream_throw_invalid_return("AsyncIterable", label->data, value);
+      if (!scr_exc_pending())
+        scr_stream_throw_invalid_return_class("AsyncIterable", label->data, cls);
       return NULL;
     }
     return scr_dyn_retain((ScrDyn *)value);
@@ -11300,7 +11334,11 @@ static void scr_pl_on_end(ScrClosure *c) {
  * program's unhandled 'error'. A for-await loop or a finished()/pipeline
  * watcher on the destination takes the error instead, as the error tick
  * decides for a stream without listeners. */
-static void scr_pl_on_error(ScrClosure *c, ScrError *err) {
+/* The emitter's fixed-arity shim calls every one-argument listener through
+ * void (*)(ScrClosure *, void *), so the listener takes that type and reads
+ * its stream arguments from it. */
+static void scr_pl_on_error(ScrClosure *c, void *reason) {
+  ScrError *err = reason;
   scr_closure_retain(c);
   scr_pl_unpipe(c);
   if (!scr_exc_pending()) scr_pl_off(c, SCR_PL_ERROR);
@@ -11316,7 +11354,8 @@ static void scr_pl_on_error(ScrClosure *c, ScrError *err) {
   scr_closure_release(c);
 }
 
-static void scr_pl_on_unpipe(ScrClosure *c, ScrStream *readable) {
+static void scr_pl_on_unpipe(ScrClosure *c, void *source) {
+  ScrStream *readable = source;
   ScrStream *src = scr_box_get_ref(c->caps[SCR_PL_SRC]);
   bool mine = src == readable;
   scr_stream_release(src);

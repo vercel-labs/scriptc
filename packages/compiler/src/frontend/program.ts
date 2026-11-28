@@ -135,6 +135,7 @@ import {
   overridesDtsPath,
   packageShimRoot,
   tsgoPath,
+  webStreamsDtsPath,
 } from "./dts-paths.js";
 import {
   builtinDefaultImportModule,
@@ -1143,16 +1144,61 @@ function erasedSpecifier(specifier: ts.Node): boolean {
  * (an aborted undici fetch rejects with one). The declaration joins the
  * program exactly then: a program file belongs to a package implementation
  * and no file of the adopted Node types declares the global. Decided from the
- * program's files, like the fallback module roots. */
+ * program's files, like the fallback module roots.
+ *
+ * The web stream globals are the other shape: Node's runtime provides them
+ * whatever the project's @types/node says, and a project standing on
+ * @types/node 20.11 and earlier can name them from its own code (its tsc
+ * accepts the names when any dependency's declarations carry them, memfs'
+ * empty interface for one). The declaration joins when a program source
+ * names one of the globals and no declaration file of the program declares
+ * them. */
 function nodeTypesSupplementRoots7(program: ts.Program, host: ts.Ts7Host): string[] {
   const names = program.getSourceFileNames();
+  const roots: string[] = [];
   const shims = tsgoPath(packageShimRoot()) + "/";
-  if (!names.some((name) => tsgoPath(name).startsWith(shims))) return [];
-  for (const name of names) {
-    if (isNodeTypesPath(name) && /\bvar\s+DOMException\b/.test(host.sourceText(name) ?? ""))
-      return [];
+  if (names.some((name) => tsgoPath(name).startsWith(shims))) {
+    let declared = false;
+    for (const name of names) {
+      if (isNodeTypesPath(name) && /\bvar\s+DOMException\b/.test(host.sourceText(name) ?? "")) {
+        declared = true;
+        break;
+      }
+    }
+    if (!declared) roots.push(domExceptionDtsPath());
   }
-  return [domExceptionDtsPath()];
+  if (programNamesWebStreams7(program) && !programDeclaresWebStreamGlobals7(program, host))
+    roots.push(webStreamsDtsPath());
+  return roots;
+}
+
+/** True when a declaration file of the program already declares the global
+ * (the adopted @types/node of 22 and later, a DOM lib, or any dependency's
+ * own declaration): the supplement would collide, and the global resolves
+ * without it. Only declaration files can declare a global, and only a value
+ * binding matters — an interface alone does not carry the name in a value
+ * position. */
+function programDeclaresWebStreamGlobals7(program: ts.Program, host: ts.Ts7Host): boolean {
+  for (const name of program.getSourceFileNames())
+    if (name.includes(".d.") && /\bvar\s+ReadableStream\b/.test(host.sourceText(name) ?? ""))
+      return true;
+  return false;
+}
+
+/** The web stream globals' names, each matched as a whole word: an ASCII
+ * letter, digit, `$` or `_`, or any code unit outside ASCII, on neither
+ * side. */
+const WEB_STREAM_GLOBAL_WORD =
+  /(?<![0-9A-Za-z$_\u0080-\uffff])(?:ReadableStream|ReadableStreamDefaultReader|ReadableStreamBYOBReader|ReadableStreamBYOBRequest|ReadableStreamDefaultController|ReadableByteStreamController|WritableStream|WritableStreamDefaultWriter|WritableStreamDefaultController|TransformStream|TransformStreamDefaultController|CompressionStream|DecompressionStream|CountQueuingStrategy|ByteLengthQueuingStrategy|TextEncoderStream|TextDecoderStream)(?![0-9A-Za-z$_\u0080-\uffff])/;
+
+/** True when a program source (user code or compiled npm JavaScript) names a
+ * web stream global. Like programNamesTemporal7, a cheap syntactic scan of
+ * the implementation files root discovery already materialized; a mention in
+ * a comment or string also counts, which only adds the declarations. */
+function programNamesWebStreams7(program: ts.Program): boolean {
+  for (const sf of program.getImplementationSourceFiles())
+    if (ts.sourceTextMatches(sf, WEB_STREAM_GLOBAL_WORD)) return true;
+  return false;
 }
 
 /** Program roots hidden behind canonical createRequire bindings. tsgo
@@ -1368,7 +1414,15 @@ function entryPackageProgramRoots7(
   const roots = new Set<string>();
   /** The file an edge adds to the roots, or null: a file the program
    * already holds, or an edge that names no compiled JavaScript. */
-  const rootOf = (from: string, spec: string, kind: "import" | "require"): string | null => {
+  const rootOf = (
+    from: string,
+    spec: string,
+    kind: "import" | "require",
+    /** True for an `export … from` edge: Node evaluates the module, so a
+     * declaration file cannot stand in for its runtime JavaScript, even in
+     * the project world that types authored code from declarations. */
+    evaluates = false,
+  ): string | null => {
     // The project edge, from any program file: a relative import, or a
     // tsconfig path, that lands on the entry package's JavaScript, on an
     // opted-in package's, or on a source package's (tsgo's own walk loads
@@ -1395,7 +1449,11 @@ function entryPackageProgramRoots7(
     if (packageRoots === null || isRelativeSpecifier(spec)) return null;
     if (target !== null && !(isNodeModulesPath(target) && !isJsSourceFileName(target))) return null;
     if (spec.startsWith("#") || canonicalBuiltinModule(spec) !== null) return null;
-    if (packageRoots.declared && resolveBareModule(from, spec, "types-only", kind) !== null)
+    if (
+      !evaluates &&
+      packageRoots.declared &&
+      resolveBareModule(from, spec, "types-only", kind) !== null
+    )
       return null;
     const npm = resolveBareModule(from, spec, undefined, kind);
     return npm !== null &&
@@ -1411,6 +1469,18 @@ function entryPackageProgramRoots7(
     for (const specifier of sf.imports) {
       if (!ts.isStringLiteralLike(specifier)) continue;
       const root = rootOf(sf.fileName, specifier.text, moduleSpecifierKind7(specifier));
+      if (root !== null) roots.add(root);
+    }
+    // `export … from "./pkg"` names a load edge too (Node evaluates the
+    // module), but TypeScript's import list holds only import declarations.
+    // Without this a star or named re-export from an opted-in package never
+    // roots the package's runtime JavaScript, so its implementation never
+    // joins the program and every name it supplies becomes an island.
+    for (const stmt of sf.statements.nodes) {
+      if (stmt.isTypeOnly || !ts.isExportDeclaration(stmt)) continue;
+      const specifier = stmt.moduleSpecifier;
+      if (specifier === undefined || !ts.isStringLiteralLike(specifier)) continue;
+      const root = rootOf(sf.fileName, specifier.text, "import", true);
       if (root !== null) roots.add(root);
     }
   }
@@ -1921,8 +1991,15 @@ function loadProgram7(
   const coreRoots = [
     entryPath,
     ambientDtsPath(),
+    // Without @types/node the fallback stands in; the web stream globals it
+    // carried through a reference path join as their own root (a declaration
+    // file cannot reference a sibling without a triple-slash directive).
     ...(nodeTypes === null
-      ? [fallbackDtsPath(), ...fallbackModulesNamedIn(host.sourceText(entryPath) ?? "")]
+      ? [
+          fallbackDtsPath(),
+          webStreamsDtsPath(),
+          ...fallbackModulesNamedIn(host.sourceText(entryPath) ?? ""),
+        ]
       : [nodeTypes]),
     ...(config.declarations ?? []),
   ];
@@ -7611,16 +7688,19 @@ function preflightStructure7(load: LoadResult): PreflightStructure {
           ) {
             continue;
           }
-          // NAMED re-exports from an INSTALLED npm package (`export
-          // { isUrl } from "url-or-path"` — the pattern's universal facade,
-          // `export { visitorKeys as default } from "@glimmer/syntax"`):
-          // import-plus-export plumbing. The lowering owns the package
-          // value diagnostic when no compiled source can supply the binding.
+          // NAMED and STAR re-exports from an INSTALLED npm package
+          // (`export { isUrl } from "url-or-path"` — the pattern's
+          // universal facade, `export { visitorKeys as default } from
+          // "@glimmer/syntax"`, and `export * from "@vercel/drives"`):
+          // import-plus-export plumbing. Importers chase each name through
+          // the alias chain to the package's own declarations; the lowering
+          // owns the package value diagnostic when no compiled source can
+          // supply the binding. A namespace re-export (`export * as ns`)
+          // still needs a namespace object, so it keeps its fence.
           if (
-            stmt.exportClause !== undefined &&
-            ts.isNamedExports(stmt.exportClause) &&
             !fromSpec.startsWith("#") &&
-            resolveNpmImport7(sf.fileName, fromSpec) !== null
+            resolveNpmImport7(sf.fileName, fromSpec) !== null &&
+            (stmt.exportClause === undefined || ts.isNamedExports(stmt.exportClause))
           ) {
             continue;
           }

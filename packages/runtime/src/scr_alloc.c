@@ -11,6 +11,7 @@
  * first touch them. Only an exiting worker thread returns pages, those
  * holding nothing but free blocks (scr_sa_trim, Linux). */
 #include "scr_runtime.h"
+#include <errno.h>
 #if defined(__GLIBC__)
 #include <malloc.h>
 #endif
@@ -2059,6 +2060,35 @@ static bool scr_sa_keep_remove(ScrSaKeep *k, const void *p) {
   return false;
 }
 
+/* Whether the keep registry holds a record of p. */
+static bool scr_sa_keep_has(const ScrSaKeep *k, const void *p) {
+  if (!k->live) return false;
+  for (size_t j = scr_sa_sys_slot(p, k->cap); k->sys[j]; j = (j + 1) & (k->cap - 1)) {
+    if (k->sys[j] == p) return true;
+  }
+  return false;
+}
+
+#ifdef SCR_SA_TEST
+/* The allocator checks: whether the calling thread's keep registry records a
+ * block. A grow that leaves a run at a new address must have moved its
+ * record. Always false where the registry is not compiled (non-worker
+ * builds). */
+bool scr_sa_test_keep_has(const void *p) { return scr_sa_keep != NULL && scr_sa_keep_has(scr_sa_keep, p); }
+
+/* How many records of p the calling thread's keep registry holds: a block
+ * registered twice is freed twice when the worker's memory goes back. */
+size_t scr_sa_test_keep_count(const void *p) {
+  ScrSaKeep *k = scr_sa_keep;
+  if (!k || !k->live) return 0;
+  size_t n = 0;
+  for (size_t j = scr_sa_sys_slot(p, k->cap); k->sys[j]; j = (j + 1) & (k->cap - 1)) {
+    if (k->sys[j] == p) n++;
+  }
+  return n;
+}
+#endif
+
 /* The calling thread's arena keeps the worker's memory (it shared): the
  * free lists set aside go back, followed by the worker's own free blocks,
  * and so do the returned regions, past which the worker carved. */
@@ -2102,6 +2132,46 @@ static void scr_sa_discard(ScrSaKeep *k) {
   uintptr_t page = (uintptr_t)sysconf(_SC_PAGESIZE);
   if (page == 0 || page == (uintptr_t)-1) page = 4096;
   size_t returned = 0, sys_bytes = 0, sys_blocks = 0;
+  /* The registry first: every block it names must be released while its
+   * chunk is still the worker's. Releasing chunks first would let another
+   * thread reuse a recorded range before the registry was consumed. */
+  if (!k->poison)
+    for (size_t s = 0; s < k->cap; s++) {
+      void *p = k->sys[s];
+      if (!p || p == SCR_SA_SYS_GONE) continue;
+      uintptr_t off = (uintptr_t)p - (uintptr_t)scr_sa_window;
+      if (off < (uintptr_t)scr_sa_window_chunks << SCR_SA_CHUNK_SHIFT) {
+        /* A window block: a run goes back to the window; a block of a large
+         * class becomes a trimmed free block of the arena. */
+        unsigned e = scr_sa_chunks[off >> SCR_SA_CHUNK_SHIFT];
+        if (e == SCR_SA_RUN_HEAD) {
+          returned += scr_sa_large_bytes(p, e);
+          scr_sa_run_free(p);
+        } else if ((e & SCR_SA_LARGE_TAG) && e < SCR_SA_RUN_HEAD) {
+          unsigned c = e & 0xff;
+          size_t sz = scr_sa_large_size(c);
+          char *lo = (char *)(((uintptr_t)p + page) & ~(page - 1)), *hi = (char *)(((uintptr_t)p + sz) & ~(page - 1));
+          ScrSaLarge *l = &scr_sa_large[scr_sa_arena];
+          ScrSaBlock *b = p;
+          if (hi > lo) {
+            scr_sa_pages_return(lo, hi);
+            returned += (size_t)(hi - lo);
+            b->next = l->trimmed[c];
+            l->trimmed[c] = b;
+          } else {
+            b->next = l->free[c];
+            l->free[c] = b;
+          }
+          __atomic_fetch_sub(&scr_sa_large_live, sz, __ATOMIC_RELAXED);
+        }
+        continue;
+      }
+#if defined(__GLIBC__)
+      sys_bytes += malloc_usable_size(p);
+#endif
+      sys_blocks++;
+      free(p);
+    }
   for (unsigned c = 0; c < SCR_SA_NCLASS; c++) {
     char *lo = k->start[c], *top = scr_sa.bump[c], *lim = scr_sa.lim[c];
     char *bump = k->front_bump[c], *limit = k->front_lim[c];
@@ -2175,43 +2245,6 @@ static void scr_sa_discard(ScrSaKeep *k) {
       b->next = scr_sa.free[c];
       scr_sa.free[c] = b;
     }
-  if (!k->poison)
-    for (size_t s = 0; s < k->cap; s++) {
-      void *p = k->sys[s];
-      if (!p || p == SCR_SA_SYS_GONE) continue;
-      uintptr_t off = (uintptr_t)p - (uintptr_t)scr_sa_window;
-      if (off < (uintptr_t)scr_sa_window_chunks << SCR_SA_CHUNK_SHIFT) {
-        /* A window block: a run goes back to the window; a block of a large
-         * class becomes a trimmed free block of the arena. */
-        unsigned e = scr_sa_chunks[off >> SCR_SA_CHUNK_SHIFT];
-        if (e == SCR_SA_RUN_HEAD) {
-          returned += scr_sa_large_bytes(p, e);
-          scr_sa_run_free(p);
-        } else if ((e & SCR_SA_LARGE_TAG) && e < SCR_SA_RUN_HEAD) {
-          unsigned c = e & 0xff;
-          size_t sz = scr_sa_large_size(c);
-          char *lo = (char *)(((uintptr_t)p + page) & ~(page - 1)), *hi = (char *)(((uintptr_t)p + sz) & ~(page - 1));
-          ScrSaLarge *l = &scr_sa_large[scr_sa_arena];
-          ScrSaBlock *b = p;
-          if (hi > lo) {
-            scr_sa_pages_return(lo, hi);
-            returned += (size_t)(hi - lo);
-            b->next = l->trimmed[c];
-            l->trimmed[c] = b;
-          } else {
-            b->next = l->free[c];
-            l->free[c] = b;
-          }
-          __atomic_fetch_sub(&scr_sa_large_live, sz, __ATOMIC_RELAXED);
-        }
-        continue;
-      }
-#if defined(__GLIBC__)
-      sys_bytes += malloc_usable_size(p);
-#endif
-      sys_blocks++;
-      free(p);
-    }
 #if defined(__GLIBC__)
   if (sys_blocks) (void)malloc_trim(0);
 #endif
@@ -2227,6 +2260,24 @@ static void scr_sa_discard(ScrSaKeep *k) {
 /* Hooks of the allocator's system paths and of sharing (scr_rc.h). */
 static void scr_sa_keep_note_system(void *p) {
   if (p && scr_sa_keep) scr_sa_keep_add(scr_sa_keep, p);
+}
+
+/* A block that leaves p for q keeps the worker's record with it: a record
+ * left at the old address names a range the block no longer occupies, so it
+ * goes, and the destination is recorded exactly once. A grow's allocation
+ * path may already have recorded the destination, and a promoted small-class
+ * block had no record at all; both end with one record at q. Every path of a
+ * grow that returns a block at a new address moves the record. */
+static void scr_sa_keep_move(void *from, void *to) {
+  ScrSaKeep *k = scr_sa_keep;
+  if (!k || from == to) return;
+  (void)scr_sa_keep_remove(k, from);
+  /* Only a block the keep records is recorded: a run or a large-class block
+   * (and a system block, which its allocation already recorded). A small
+   * class block is never recorded, because its free is the inline fast path,
+   * which does not consult the registry: a record would outlive the block
+   * and the discard would release a stale pointer after chunks went back. */
+  if (!scr_sa_keep_has(k, to) && scr_mem_block_size(to) > SCR_SA_MAX) scr_sa_keep_add(k, to);
 }
 
 void scr_sa_thread_shares(void) {
@@ -2840,9 +2891,44 @@ __attribute__((noinline)) void *scr_sa_slow_ref(size_t n, bool zero) {
  * before 6.17 fails a fixed move that spans mappings (the destination is
  * unmapped). Consumed once. */
 bool scr_sa_test_fail_move;
+/* The next destination map of a run move, the next re-map of the run it
+ * left, and the next move back into that run fail the way an exhausted
+ * address space fails them. Consumed once. */
+bool scr_sa_test_fail_map_dest;
+bool scr_sa_test_fail_map_src;
+bool scr_sa_test_fail_move_back;
 #endif
 
 #if defined(__linux__) && defined(MREMAP_FIXED)
+/* Reports a grow whose new range could not be mapped, with the numbers a
+ * failure report needs: both runs' addresses and sizes, the errno and the
+ * window's bounds. A grow never traps for this: the caller copies the block
+ * into a fresh run instead, and the range that could not be mapped is burned
+ * so no free list hands it out again. */
+static void scr_sa_move_refused(const char *what, int err, const void *p, size_t have, const void *q,
+                                size_t n) {
+  char *w = __atomic_load_n(&scr_sa_window, __ATOMIC_ACQUIRE);
+  char line[320];
+  int len = snprintf(line, sizeof line,
+                     "scriptc: grow could not map %s (errno %d): run %p of %zu bytes, new run %p of "
+                     "%zu bytes, window %p of %zu chunks\n",
+                     what, err, p, have, q, n, (void *)w, scr_sa_window_chunks);
+  if (len > 0) (void)!write(2, line, (size_t)(len < (int)sizeof line ? len : (int)sizeof line - 1));
+}
+
+/* Takes the window range q of n bytes out of circulation: it could not be
+ * mapped, so handing it out again would hand out unmapped memory. Marked as a
+ * run, which no free list names. */
+static void scr_sa_run_burn(char *q, size_t n) {
+  size_t i = (size_t)(q - scr_sa_window) >> SCR_SA_CHUNK_SHIFT;
+  size_t chunks = (n + SCR_SA_CHUNK - 1) >> SCR_SA_CHUNK_SHIFT;
+  if (i >= scr_sa_window_chunks || chunks == 0) return;
+  if (i + chunks > scr_sa_window_chunks) chunks = scr_sa_window_chunks - i;
+  scr_sa_chunk_set(i, (uint16_t)SCR_SA_RUN_HEAD);
+  scr_sa_run_chunks[i] = (uint16_t)chunks;
+  for (size_t k = 1; k < chunks; k++) scr_sa_chunk_set(i + k, (uint16_t)SCR_SA_RUN_NEXT);
+}
+
 /* Grows the run p of `have` bytes to a run of n bytes (n > SCR_SA_LARGE_MAX)
  * by moving its pages to a new run, as the system allocator grows a mapped
  * block, instead of copying them; NULL when p is no run or the window has no
@@ -2873,15 +2959,57 @@ static void *scr_sa_run_move(void *p, size_t have, size_t n) {
     /* A failed fixed move has unmapped the destination already (the kernel
      * unmaps it before doing the move; before 6.17 a move that spans
      * mappings fails there), so map the new run again before copying into
-     * it. */
-    if (mmap(q, n, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_FIXED | MAP_NORESERVE, -1, 0) != q)
-      scr_trap("scriptc: out of memory\n");
+     * it. A new run that cannot be mapped costs this grow its move, not the
+     * program: the block stays where it is, the caller copies it, and the
+     * range that could not be mapped is burned. */
+#ifdef SCR_SA_TEST
+    bool dest_failed = scr_sa_test_fail_map_dest;
+    scr_sa_test_fail_map_dest = false;
+#else
+    bool dest_failed = false;
+#endif
+    if (dest_failed ||
+        mmap(q, n, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_FIXED | MAP_NORESERVE, -1, 0) != q) {
+      scr_sa_move_refused("the new run", dest_failed ? ENOMEM : errno, p, have, q, n);
+      scr_sa_run_burn(q, n);
+      return NULL;
+    }
     memcpy(q, p, have);
     scr_sa_run_free(p);
+#ifdef SCR_SA_TRIM
+    scr_sa_keep_move(p, q);
+#endif
     return q;
   }
-  if (mmap(p, have, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_FIXED | MAP_NORESERVE, -1, 0) != p)
-    scr_trap("scriptc: out of memory\n");
+#ifdef SCR_SA_TEST
+  bool src_failed = scr_sa_test_fail_map_src;
+  scr_sa_test_fail_map_src = false;
+#else
+  bool src_failed = false;
+#endif
+  if (src_failed ||
+      mmap(p, have, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_FIXED | MAP_NORESERVE, -1, 0) != p) {
+    /* The page move worked but the old range cannot be mapped back as a
+     * zeroed run. The contents are at the new run: give them back to the old
+     * one when the kernel allows it, and keep them at the new run when it
+     * does not, burning the range that cannot be mapped. */
+    scr_sa_move_refused("the old run back", src_failed ? ENOMEM : errno, p, have, q, n);
+#ifdef SCR_SA_TEST
+    bool back_failed = scr_sa_test_fail_move_back;
+    scr_sa_test_fail_move_back = false;
+#else
+    bool back_failed = false;
+#endif
+    if (!back_failed && mremap(q, have, have, MREMAP_MAYMOVE | MREMAP_FIXED, p) == p) {
+      scr_sa_run_burn(q, n);
+      return NULL;
+    }
+    scr_sa_run_burn(p, have);
+#ifdef SCR_SA_TRIM
+    scr_sa_keep_move(p, q);
+#endif
+    return q;
+  }
 #ifdef SCR_SA_THP
   (void)madvise(p, have, MADV_NOHUGEPAGE);
 #endif
@@ -2890,7 +3018,7 @@ static void *scr_sa_run_move(void *p, size_t have, size_t n) {
 #endif
   scr_sa_run_release(p, true);
 #ifdef SCR_SA_TRIM
-  if (scr_sa_keep && scr_sa_keep_remove(scr_sa_keep, p)) scr_sa_keep_add(scr_sa_keep, q);
+  scr_sa_keep_move(p, q);
 #endif
   return q;
 }
@@ -2918,7 +3046,7 @@ void *scr_mem_realloc_ref(void *p, size_t n) {
     char *q = w ? scr_sa_run_take(1, n, false) : NULL;
     if (q) {
 #ifdef SCR_SA_TRIM
-      if (scr_sa_keep) scr_sa_keep_add(scr_sa_keep, q);
+      scr_sa_keep_move(p, q);
 #endif
       memcpy(q, p, have);
       scr_mem_free(p);
@@ -2943,6 +3071,9 @@ void *scr_mem_realloc_ref(void *p, size_t n) {
   }
   void *q = scr_mem_alloc_ref(n ? n : 1);
   if (!q) return NULL;
+#ifdef SCR_SA_TRIM
+  scr_sa_keep_move(p, q);
+#endif
   memcpy(q, p, have < n ? have : n);
   scr_mem_free(p);
   return q;

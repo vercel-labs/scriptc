@@ -1,3 +1,4 @@
+import { declIterationSource } from "./decl-iteration.js";
 import { lowerHistogramStatsMethodCall } from "./builtins/histogram-stats.js";
 import { isCheckerPanic } from "../../diagnostics/diagnostic.js";
 import { reboundRequireBindingOf } from "./rebindable-requires.js";
@@ -617,6 +618,11 @@ export function refuseWrittenBuiltin(
 }
 
 export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
+  // The declaration projection's iteration marker wraps a package-produced
+  // iterable so the checker types the loop binding from the declaration
+  // world; the call's value is the wrapped expression.
+  const iterSource = declIterationSource(lowerer, expr);
+  if (iterSource !== null) return lowerer.lowerExpr(iterSource);
   // `Module.isBuiltin(...)`: the class's statics are the module surface.
   const moduleStatic = lowerModuleClassStaticCall(lowerer, expr);
   if (moduleStatic) return moduleStatic;

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import { Ts7Api } from "./rpc-api.js";
+import { Ts7Session } from "./session.js";
 import {
   getPreEmitDiagnostics,
   Ts7Host,
@@ -541,4 +542,43 @@ test("a reusable host returns to its owner on close and closes its connection on
   host.close();
   expect(close).toHaveBeenCalledTimes(1);
   expect(() => host.createProgram([entry], options)).toThrow("closed");
+});
+
+test("a tsc-ts diagnostics request asks for no formatting context", () => {
+  const { directory, entry } = fixture();
+  writeFileSync(join(directory, "other.ts"), "export const n: number = 'x';\n");
+  writeFileSync(entry, 'import "./other.js";\nexport const answer = 1;\n');
+  const { host } = makeHost(directory);
+  const program = host.createProgram([entry], options);
+  const binary = vi.spyOn(Ts7Session.prototype, "binary");
+  const previous = process.env["SCRIPTC_CHECKER"];
+  try {
+    const diagnosticsMethods = [
+      "getDiagnosticsOfCheckedFiles",
+      "getSemanticDiagnostics",
+      "getSyntacticDiagnostics",
+      "getGlobalDiagnostics",
+      "getProgramDiagnostics",
+      "getConfigFileParsingDiagnostics",
+      "getDeclarationDiagnostics",
+      "getBindDiagnostics",
+    ];
+    delete process.env["SCRIPTC_CHECKER"];
+    getPreEmitDiagnostics(program, () => true);
+    const asked = binary.mock.calls.filter(([method]) =>
+      diagnosticsMethods.includes(String(method)),
+    );
+    expect(asked.length).toBeGreaterThan(0);
+    for (const [, payload] of asked) expect(payload).toContain('"context":false');
+    binary.mockClear();
+    process.env["SCRIPTC_CHECKER"] = "tsgo";
+    getPreEmitDiagnostics(program, () => true);
+    for (const [method, payload] of binary.mock.calls)
+      if (diagnosticsMethods.includes(String(method))) expect(payload).not.toContain("context");
+  } finally {
+    if (previous === undefined) delete process.env["SCRIPTC_CHECKER"];
+    else process.env["SCRIPTC_CHECKER"] = previous;
+    binary.mockRestore();
+    program.dispose();
+  }
 });

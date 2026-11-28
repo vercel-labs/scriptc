@@ -6,6 +6,8 @@ import {
   fallbackDtsPath,
   fallbackModulePath,
   fallbackModulesNamedIn,
+  isFallbackDtsPath,
+  webStreamsDtsPath,
 } from "../src/frontend/dts-paths.js";
 
 const moduleDirectory = join(dirname(fallbackDtsPath()), "node-fallback");
@@ -49,4 +51,12 @@ test("the DOMException declaration beside an older @types/node is the fallback's
   const declaration = supplement.slice(supplement.indexOf("interface DOMException"));
   expect(declaration).toContain("declare var DOMException");
   expect(readFileSync(fallbackDtsPath(), "utf8")).toContain(declaration);
+});
+
+test("the web stream supplement counts as a fallback declaration", () => {
+  expect(isFallbackDtsPath(webStreamsDtsPath())).toBe(true);
+  const supplement = readFileSync(webStreamsDtsPath(), "utf8");
+  expect(supplement).toContain("declare var ReadableStream");
+  expect(supplement).toContain("declare var CompressionStream");
+  expect(supplement).toContain("declare var DecompressionStream");
 });

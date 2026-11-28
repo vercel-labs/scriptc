@@ -8,8 +8,44 @@
    "message": "'picked' is possibly 'undefined'.",
    "loc": {
     "file": "<repo>/tests/fixtures/strictness/indexed-strict/main.ts",
-    "start": 360,
-    "end": 366
+    "start": 497,
+    "end": 503
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "'picked' is possibly 'undefined'.",
+   "loc": {
+    "file": "<repo>/tests/fixtures/strictness/indexed-strict/main.ts",
+    "start": 694,
+    "end": 700
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Object is possibly 'undefined'.",
+   "loc": {
+    "file": "<repo>/tests/fixtures/strictness/indexed-strict/main.ts",
+    "start": 713,
+    "end": 718
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Object is possibly 'undefined'.",
+   "loc": {
+    "file": "<repo>/tests/fixtures/strictness/indexed-strict/main.ts",
+    "start": 876,
+    "end": 887
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Object is possibly 'undefined'.",
+   "loc": {
+    "file": "<repo>/tests/fixtures/strictness/indexed-strict/main.ts",
+    "start": 1015,
+    "end": 1027
    }
   }
  ]

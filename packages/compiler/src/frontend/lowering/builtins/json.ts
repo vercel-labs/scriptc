@@ -36,6 +36,7 @@ import {
   isDynTypedRefType,
   isLiveDynRefType,
   type IrExpr,
+  type IrStmt,
   STRING,
   type SrcLoc,
   canBoxFuncIntoDyn,
@@ -204,6 +205,25 @@ export function lowerJsonMethodCall(
       return { kind: "jsonStringify", value: x509ToString(value, loc), type: STRING, loc };
     const optionalString = lowerOptionalStringifyRoot(lowerer, value, indent, loc);
     if (optionalString) return optionalString;
+    // A null root is the text "null" (Node never writes its unit literal
+    // through the typed serializer, which rejects a bare unit).
+    if (value.type.kind === "nullT")
+      return constantStringifyRoot(
+        lowerer,
+        call,
+        value,
+        { kind: "strLit", value: "null", type: STRING, loc },
+        loc,
+      );
+    const maybeUndefined = lowerMaybeUndefinedStringifyRoot(
+      lowerer,
+      value,
+      indent,
+      loc,
+      argNode,
+      call,
+    );
+    if (maybeUndefined) return maybeUndefined;
     // A program class instance whose class (or a base) declares toJSON:
     // JSON.stringify serializes whatever toJSON(key) returns, so the
     // instance crosses into the runtime walker, which calls the hook
@@ -291,40 +311,8 @@ export function lowerJsonMethodCall(
     }
 
     if (!lowerer.jsonStringifySafe(value.type)) {
-      // Bare undefined-armed unions get their own wording: Node's
-      // stringify of bare undefined is not a string at all — per-type
-      // serialization cannot match that exactly, so the fence is
-      // deliberate, not a gap. (Undefined-armed RECORD FIELDS pass the
-      // fence: the field drops from the output, exactly Node.)
-      if (lowerer.bareUndefinedArmedUnion(value.type)) {
-        // A runtime-optional read (an absent dictionary key) can BE the
-        // undefined arm: the runtime walker answers Node's undefined for a
-        // dropped root and the text for every other value.
-        if (runtimeOptionalRead(lowerer, argNode, value)) {
-          const boxed: IrExpr = { kind: "dynFrom", value, type: DYN, loc };
-          const raw: IrExpr = {
-            kind: "libCall",
-            fn: "json.stringifyReplacer",
-            args: [
-              boxed,
-              dynUndefinedExpr(loc),
-              { kind: "strLit", value: indent, type: STRING, loc },
-            ],
-            type: DYN,
-            loc,
-          };
-          return { kind: "dynCheck", value: raw, type: lowerer.withUndefinedArm(STRING), loc };
-        }
-        lowerer.unsupported(
-          "SC1090",
-          argNode,
-          `JSON.stringify of '${lowerer.fmt(value.type)}' values ` +
-            `(Node's stringify of bare undefined is not a string at all — ` +
-            `narrow with '!== undefined' first, model absence with a null arm, ` +
-            `or use an optional record field ('{ a?: string }'), which drops ` +
-            `from the output like Node's)`,
-        );
-      }
+      // Maybe-undefined roots took the walker above; everything left has no
+      // serializer at all.
       lowerer.unsupported(
         "SC1090",
         argNode,
@@ -373,6 +361,110 @@ function recordDeclaresToJson(
     default:
       return false;
   }
+}
+
+/** True when a lowered type's value may be undefined at run time: the
+ * undefined type itself, or a union with an undefined arm. */
+export function jsonTypeMaybeUndefined(lowerer: Lowerer, t: IrType): boolean {
+  // A call to a function declared to return undefined lowers to the void
+  // type: its value is undefined, Node's stringify of it is not a string.
+  if (t.kind === "undefinedT" || t.kind === "void") return true;
+  if (t.kind !== "union") return false;
+  const def = lowerer.unions.get(t.unionId);
+  return def !== undefined && def.arms.some((arm) => arm.kind === "undefinedT");
+}
+
+/** True when a `JSON.stringify` root expression's checker type may be
+ * undefined at run time: a bare undefined, a union with an undefined arm,
+ * the dynamic boundary, an untyped JavaScript value, or a class whose
+ * toJSON can answer undefined. */
+export function jsonStringifyRootMaybeUndefined(lowerer: Lowerer, root: ts.Expression): boolean {
+  const type = lowerer.typeOf(root);
+  const mapped = lowerer.mapTypeOf(type);
+  if (mapped === null) return (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0;
+  if (mapped.kind === "dyn") return true;
+  if (jsonTypeMaybeUndefined(lowerer, mapped)) return true;
+  return (
+    mapped.kind === "object" &&
+    lowerer.findMethodOn(lowerer.classes.get(mapped.className) ?? null, "toJSON") !== null
+  );
+}
+
+/** A `JSON.stringify` root that may be undefined: Node answers undefined
+ * for it (JSON.stringify(undefined) is not a string at all), so the runtime
+ * walker carries the missing root through and the result keeps the
+ * undefined arm instead of being narrowed to the lib type's string. */
+function lowerMaybeUndefinedStringifyRoot(
+  lowerer: Lowerer,
+  value: IrExpr,
+  indent: string,
+  loc: SrcLoc,
+  argNode: ts.Expression,
+  call: ts.CallExpression,
+): IrExpr | null {
+  if (value.type.kind === "undefinedT" || value.type.kind === "void") {
+    const missing = lowerer.wrappedUndefined(lowerer.withUndefinedArm(STRING), loc);
+    if (!missing)
+      throw new InternalCompilerError("JSON.stringify of undefined needs an undefined arm");
+    return constantStringifyRoot(lowerer, call, value, missing, loc);
+  }
+  if (!jsonTypeMaybeUndefined(lowerer, value.type)) return null;
+  if (!lowerer.dynConvertible(value.type)) {
+    lowerer.unsupported(
+      "SC1090",
+      argNode,
+      `JSON.stringify of '${lowerer.fmt(value.type)}' values ` +
+        `(the value may be undefined and cannot cross into the checked-dynamic boundary)`,
+    );
+  }
+  // A record, array or class root stays a live reference while the walker
+  // visits it: a toJSON hook can mutate a later field, as in Node. A union
+  // of scalars only holds no container and converts by value.
+  const boxed: IrExpr = {
+    kind: "dynFrom",
+    value,
+    ...(isLiveDynRefType(value.type, (id) => lowerer.unions.get(id))
+      ? { liveRef: true as const }
+      : {}),
+    type: DYN,
+    loc,
+  };
+  const raw: IrExpr = {
+    kind: "libCall",
+    fn: "json.stringifyReplacer",
+    args: [boxed, dynUndefinedExpr(loc), { kind: "strLit", value: indent, type: STRING, loc }],
+    type: DYN,
+    loc,
+  };
+  return { kind: "dynCheck", value: raw, type: lowerer.withUndefinedArm(STRING), loc };
+}
+
+/** A root whose answer is fixed by its value still evaluates every argument
+ * expression, in source order: Node runs the root's own expression (a
+ * `(f(), null)` operand keeps its call) and the replacer/space expressions
+ * before the serializer can answer. */
+function constantStringifyRoot(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  rootValue: IrExpr | null,
+  result: IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  const stmts: IrStmt[] = [];
+  call.arguments.nodes.forEach((node, index) => {
+    const value = index === 0 && rootValue !== null ? rootValue : lowerer.lowerExpr(node);
+    for (const stmt of evalOnlyStmts(value)) stmts.push(stmt);
+  });
+  return stmts.length === 0 ? result : { kind: "seqExpr", stmts, result, type: result.type, loc };
+}
+
+/** The statements that evaluate `value` for its effects alone: a unit or a
+ * sequence ending in one contributes only its own effects (a bare unit
+ * literal is not a value the emitter may write). */
+function evalOnlyStmts(value: IrExpr): IrStmt[] {
+  if (value.kind === "unitLit") return [];
+  if (value.kind === "seqExpr") return [...value.stmts, ...evalOnlyStmts(value.result)];
+  return [{ kind: "exprStmt", expr: value, loc: value.loc }];
 }
 
 function lowerOptionalStringifyRoot(

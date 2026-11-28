@@ -191,6 +191,7 @@ const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
   "stream.isDyn",
   "stream.stateDyn",
   "stream.dynIterableSource",
+  "stream.dynHandsValue",
   "stream.dynSourceValue",
   "stream.unboxDynStage",
   "stream.dynTransformResult",
@@ -353,6 +354,8 @@ const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
   // proxy trap may run) and raise ECMA-402's RangeError and TypeError;
   // format raises RangeError for a time value out of range.
   "icu.numberFormatNew",
+  "icu.listFormatNew",
+  "icu.listFormatFormat",
   "icu.numberFormatFormat",
   "icu.numberFormatFormatDyn",
 ];
@@ -484,6 +487,7 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "http.resOnWriteFlush",
   "http.resWriteProcessingCb",
   "http.resWriteEarlyHintsCb",
+  "http.resWriteInformationCb",
   "http.validateHeaderName",
   "http.validateHeaderValue",
   "http.setMaxIdleParsers",
@@ -594,6 +598,10 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   // setMaxSendFragment throws Node's ERR_OUT_OF_RANGE for NaN, an infinity
   // or a fraction.
   "tls.sockSetMaxFragment",
+  // setSession throws Node's ERR_INVALID_ARG_TYPE ("Session must be a
+  // buffer") for an argument that is neither a Buffer, a typed array nor a
+  // string.
+  "tls.sockSetSession",
   "net.sockWriteDyn",
   "net.sockEndDyn",
   // socket.write/end(data, encoding): Buffer.from's encoding ladder throws

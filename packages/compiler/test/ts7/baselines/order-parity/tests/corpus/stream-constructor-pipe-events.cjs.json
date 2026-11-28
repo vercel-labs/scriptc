@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/stream-constructor-pipe-events.cjs"
+ ],
+ "diags": []
+}

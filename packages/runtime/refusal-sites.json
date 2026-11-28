@@ -853,6 +853,12 @@
  },
  {
   "file": "scr_http2.c",
+  "function": "scr_http2_perform_server_handshake_opts",
+  "message": "http2 maxSessionMemory is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_http2.c",
   "function": "scr_h2_settings_validate",
   "message": "HTTP/2 customSettings are not supported yet",
   "code": "SC2020"
@@ -2487,12 +2493,6 @@
   "file": "scr_stream.c",
   "function": "scr_stream_dynopt_unsupported",
   "message": "",
-  "code": "SC2020"
- },
- {
-  "file": "scr_stream.c",
-  "function": "scr_stream_on_dyn",
-  "message": "this stream event has no checked-dynamic listener adapter",
   "code": "SC2020"
  },
  {

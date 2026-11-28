@@ -20735,6 +20735,7 @@
           "tests/corpus/crypto-kem-crypto-key.ts",
           "tests/corpus/crypto-kem-dhkem.ts",
           "tests/corpus/crypto-kem-rsa.ts",
+          "tests/corpus/crypto-key-object-matrix.mjs",
           "tests/corpus/crypto-key-object-properties.ts",
           "tests/corpus/crypto-key-sources.cjs",
           "tests/corpus/crypto-ml-kem-callback-errors.ts",
@@ -21519,7 +21520,8 @@
           "tests/corpus/crypto-dh-key-parse.mjs",
           "tests/fixtures/node-types/keys.ts",
           "tests/corpus/crypto-key-sources.cjs",
-          "tests/harness/crypto-unsupported-audit.test.ts"
+          "tests/harness/crypto-unsupported-audit.test.ts",
+          "tests/corpus/crypto-key-object-matrix.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -21575,7 +21577,8 @@
           "tests/corpus/crypto-dh-key-parse.mjs",
           "tests/fixtures/node-types/keys.ts",
           "tests/corpus/crypto-key-sources.cjs",
-          "tests/harness/crypto-unsupported-audit.test.ts"
+          "tests/harness/crypto-unsupported-audit.test.ts",
+          "tests/corpus/crypto-key-object-matrix.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -21843,7 +21846,8 @@
           "tests/corpus/crypto-dh-key-parse.mjs",
           "tests/fixtures/node-types/keys.ts",
           "tests/corpus/crypto-key-sources.cjs",
-          "tests/harness/crypto-unsupported-audit.test.ts"
+          "tests/harness/crypto-unsupported-audit.test.ts",
+          "tests/corpus/crypto-key-object-matrix.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -21876,7 +21880,8 @@
           "tests/corpus/crypto-dh-key-parse.mjs",
           "tests/fixtures/node-types/keys.ts",
           "tests/corpus/crypto-key-sources.cjs",
-          "tests/harness/crypto-unsupported-audit.test.ts"
+          "tests/harness/crypto-unsupported-audit.test.ts",
+          "tests/corpus/crypto-key-object-matrix.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -94498,6 +94503,7 @@
           "tests/corpus/compat-stream-state.mjs",
           "tests/corpus/compat-stream-state.ts",
           "tests/corpus/fs-stream-erased-open-listener.ts",
+          "tests/corpus/stream-async-disposal.mjs",
           "tests/corpus/stream-duplex-from-web.ts",
           "tests/corpus/stream-duplex-pair.ts",
           "tests/corpus/stream-duplex-to-web.ts",
@@ -94511,6 +94517,7 @@
           "tests/corpus/stream-readable-to-web-untyped.mjs",
           "tests/corpus/stream-readable-to-web-zero-hwm.mjs",
           "tests/corpus/stream-readable-to-web.ts",
+          "tests/corpus/stream-reader-iterator.mjs",
           "tests/corpus/stream-set-default-hwm.ts",
           "tests/corpus/stream-set-encoding-hwm.ts",
           "tests/corpus/stream-web-predicates-js.cjs",
@@ -96289,9 +96296,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.writable",
         "tests": [
+          "tests/corpus/stream-async-disposal.mjs",
           "tests/corpus/compat-stream-getters.mjs",
           "tests/corpus/compat-stream-getters.ts",
           "tests/corpus/compat-stream-async-dispose.mjs",
@@ -96435,9 +96443,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.writableAborted",
         "tests": [
+          "tests/corpus/stream-async-disposal.mjs",
           "tests/corpus/compat-stream-getters.mjs",
           "tests/corpus/compat-stream-getters.ts",
           "tests/corpus/compat-stream-async-dispose.mjs",
@@ -97338,9 +97347,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.readable",
         "tests": [
+          "tests/corpus/stream-async-disposal.mjs",
           "tests/corpus/compat-stream-getters.mjs",
           "tests/corpus/compat-stream-getters.ts",
           "tests/corpus/compat-stream-async-dispose.mjs",
@@ -97394,9 +97404,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.readable.iterator",
         "tests": [
+          "tests/corpus/stream-reader-iterator.mjs",
           "tests/corpus/1746-stream-for-await.ts",
           "tests/corpus/2861-readable-iterator-close.ts"
         ]
@@ -97829,9 +97840,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.readableAborted",
         "tests": [
+          "tests/corpus/stream-async-disposal.mjs",
           "tests/corpus/compat-stream-getters.mjs",
           "tests/corpus/compat-stream-getters.ts",
           "tests/corpus/compat-stream-async-dispose.mjs",
@@ -97858,9 +97870,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.readableDidRead",
         "tests": [
+          "tests/corpus/stream-async-disposal.mjs",
           "tests/corpus/compat-stream-getters.mjs",
           "tests/corpus/compat-stream-getters.ts",
           "tests/corpus/compat-stream-async-dispose.mjs",
@@ -97887,9 +97900,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.readableEncoding",
         "tests": [
+          "tests/corpus/stream-async-disposal.mjs",
           "tests/corpus/compat-stream-getters.mjs",
           "tests/corpus/compat-stream-getters.ts",
           "tests/corpus/compat-stream-async-dispose.mjs",

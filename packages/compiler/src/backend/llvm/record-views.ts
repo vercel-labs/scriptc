@@ -52,6 +52,7 @@ import {
   KEY_ORDER_FIELD,
   shapeHasAccessorSlots,
   shapeKeyOrders,
+  RECORD_VIEW_LEAF_KINDS as LEAF_KINDS,
   typeKey,
   type IrModule,
   type IrRecordShape,
@@ -133,25 +134,6 @@ interface ViewOptions {
   /** The program starts worker threads: it plans partial views only. */
   readonly workers?: boolean;
 }
-
-/** Value kinds that hold no reference to a record. */
-const LEAF_KINDS: ReadonlySet<IrType["kind"]> = new Set([
-  "f64",
-  "bool",
-  "string",
-  "bigint",
-  "date",
-  "regex",
-  "bytes",
-  "symbol",
-  "url",
-  "searchParams",
-  "stats",
-  "bigintStats",
-  "undefinedT",
-  "nullT",
-  "void",
-]);
 
 function plainShape(shape: IrRecordShape, allowEmpty = false): boolean {
   return (

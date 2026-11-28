@@ -66,6 +66,8 @@ ScrStr *scr_intl_locale_value(ScrDyn *value);
  * checked-dynamic value (a number, or undefined). +1 results; NULL with the
  * exception pending. */
 ScrDyn *scr_intl_number_format_new(ScrStr *locale, ScrDyn *options);
+ScrDyn *scr_intl_list_format_new(ScrStr *locale, ScrDyn *options);
+ScrStr *scr_intl_list_format_format(ScrDyn *format, ScrDyn *list);
 ScrStr *scr_intl_number_format_format(ScrDyn *format, double x);
 ScrStr *scr_intl_number_format_format_dyn(ScrDyn *format, ScrDyn *value);
 ScrStr *scr_intl_number_to_locale_string(double x, ScrStr *locale, ScrDyn *options);

@@ -3271,6 +3271,35 @@ export function lowerInExpression(
         `'in' with the key '${key}' on Error receivers (code answers from the error's code slot; message and name are always present)`,
       );
     }
+    // A private name is not a property key: the string "#x" never reaches a
+    // class's private field, only a string property the program wrote under
+    // that exact name. The declaration cannot answer such a key, so the test
+    // reads the instance's runtime property state; an instance with no
+    // checked-dynamic view holds no such property.
+    if (key.startsWith("#")) {
+      if (lowerer.dynConvertible(recv.type)) {
+        return {
+          kind: "libCall",
+          fn: "dyn.in",
+          args: [
+            lowerer.coerceToExpected(recv, DYN),
+            { kind: "strLit", value: key, type: STRING, loc },
+          ],
+          type: BOOL,
+          loc,
+        };
+      }
+      const answer: IrExpr = { kind: "boolLit", value: false, type: BOOL, loc };
+      return isSafeToDiscard(recv)
+        ? answer
+        : {
+            kind: "seqExpr",
+            stmts: [{ kind: "exprStmt", expr: recv, loc }],
+            result: answer,
+            type: BOOL,
+            loc,
+          };
+    }
     // A plain compiled class (no Error root): every instance carries its
     // declared fields and prototype members, so membership answers from the
     // declaration (classInstanceIn). A receiver that is not a stable read

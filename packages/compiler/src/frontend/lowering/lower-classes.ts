@@ -7543,6 +7543,23 @@ export function analyzeClassDecoration(lowerer: Lowerer, info: ClassInfo): void 
         cd.nodes[0]!,
         `legacy class decorators that the compiled call cannot verify on '${display}', which has subclasses ('${info.subclasses[0]!.def.jsName ?? info.subclasses[0]!.def.name}' extends '${display}': a replacement constructor would be bypassed by the compiled subclass — decorate the leaf classes)`,
       );
+    // A class whose base comes from a factory call answers its statics
+    // through the run-time base, and a decoration body cannot read or
+    // replace those statics there; typed static calls keep reading the
+    // compiled method, so a decorator that installs a replacement would be
+    // bypassed (and its reads of the statics differ from Node's). Refuse
+    // the combination instead of compiling it with the guard skipped.
+    if (
+      (info.factoryBaseExpression !== undefined || info.def.baseValueGlobal !== undefined) &&
+      ((info.staticMethods?.size ?? 0) > 0 ||
+        info.staticFields.length > 0 ||
+        (info.staticBlocks?.length ?? 0) > 0)
+    )
+      lowerer.unsupported(
+        "SC1090",
+        cd.nodes[0]!,
+        "legacy class decorators on a class whose base comes from a factory call and that declares static members (the decorator cannot observe or replace those statics, and typed static calls keep the compiled method — extend a named class, or declare the statics on the named base)",
+      );
     const typedReplace = shapes.some((s) => s.kind === "call" && s.replaces);
     if (typedReplace || shapes.some((s) => s.kind === "dynamic")) {
       // The name can rebind at runtime: every reference must route
@@ -14161,7 +14178,7 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   const intl = ts.isPropertyAccessExpression(intlConstructor)
     ? lowerer.stdlibGlobalMember(intlConstructor, "Intl")
     : null;
-  if (intl === "NumberFormat" || intl === "DateTimeFormat")
+  if (intl === "NumberFormat" || intl === "DateTimeFormat" || intl === "ListFormat")
     return lowerIntlFormatterNew(lowerer, expr, intl);
   if (intl && intl !== "Segmenter")
     lowerer.noLowering(

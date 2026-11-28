@@ -1,0 +1,13 @@
+class-extends-generic-member-base/main.ts:5:19 - error SC1090: extending the generic class 'Box' through 'dep["Box"]' (its instantiation is not modeled here — extend a non-generic class, or name the base by its instantiated class) is not supported yet
+
+  4 | import * as dep from "./dep.ts";
+  5 | class Sub extends dep["Box"] {}
+    |                   ^~~~~~~~~~
+  6 | console.log("ok", (new Sub() as unknown as { value: string }).value);
+
+class-extends-generic-member-base/main.ts:6:20 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
+
+  5 | class Sub extends dep["Box"] {}
+  6 | console.log("ok", (new Sub() as unknown as { value: string }).value);
+    |                    ^~~~~~~~~
+  7 | 

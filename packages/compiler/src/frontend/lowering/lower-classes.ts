@@ -2407,6 +2407,77 @@ function widenJsFieldsForUndefinedWrites(
   }
 }
 
+/** Whether `expr` names a member of a namespace binding without evaluating
+ * anything: a dotted chain of identifiers (`a.B`, `a.b.C`) or string-literal
+ * element accesses (`a["B"]`), never a computed key, call, or `this`. The
+ * heritage path resolves such a member statically, so the expression is not
+ * evaluated at the class statement; anything with a possible effect keeps
+ * the computed-expression fence. */
+function sideEffectFreeHeritageMember(expr: ts.Expression): boolean {
+  let current: ts.Expression = expr;
+  for (;;) {
+    if (ts.isPropertyAccessExpression(current)) {
+      if (current.questionDotToken !== undefined) return false;
+      current = current.expression;
+      continue;
+    }
+    if (ts.isElementAccessExpression(current)) {
+      if (current.questionDotToken !== undefined) return false;
+      const key = current.argumentExpression;
+      if (!ts.isStringLiteralLike(key)) return false;
+      current = current.expression;
+      continue;
+    }
+    return ts.isIdentifier(current);
+  }
+}
+
+/** The root binding of a member heritage expression (`dep.a.B` ->
+ * `dep`), or null when the chain does not start at an identifier. */
+function heritageRootIdentifier(expr: ts.Expression): ts.Identifier | null {
+  let current: ts.Expression = expr;
+  for (;;) {
+    if (ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current)) {
+      current = current.expression;
+      continue;
+    }
+    return ts.isIdentifier(current) ? current : null;
+  }
+}
+
+/** Whether the binding `root` holds a value before the class `decl`
+ * evaluates. An import declaration's alias is initialized by the module's
+ * imports; an `import x = require(...)` alias is initialized where its
+ * statement runs, so it must precede the class like a variable; a
+ * same-module variable must be declared with an initializer in a statement
+ * that precedes the class. A binding declared in another module is
+ * initialized by that module's evaluation. */
+function heritageBindingInitializedBefore(
+  lowerer: Lowerer,
+  root: ts.Identifier,
+  decl: ts.ClassLikeDeclaration,
+): boolean {
+  const symbol = lowerer.checker.getSymbolAtLocation(root);
+  if (symbol === undefined) return true;
+  const declaration = symbol.valueDeclaration;
+  if (declaration === undefined) return true;
+  const declarationNode = declaration as unknown as ts.Node;
+  const declarationFile = ts.getSourceFileOfNode(declarationNode);
+  if (declarationFile !== ts.getSourceFileOfNode(decl)) return true;
+  if ((symbol.flags & ts.SymbolFlags.Alias) !== 0) {
+    // `import dep = require("./x")` runs where its statement runs; a plain
+    // import declaration is hoisted and initialized before any statement.
+    if (!ts.isImportEqualsDeclaration(declarationNode)) return true;
+    return ts.tokenStartOfNode(declarationNode) < ts.tokenStartOfNode(decl);
+  }
+  if (!ts.isVariableDeclaration(declarationNode)) return true;
+  const statement = declarationNode.parent?.parent;
+  if (statement === undefined || !ts.isVariableStatement(statement)) return true;
+  if (statement.parent !== ts.getSourceFileOfNode(decl)) return true;
+  if (declarationNode.initializer === undefined) return false;
+  return ts.tokenStartOfNode(statement) < ts.tokenStartOfNode(decl);
+}
+
 export function collectClassShapeInner(
   lowerer: Lowerer,
   decl: ts.ClassLikeDeclaration,
@@ -3060,6 +3131,59 @@ export function collectClassShapeInner(
       ) {
         lowerer.pushDiag(nativeSubclassOfIslandDiag(locOf(t)));
         throw new PoisonError();
+      }
+      // `class X extends ns.Base` (a class named through a module
+      // namespace, the form compiled CommonJS packages write): the property
+      // resolves to the class itself, so the base is that class — the same
+      // chain an identifier base takes. Only a SIDE-EFFECT-FREE member of
+      // the namespace is admitted: the static base is resolved at compile
+      // time and the heritage expression is not evaluated at the class
+      // statement, so a computed key (`ns[f()]`) or any other evaluation in
+      // the expression would silently lose its effects. Those keep the
+      // computed-expression fence.
+      if (
+        t &&
+        !t.typeArguments?.nodes &&
+        (ts.isPropertyAccessExpression(t.expression) ||
+          ts.isElementAccessExpression(t.expression)) &&
+        sideEffectFreeHeritageMember(t.expression)
+      ) {
+        let symbol = lowerer.checker.getSymbolAtLocation(t.expression);
+        // `ns["Base"]`: the checker may not resolve an element access, so the
+        // member is looked up in the receiver's export table by its
+        // (string-literal) name.
+        if (
+          symbol === undefined &&
+          ts.isElementAccessExpression(t.expression) &&
+          ts.isStringLiteralLike(t.expression.argumentExpression)
+        ) {
+          let receiver = lowerer.checker.getSymbolAtLocation(t.expression.expression);
+          if (receiver !== undefined && (receiver.flags & ts.SymbolFlags.Alias) !== 0)
+            receiver = lowerer.checker.getAliasedSymbol(receiver);
+          symbol = receiver
+            ?.getExports()
+            .get(ts.escapedSymbolName(t.expression.argumentExpression.text));
+        }
+        if (symbol !== undefined && (symbol.flags & ts.SymbolFlags.Alias) !== 0)
+          symbol = lowerer.checker.getAliasedSymbol(symbol);
+        const info = symbol === undefined ? undefined : lowerer.classBySymbol.get(symbol);
+        if (info !== undefined && info.decl !== null) {
+          if (info.generic !== undefined)
+            lowerer.unsupported(
+              "SC1090",
+              t,
+              `extending the generic class '${info.def.jsName ?? info.def.name}' through '${ts.getTextOfNode(t.expression)}' (its instantiation is not modeled here — extend a non-generic class, or name the base by its instantiated class)`,
+            );
+          const root = heritageRootIdentifier(t.expression);
+          if (root !== null && !heritageBindingInitializedBefore(lowerer, root, decl))
+            lowerer.unsupported(
+              "SC1090",
+              t,
+              `extending '${ts.getTextOfNode(t.expression)}' above the statement that initializes its binding (the value is still undefined when this class evaluates — Node throws here; initialize it first)`,
+            );
+          base = info;
+          continue;
+        }
       }
       if (!t || !ts.isIdentifier(t.expression)) {
         if (t && adoptCallableBase(t.expression)) continue;

@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/class-extends-generic-member-base/dep.ts",
+  "<repo>/tests/diagnostics/class-extends-generic-member-base/main.ts"
+ ],
+ "diags": []
+}

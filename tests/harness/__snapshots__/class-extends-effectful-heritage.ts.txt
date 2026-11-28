@@ -1,0 +1,13 @@
+class-extends-effectful-heritage.ts:10:11 - error SC1090: extending computed expressions are not supported yet
+
+   9 | }
+  10 | class Sub extends ns[key()] {}
+     |           ^~~~~~~~~~~~~~~~~
+  11 | console.log("calls", calls, new Sub() instanceof ns.Base);
+
+class-extends-effectful-heritage.ts:11:29 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
+
+  10 | class Sub extends ns[key()] {}
+  11 | console.log("calls", calls, new Sub() instanceof ns.Base);
+     |                             ^~~~~~~~~
+  12 | 

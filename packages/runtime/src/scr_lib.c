@@ -18456,6 +18456,17 @@ ScrDyn *scr_dyn_native_date_new_fields(const ScrDyn *arguments) {
     scr_date_new_local(fields[0], fields[1], fields[2], fields[3], fields[4], fields[5], fields[6]));
 }
 
+/* `new Date(...)` through a stored global constructor: installed from main()
+ * only for programs whose features reach Date (date.* calls, a date IR type,
+ * a read of the global Date, or a Node island). */
+static ScrDyn *dyn_ctor_date(const ScrDyn *args, size_t argc) {
+  return argc == 0 ? scr_dyn_native_date_new(args)
+       : argc == 1 ? scr_dyn_native_date_new_value(args)
+       : scr_dyn_native_date_new_fields(args);
+}
+
+ScrDynGlobalCtorFn scr_dyn_ctor_date_vtable(void) { return dyn_ctor_date; }
+
 /* The Date.prototype methods scr_native_date_invoke answers. */
 static const char *const scr_native_date_methods[] = {
   "getTime", "valueOf", "toISOString", "toJSON", "toString", scr_date_to_date_string_name,

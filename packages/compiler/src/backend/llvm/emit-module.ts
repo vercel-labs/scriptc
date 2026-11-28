@@ -835,6 +835,32 @@ export function emitModuleParts(emitter: LlEmitter): TextPart[] {
   // Programs that read Symbol.toPrimitive install ToNumber's
   // Symbol.toPrimitive step; the others do not link it.
   const usesToPrimitiveNumber = runtimeFeatures.toPrimitiveNumber;
+  // A program that links the dynamic-invoke unit installs the handle
+  // `.constructor` hooks from main(). They used to ride an .init_array
+  // constructor, which kept Date, Map, Set and Weak* linked in every
+  // dynamic program; each constructor family is installed separately, and
+  // only when the program can reach it. The predicate matches the pack's
+  // selection of scr_dyn_invoke.c: any("dynInvoke", "nativeFetch",
+  // "nodeIsland") at runtime-pack-matrix.mjs:114, where the link feature
+  // dynInvoke is the fact OR fsWebStream OR fsOpenAsBlob
+  // (executable-features.ts). An island can hand any of these values across
+  // the bridge, so it enables every family.
+  const dynConstructorAny =
+    runtimeFeatures.dynConstructorAny === true || runtimeFeatures.nodeIsland === true;
+  const usesDynConstructors =
+    runtimeFeatures.dynInvoke === true ||
+    runtimeFeatures.fsWebStream === true ||
+    runtimeFeatures.fsOpenAsBlob === true ||
+    runtimeFeatures.fetch === true ||
+    runtimeFeatures.nodeIsland === true;
+  const usesDynCtorDate =
+    usesDynConstructors && (runtimeFeatures.date === true || dynConstructorAny);
+  const usesDynCtorCollections =
+    usesDynConstructors &&
+    (runtimeFeatures.mapSet === true ||
+      runtimeFeatures.dynCollections === true ||
+      runtimeFeatures.weakCollections === true ||
+      dynConstructorAny);
   const snapshotsTlsCa = runtimeFeatures.tls || runtimeFeatures.tlsCa;
   // The process verdict has the same precedence as the C reference
   // emitter: node:test owns the final status when present; otherwise an
@@ -915,6 +941,9 @@ export function emitModuleParts(emitter: LlEmitter): TextPart[] {
   if (usesDynBufferMembers) emitter.declare(`declare void @scr_bytes_buffer_members_install()`);
   if (usesSymbolFor) emitter.declare(`declare void @scr_sym_for_install()`);
   if (usesToPrimitiveNumber) emitter.declare(`declare void @scr_dyn_to_primitive_number_install()`);
+  if (usesDynConstructors) emitter.declare(`declare void @scr_dyn_global_constructor_install()`);
+  if (usesDynCtorDate) emitter.declare(`declare void @scr_dyn_ctor_date_install()`);
+  if (usesDynCtorCollections) emitter.declare(`declare void @scr_dyn_ctor_collections_install()`);
 
   if (usesNodeTest) {
     emitter.declare(`declare i32 @scr_test_exit_code()`);
@@ -1735,6 +1764,9 @@ export function emitModuleParts(emitter: LlEmitter): TextPart[] {
     ...(usesDynBufferMembers ? [`  call void @scr_bytes_buffer_members_install()`] : []),
     ...(usesSymbolFor ? [`  call void @scr_sym_for_install()`] : []),
     ...(usesToPrimitiveNumber ? [`  call void @scr_dyn_to_primitive_number_install()`] : []),
+    ...(usesDynConstructors ? [`  call void @scr_dyn_global_constructor_install()`] : []),
+    ...(usesDynCtorDate ? [`  call void @scr_dyn_ctor_date_install()`] : []),
+    ...(usesDynCtorCollections ? [`  call void @scr_dyn_ctor_collections_install()`] : []),
     ...(usesNet ? [`  call void @scr_net_install()`, `  call void @scr_net_dyn_install()`] : []),
     ...(usesWebSocket && !usesNet ? [`  call void @scr_net_install()`] : []),
     ...(usesNetLookup ? [`  call void @scr_net_lookup_install()`] : []),

@@ -1410,6 +1410,32 @@ extern ScrDyn *(*scr_dyn_global_constructor_opt_hook)(const char *name);
  * `constructor` (a DataView's, a DOMException's) with the global's own value
  * where it is set and keeps its named refusal where it is NULL. */
 extern ScrDyn *(*scr_dyn_global_constructor_hook)(const ScrStr *name);
+/* The constructors a dynamic `new` of an interned global builds, installed
+ * by the compiler from main() only for programs whose features reach the
+ * family (date / mapSet / weakCollections / nodeIsland). A NULL hook answers
+ * the same TypeError a class whose implementing unit is not linked raises;
+ * a program that never constructs one keeps the family's unit out of the
+ * link through section collection. `args` is the argument array and `argc`
+ * its length, exactly as dyn_global_construct receives them. */
+typedef ScrDyn *(*ScrDynGlobalCtorFn)(const ScrDyn *args, size_t argc);
+/* Installs the handle `.constructor` hooks scr_json.c reads. Emitted from
+ * main() for every program that links this unit (features.dynInvoke), which
+ * is exactly when the startup constructor used to run. */
+void scr_dyn_global_constructor_install(void);
+/* Installs one constructor family. The install functions live here, in the
+ * optional unit, and ask the family's unit for its hook: the only symbol
+ * edge is from this unit to an always-linked base unit (scr_lib.c) or to
+ * scr_json.c, so no always-linked unit carries an undefined reference to an
+ * optional one on any object format. Emitted from main() only when the
+ * program links this unit and can reach the family. */
+void scr_dyn_ctor_date_install(void);
+/* Map, Set, WeakMap, WeakSet and WeakRef (all five live in scr_json.c). */
+void scr_dyn_ctor_collections_install(void);
+/* The family's hook, defined by the unit that builds it (scr_lib.c's Date,
+ * scr_json.c's collections). */
+ScrDynGlobalCtorFn scr_dyn_ctor_date_vtable(void);
+/* Fills `out` in order: Map, Set, WeakMap, WeakSet, WeakRef. */
+void scr_dyn_ctor_collections_vtable(ScrDynGlobalCtorFn *out);
 /* The interned function value of an error constructor ("TypeError"), or
  * NULL for other names. */
 ScrDyn *scr_dyn_error_constructor(const char *name);

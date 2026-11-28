@@ -2732,6 +2732,17 @@ static void dyn_unsupported_constructor(const char *name, ScrDyn **result) {
   *result = NULL;
 }
 
+/* The constructor families a dynamic `new` builds from another unit. NULL
+ * until the compiler's main() emits the family's install call (defined
+ * below); a program that never reaches one keeps the family's unit out of
+ * the link. */
+static ScrDynGlobalCtorFn scr_dyn_ctor_date_fn;
+static ScrDynGlobalCtorFn scr_dyn_ctor_map_fn;
+static ScrDynGlobalCtorFn scr_dyn_ctor_set_fn;
+static ScrDynGlobalCtorFn scr_dyn_ctor_weakmap_fn;
+static ScrDynGlobalCtorFn scr_dyn_ctor_weakset_fn;
+static ScrDynGlobalCtorFn scr_dyn_ctor_weakref_fn;
+
 static bool dyn_global_construct(const ScrDyn *callee, const ScrDyn *args, ScrDyn **result) {
   if (callee->kind != SCR_DYN_FUNC || callee->v.fn.thunk != dyn_global_ctor_call) return false;
   const char *name = callee->v.fn.clo->fn;
@@ -2741,17 +2752,32 @@ static bool dyn_global_construct(const ScrDyn *callee, const ScrDyn *args, ScrDy
   bool primitive = first->kind == SCR_DYN_NUM || first->kind == SCR_DYN_STR || first->kind == SCR_DYN_BOOL ||
                    first->kind == SCR_DYN_BIGINT || first->kind == SCR_DYN_SYMBOL;
   if (strcmp(name, dyn_s26) == 0 && !primitive) *result = dyn_global_ctor_call(callee->v.fn.clo, items, argc);
-  else if (strcmp(name, dyn_s29) == 0)
-    *result = argc == 0 ? scr_dyn_native_date_new(args)
-            : argc == 1 ? scr_dyn_native_date_new_value(args)
-            : scr_dyn_native_date_new_fields(args);
+  else if (strcmp(name, dyn_s29) == 0) {
+    if (scr_dyn_ctor_date_fn) *result = scr_dyn_ctor_date_fn(args, argc);
+    else dyn_unsupported_constructor(name, result);
+  }
   else if (strcmp(name, dyn_s25) == 0)
     *result = dyn_regex_construct(first, argc > 1 ? items[1] : scr_dyn_undefined(), false);
-  else if (strcmp(name, dyn_s30) == 0) *result = scr_dyn_native_map_new(first);
-  else if (strcmp(name, dyn_s31) == 0) *result = scr_dyn_native_set_new(first);
-  else if (strcmp(name, dyn_s22) == 0) *result = scr_weak_map_new((ScrDyn *)first);
-  else if (strcmp(name, dyn_s24) == 0) *result = scr_weak_set_new((ScrDyn *)first);
-  else if (strcmp(name, dyn_s49) == 0) *result = scr_weak_ref_new((ScrDyn *)first);
+  else if (strcmp(name, dyn_s30) == 0) {
+    if (scr_dyn_ctor_map_fn) *result = scr_dyn_ctor_map_fn(args, argc);
+    else dyn_unsupported_constructor(name, result);
+  }
+  else if (strcmp(name, dyn_s31) == 0) {
+    if (scr_dyn_ctor_set_fn) *result = scr_dyn_ctor_set_fn(args, argc);
+    else dyn_unsupported_constructor(name, result);
+  }
+  else if (strcmp(name, dyn_s22) == 0) {
+    if (scr_dyn_ctor_weakmap_fn) *result = scr_dyn_ctor_weakmap_fn(args, argc);
+    else dyn_unsupported_constructor(name, result);
+  }
+  else if (strcmp(name, dyn_s24) == 0) {
+    if (scr_dyn_ctor_weakset_fn) *result = scr_dyn_ctor_weakset_fn(args, argc);
+    else dyn_unsupported_constructor(name, result);
+  }
+  else if (strcmp(name, dyn_s49) == 0) {
+    if (scr_dyn_ctor_weakref_fn) *result = scr_dyn_ctor_weakref_fn(args, argc);
+    else dyn_unsupported_constructor(name, result);
+  }
   else if (strcmp(name, dyn_s50) == 0) {
     /* One construction: a probe call in the condition built a second channel, and the first
      * was never released. Without a worker build there is no channel, and the construction is
@@ -2834,10 +2860,24 @@ ScrDyn *scr_dyn_global_constructor_opt(const char *name) {
   return dyn_global_ctor(name);
 }
 
+void scr_dyn_ctor_date_install(void) { scr_dyn_ctor_date_fn = scr_dyn_ctor_date_vtable(); }
+
+void scr_dyn_ctor_collections_install(void) {
+  ScrDynGlobalCtorFn fns[5];
+  scr_dyn_ctor_collections_vtable(fns);
+  scr_dyn_ctor_map_fn = fns[0];
+  scr_dyn_ctor_set_fn = fns[1];
+  scr_dyn_ctor_weakmap_fn = fns[2];
+  scr_dyn_ctor_weakset_fn = fns[3];
+  scr_dyn_ctor_weakref_fn = fns[4];
+}
+
 /* A value's `constructor` (a DataView's, a DOMException's) is answered through
  * this hook (scr_json.c) with the global's own interned value. A program that
- * never asks does not link this unit, and the read keeps its named refusal. */
-__attribute__((constructor)) static void dyn_global_constructor_hook_install(void) {
+ * never asks does not link this unit, and the read keeps its named refusal.
+ * main() emits this call for every program that links the unit
+ * (features.dynInvoke), where the startup constructor used to run. */
+void scr_dyn_global_constructor_install(void) {
   scr_dyn_global_constructor_hook = scr_dyn_global_constructor;
   scr_dyn_global_constructor_opt_hook = scr_dyn_global_constructor_opt;
 }

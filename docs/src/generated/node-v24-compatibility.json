@@ -32972,8 +32972,8 @@
       },
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
+        "verification": "verified-absence"
       }
     },
     {

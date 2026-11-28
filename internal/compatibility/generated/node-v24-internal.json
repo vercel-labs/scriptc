@@ -57184,7 +57184,10 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "evidence": "compiler-feature:globals.FormData",
+        "tests": [
+          "tests/diagnostics/compat-absent-web-globals.ts"
+        ]
       },
       "anchorSource": "exact"
     },

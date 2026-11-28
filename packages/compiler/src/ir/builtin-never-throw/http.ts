@@ -29,4 +29,13 @@ export const httpNeverThrow: readonly IrLibFn[] = [
   "http.serverListeners",
   "http.clientMaxHeadersCountGet",
   "http.clientMaxHeadersCountSet",
+  // req.off(event, cb) / res.off(event, cb): the last entry standing for
+  // the function leaves the event's list; no 'removeListener' event runs.
+  "http.reqOff",
+  "http.resOff",
+  // request.unpipe(destination): the matching pipe edge is released and
+  // the request pauses when nothing else consumes it; no listener runs.
+  "http.reqUnpipeRes",
+  "http.reqUnpipeClient",
+  "http.reqUnpipeSock",
 ];

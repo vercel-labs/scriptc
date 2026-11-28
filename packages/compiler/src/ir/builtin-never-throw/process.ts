@@ -28,4 +28,8 @@ export const processNeverThrow: readonly IrLibFn[] = [
   // The retained frozen config object (built once in scr_process_config);
   // a plain read that cannot raise.
   "process.configValue",
+  // process.off('message'|'disconnect', listener): the entry leaves the
+  // channel's list, or a process without a channel answers without one.
+  "process.offMessage",
+  "process.offDisconnect",
 ];

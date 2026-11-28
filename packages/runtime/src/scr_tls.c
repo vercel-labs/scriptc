@@ -951,6 +951,9 @@ typedef struct ScrTlsCli {
   bool has_own;
   mbedtls_x509_crt own;
   mbedtls_pk_context own_pk;
+  /* tls.connect's checkServerIdentity (+1): the caller's verifier, which
+   * replaces the builtin name check; NULL keeps the builtin. */
+  ScrDyn *check_identity;
   /* tls.connect's session option: the serialized session (getSession's
    * Buffer, mbedTLS's own format) the handshake offers for resumption.
    * A session the engine cannot load is ignored, as Node's engine ignores
@@ -1150,6 +1153,7 @@ static void scr_tls_cli_free(ScrTlsCli *c) {
   mbedtls_x509_crl_free(&c->crl);
   mbedtls_x509_crt_free(&c->own);
   mbedtls_pk_free(&c->own_pk);
+  scr_dyn_release(c->check_identity);
   free(c->hostname);
   free(c->verify_name);
   free(c);
@@ -1207,6 +1211,12 @@ typedef struct ScrTlsSock {
   ScrTlsCli *cli;     /* owned client side, NULL server side */
   bool notify_sent;
   bool established; /* the handshake stood — socket.authorized reads gate on it */
+  /* the handshake returned success but establishment has not run yet: a
+   * custom checkServerIdentity reads the peer certificate in that window */
+  bool handshake_done;
+  /* the custom verifier's Error when it ran with rejectUnauthorized:false
+   * (the socket stays connected and answers unauthorized); +1 */
+  ScrDyn *check_identity_err;
   /* the handshake that stood resumed the session its peer offered (a server's
    * ticket parse ran successfully): isSessionReused answers it */
   bool session_resumed;
@@ -1854,7 +1864,10 @@ static int scr_tls_vrfy_cb(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t
     t->vrfy_chain[depth] = crt;
     if ((size_t)depth + 1 > t->vrfy_chain_len) t->vrfy_chain_len = (size_t)depth + 1;
   }
-  if (depth == 0 && t->cli != NULL && t->cli->hostname == NULL) {
+  if (depth == 0 && t->cli != NULL && t->cli->hostname == NULL &&
+      t->cli->check_identity == NULL) {
+    /* a custom checkServerIdentity replaces the builtin name check (the
+     * chain verdict below still applies) */
     const char *name = t->cli->verify_name;
     if (name == NULL || name[0] == '\0') {
       *flags |= MBEDTLS_X509_BADCERT_CN_MISMATCH;
@@ -1906,6 +1919,11 @@ static int scr_tls_vrfy_cb(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t
    * seen every flag of the walk. The hostname check runs outside Node's
    * X509_verify_cert, so a name mismatch alone leaves the chain verified and
    * the peer list unread: the name error stands. */
+  /* A custom checkServerIdentity replaces the builtin name check: mbedTLS's
+   * own hostname verdict is masked so the caller's verifier decides the
+   * identity (the chain verdict below still applies). */
+  if (t->cli != NULL && t->cli->check_identity != NULL)
+    *flags &= ~(uint32_t)MBEDTLS_X509_BADCERT_CN_MISMATCH;
   t->vrfy_flags |= *flags;
   if (depth == 0 && !t->vrfy_blocked && (t->vrfy_flags & ~(uint32_t) MBEDTLS_X509_BADCERT_CN_MISMATCH) != 0) {
     for (const mbedtls_x509_crt *c = crt->next; c != NULL; c = c->next) {
@@ -2654,6 +2672,70 @@ static void scr_tls_hold_until_immediate(ScrTlsSock *t) {
   (void)scr_set_immediate(cb);
 }
 
+/* tls.connect's checkServerIdentity: the caller's verifier decides the
+ * identity, so the builtin name check is disabled for it (the chain check
+ * stands). Its returned Error fails the connection with that error's
+ * message and code. False when the connection must fail. */
+/* The verified chain as getPeerCertificate's legacy object, leaf linked to
+ * its issuers through vrfy_chain alone. +1 (an object; {} without a chain). */
+static ScrDyn *scr_tls_verified_certificate(ScrTlsSock *t) {
+  ScrDyn *leaf = NULL;
+  ScrDyn *previous = NULL;
+  for (size_t i = 0; i < t->vrfy_chain_len; i++) {
+    const mbedtls_x509_crt *c = t->vrfy_chain[i];
+    if (c == NULL || c->raw.len == 0) break;
+    ScrBytes *der = scr_bytes_new(SCR_BYTES_U8, (double)c->raw.len);
+    memcpy(der->data, c->raw.p, c->raw.len);
+    ScrDyn *object = scr_crypto_x509_legacy_object(der);
+    scr_bytes_release(der);
+    if (leaf == NULL) leaf = object;
+    else scr_dyn_obj_set(previous, "issuerCertificate", 17, object);
+    previous = object;
+  }
+  return leaf != NULL ? leaf : scr_dyn_new_obj();
+}
+
+static bool scr_tls_run_check_identity(ScrTlsSock *t) {
+  /* Node runs the caller's verifier only when the chain verified: a chain
+   * failure stands on its own (the socket answers unauthorized and the
+   * chain's error), and the caller's function never sees a certificate the
+   * chain rejected. */
+  if (mbedtls_ssl_get_verify_result(&t->ssl) != 0) return true;
+  const char *name = t->cli->verify_name != NULL ? t->cli->verify_name : "";
+  ScrStr *host = scr_str_new(name, strlen(name));
+  ScrDyn *hostv = scr_dyn_new_str(host);
+  scr_str_release(host);
+  /* The verifier's certificate is the chain mbedTLS VERIFIED — the verify
+   * callback's walk, leaf at depth 0 — with issuerCertificate built from
+   * those entries only: a peer cannot hang a forged cross-certificate (or a
+   * pasted genuine root) off it the way the metadata-linked public accessor
+   * allows, so issuer pinning inspects the authenticated chain. */
+  ScrDyn *cert = scr_tls_verified_certificate(t);
+  if (cert == NULL) {
+    scr_dyn_release(hostv);
+    return false;
+  }
+  ScrDyn *argv[2] = {hostv, cert};
+  ScrDyn *verdict = scr_dyn_call(t->cli->check_identity, argv, 2, "checkServerIdentity");
+  scr_dyn_release(hostv);
+  scr_dyn_release(cert);
+  if (verdict == NULL) return false; /* the verifier threw: that exception stands */
+  bool ok = verdict->kind == SCR_DYN_UNDEF || verdict->kind == SCR_DYN_NULL;
+  if (ok) {
+    scr_dyn_release(verdict);
+    return true;
+  }
+  if (t->cli->reject) {
+    scr_net_sock_transport_error_obj(t->sock, verdict); /* moves */
+    return false;
+  }
+  /* rejectUnauthorized:false: the verdict leaves the socket unauthorized
+   * and the connection proceeds — Node still fires secureConnect. */
+  scr_dyn_release(t->check_identity_err);
+  t->check_identity_err = verdict; /* moves */
+  return true;
+}
+
 static int scr_tls_handshake(void *tctx) {
   ScrTlsSock *t = (ScrTlsSock *)tctx;
   t->handshake_started = true;
@@ -2685,6 +2767,15 @@ static int scr_tls_handshake(void *tctx) {
     r = MBEDTLS_ERR_SSL_WANT_READ;
   }
 #endif
+  /* A resumed handshake exchanges no certificate, and Node does not run
+   * the caller's verifier for it (the session carries the verdict of the
+   * connection that established it): a pinning callback would otherwise be
+   * handed an empty certificate and reject a valid resumption. */
+  bool resumed = t->cli != NULL && t->cli->has_resume && !t->peer_cert_parsed;
+  if (r == 0 && t->cli != NULL && t->cli->check_identity != NULL && !resumed) {
+    t->handshake_done = true; /* the peer certificate is readable now */
+    if (!scr_tls_run_check_identity(t)) return -1;
+  }
   if (r == 0) {
     scr_tls_hold_until_immediate(t);
   } else {
@@ -2832,6 +2923,7 @@ static void scr_tls_shutdown_write(void *tctx) {
 static void scr_tls_free(void *tctx) {
   ScrTlsSock *t = (ScrTlsSock *)tctx;
   mbedtls_ssl_free(&t->ssl);
+  scr_dyn_release(t->check_identity_err);
   if (t->srv) scr_tls_srv_release(t->srv);
   if (t->cli) scr_tls_cli_free(t->cli);
   scr_net_ls_drop(&t->session_ls);
@@ -2890,6 +2982,15 @@ static void scr_tls_after_established(void *tctx) {
 static void scr_tls_settle(void *tctx) {
   ScrTlsSock *t = (ScrTlsSock *)tctx;
   t->settled = true;
+  /* break the cycle a connection-scoped verifier can form with this
+   * socket: the closure (and the stored verdict) drop at settlement */
+  if (t->cli != NULL) {
+    scr_dyn_release(t->cli->check_identity);
+    t->cli->check_identity = NULL;
+  }
+  /* the stored verdict STAYS: socket.authorized must keep answering false
+   * after 'close' for an identity the verifier rejected (the transport free
+   * releases it) */
   scr_net_ls_drop(&t->secure_ls);
   scr_net_ls_drop(&t->session_ls);
   scr_net_ls_drop(&t->keylog_ls);
@@ -5097,6 +5198,7 @@ static ScrNetSocket *scr_tls_connect_plain(double port, ScrStr *host /*borrowed,
   const ScrDyn *timeout_value = NULL;
   int min_version = 12, max_version = 13;
   ScrNetSocket *wrap = NULL; /* options.socket: the open socket to take over */
+  ScrDyn *check_identity = NULL; /* options.checkServerIdentity (+1) */
   bool ok = true;
   if (opts != NULL && opts->kind != SCR_DYN_UNDEF && opts->kind != SCR_DYN_NULL) {
     if (opts->kind != SCR_DYN_OBJ) {
@@ -5119,9 +5221,9 @@ static ScrNetSocket *scr_tls_connect_plain(double port, ScrStr *host /*borrowed,
           scr_dyn_prop_type_fail("options.checkServerIdentity", "of type function", v);
           ok = false;
         } else {
-          scr_tls_opt_fence("tls.connect", "checkServerIdentity",
-                            "custom identity verification has no lowering — the runtime verifies against the servername/host");
-          ok = false;
+          /* kept for the handshake: it replaces the builtin name check */
+          scr_dyn_release(check_identity);
+          check_identity = scr_dyn_retain((ScrDyn *)v);
         }
         continue;
       }
@@ -5270,6 +5372,7 @@ static ScrNetSocket *scr_tls_connect_plain(double port, ScrStr *host /*borrowed,
     scr_bytes_release(crl);
     scr_bytes_release(own_cert);
     scr_bytes_release(own_key);
+    scr_dyn_release(check_identity);
     scr_bytes_release(session_opt);
     scr_closure_release(cb);
     return NULL;
@@ -5317,6 +5420,15 @@ static ScrNetSocket *scr_tls_connect_plain(double port, ScrStr *host /*borrowed,
   ScrTlsCli *cli = scr_tls_cli_new2(verify_host, reject, scr_tls_ca_data(ca),
                                      ca != NULL ? ca->len : 0, scr_tls_crl_data(crl),
                                      crl != NULL ? crl->len : 0, !reject);
+  cli->check_identity = check_identity; /* moves */
+  check_identity = NULL;
+  if (cli->check_identity != NULL) {
+    /* The caller's verifier reads the peer certificate: record the chain
+     * even when rejectUnauthorized is false (an OPTIONAL verdict never
+     * fails the handshake; the caller's function decides the identity). */
+    if (!cli->reject) mbedtls_ssl_conf_authmode(&cli->conf, MBEDTLS_SSL_VERIFY_OPTIONAL);
+    mbedtls_ssl_conf_ca_chain(&cli->conf, cli->has_ca ? &cli->ca : scr_tls_system_ca(), NULL);
+  }
   if (servername != NULL) scr_tls_cli_set_servername(cli, servername);
   if (session_opt != NULL) scr_tls_cli_set_session(cli, session_opt);
   scr_bytes_release(session_opt);
@@ -6424,11 +6536,27 @@ ScrDyn *scr_tls_sock_dyn_member(ScrNetSocket *s, double which) {
 
 bool scr_tls_sock_authorized(ScrNetSocket *s) {
   ScrTlsSock *t = scr_tls_sock_of(s);
+  if (t != NULL && t->check_identity_err != NULL) return false;
   return t != NULL && scr_tls_sock_verifies(t) && scr_tls_read_verdict(t) == 0;
 }
 
 ScrStr *scr_tls_sock_auth_error(ScrNetSocket *s) {
   ScrTlsSock *t = scr_tls_sock_of(s);
+  if (t != NULL && t->check_identity_err != NULL) {
+    /* the caller's verifier rejected: Node answers the error's code, or its
+     * message when it carries none */
+    ScrDyn *c = scr_dyn_obj_read(t->check_identity_err, "code", 4);
+    if (c != NULL && c->kind == SCR_DYN_STR) {
+      ScrStr *code = scr_str_retain(c->v.str);
+      scr_dyn_release(c);
+      return code;
+    }
+    scr_dyn_release(c);
+    ScrDyn *m = scr_dyn_obj_read(t->check_identity_err, "message", 7);
+    ScrStr *text = m != NULL && m->kind == SCR_DYN_STR ? scr_str_retain(m->v.str) : NULL;
+    scr_dyn_release(m);
+    if (text != NULL) return text;
+  }
   if (t == NULL || !scr_tls_sock_verdict(t) || scr_tls_read_verdict(t) == 0) {
     return NULL; /* the null arm — authorized, or never verified */
   }
@@ -6451,7 +6579,7 @@ bool scr_tls_sock_has_handle(ScrNetSocket *s) {
  * none before the handshake. Answers the count. */
 size_t scr_tls_sock_peer_chain(ScrNetSocket *s, const uint8_t **der, size_t *len, size_t max) {
   ScrTlsSock *t = scr_tls_sock_of(s);
-  if (t == NULL || !t->established) return 0;
+  if (t == NULL || (!t->established && !t->handshake_done)) return 0;
   size_t n = 0;
   for (const mbedtls_x509_crt *c = mbedtls_ssl_get_peer_cert(&t->ssl); c != NULL && c->raw.len > 0 && n < max;
        c = c->next) {

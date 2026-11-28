@@ -646,6 +646,9 @@ void scr_net_sock_transport_report(ScrNetSocket *s, const char *msg, const char 
 /* The same with the error's code given (static storage), for messages
  * whose text does not name it. */
 void scr_net_sock_transport_error_code(ScrNetSocket *s, const char *msg, const char *code);
+/* A transport failure carrying its own error object (moves): the socket
+ * emits that error with its message and code. */
+void scr_net_sock_transport_error_obj(ScrNetSocket *s, ScrDyn *err);
 /* The peer closed before the handshake finished on a wrapped socket:
  * 'end', then 'close' without an error. */
 void scr_net_sock_transport_eof(ScrNetSocket *s);

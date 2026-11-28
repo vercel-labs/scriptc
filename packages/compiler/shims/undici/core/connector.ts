@@ -59,6 +59,27 @@ export function buildConnector(options: ConnectorBuildOptions): Connector {
   const rejectUnauthorized = options.rejectUnauthorized;
   const ca = options.ca;
   const defaultServername = options.servername;
+  // undici hands its whole connect record to the dial; the fields this
+  // connector (or the plain dial) owns are pulled out here and the rest —
+  // the TLS client settings, a pinning checkServerIdentity included — go to
+  // tls.connect, so a reusable TLS option record is applied instead of
+  // silently dropped.
+  const {
+    timeout: _timeout,
+    maxCachedSessions: _maxCachedSessions,
+    socketPath: _socketPath,
+    lookup: _lookup,
+    keepAlive: _keepAlive,
+    keepAliveInitialDelay: _keepAliveInitialDelay,
+    noDelay: _noDelay,
+    autoSelectFamily: _autoSelectFamily,
+    autoSelectFamilyAttemptTimeout: _autoSelectFamilyAttemptTimeout,
+    port: _port,
+    servername: _servername,
+    rejectUnauthorized: _rejectUnauthorized,
+    ca: _ca,
+    ...tlsOptions
+  } = options;
 
   return (params: ConnectorOptions, callback: ConnectorCallback): net.Socket => {
     let pending: ConnectorCallback | null = callback;
@@ -78,6 +99,7 @@ export function buildConnector(options: ConnectorBuildOptions): Connector {
             ? defaultServername
             : serverNameOf(params.host ?? params.hostname);
       socket = tls.connect({
+        ...tlsOptions,
         port,
         host: params.hostname,
         servername,

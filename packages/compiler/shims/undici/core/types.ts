@@ -3,6 +3,7 @@
 // shim implements; test/package-shims/undici-types.test.ts checks them
 // against the installed 5.x and 7.x declarations.
 import type { Socket } from "node:net";
+import type { PeerCertificate } from "node:tls";
 import type { Dispatcher } from "./dispatcher.ts";
 
 /** Response and request header records (undici's IncomingHttpHeaders). */
@@ -105,7 +106,11 @@ export type ConnectorCallback = (err: Error | null, socket: Socket | null) => vo
  * (undici 5 and 7 both return it although their types declare void). */
 export type Connector = (options: ConnectorOptions, callback: ConnectorCallback) => Socket;
 
-/** net/tls connect options a connector forwards (the implemented subset). */
+/** net/tls connect options a connector forwards. undici's buildConnector
+ * hands the caller's whole options record to the dial, so a reusable TLS
+ * record — a pinning identity check, a client certificate, a cipher or
+ * version setting — reaches tls.connect instead of being dropped by a
+ * narrower type. */
 export interface ConnectorBuildOptions {
   timeout?: number | null;
   maxCachedSessions?: number | null;
@@ -114,6 +119,21 @@ export interface ConnectorBuildOptions {
   rejectUnauthorized?: boolean;
   ca?: string | Buffer | (string | Buffer)[];
   servername?: string;
+  /** tls.connect's identity check; it replaces the builtin hostname check */
+  checkServerIdentity?(hostname: string, cert: PeerCertificate): Error | undefined;
+  /** the rest of tls.connect's client settings, forwarded to the TLS dial */
+  key?: string | Buffer | (string | Buffer)[];
+  cert?: string | Buffer | (string | Buffer)[];
+  pfx?: string | Buffer | (string | Buffer)[];
+  passphrase?: string;
+  minVersion?: string;
+  maxVersion?: string;
+  ciphers?: string;
+  crl?: string | Buffer | (string | Buffer)[];
+  ALPNProtocols?: string[] | Uint8Array[];
+  localAddress?: string;
+  /** any other field of the connect record is forwarded too */
+  [option: string]: unknown;
   /** net.connect's resolver hook: @types/node's LookupFunction is
    * assignable (method syntax; the callback takes one address or all). */
   lookup?(

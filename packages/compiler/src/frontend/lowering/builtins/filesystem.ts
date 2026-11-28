@@ -2946,9 +2946,27 @@ function lowerFileHandleStatOptions(
     );
   }
   const representation = inner.kind === "stats" ? "number" : "bigint";
-  const options = lowerer.lowerExprExpecting(optsNode, DYN);
-  if (ts.isObjectLiteralExpression(optsNode)) {
-    for (const property of optsNode.properties.nodes) {
+  // A type-asserted options value is read through the dynamic slot itself:
+  // lowering the CAST would materialize a record view, running its member
+  // getters before the runtime's descriptor check (Node validates the
+  // handle first, so a closed handle never reads them). An object literal
+  // (the checked shape below) keeps its own lowering.
+  let optionsNode = optsNode;
+  while (
+    ts.isParenthesizedExpression(optionsNode) ||
+    ts.isAsExpression(optionsNode) ||
+    ts.isTypeAssertion(optionsNode)
+  )
+    optionsNode = optionsNode.expression;
+  const options = lowerer.lowerExprExpecting(
+    ts.isObjectLiteralExpression(optionsNode) ? optionsNode : optionsNode,
+    DYN,
+  );
+  // The member checks run on the literal even when the call site wrapped it
+  // in a type assertion: a cast must not smuggle a runtime-valued bigint or
+  // an extra option past them.
+  if (ts.isObjectLiteralExpression(optionsNode)) {
+    for (const property of optionsNode.properties.nodes) {
       const member = optionMember(property);
       if (!member || member.name !== "bigint") {
         lowerer.noLowering(
@@ -2957,7 +2975,17 @@ function lowerFileHandleStatOptions(
           "bigint is the supported option",
         );
       }
-      const literal = statBoolLiteral(lowerer, member.value);
+      // A SYNTACTIC literal: `flag as true` has the checker's literal type
+      // but is a runtime value, which would pick the member table at the
+      // call.
+      let boolNode: ts.Expression = member.value;
+      while (ts.isParenthesizedExpression(boolNode)) boolNode = boolNode.expression;
+      const literal =
+        boolNode.kind === ts.SyntaxKind.TrueKeyword
+          ? "true"
+          : boolNode.kind === ts.SyntaxKind.FalseKeyword
+            ? "false"
+            : null;
       if (literal === null) {
         lowerer.noLowering(
           "FileHandle.stat with a bigint option only the runtime knows",

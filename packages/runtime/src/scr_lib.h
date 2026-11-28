@@ -964,6 +964,8 @@ ScrPromise *scr_file_handle_write_file_data_promise(ScrFileHandle *h, const ScrD
                                                     ScrStr *encoding);
 ScrPromise *scr_file_handle_stat_promise(ScrFileHandle *h);
 ScrPromise *scr_file_handle_stat_opts_promise(ScrFileHandle *h, const ScrDyn *options);
+/* The pending exception as a rejected promise (never NULL). */
+ScrPromise *scr_promise_rejected_pending(void);
 
 /* Raw fd operations for worker-pool steps (scr_lib.c): no runtime state
  * and no exceptions; each answers its result or -errno. A negative

@@ -16,4 +16,7 @@ export const punycodeSignatures = defineLibFnSignatures({
   "punycode.ucs2Decode": { argTypes: [STRING], result: arrayOf(F64) },
   "punycode.ucs2Encode": { argTypes: [arrayOf(F64)], result: STRING },
   "punycode.warn": { argTypes: [BOOL, BOOL], result: VOID },
+  /** The require() form of the same first load: the DEP0040 report is
+   * queued on the next tick, so the program runs the loop for it. */
+  "punycode.warnDeferred": { argTypes: [BOOL], result: VOID },
 });

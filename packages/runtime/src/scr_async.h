@@ -537,6 +537,10 @@ void scr_process_set_emit_warning(ScrDyn *fn);
  * made from node_modules) — at once for a static ES import, which Node
  * links before any module evaluates, otherwise on the next tick. */
 void scr_punycode_warn(bool immediate, bool report);
+/* The require() form alone: the same first-load latch and report, queued on
+ * the next tick (a program whose only work is synchronous keeps the loop
+ * live for it). */
+void scr_punycode_warn_deferred(bool report);
 /* The deprecated Buffer() and new Buffer() called outside node_modules
  * (scr_async_dyn.c): DEP0005 on the next tick, once, within Node's
  * 10000-call check (scr_buffer_deprecation_count). */

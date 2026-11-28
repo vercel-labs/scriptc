@@ -1156,6 +1156,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "punycode.ucs2Decode": "scr_punycode_ucs2_decode",
   "punycode.ucs2Encode": "scr_str_from_code_point",
   "punycode.warn": "scr_punycode_warn",
+  "punycode.warnDeferred": "scr_punycode_warn_deferred",
   "url.domainToUnicode": "scr_url_domain_to_unicode",
   "url.toHttpOptions": "scr_url_to_http_options_dyn",
   "url.pathToFileURL": "scr_url_from_path",
@@ -2542,6 +2543,11 @@ export const USES_TIMERS_LIB_FNS = new Set<IrLibFn>([
   "crypto.randomIntAnyCb",
   "crypto.argon2Cb",
   "process.emitWarning",
+  // A require("node:punycode") queues its DEP0040 report on the next tick;
+  // a program whose only other work is synchronous still has to run the
+  // loop, or the report is dropped (and its queued tick leaks). The static
+  // import's report is immediate and uses the other entry point.
+  "punycode.warnDeferred",
   // The finalization registration reports its ExperimentalWarnings through
   // the deferred tick queue, and its callbacks run from the exit listeners
   // the loop's end installs the ordering for: the queue must drain.

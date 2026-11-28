@@ -60,4 +60,10 @@ export const http2NeverThrow: readonly IrLibFn[] = [
   // 'warning' listener it reaches, runs after the call returned.
   "http2.streamPriority",
   "http2.streamPriority0",
+  // The session's timeout listener and its ref state: an internal list
+  // insert and a refcount change — no user code runs inside the call, and a
+  // failed allocation ends the process.
+  "http2.sessionOnTimeout",
+  "http2.sessionRef",
+  "http2.sessionUnref",
 ];

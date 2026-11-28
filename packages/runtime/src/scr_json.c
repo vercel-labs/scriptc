@@ -122,6 +122,10 @@ void scr_message_set_wrapper_ops(const ScrMessageWrapperOps *ops) {
  * which must stay that value so `new` and a call without `new` behave as
  * Node's global does). A program that never asks keeps this NULL. */
 ScrDyn *(*scr_dyn_global_constructor_hook)(const ScrStr *name) = NULL;
+/* The same lookup by C string, NULL for a name Node has no interned
+ * constructor for: a handle's `.constructor` answer (scr_dyn_handle_key_get)
+ * must not trap on the classes the interned table does not hold. */
+ScrDyn *(*scr_dyn_global_constructor_opt_hook)(const char *name) = NULL;
 /* Set by scr_dyn_invoke.c when a program links it (every program that
  * creates a native Proxy does): the Object.prototype, Array.prototype and
  * Function.prototype members a program's computed key or a trap-less
@@ -243,6 +247,8 @@ void scr_dyn_install_async_dispose_symbol(ScrDyn *key) {
   scr_async_dispose_symbol = scr_dyn_retain(key);
   scr_atexit(scr_async_dispose_symbol_cleanup);
 }
+
+ScrDyn *scr_dyn_async_dispose_symbol_value(void) { return scr_async_dispose_symbol; }
 
 bool scr_dyn_is_async_dispose_symbol(const ScrDyn *key) {
   return scr_async_dispose_symbol && key->kind == SCR_DYN_SYMBOL &&
@@ -6631,6 +6637,53 @@ bool scr_jb_try_record_source(ScrJsonBuf *b, void *rec,
   return true;
 }
 
+/* Type keys must outlive the capsules that name them: a typed reference
+ * stores the pointer it is given, and program keys are string constants. A
+ * key built on the stack — the stream unit's class-named pipe/event capsule —
+ * is copied here once per distinct key and owned by this table, so the
+ * capsule's key stays valid after the frame that spelled it is gone. */
+typedef struct {
+  char *key;
+  size_t len;
+} ScrKeyIntern;
+static SCR_TL ScrKeyIntern *scr_key_interns;
+static SCR_TL size_t scr_key_intern_count, scr_key_intern_capacity;
+static SCR_TL bool scr_key_intern_exit_registered;
+
+static void scr_key_intern_cleanup(void) {
+  for (size_t i = 0; i < scr_key_intern_count; i++) free(scr_key_interns[i].key);
+  free(scr_key_interns);
+  scr_key_interns = NULL;
+  scr_key_intern_count = 0;
+  scr_key_intern_capacity = 0;
+  scr_key_intern_exit_registered = false;
+}
+
+const char *scr_dyn_type_key_intern(const char *key, size_t len) {
+  for (size_t i = 0; i < scr_key_intern_count; i++)
+    if (scr_key_interns[i].len == len && !memcmp(scr_key_interns[i].key, key, len))
+      return scr_key_interns[i].key;
+  if (scr_key_intern_count == scr_key_intern_capacity) {
+    size_t capacity = scr_key_intern_capacity ? scr_key_intern_capacity * 2 : 8;
+    ScrKeyIntern *grown = realloc(scr_key_interns, capacity * sizeof *grown);
+    if (!grown) scr_json_oom();
+    scr_key_interns = grown;
+    scr_key_intern_capacity = capacity;
+    if (!scr_key_intern_exit_registered) {
+      scr_key_intern_exit_registered = true;
+      scr_atexit(scr_key_intern_cleanup);
+    }
+  }
+  char *copy = malloc(len + 1);
+  if (!copy) scr_json_oom();
+  memcpy(copy, key, len);
+  copy[len] = '\0';
+  scr_key_interns[scr_key_intern_count].key = copy;
+  scr_key_interns[scr_key_intern_count].len = len;
+  scr_key_intern_count++;
+  return copy;
+}
+
 /* The flags are written with the rest of the capsule: setting a flag bit
  * afterwards is a byte store that the next read of the flag word (the
  * live-view bind right after construction) cannot forward from. */
@@ -10463,7 +10516,10 @@ ScrDyn *scr_dyn_new_handle(void *h, ScrDynHandleTag tag) {
   d->v.handle.ptr = scr_dyn_handle_ops(tag)->retain(h);
   d->v.handle.tag = tag;
   d->v.handle.traced = tag == SCR_DYNH_CONSOLE_INSTANCE ||
-      tag == SCR_DYNH_WEAK_MAP || tag == SCR_DYNH_WEAK_SET ||
+      tag == SCR_DYNH_WEBSOCKET || tag == SCR_DYNH_EVENT ||
+      tag == SCR_DYNH_CUSTOM_EVENT || tag == SCR_DYNH_MESSAGE_EVENT ||
+      tag == SCR_DYNH_CLOSE_EVENT || tag == SCR_DYNH_WEAK_MAP ||
+      tag == SCR_DYNH_WEAK_SET ||
       tag == SCR_DYNH_WORKER || tag == SCR_DYNH_MESSAGE_PORT || tag == SCR_DYNH_DISPOSABLE_STACK ||
       tag == SCR_DYNH_ASYNC_RESOURCE ||
       /* node:sqlite objects are collector nodes: their traces reach the
@@ -10716,6 +10772,18 @@ ScrDyn *scr_dyn_handle_key_get(const ScrDyn *d, const ScrStr *k) {
     return NULL;
   }
   if (!r) r = scr_dynh_method_value(tag, ops, k->data, k->len);
+  /* A handle's `constructor` is the class value the global name reads for
+   * that class (an Event's is the interned Event constructor), so
+   * `e.constructor === Event` and `.constructor.name` are Node's. */
+  if ((!r || r->kind == SCR_DYN_UNDEF) && k->len == 11 &&
+      memcmp(k->data, "constructor", 11) == 0 && ops->cls != NULL &&
+      scr_dyn_global_constructor_opt_hook != NULL) {
+    ScrDyn *interned = scr_dyn_global_constructor_opt_hook(ops->cls); /* +1 or NULL */
+    if (interned != NULL) {
+      scr_dyn_release(r);
+      return interned;
+    }
+  }
   /* A class value's prototype answers the members the handle models none
    * of (its `constructor` names the class value, as Node's instances answer
    * it through their class prototype). */
@@ -12961,6 +13029,13 @@ ScrDyn *scr_dyn_iterator(const ScrDyn *source, const ScrStr *spell) {
 }
 
 static ScrDyn *scr_iterator_read(const ScrDyn *value, const char *key, size_t len) {
+  /* A compiled generator capsule keeps its next/return/throw methods in the
+   * program's getters, not in a materialized view; an async capsule answers
+   * the promise its method returns, which the caller awaits. */
+  if (scr_generator_member_hook && scr_dyn_generator(value)) {
+    ScrDyn *member = scr_generator_member_hook(value, key, len);
+    if (member) return member;
+  }
   if (value->kind == SCR_DYN_TYPED_REF) {
     ScrDyn *view = scr_dyn_typed_ref_materialize(value);
     if (!view) return NULL;
@@ -21236,6 +21311,50 @@ static bool scr_sc_error_view(const ScrDyn *v, const ScrDyn *snapshot) {
          scr_error_is(v->v.typed_ref.ptr);
 }
 
+/* Node's DataCloneError for a value the clone cannot carry:
+ * "<rendered> could not be cloned.", rendering the value as the structured
+ * clone does — a symbol's description, "#<Object>" for a proxy, and the
+ * source text for anything else. The message encoder reports the same way,
+ * which is why this is an entry of the always-linked dynamic core. */
+void scr_clone_value_error(const ScrDyn *v) {
+  if (v->kind == SCR_DYN_SYMBOL) {
+    ScrStr *text = v->v.symbol.render(v->v.symbol.value);
+    static const char tail[] = " could not be cloned.";
+    ScrStr *suffix = scr_str_new(tail, sizeof tail - 1);
+    ScrStr *message = scr_str_concat(text, suffix);
+    scr_throw_domex("DataCloneError", message->data);
+    scr_str_release(message);
+    scr_str_release(suffix);
+    scr_str_release(text);
+    return;
+  }
+  if (v->kind == SCR_DYN_PROXY) {
+    scr_throw_domex("DataCloneError", "#<Object> could not be cloned.");
+    return;
+  }
+  ScrStr *what = scr_dyn_string_coerce(v);
+  if (what == NULL) {
+    /* The value has no primitive rendering — a handle whose conversion
+     * throws, an island object among them. Its conversion's own error is
+     * dropped and the clone reports the generic sentence, so the caller
+     * always answers a catchable DataCloneError instead of dying on a null
+     * dereference. */
+    scr_exc_clear();
+    scr_throw_domex("DataCloneError", "The value could not be cloned.");
+    return;
+  }
+  static const char suffix[] = " could not be cloned.";
+  size_t len = what->len + sizeof suffix - 1;
+  char *msg = malloc(len + 1);
+  if (!msg) scr_trap("scriptc: out of memory\n");
+  memcpy(msg, what->data, what->len);
+  memcpy(msg + what->len, suffix, sizeof suffix);
+  scr_str_release(what);
+  ScrStr *m = scr_str_new(msg, len);
+  free(msg);
+  scr_throw_domex_str("DataCloneError", m); /* takes ownership of m */
+}
+
 /* The clone is a fresh tree (shared inputs are copied per path, cycles
  * throw), so it is tagged like a parse result (ScrDynRegion); a leaf the
  * region may not hold clears it. An error is the exception: it clones to
@@ -21246,7 +21365,7 @@ static ScrDyn *scr_sc_clone(const ScrDyn *v, const ScrScParent *up, ScrDynRegion
     return NULL;
   }
   if (v->kind == SCR_DYN_PROXY) {
-    scr_throw_domex("DataCloneError", "#<Object> could not be cloned.");
+    scr_clone_value_error(v);
     return NULL;
   }
   /* An error is the value its checked-dynamic node stands for. An object
@@ -21264,17 +21383,9 @@ static ScrDyn *scr_sc_clone(const ScrDyn *v, const ScrScParent *up, ScrDynRegion
     return out;
   }
   switch (v->kind) {
-  case SCR_DYN_SYMBOL: {
-    ScrStr *text = v->v.symbol.render(v->v.symbol.value);
-    static const char tail[] = " could not be cloned.";
-    ScrStr *suffix = scr_str_new(tail, sizeof tail - 1);
-    ScrStr *message = scr_str_concat(text, suffix);
-    scr_throw_domex("DataCloneError", message->data);
-    scr_str_release(message);
-    scr_str_release(suffix);
-    scr_str_release(text);
+  case SCR_DYN_SYMBOL:
+    scr_clone_value_error(v);
     return NULL;
-  }
   case SCR_DYN_UNDEF:
     return scr_dyn_retain(scr_dyn_undefined());
   case SCR_DYN_NULL:
@@ -21402,25 +21513,9 @@ static ScrDyn *scr_sc_clone(const ScrDyn *v, const ScrScParent *up, ScrDynRegion
     }
     /* fall through */
   case SCR_DYN_FUNC:
-  default: {
-    /* Node renders the value's source text; the checked-dynamic tree has none — the
-     * String() rendering stands in ("function () { [native code] } could
-     * not be cloned."). */
-    ScrStr *what = scr_dyn_string_coerce(v);
-    static const char suffix[] = " could not be cloned.";
-    size_t len = what->len + sizeof suffix - 1;
-    char *msg = malloc(len + 1);
-    if (!msg) {
-      scr_trap("scriptc: out of memory\n");
-    }
-    memcpy(msg, what->data, what->len);
-    memcpy(msg + what->len, suffix, sizeof suffix);
-    scr_str_release(what);
-    ScrStr *m = scr_str_new(msg, len);
-    free(msg);
-    scr_throw_domex_str("DataCloneError", m); /* takes ownership of m */
+  default:
+    scr_clone_value_error(v);
     return NULL;
-  }
   }
 }
 
@@ -26319,14 +26414,24 @@ size_t scr_weak_collect_entries(void) { return scr_weak_judge_all(); }
  * its cleanup), so the registry keeps neither the callback nor the held
  * values. A token with a weak lifetime is a key of an internal WeakMap
  * counting its registrations, so it is not kept alive. A token the weak
- * tables cannot key (a handle kind without a weak entry, a copied native
- * value) is held here instead, compared by value, so unregister still
- * answers for the registration the program made; the registry releases
- * those tokens with itself. */
+ * tables cannot key (a handle kind without a weak entry, a typed reference,
+ * a copied native value) is remembered here instead, so unregister still
+ * answers for the registration the program made: by the identity the token
+ * answers with (a handle's native object, a reference's target) and without
+ * a reference to the token — a discarded token, with whatever payload its
+ * handle carries, is freed with the program's last reference to it. Only a
+ * value that is compared by its own copy is kept. */
+typedef struct {
+  bool by_value;   /* compare `value` with strict equality */
+  ScrDyn *value;   /* +1 when by_value, else NULL */
+  int64_t kind;    /* a handle tag, or -1 for a typed reference */
+  void *identity;  /* the native object the token stands for */
+} ScrFinalizationHeld;
+
 typedef struct {
   size_t rc;
   ScrDyn *tokens; /* WeakMap: token -> registration count */
-  ScrDyn **held_tokens; /* tokens with no weak lifetime, compared by value */
+  ScrFinalizationHeld *held_tokens; /* tokens with no weak map entry */
   size_t held_len, held_cap;
 } ScrFinalizationRegistry;
 
@@ -26341,7 +26446,9 @@ static void scr_finalization_registry_release(void *ptr) {
   /* Weak collections keyed by the registry drop their entries. */
   scr_weak_dispose(registry);
   scr_dyn_release(registry->tokens);
-  for (size_t i = 0; i < registry->held_len; i++) scr_dyn_release(registry->held_tokens[i]);
+  for (size_t i = 0; i < registry->held_len; i++) {
+    if (registry->held_tokens[i].value) scr_dyn_release(registry->held_tokens[i].value);
+  }
   /* The token array grows through scr_mem_realloc, whose block belongs to
    * the small-object allocator: it goes back through scr_mem_free (which
    * also takes a system block), never through the C library's free. */
@@ -26349,28 +26456,60 @@ static void scr_finalization_registry_release(void *ptr) {
   free(registry);
 }
 
+/* The identity a token with no weak map entry answers unregister with: a
+ * handle's native object (with its tag), a typed reference's target. False
+ * for a value that has only its own copy to compare. */
+static bool scr_finalization_identity(const ScrDyn *token, int64_t *kind, void **identity) {
+  if (token->kind == SCR_DYN_HANDLE) {
+    *kind = (int64_t)token->v.handle.tag;
+    *identity = token->v.handle.ptr;
+    return true;
+  }
+  if (token->kind == SCR_DYN_TYPED_REF) {
+    *kind = -1;
+    *identity = token->v.typed_ref.ptr;
+    return true;
+  }
+  return false;
+}
+
 /* The position of a token the weak tables cannot key, compared the way
- * JavaScript compares the token it is handed back (a handle's own identity,
- * a copied value's own), or -1. */
+ * JavaScript compares the token it is handed back: by the identity it
+ * answers with, or by its own copy for a value that has none, else -1. */
 static long scr_finalization_held_index(const ScrFinalizationRegistry *registry,
                                         const ScrDyn *token) {
-  for (size_t i = 0; i < registry->held_len; i++)
-    if (scr_dyn_strict_eq(registry->held_tokens[i], token)) return (long)i;
+  int64_t kind = 0;
+  void *identity = NULL;
+  bool has_identity = scr_finalization_identity(token, &kind, &identity);
+  for (size_t i = 0; i < registry->held_len; i++) {
+    const ScrFinalizationHeld *held = &registry->held_tokens[i];
+    if (!held->by_value) {
+      if (has_identity && held->kind == kind && held->identity == identity) return (long)i;
+    } else if (!has_identity && held->value && scr_dyn_strict_eq(held->value, token)) {
+      return (long)i;
+    }
+  }
   return -1;
 }
 
-/* Keep a token with no weak lifetime, once (one entry answers every
- * registration with it, as the count does for a weak key). */
-static void scr_finalization_hold(ScrFinalizationRegistry *registry, ScrDyn *token) {
+/* Remember a token with no weak map entry once (one entry answers every
+ * registration with it, as the count does for a weak key), by identity and
+ * not by reference. */
+static void scr_finalization_hold(ScrFinalizationRegistry *registry, const ScrDyn *token) {
   if (scr_finalization_held_index(registry, token) >= 0) return;
   if (registry->held_len == registry->held_cap) {
     size_t cap = registry->held_cap ? registry->held_cap * 2 : 4;
-    ScrDyn **grown = scr_mem_realloc(registry->held_tokens, cap * sizeof *grown);
+    ScrFinalizationHeld *grown =
+        scr_mem_realloc(registry->held_tokens, cap * sizeof *grown);
     if (!grown) scr_json_oom();
     registry->held_tokens = grown;
     registry->held_cap = cap;
   }
-  registry->held_tokens[registry->held_len++] = scr_dyn_retain(token);
+  ScrFinalizationHeld *entry = &registry->held_tokens[registry->held_len++];
+  entry->kind = 0;
+  entry->identity = NULL;
+  entry->by_value = !scr_finalization_identity(token, &entry->kind, &entry->identity);
+  entry->value = entry->by_value ? scr_dyn_retain((ScrDyn *)token) : NULL;
 }
 
 static void scr_finalization_type_error(const char *message) {
@@ -26489,10 +26628,10 @@ static ScrDyn *scr_finalization_registry_invoke(void *ptr, ScrDyn *self, const c
     if (kind == SCR_WEAK_UNTRACKED_KIND) {
       long at = scr_finalization_held_index(registry, first);
       if (at < 0) return scr_dyn_new_bool(false);
-      ScrDyn *held = registry->held_tokens[at];
+      ScrFinalizationHeld *held = &registry->held_tokens[at];
+      if (held->value) scr_dyn_release(held->value);
       registry->held_len--;
       registry->held_tokens[at] = registry->held_tokens[registry->held_len];
-      scr_dyn_release(held);
       return scr_dyn_new_bool(true);
     }
     ScrWeakEntry *entry = scr_weak_find(tokens, identity, kind);
@@ -27548,6 +27687,7 @@ void scr_class_throw_not_extensible(ScrStr *field) {
 
 static SCR_TL ScrDyn *scr_generator_next_getter;
 static SCR_TL ScrDyn *scr_generator_return_getter;
+static SCR_TL ScrDyn *scr_generator_throw_getter;
 /* Set with the getters, so only programs that register them link the
  * iterator helpers through these paths. External, so the compiler keeps
  * the calls through them indirect. */
@@ -27561,18 +27701,23 @@ static bool scr_generator_helper_invoke(ScrDyn *recv, const char *method, ScrDyn
 static void scr_generator_members_cleanup(void) {
   scr_dyn_release(scr_generator_next_getter);
   scr_dyn_release(scr_generator_return_getter);
+  scr_dyn_release(scr_generator_throw_getter);
   scr_generator_next_getter = NULL;
   scr_generator_return_getter = NULL;
+  scr_generator_throw_getter = NULL;
   scr_generator_member_hook = NULL;
   scr_dyn_generator_helper_hook = NULL;
 }
 
-void scr_dyn_set_generator_members(ScrDyn *next_getter, ScrDyn *return_getter) {
+void scr_dyn_set_generator_members(ScrDyn *next_getter, ScrDyn *return_getter,
+                                   ScrDyn *throw_getter) {
   if (!scr_generator_next_getter) scr_atexit(scr_generator_members_cleanup);
   scr_dyn_release(scr_generator_next_getter);
   scr_dyn_release(scr_generator_return_getter);
+  scr_dyn_release(scr_generator_throw_getter);
   scr_generator_next_getter = scr_dyn_retain(next_getter);
   scr_generator_return_getter = scr_dyn_retain(return_getter);
+  scr_generator_throw_getter = scr_dyn_retain(throw_getter);
   scr_generator_member_hook = &scr_generator_member;
   scr_dyn_generator_helper_hook = &scr_generator_helper_invoke;
 }
@@ -27581,11 +27726,13 @@ static bool scr_dyn_sync_generator(const ScrDyn *value) {
   return scr_dyn_generator(value) && value->v.typed_ref.type_key[0] == 'g';
 }
 
-/* A synchronous generator capsule's next or return method (+1), read
- * through the program's registered getters. NULL for other keys. */
+/* A generator capsule's next, return or throw method (+1), read through the
+ * program's registered getters. NULL for other keys. */
 static ScrDyn *scr_generator_member(const ScrDyn *capsule, const char *key, size_t len) {
-  ScrDyn *getter = len == 4 && !memcmp(key, "next", 4) ? scr_generator_next_getter
-    : len == 6 && !memcmp(key, "return", 6) ? scr_generator_return_getter : NULL;
+  ScrDyn *getter = len == 4 && !memcmp(key, "next", 4)                  ? scr_generator_next_getter
+                   : len == 6 && !memcmp(key, "return", 6)              ? scr_generator_return_getter
+                   : len == 5 && !memcmp(key, "throw", 5)               ? scr_generator_throw_getter
+                                                                        : NULL;
   if (!getter) return NULL;
   ScrDyn *args[1] = { (ScrDyn *)capsule };
   return scr_dyn_call(getter, args, 1, "next");

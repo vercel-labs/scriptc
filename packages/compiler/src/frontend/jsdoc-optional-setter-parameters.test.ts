@@ -2,7 +2,10 @@
  * JSDoc a setter documents it with (`/** @param {string | null} [next] *\/`).
  * Node parses the executable parameter, which is mandatory, and never reads
  * the comment, so the preflight admits that comment-only optionality. Every
- * executable spelling of the same mistake keeps tsc's diagnostic. */
+ * other executable spelling of the same mistake keeps tsc's diagnostic.
+ * TS1052 on a JavaScript setter's default parameter is a TypeScript grammar
+ * rule only: Node runs it, so the preflight admits it too
+ * (`jsSetterParameterInitializerSuppressed`). */
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -51,7 +54,6 @@ test("a checked JavaScript file also admits a comment-only setter optionality", 
 
 test.for([
   ["a real optional parameter", "set value(next?) { this.stored = next; }"],
-  ["a default parameter", "set value(next = null) { this.stored = next; }"],
   ["a rest parameter", "set value(...next) { this.stored = next; }"],
   ["two parameters", "set value(a, b) { this.stored = a; }"],
 ])("%s keeps the setter diagnostic", (row) => {
@@ -59,6 +61,25 @@ test.for([
     `class Store {\n  constructor() { this.stored = null; }\n  ${row[1]!}\n}`,
   );
   expect(result.some((d) => d.code === "SC0001" && d.message.includes("set' accessor"))).toBe(true);
+});
+
+const CLASS_SETTER_DEFAULT = `class Store {
+  constructor() { this.stored = null; }
+  set value(next = null) { this.stored = next; }
+}`;
+
+const OBJECT_SETTER_DEFAULT = `const store = {
+  stored: null,
+  set value(next = null) { this.stored = next; },
+};`;
+
+test.for([
+  ["class", CLASS_SETTER_DEFAULT],
+  ["object literal", OBJECT_SETTER_DEFAULT],
+])("a JavaScript setter's default parameter is admitted for a %s", (row) => {
+  // TS1052 is a TypeScript grammar rule; Node runs the setter and applies the
+  // default when the assigned value is undefined.
+  expect(diagnostics(row[1]!)).toEqual([]);
 });
 
 test("a real optional parameter beside a documented one keeps its diagnostic", () => {

@@ -34,7 +34,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if !defined(_WIN32) && !defined(__wasi__)
+#if !defined(__wasi__)
 
 /* The bootstrap's `invoke(fn, fd, ...args)`: calls an island function with
  * the island's stream for `fd` as `this`. */
@@ -166,4 +166,4 @@ void scr_ni_stdio_started(void) {
 void scr_ni_stdio_started(void) {}
 void scr_ni_stdio_stop(void) {}
 
-#endif /* !_WIN32 && !__wasi__ */
+#endif /* !__wasi__ */

@@ -51,7 +51,7 @@ import {
 import { llvmBytes, wtf8Bytes } from "../backend/literals.js";
 import { prepareLibrary } from "../library/prepare.js";
 import { libnodeCacheKeyFor } from "../node-islands/libnode.js";
-import type { LibraryProfile } from "../library/library-profile.js";
+import { emittedSourcePath, type LibraryProfile } from "../library/library-profile.js";
 import { serializeModuleParts } from "../ir/serialize.js";
 import { contentDigest, NATIVE_STRING_BYTES, type NativeCache } from "./cache.js";
 import { batchTextParts, joinedParts } from "./text-file.js";
@@ -794,6 +794,9 @@ export function prepareNativeLibrary(
     ...(carriesDebugSources(profile.optimization, false)
       ? { debugSources: prepared.sourceTexts }
       : {}),
+    ...(profile.filePrefixMap.length === 0
+      ? {}
+      : { sourcePathMap: (file: string) => emittedSourcePath(profile, file) }),
   });
   timing("llvm-emit");
   const input: NativeExecutableInput = {

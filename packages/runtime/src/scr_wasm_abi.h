@@ -35,7 +35,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define SCR_WASM_ABI_VERSION 2
+#define SCR_WASM_ABI_VERSION 3
 
 enum { SCR_WASM_FUNC = 0, SCR_WASM_TABLE = 1, SCR_WASM_MEMORY = 2, SCR_WASM_GLOBAL = 3 };
 
@@ -226,9 +226,14 @@ typedef struct ScrWasmTable {
   uint64_t declared_max; /* UINT64_MAX when the table has no maximum */
 } ScrWasmTable;
 
-/* A global's cell: the value in the low bytes of `value`. */
+/* A global's cell: the value in the low bytes of `value`. A v128 global
+ * fills all sixteen bytes of `vec`; the translated code accesses the cell at
+ * offset 0 with align 8. */
 typedef struct ScrWasmGlobal {
-  uint64_t value; /* 0 */
+  union {
+    uint64_t value; /* 0 */
+    uint8_t vec[16];
+  };
   size_t rc;
   char type;
   bool mutable_;

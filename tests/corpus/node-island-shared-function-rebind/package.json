@@ -1,0 +1,1 @@
+{ "name": "shared-function-rebind", "private": true, "type": "module", "scriptc": { "packages": { "ext": "node" } } }

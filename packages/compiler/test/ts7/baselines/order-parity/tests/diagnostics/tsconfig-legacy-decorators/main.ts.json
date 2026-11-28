@@ -5,13 +5,13 @@
  "diags": [
   {
    "code": "SC0016",
-   "message": "this project's tsconfig sets \"experimentalDecorators\", which scriptc does not follow: a decorator here has the legacy semantics (it is called with the target, the member name and a descriptor, in another order), and scriptc compiles standard decorators only (3 places in this program)",
+   "message": "this project's tsconfig sets \"emitDecoratorMetadata\", which scriptc does not follow: this project sets \"emitDecoratorMetadata\", and scriptc does not emit the design-type metadata it asks for yet (3 places in this program)",
    "loc": {
     "file": "<repo>/tests/diagnostics/tsconfig-legacy-decorators/main.ts",
     "start": 544,
     "end": 551
    },
-   "hint": "remove the decorators from the compiled program, or write them as standard decorators and drop the setting"
+   "hint": "remove \"emitDecoratorMetadata\" from the tsconfig until metadata support lands, or drop the decorators it covers"
   }
  ]
 }

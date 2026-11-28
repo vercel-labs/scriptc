@@ -121,7 +121,10 @@ typedef enum {
  * always-linked storage or code: a program that never boxes the new handle
  * links byte-identical objects. Raising the capacity is a program-wide
  * layout change; do it in a change of its own, measured as neutral, and
- * only when the tags outgrow it. */
+ * only when the tags outgrow it. 160: the tags added since the last pin (the
+ * WebSocket client's and the compression streams' among them) took the list
+ * past 128. The tables are thread-local pointer rows, so the capacity
+ * changes no per-value representation. */
 #define SCR_DYNH_CAPACITY 160
 
 /* The handle-type tags the checked-dynamic tree can carry. The set is deliberately the
@@ -287,7 +290,11 @@ typedef enum {
   Y(SQLITE_STATEMENT) /* node:sqlite StatementSync (scr_sqlite.c) */ \
   Y(SQLITE_TAG_STORE) /* node:sqlite SQLTagStore (scr_sqlite.c) */ \
   Y(TRACING) /* trace_events.Tracing (scr_async_dyn.c) */ \
-  Y(WEAK_REF) /* WeakRef (scr_json.c) */
+  Y(UTF8_STREAM) /* fs.Utf8Stream (scr_fs_utf8_stream.c) */ \
+  Y(WEAK_REF) /* WeakRef (scr_json.c) */ \
+  Y(WEBSOCKET) /* the global WebSocket client (scr_websocket.c) */ \
+  Y(WS_COMPRESSION) /* CompressionStream (scr_webstream_compress.c) */ \
+  Y(WS_DECOMPRESSION) /* DecompressionStream (scr_webstream_compress.c) */
 
 /* Values below the largest pinned one that no tag holds, each with the
  * reason. Never reuse one without removing it here. */
@@ -1374,6 +1381,10 @@ ScrDyn *scr_dyn_negate(const ScrDyn *value);
 /* Internal constructor consumes a retained symbol with its native operations. */
 ScrDyn *scr_dyn_symbol_ref(ScrSym *value, void (*release)(ScrSym *), ScrStr *(*render)(ScrSym *), ScrStr *(*description)(ScrSym *));
 ScrDyn *scr_dyn_new_str(ScrStr *s);
+/* Throws Node's DataCloneError for a value the clone cannot carry:
+ * "<rendered> could not be cloned." with the structured clone's rendering
+ * (defined in scr_json.c). */
+void scr_clone_value_error(const ScrDyn *v);
 ScrDyn *scr_dyn_new_arr(void);
 ScrDyn *scr_dyn_array_constructor(void);
 /* Gives a builtin constructor value (Object, Array, Error) its builtin
@@ -1383,6 +1394,10 @@ void scr_dyn_fn_seed_prototype(ScrDyn *function, ScrDyn *prototype);
 /* The interned builtin constructor `name` (Object, Date, RegExp, Map, Set,
  * Promise, WeakMap, WeakSet) as a dynamic function value: +1. */
 ScrDyn *scr_dyn_global_constructor(const ScrStr *name);
+/* The same lookup by C string; NULL when Node has no interned constructor
+ * of that name (no trap). */
+ScrDyn *scr_dyn_global_constructor_opt(const char *name);
+extern ScrDyn *(*scr_dyn_global_constructor_opt_hook)(const char *name);
 /* That table as another unit reaches it: scr_dyn_invoke.c installs the hook
  * at startup when a program links it, and scr_json.c answers a value's
  * `constructor` (a DataView's, a DOMException's) with the global's own value
@@ -1494,6 +1509,9 @@ ScrDyn *scr_dyn_async_iterator_symbol_value(void);
 /* True when key is Symbol.asyncDispose (registered by the symbol unit when
  * the program names it); handle symbol_get ops outside that unit use it. */
 bool scr_dyn_is_async_dispose_symbol(const ScrDyn *key);
+/* Symbol.asyncDispose as the symbol unit installed it (borrowed), or NULL
+ * before the program names it. */
+ScrDyn *scr_dyn_async_dispose_symbol_value(void);
 /* Whether key is Symbol.dispose (registered by the symbol unit when the
  * program names it). */
 bool scr_dyn_is_dispose_symbol(const ScrDyn *key);
@@ -1526,7 +1544,8 @@ ScrDyn *scr_dyn_native_iterator_source(const ScrDyn *iterator);
  * untyped values registers the checked functions that read a generator
  * capsule's next and return methods (each takes the capsule). The
  * iterator helpers below then drive compiled generators. */
-void scr_dyn_set_generator_members(ScrDyn *next_getter, ScrDyn *return_getter);
+void scr_dyn_set_generator_members(ScrDyn *next_getter, ScrDyn *return_getter,
+                                   ScrDyn *throw_getter);
 /* An iterator helper method called on a synchronous generator capsule:
  * true with *out set (+1, or NULL with the exception pending) when
  * `method` is one. NULL until the program registers its generator
@@ -1652,6 +1671,10 @@ ScrDyn *scr_dyn_new_typed_ref_traced(
     const char *type_key, size_t type_key_len,
     ScrDyn *(*materialize)(void *),
     void (*commit)(void *, const ScrDyn *));
+/* Intern a type key built at run time (a stack buffer): the typed reference
+ * stores the returned pointer, which lives as long as the process. */
+const char *scr_dyn_type_key_intern(const char *key, size_t len);
+
 ScrDyn *scr_dyn_new_typed_ref_observed(
     void *ptr, void *(*retain)(void *), void (*release)(void *),
     const char *type_key, size_t type_key_len,

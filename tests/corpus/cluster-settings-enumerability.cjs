@@ -43,3 +43,37 @@ Object.defineProperty(options, "hidden", {
 });
 cluster.setupPrimary(options);
 console.log("done");
+
+// A function and an array snapshot every own key too, so a key an earlier
+// getter makes enumerable is copied.
+function settingsFunction() {}
+Object.defineProperty(settingsFunction, "reveal", {
+  get() {
+    Object.defineProperty(settingsFunction, "hidden", { enumerable: true });
+    return "r";
+  },
+  enumerable: true,
+  configurable: true,
+});
+Object.defineProperty(settingsFunction, "hidden", {
+  value: "h",
+  enumerable: false,
+  configurable: true,
+});
+cluster.setupPrimary(settingsFunction);
+
+const list = [];
+Object.defineProperty(list, "reveal", {
+  get() {
+    Object.defineProperty(list, "hidden", { enumerable: true });
+    return "r";
+  },
+  enumerable: true,
+  configurable: true,
+});
+Object.defineProperty(list, "hidden", {
+  value: "h",
+  enumerable: false,
+  configurable: true,
+});
+cluster.setupPrimary(list);

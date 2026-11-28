@@ -392,21 +392,12 @@ static ScrDyn *scr_cl_default_settings(void) {
   return settings;
 }
 
-/* The own string keys a spread snapshots: every own string key of a plain
- * object (each key's enumerability is checked when its value is read), and
- * the own enumerable keys of every other kind. */
+/* The own string keys a property copy snapshots: every own string key of an
+ * object, function, array, typed record view, or Proxy (Node's
+ * [[OwnPropertyKeys]]); a handle keeps its own enumerable names. */
 static ScrArr *scr_cl_settings_keys(const ScrDyn *source) {
-  if (source->kind != SCR_DYN_OBJ) return scr_dyn_obj_key_strs(source);
-  ScrDyn *keys = scr_dyn_obj_own_keys(source); /* +1 */
-  if (keys == NULL) return NULL;
-  ScrArr *out = scr_arr_new(SCR_ELEM_STR, keys->v.arr.len);
-  for (size_t i = 0; i < keys->v.arr.len; i++) {
-    const ScrDyn *key = keys->v.arr.items[i];
-    if (key->kind != SCR_DYN_STR) continue;
-    scr_arr_push_ref(out, scr_str_retain(key->v.str));
-  }
-  scr_dyn_release(keys);
-  return out;
+  if (source->kind == SCR_DYN_HANDLE) return scr_dyn_obj_key_strs(source);
+  return scr_dyn_own_key_strs_all(source);
 }
 
 /* Whether `source` still has `key` as an own enumerable property. Node's
@@ -514,7 +505,9 @@ static void scr_cl_setup_impl(const ScrDyn *options) {
   ScrDyn *previous = scr_cl_settings != NULL ? scr_dyn_retain(scr_cl_settings) : NULL;
   ScrDyn *settings = scr_cl_default_settings();
   if (previous != NULL) scr_cl_object_assign(settings, previous);
-  if (options != NULL) scr_cl_object_assign(settings, options);
+  /* A getter on the previous settings that throws stops the spread before
+   * the options are read, so their getters do not run. */
+  if (!scr_exc_pending() && options != NULL) scr_cl_object_assign(settings, options);
   /* A throwing getter makes Node's object spread throw, so the merge stops
    * before the settings object replaces the previous one or is emitted. */
   if (scr_exc_pending()) {

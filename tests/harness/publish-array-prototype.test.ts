@@ -36,6 +36,7 @@ test(`publishing an array with a prototype refuses${sanitize ? " (sanitized)" : 
       "null-prototype Cannot publish an array with non-index properties",
       "record published",
       "record-prototype Cannot publish a record with a prototype",
+      "subclass Cannot publish an Array subclass instance",
       "",
     ].join("\n"),
   );

@@ -12,6 +12,7 @@ import {
   arrayClassSpeciesFn,
   arrayOfClassInstance,
   arrayRootOf,
+  lowerWithArrayOverrideDispatch,
   lowerWithArraySpecies,
 } from "./builtins/array-classes.js";
 import { canonShadowHook, mapCanonical, type CanonMapNotes } from "../canon-map.js";
@@ -25105,8 +25106,28 @@ export class Lowerer {
     call: ts.CallExpression,
     access: ts.PropertyAccessExpression,
   ): IrExpr | null {
-    return lowerWithArraySpecies(this, call, access, () =>
-      lowerArrayMethodCall(this, call, access),
+    return lowerWithArrayOverrideDispatch(this, call, access, () =>
+      lowerWithArraySpecies(this, call, access, () => lowerArrayMethodCall(this, call, access)),
+    );
+  }
+
+  /** `super.m(...)` inside a class declared `extends Array`: the
+   * Array.prototype method over the instance as an array. The class's own
+   * overrides never answer, since `super` dispatches above the class, and
+   * the method's result still goes through ArraySpeciesCreate over the
+   * instance. */
+  lowerArraySuperMethodCall(
+    call: ts.CallExpression,
+    access: ts.PropertyAccessExpression,
+    thisLocal: IrLocal,
+  ): IrExpr | null {
+    const info = this.currentClass;
+    if (info === null || !info.extendsArray) return null;
+    const loc = locOf(call);
+    const self: IrExpr = { kind: "varRef", localId: thisLocal.id, type: thisLocal.type, loc };
+    const array = arrayOfClassInstance(info, self, loc);
+    return this.withExpressionOverride(access.expression, array, () =>
+      lowerWithArraySpecies(this, call, access, () => lowerArrayMethodCall(this, call, access)),
     );
   }
 

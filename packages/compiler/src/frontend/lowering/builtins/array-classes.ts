@@ -12,11 +12,18 @@ import { type Lowerer } from "../lowerer.js";
 import { isJsSourceFile, locOf } from "../../program.js";
 import { keyedHelperName } from "../stable-names.js";
 import { dynUndefinedExpr, nodeThrowExpr } from "../../../ir/build.js";
+import { completeArgs } from "../call-arguments.js";
 import { lowerArrayFromCall, lowerArrayOfCall } from "../containers/array-construction.js";
 import { boundedArrayHofHelper } from "../containers/array-callbacks.js";
-import { storedClassValueType, type ClassInfo } from "../lower-classes.js";
+import {
+  findGenericMethodOn,
+  lowerClassGenericMethodCall,
+  storedClassValueType,
+  type ClassInfo,
+} from "../lower-classes.js";
 import { isSafeToRepeat } from "../expressions/evaluation-safety.js";
 import { mapExprChildren, mapStmtChildren } from "../../../ir/traverse.js";
+import { ARRAY_METHODS } from "../surfaces.js";
 import { v8CalleeText } from "../expressions/narrowing.js";
 import {
   BOOL,
@@ -24,6 +31,7 @@ import {
   F64,
   STRING,
   UNDEFINED_T,
+  VOID,
   arrayOf,
   typeEquals,
   type IrExpr,
@@ -803,6 +811,194 @@ export function arrayClassSpeciesFn(lowerer: Lowerer, info: ClassInfo): IrFuncti
 export function programDeclaresArrayClass(lowerer: Lowerer): boolean {
   for (const info of lowerer.classes.values()) if (info.extendsArray) return true;
   return false;
+}
+
+/** The method names at least one class declared `extends Array` implements.
+ * Node looks a method up on the receiver's prototype chain, so a call on an
+ * array the checker types as a plain array can reach such a method when the
+ * array is an instance; those calls dispatch on the receiver's class
+ * (lowerWithArrayOverrideDispatch). Programs with no such method keep the
+ * plain lowering, so their IR does not change. */
+export function programOverriddenArrayMethods(lowerer: Lowerer): ReadonlySet<string> {
+  const names = new Set<string>();
+  for (const info of lowerer.classes.values()) {
+    if (!info.extendsArray || info.decl === null) continue;
+    for (const name of info.methods.keys()) {
+      if (
+        name.startsWith("get:") ||
+        name.startsWith("set:") ||
+        name.startsWith("#") ||
+        name.startsWith("%")
+      )
+        continue;
+      names.add(name);
+    }
+    for (const name of info.genericMethods?.keys() ?? []) names.add(name);
+  }
+  return names;
+}
+
+/** The classes declared `extends Array` that implement `name`, in a stable
+ * order: a base-typed call tests the receiver's class against each. A
+ * generic method (`map<U>`) counts: it is the only way a TypeScript class
+ * can override the generic Array methods. */
+function arrayOverrideCandidates(lowerer: Lowerer, name: string): ClassInfo[] {
+  const candidates: ClassInfo[] = [];
+  for (const info of lowerer.classes.values()) {
+    if (!info.extendsArray || info.decl === null) continue;
+    const sig = info.methods.get(name);
+    if (sig !== undefined && sig.abstract !== true) candidates.push(info);
+    else if (info.genericMethods?.has(name)) candidates.push(info);
+  }
+  return candidates.sort((a, b) => (a.def.name < b.def.name ? -1 : 1));
+}
+
+/** The call `name` on the class `info`'s own method, over the array `ref`
+ * viewed as the class's instance. */
+function arrayOverrideCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+  ref: IrExpr,
+  info: ClassInfo,
+  want: IrType,
+): IrExpr | null {
+  const name = access.name.text;
+  const loc = locOf(call);
+  const view = arrayClassView(info, ref, loc);
+  const found = lowerer.findMethodOn(info, name);
+  let direct: IrExpr;
+  if (found !== null && found.sig.abstract !== true) {
+    const args = completeArgs(lowerer, call.arguments.nodes, found.sig.params, loc, call);
+    lowerer.noteEdge(`%${found.declarer.def.name}.${name}`);
+    direct = {
+      kind: "call",
+      callee: `%${found.declarer.def.name}.${name}`,
+      args: [view, ...args],
+      type: found.sig.ret,
+      loc,
+    };
+  } else {
+    // A generic override (`map<U>`): the only spelling TypeScript accepts
+    // for the generic Array methods. It monomorphizes per call site like
+    // every generic method.
+    const generic = findGenericMethodOn(lowerer, info, name);
+    if (generic === null) return null;
+    direct = lowerClassGenericMethodCall(lowerer, call, access, info, generic, view);
+  }
+  return typeEquals(direct.type, want)
+    ? direct
+    : lowerer.coerceToExpected(direct, want, direct.type);
+}
+
+/** A call to an Array prototype method on an array the checker types as a
+ * plain array (`const xs: number[] = instance; xs.push(1)`). Node finds the
+ * method on the instance's prototype chain, so an instance of a class
+ * declared `extends Array` that implements the method runs the class's
+ * method; every other array keeps the builtin. The receiver is evaluated
+ * once, the way a call evaluates it before its arguments, and only the
+ * branch the receiver's class selects runs. Programs whose Array subclasses
+ * implement none of the called names keep the plain lowering. */
+export function lowerWithArrayOverrideDispatch(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+  lower: () => IrExpr | null,
+): IrExpr | null {
+  const name = access.name.text;
+  if (!programOverriddenArrayMethods(lowerer).has(name)) return lower();
+  const mapped = lowerer.mapTypeOf(lowerer.typeOf(access.expression));
+  if (mapped?.kind !== "array") return lower();
+  // Only a name the builtin lowering answers can be dispatched from:
+  // a class member the array lowering does not know (`add`, `top`) is the
+  // class path's call, which runs before this one.
+  if (!arrayMethodLoweringName(call, name)) return lower();
+  const candidates = arrayOverrideCandidates(lowerer, name);
+  if (candidates.length === 0) return lower();
+  const loc = locOf(call);
+  const receiver = lowerer.lowerExpr(access.expression);
+  const arrayType = receiver.type;
+  if (arrayType.kind !== "array") return lower();
+  // An instance has the class's element type: a string[] call never reaches a
+  // class that extends Array<number>.
+  const matching = candidates.filter((info) => {
+    const elem = arrayRootOf(info)?.extendsArray?.elem;
+    return elem !== undefined && typeEquals(elem, arrayType.elem);
+  });
+  if (matching.length === 0) return lower();
+  const local = lowerer.declareHiddenLocal("%arrayBaseReceiver", receiver.type);
+  const ref: IrExpr = { kind: "varRef", localId: local.id, type: receiver.type, loc };
+  const builtin = lowerer.withExpressionOverride(access.expression, ref, lower);
+  if (builtin === null) return null;
+  const branches: IrExpr[] = [];
+  const tests: ClassInfo[] = [];
+  for (const info of matching) {
+    const branch = arrayOverrideCall(lowerer, call, access, ref, info, builtin.type);
+    if (branch === null) continue;
+    branches.push(branch);
+    tests.push(info);
+  }
+  if (builtin.type.kind === "void") {
+    // A method that returns nothing has no value to select between: the
+    // class test becomes control flow, and the call's value is the empty
+    // function's.
+    let otherwise: IrStmt[] = [{ kind: "exprStmt", expr: builtin, loc }];
+    for (let i = branches.length - 1; i >= 0; i--)
+      otherwise = [
+        {
+          kind: "if",
+          cond: { kind: "instanceOf", value: ref, className: tests[i]!.def.name, type: BOOL, loc },
+          then: [{ kind: "exprStmt", expr: branches[i]!, loc }],
+          else_: otherwise,
+          loc,
+        },
+      ];
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "varDecl", localId: local.id, init: receiver, loc }, ...otherwise],
+      result: { kind: "call", callee: arrayVoidHelper(lowerer, loc), args: [], type: VOID, loc },
+      type: VOID,
+      loc,
+    };
+  }
+  let result: IrExpr = builtin;
+  for (let i = branches.length - 1; i >= 0; i--) {
+    result = {
+      kind: "ternary",
+      cond: { kind: "instanceOf", value: ref, className: tests[i]!.def.name, type: BOOL, loc },
+      then: branches[i]!,
+      else_: result,
+      type: builtin.type,
+      loc,
+    };
+  }
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "varDecl", localId: local.id, init: receiver, loc }],
+    result,
+    type: builtin.type,
+    loc,
+  };
+}
+
+/** Whether lowerArrayMethodCall answers the call `name(...)` (the names it
+ * lowers, plus the iterator spellings it takes without arguments). */
+function arrayMethodLoweringName(call: ts.CallExpression, name: string): boolean {
+  if (ARRAY_METHODS.has(name) || name === "sort" || name === "shift" || name === "splice")
+    return true;
+  return (
+    (name === "values" || name === "keys" || name === "entries") &&
+    call.arguments.nodes.length === 0
+  );
+}
+
+/** The empty function an override dispatch over a void method calls for
+ * its value (`forEach` returns nothing). */
+function arrayVoidHelper(lowerer: Lowerer, loc: SrcLoc): string {
+  const name = "%arrayDispatchVoid";
+  if (lowerer.liftedFnNamed(name) === undefined)
+    lowerer.liftedFns.push({ name, params: [], returnType: VOID, locals: [], body: [], loc });
+  return name;
 }
 
 /** The Array methods that create their result through ArraySpeciesCreate:

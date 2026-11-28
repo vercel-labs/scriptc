@@ -225,6 +225,13 @@ void scr_pub_arr(void *v, ScrPub *ctx, ScrPubFn elem) {
     scr_pub_refuse(ctx, "Cannot publish an array with non-index properties");
     return;
   }
+  /* An instance of a program class that extends Array keeps the class's own
+   * fields after the array header, and its class descriptor owns them; the
+   * shared array would expose and outlive that state. */
+  if (scr_arr_ext_of(a) && scr_arr_ext_of(a)->cls) {
+    scr_pub_refuse(ctx, "Cannot publish an Array subclass instance");
+    return;
+  }
   if (!scr_pub_mark(ctx, a, a->cyc != 0, SCR_PUB_KIND_ARRAY)) return;
   if (__builtin_expect(a->elem == SCR_ELEM_CREF, 0)) {
     scr_pub_cref_elems(a, ctx, elem);

@@ -39,3 +39,15 @@ Object.setPrototypeOf(prototypedRecord, { marker: 2 });
 attempt("record-prototype", () => {
   publish(prototypedRecord);
 });
+
+// An instance of a class that extends Array keeps the class's own fields
+// after the array header; the shared array would expose state the class
+// descriptor owns.
+class Numbers extends Array<number> {
+  label = "subclass";
+}
+const subclass = new Numbers();
+subclass.push(1);
+attempt("subclass", () => {
+  publish(subclass);
+});

@@ -12949,6 +12949,15 @@ export function lowerSuperMethodCall(
       `'super.${memberName}' (Date.prototype does not declare it)`,
     );
   }
+  // `super.splice(...)` in a class declared `extends Array`: the
+  // Array.prototype method over this instance as an array. `super`
+  // dispatches above the class, so its own overrides never answer.
+  if (cls?.extendsArray && ts.isPropertyAccessExpression(access)) {
+    const thisL = lowerer.resolveThis();
+    if (!thisL) lowerer.unsupported("SC1080", access);
+    const arraySuper = lowerer.lowerArraySuperMethodCall(call, access, thisL);
+    if (arraySuper !== null) return arraySuper;
+  }
   if (!cls?.base) {
     // tsc rejects super outside derived-class bodies first; defensive.
     lowerer.unsupported("SC1090", access, "'super' outside a derived class");

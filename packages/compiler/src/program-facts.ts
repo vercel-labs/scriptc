@@ -217,6 +217,20 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     lowererFields: [],
   },
   {
+    name: "overrides-array-methods",
+    file: `${SRC}/frontend/lowering/builtins/array-classes.ts`,
+    symbol: "programOverriddenArrayMethods",
+    source: "symbols",
+    scope: "program",
+    setBy:
+      "a class that extends Array implementing a method whose name an Array prototype method also has",
+    gates:
+      "a call to that method on an array the checker types as a plain array tests the receiver's class and calls the class's method when the array is its instance",
+    narrower: "the receiver's static type and the classes reachable at the call site",
+    tracked: null,
+    lowererFields: [],
+  },
+  {
     name: "declares-date-class",
     file: `${SRC}/frontend/lowering/builtins/date-classes.ts`,
     symbol: "programDeclaresDateClass",

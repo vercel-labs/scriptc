@@ -310,6 +310,9 @@ describe.skipIf(!zigOnPath() || !wasmPackInstalled())("wasm32-wasi differential"
     "5710-map-number-keys-hashed.ts",
     // JSON writers read array slots as pointers.
     "5305-json-stringify-typed-arrays.ts",
+    // An Array subclass instance keeps its class word in the ext struct, a
+    // pointer field, and its base-typed dispatch reads the class at run time.
+    "array-subclass-base-typed-overrides.ts",
     // Comparator sorts move 64-bit slots of 32-bit pointers.
     "5360-array-sort-comparator-calls.ts",
     "5363-array-sort-comparator-writes.ts",

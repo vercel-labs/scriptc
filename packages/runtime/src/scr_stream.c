@@ -590,8 +590,13 @@ void scr_stream_trace(void *obj, ScrTraceVisit visit, void *ctx) {
   scr_stream_st_trace(s->st, visit, ctx);
 }
 
+static bool scr_stream_ref_is_stream(const void *ptr);
+static void scr_stream_live_add(const void *ptr);
+static void scr_stream_live_remove(const void *ptr);
+
 static void scr_stream_gcfree(void *obj) {
   ScrStream *s = obj;
+  scr_stream_live_remove(s);
   scr_emitter_reg_gcfree(s->reg);
   scr_stream_state_drop(s->st, true);
   scr_obj_free_note();
@@ -917,7 +922,7 @@ static inline void scr_stream_settle_next(ScrStream *s) {
 }
 static int scr_stream_ref_member(void *p, const char *key, size_t key_len, ScrDyn **value);
 static ScrDyn *scr_stream_ref_symbol(void *p, const ScrDyn *key);
-static bool scr_stream_ref_is_view(const ScrDyn *view);
+
 
 static ScrStream *scr_stream_alloc(const ScrVt *vt, const char *cls, bool has_r, bool has_w,
                                     double rhwm, double whwm, bool auto_destroy,
@@ -3058,12 +3063,13 @@ static ScrStream *scr_stream_alloc(const ScrVt *vt, const char *cls, bool has_r,
                                     bool emit_close, bool allow_half_open) {
   static ScrCycType cyc_type = { &scr_stream_trace, &scr_stream_gcfree, SCR_CYC_KIND_STREAM };
   ScrStream *s = scr_cyc_alloc(sizeof *s, &cyc_type);
+  scr_stream_live_add(s);
   /* A stream seen as `unknown` answers member questions from here on: the
    * address a capsule is known by goes in last. */
   if (!scr_stream_ref_hooks.view) {
     scr_stream_ref_hooks.member = scr_stream_ref_member;
     scr_stream_ref_hooks.symbol = scr_stream_ref_symbol;
-    scr_stream_ref_hooks.is_view = scr_stream_ref_is_view;
+    scr_stream_ref_hooks.is_stream = scr_stream_ref_is_stream;
     scr_stream_ref_hooks.get = scr_typed_ref_stream_get;
     scr_stream_ref_hooks.has = scr_typed_ref_stream_has;
     scr_stream_ref_hooks.view = scr_stream_ref_view;
@@ -9814,22 +9820,73 @@ static ScrDyn *scr_stream_dyn_call(ScrStream *stream, ScrDyn *self, const char *
 
 static ScrDyn *scr_stream_view_call(ScrClosure *cb, ScrDyn *const *args, size_t argc);
 
-/* The views scr_stream_dyn_view built most recently: a symbol read on a
- * live stream capsule materializes its view and immediately asks whether
- * this unit built it, before answering a symbol the stream implements
- * itself. The identity test avoids storing anything on the view (a symbol
- * property would render the symbol's name and outlive the call). */
-enum { SCR_STREAM_RECENT_VIEWS = 8 };
-static SCR_TL const ScrDyn *scr_stream_recent_views[SCR_STREAM_RECENT_VIEWS];
-static SCR_TL unsigned scr_stream_recent_next;
+/* The live streams of this thread, by address: a symbol read on a live
+ * stream capsule asks whether the capsule's payload is one of these, which
+ * is a real type test rather than a look at a view that may have been freed
+ * and whose address a pooled allocation can reuse. Every stream enters the
+ * set in scr_stream_alloc and leaves it in scr_stream_gcfree, so an address
+ * is in the set only while the stream is live. */
+static SCR_TL void **scr_stream_live;
+static SCR_TL size_t scr_stream_live_cap, scr_stream_live_count, scr_stream_live_tombs;
+static void *const scr_stream_live_tomb = (void *)(uintptr_t)1;
 
-static void scr_stream_note_view(const ScrDyn *view) {
-  scr_stream_recent_views[scr_stream_recent_next++ % SCR_STREAM_RECENT_VIEWS] = view;
+static size_t scr_stream_live_bucket(const void *ptr, size_t cap) {
+  return (size_t)((((uintptr_t)ptr >> 4) * UINT64_C(11400714819323198485)) & (cap - 1));
 }
 
-static bool scr_stream_ref_is_view(const ScrDyn *view) {
-  for (size_t i = 0; i < SCR_STREAM_RECENT_VIEWS; i++)
-    if (scr_stream_recent_views[i] == view) return true;
+static void scr_stream_live_put(void **slots, size_t cap, const void *ptr) {
+  size_t slot = scr_stream_live_bucket(ptr, cap);
+  while (slots[slot] != NULL && slots[slot] != scr_stream_live_tomb) slot = (slot + 1) & (cap - 1);
+  slots[slot] = (void *)ptr;
+}
+
+static void scr_stream_live_rehash(size_t capacity) {
+  void **slots = calloc(capacity, sizeof *slots);
+  if (!slots) scr_stream_oom();
+  for (size_t i = 0; i < scr_stream_live_cap; i++) {
+    void *entry = scr_stream_live[i];
+    if (entry != NULL && entry != scr_stream_live_tomb) scr_stream_live_put(slots, capacity, entry);
+  }
+  free(scr_stream_live);
+  scr_stream_live = slots;
+  scr_stream_live_cap = capacity;
+  scr_stream_live_tombs = 0;
+}
+
+/* Additions after a removal hold the same address until the stream is freed
+ * twice, so entries are never duplicated. */
+static void scr_stream_live_add(const void *ptr) {
+  if ((scr_stream_live_count + scr_stream_live_tombs + 1) * 2 >= scr_stream_live_cap)
+    scr_stream_live_rehash(scr_stream_live_cap ? scr_stream_live_cap * 2 : 64);
+  size_t slot = scr_stream_live_bucket(ptr, scr_stream_live_cap);
+  while (scr_stream_live[slot] != NULL && scr_stream_live[slot] != scr_stream_live_tomb)
+    slot = (slot + 1) & (scr_stream_live_cap - 1);
+  if (scr_stream_live[slot] == NULL) scr_stream_live_count++;
+  else scr_stream_live_tombs--;
+  scr_stream_live[slot] = (void *)ptr;
+}
+
+static void scr_stream_live_remove(const void *ptr) {
+  if (scr_stream_live_cap == 0) return;
+  size_t slot = scr_stream_live_bucket(ptr, scr_stream_live_cap);
+  while (scr_stream_live[slot] != NULL) {
+    if (scr_stream_live[slot] == ptr) {
+      scr_stream_live[slot] = scr_stream_live_tomb;
+      scr_stream_live_count--;
+      scr_stream_live_tombs++;
+      return;
+    }
+    slot = (slot + 1) & (scr_stream_live_cap - 1);
+  }
+}
+
+static bool scr_stream_ref_is_stream(const void *ptr) {
+  if (scr_stream_live_cap == 0 || ptr == NULL) return false;
+  size_t slot = scr_stream_live_bucket(ptr, scr_stream_live_cap);
+  while (scr_stream_live[slot] != NULL) {
+    if (scr_stream_live[slot] == ptr) return true;
+    slot = (slot + 1) & (scr_stream_live_cap - 1);
+  }
   return false;
 }
 
@@ -9985,7 +10042,6 @@ ScrDyn *scr_stream_dyn_view(ScrStream *stream) {
   ScrDyn *attached = scr_dyn_set_prototype(view, prototype);
   scr_dyn_release(attached);
   scr_dyn_release(prototype);
-  scr_stream_note_view(view);
   return view;
 }
 

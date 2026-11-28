@@ -1827,9 +1827,10 @@ typedef struct ScrStreamRefHooks {
   int (*_Atomic member)(void *stream, const char *key, size_t key_len, ScrDyn **value);
   /* The symbol-keyed member a live stream answers itself (its
    * [Symbol.asyncIterator] method), +1, or NULL for the view to answer, and
-   * whether a view is one this unit built (scr_stream_dyn_view's). */
+   * whether a capsule's payload is a live stream (a real type test; the
+   * address is in the unit's set only while the stream is allocated). */
   ScrDyn *(*_Atomic symbol)(void *stream, const ScrDyn *key);
-  bool (*_Atomic is_view)(const ScrDyn *view);
+  bool (*_Atomic is_stream)(const void *ptr);
 } ScrStreamRefHooks;
 extern ScrStreamRefHooks scr_stream_ref_hooks;
 /* ScrStreamRefHooks.get: what the view of live stream capsule `capsule`

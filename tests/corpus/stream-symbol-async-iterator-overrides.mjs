@@ -30,3 +30,25 @@ const writable = /** @type {any} */ (
   })
 );
 console.log("writable", String(writable[Symbol.asyncIterator]));
+
+// Repeated reads keep answering: the answer is a test of the live stream,
+// not a cache of recently built views.
+let reads = 0;
+for (let i = 0; i < 20; i++) if (typeof plain[Symbol.asyncIterator] === "function") reads += 1;
+console.log("reads", reads);
+
+// Streams released before an ordinary class's instances are made: their
+// addresses may be reused, and that must never make a class view look like
+// a stream.
+class Plain {
+  constructor() {
+    this.value = 1;
+  }
+}
+const instances = [];
+for (let i = 0; i < 8; i++) {
+  const released = Readable.from(["z"]);
+  released.destroy();
+  instances.push(new Plain());
+}
+console.log("instances", instances.map((v) => typeof v[Symbol.asyncIterator]).join(","));

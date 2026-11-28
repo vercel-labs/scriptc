@@ -233,13 +233,19 @@ export function lowerBuiltinCall(
         loc,
       };
     }
-    return checkedTimerStyleCallback(lowerer, expr.arguments.nodes, "process.nextTick", loc, (cb) => ({
-      kind: "libCall",
-      fn: "process.nextTick",
-      args: [cb],
-      type: VOID,
+    return checkedTimerStyleCallback(
+      lowerer,
+      expr.arguments.nodes,
+      "process.nextTick",
       loc,
-    }));
+      (cb) => ({
+        kind: "libCall",
+        fn: "process.nextTick",
+        args: [cb],
+        type: VOID,
+        loc,
+      }),
+    );
   }
   const clusterServed = lowerer.lowerClusterModuleCall(expr, bi, loc);
   if (clusterServed) return clusterServed;

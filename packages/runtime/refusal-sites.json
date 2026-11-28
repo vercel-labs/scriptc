@@ -2168,6 +2168,12 @@
  {
   "file": "scr_worker_events.c",
   "function": "scr_worker_view_invoke",
+  "message": "prependListener is not supported on a MessagePort",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_worker_events.c",
+  "function": "scr_worker_view_invoke",
   "message": "This Worker or MessagePort method is not supported yet",
   "code": "SC2020"
  },

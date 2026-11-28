@@ -144,8 +144,8 @@ static const char *const scr_worker_method_names[] = {
   "ref", "unref", "hasRef", "terminate", "postMessage", "on", "once", "addListener",
   "prependListener", "prependOnceListener", "off", "removeListener", "removeAllListeners",
   "listenerCount", "close", "start", "cpuUsage", "getHeapStatistics", "addEventListener",
-  "removeEventListener",
-  "dispatchEvent",
+  "removeEventListener", "dispatchEvent", "emit", "eventNames", "getMaxListeners",
+  "setMaxListeners", "listeners", "rawListeners",
 };
 static SCR_TL ScrDyn *scr_worker_methods[sizeof scr_worker_method_names / sizeof scr_worker_method_names[0]];
 static const char *const scr_broadcast_method_names[] = {
@@ -254,6 +254,11 @@ static void scr_worker_view_gcfree(void *ptr) {
 
 static void scr_worker_view_destroy(void *ptr) {
   ScrWorkerView *view = ptr;
+  /* The registry can outlive the view: a once() wrapper taken from
+   * rawListeners() keeps the emitter alive, and a later add or remove runs
+   * the owner hook. The hook's context is the view itself, so it is cleared
+   * here rather than left pointing at freed state. */
+  scr_emitter_observe(view->events, NULL, NULL);
   scr_emitter_release(view->events);
   while (view->termination) {
     ScrTermWait *wait = view->termination;
@@ -1075,6 +1080,10 @@ static ScrDyn *scr_worker_view_invoke(void *ptr, ScrDyn *self, const char *metho
   }
   bool once = method_is(method, "once") || method_is(method, "prependOnceListener");
   bool prepend = method_is(method, "prependListener") || method_is(method, "prependOnceListener");
+  /* Node's MessagePort has no prepend* listeners; registering one anyway
+   * would answer a call Node refuses. */
+  if (view->port && prepend)
+    return scr_worker_refusal("prependListener is not supported on a MessagePort");
   if (once || prepend || method_is(method, "on") || method_is(method, "addListener")) {
     ScrDyn *listener = argc > 1 ? args[1] : scr_dyn_undefined();
     scr_dyn_check_listener(listener, "listener");
@@ -1200,6 +1209,26 @@ static ScrDyn *scr_worker_view_invoke(void *ptr, ScrDyn *self, const char *metho
     }
     scr_str_release(name);
     return scr_exc_pending() ? NULL : scr_dyn_new_bool(had);
+  }
+  /* A Worker's listener lists: the registered functions in order, and for
+   * rawListeners the once() wrapper with its `listener` property. A port
+   * has neither. An omitted name is the key "undefined", as Node's table
+   * has it. */
+  if (!view->port && (method_is(method, "listeners") || method_is(method, "rawListeners"))) {
+    ScrStr *name = argc && args[0]->kind != SCR_DYN_UNDEF ? scr_emitter_name_dyn(args[0])
+                                                          : scr_str_new("undefined", 9);
+    if (!name) return NULL;
+    ScrDyn *out = method_is(method, "rawListeners")
+      ? scr_emitter_raw_listeners_dyn(view->events, name)
+      : scr_emitter_listeners_dyn(view->events, name);
+    scr_str_release(name);
+    /* The list helpers answer an empty array beside a pending refusal (a
+     * listener with no checked-dynamic value); the call throws instead. */
+    if (scr_exc_pending()) {
+      scr_dyn_release(out);
+      return NULL;
+    }
+    return out;
   }
   if (method_is(method, "eventNames")) {
     if (!view->port) return scr_emitter_event_names(view->events);
@@ -1420,7 +1449,12 @@ static ScrDyn *scr_worker_view_get(void *ptr, const char *key, size_t length) {
   for (size_t i = 0; i < sizeof scr_worker_methods / sizeof scr_worker_methods[0]; i++) {
     const char *name = scr_worker_method_names[i];
     if (strlen(name) != length || memcmp(name, key, length)) continue;
-    if ((view->port && (!strcmp(name, "terminate") || !strcmp(name, "cpuUsage"))) ||
+    /* A port's NodeEventTarget has no listeners()/rawListeners() and no
+     * prepend* listeners (Node answers undefined for all four), and a Worker
+     * has none of the port-only names. */
+    if ((view->port && (!strcmp(name, "terminate") || !strcmp(name, "cpuUsage") ||
+                        !strcmp(name, "listeners") || !strcmp(name, "rawListeners") ||
+                        !strcmp(name, "prependListener") || !strcmp(name, "prependOnceListener"))) ||
         (!view->port && (!strcmp(name, "start") || !strcmp(name, "close") || !strcmp(name, "hasRef") ||
                          !strcmp(name, "addEventListener") || !strcmp(name, "removeEventListener") ||
                          !strcmp(name, "dispatchEvent")))) return NULL;

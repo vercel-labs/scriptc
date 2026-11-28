@@ -203,6 +203,15 @@ export function classSymbolKeyOfSymbol(lowerer: Lowerer, sym: ts.Symbol): ClassS
     if (key) cache.set(sym, key);
     return key;
   }
+  // `exports.KEY = Symbol("…")`: a CommonJS module's exported symbol key
+  // (the form @nestjs/common's constants take). The export's global holds
+  // the symbol value, so the member assignment is as stable as a
+  // module-scope const.
+  if (decls.length === 1 && decl && ts.isBinaryExpression(decl)) {
+    const key = cjsMemberSymbolKeyOf(lowerer, sym, decl);
+    if (key) cache.set(sym, key);
+    return key;
+  }
   if (decls.length !== 1 || !decl || !ts.isVariableDeclaration(decl) || !ts.isIdentifier(decl.name))
     return null;
   const list = decl.parent;
@@ -349,6 +358,192 @@ function literalSymbolCallOf(
  * can run code (a require there could close a cycle and publish the
  * initial empty exports object instead). Any write to the property, or
  * replacement through `exports`/`module.exports`, keeps it unstable. */
+/** `exports.KEY = Symbol("…")` (or `module.exports.KEY = …`) at a
+ * CommonJS module's top level: the exported member's symbol is one identity
+ * for the module's evaluation, held by the export's global. */
+function cjsMemberSymbolKeyOf(
+  lowerer: Lowerer,
+  sym: ts.Symbol,
+  decl: ts.BinaryExpression,
+): ClassSymbolKey | null {
+  if (decl.operatorToken.kind !== ts.SyntaxKind.EqualsToken) return null;
+  const left = decl.left;
+  if (!ts.isPropertyAccessExpression(left) || !ts.isIdentifier(left.name)) return null;
+  const receiver = left.expression;
+  const moduleExports =
+    (ts.isIdentifier(receiver) && receiver.text === "exports") ||
+    (ts.isPropertyAccessExpression(receiver) &&
+      receiver.name.text === "exports" &&
+      ts.isIdentifier(receiver.expression) &&
+      receiver.expression.text === "module");
+  if (!moduleExports) return null;
+  const stmt = decl.parent;
+  if (stmt === undefined || !ts.isExpressionStatement(stmt) || !ts.isSourceFile(stmt.parent))
+    return null;
+  const call = literalSymbolCallOf(lowerer, decl.right);
+  if (!call) return null;
+  const sf = ts.getSourceFileOfNode(decl);
+  if (bindingWritten(lowerer, sym, sf)) return null;
+  // No OTHER module may write the export: a consumer reassigning
+  // `exports.SYM` (rotating the symbol to revoke access, for instance)
+  // would make later instances answer from a different key, which a fixed
+  // static slot cannot model.
+  if (exportSymbolWritten(lowerer, sym, decl)) return null;
+  // The assignment must run before any instance can exist: in the defining
+  // module it precedes every top-level class declaration and every
+  // statement that can run code, so the key is initialized before a class
+  // that reads it is defined or constructed (Node's computed key reads the
+  // export at the class statement, and a constructor before the assignment
+  // writes the property key `undefined`).
+  if (!assignmentPrecedesClassUses(decl)) return null;
+  return symbolKeyOf(lowerer, sym, call.registered, call.description);
+}
+
+/** Whether any source file writes the export member `sym` (a CommonJS
+ * assignment, delete, or `Object.defineProperty`) other than its defining
+ * assignment. Consumers are resolved through their import aliases. */
+function exportSymbolWritten(
+  lowerer: Lowerer,
+  sym: ts.Symbol,
+  definition: ts.BinaryExpression,
+): boolean {
+  const name = ts.isPropertyAccessExpression(definition.left) ? definition.left.name.text : null;
+  const definingFile = ts.getSourceFileOfNode(definition).fileName;
+  const checker = lowerer.checker;
+  const same = (target: ts.Symbol | undefined): boolean => {
+    if (target === undefined) return false;
+    const resolved =
+      (target.flags & ts.SymbolFlags.Alias) !== 0 ? checker.getAliasedSymbol(target) : target;
+    if (resolved === sym) return true;
+    return (
+      name !== null &&
+      resolved.declarations.some((d) => {
+        const node = d as unknown as ts.Node;
+        return (
+          ts.isPropertyAccessExpression(node) &&
+          node.name.text === name &&
+          ts.getSourceFileOfNode(node).fileName === definingFile
+        );
+      })
+    );
+  };
+  const writeOf = (node: ts.Expression): boolean => {
+    if (ts.isPropertyAccessExpression(node)) {
+      if (same(checker.getSymbolAtLocation(node))) return true;
+      // An untyped or casted receiver (`(pkg as any).SYM = …`) answers no
+      // export symbol; the member NAME still shows the export is replaced.
+      // A name match over-refuses only when an unrelated object writes the
+      // same member name — the conservative side for a security fence.
+      return name !== null && node.name.text === name;
+    }
+    if (ts.isElementAccessExpression(node)) {
+      if (!ts.isStringLiteralLike(node.argumentExpression)) return false;
+      if (same(checker.getSymbolAtLocation(node))) return true;
+      return name !== null && node.argumentExpression.text === name;
+    }
+    return false;
+  };
+  for (const sf of lowerer.program.getImplementationSourceFiles()) {
+    if (sf.isDeclarationFile) continue;
+    let written = false;
+    ts.walkPreorder(sf, (node) => {
+      if (written) return "stop";
+      if (
+        node !== definition &&
+        ts.isBinaryExpression(node) &&
+        node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+        node.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
+        writeOf(node.left)
+      ) {
+        // The compiler's own initialization preamble (`exports.SYM = void 0`)
+        // before the defining assignment runs nothing and writes no value.
+        if (!(isUndefinedInitialization(node) && precedes(node, definition))) written = true;
+      } else if (ts.isDeleteExpression(node) && writeOf(node.expression)) {
+        written = true;
+      } else if (
+        ts.isCallExpression(node) &&
+        ts.isPropertyAccessExpression(node.expression) &&
+        node.expression.name.text === "defineProperty" &&
+        ts.isIdentifier(node.expression.expression) &&
+        node.expression.expression.text === "Object" &&
+        node.arguments.nodes.length >= 2 &&
+        ts.isStringLiteralLike(node.arguments.nodes[1]!) &&
+        name !== null &&
+        node.arguments.nodes[1]!.text === name &&
+        writeOf(node.arguments.nodes[0]!)
+      ) {
+        written = true;
+      }
+      return undefined;
+    });
+    if (written) return true;
+  }
+  return false;
+}
+
+/** Whether `write` assigns only `void 0` / `undefined` (the initialization
+ * preamble tsc emits for every export). */
+function isUndefinedInitialization(write: ts.BinaryExpression): boolean {
+  let value: ts.Expression = write.right;
+  while (ts.isParenthesizedExpression(value)) value = value.expression;
+  return (
+    (ts.isVoidExpression(value) && value.expression.kind === ts.SyntaxKind.NumericLiteral) ||
+    (ts.isIdentifier(value) && value.text === "undefined")
+  );
+}
+
+/** Whether `a` starts before `b` in source order. */
+function precedes(a: ts.Node, b: ts.Node): boolean {
+  if (ts.getSourceFileOfNode(a) !== ts.getSourceFileOfNode(b)) return true;
+  return ts.tokenStartOfNode(a) < ts.tokenStartOfNode(b);
+}
+
+/** Whether the defining assignment precedes every top-level statement of its
+ * module that can construct or define a class: an instance cannot exist
+ * before the export member holds the symbol (Node's key would be undefined).
+ * Imports, function declarations and inert variable declarations may
+ * precede it; a class declaration, an expression statement, a loop, or a
+ * variable initializer that can run code may not. */
+function assignmentPrecedesClassUses(decl: ts.BinaryExpression): boolean {
+  const stmt = decl.parent;
+  if (stmt === undefined) return false;
+  const sf = ts.getSourceFileOfNode(decl);
+  const at = sf.statements.nodes.indexOf(stmt as ts.Statement);
+  if (at < 0) return false;
+  const inert = (init: ts.Expression | undefined): boolean => {
+    if (init === undefined) return true;
+    while (ts.isParenthesizedExpression(init)) init = init.expression;
+    return (
+      ts.isStringLiteralLike(init) ||
+      ts.isNumericLiteral(init) ||
+      ts.isArrowFunction(init) ||
+      ts.isFunctionExpression(init) ||
+      init.kind === ts.SyntaxKind.TrueKeyword ||
+      init.kind === ts.SyntaxKind.FalseKeyword ||
+      init.kind === ts.SyntaxKind.NullKeyword ||
+      (init.kind === ts.SyntaxKind.ThisKeyword && false)
+    );
+  };
+  for (let i = 0; i < at; i++) {
+    const statement = sf.statements.nodes[i]!;
+    // A directive prologue ("use strict") runs nothing.
+    if (ts.isExpressionStatement(statement) && ts.isStringLiteral(statement.expression)) continue;
+    if (ts.isImportDeclaration(statement) || ts.isImportEqualsDeclaration(statement)) continue;
+    if (ts.isFunctionDeclaration(statement)) continue;
+    if (ts.isVariableStatement(statement)) {
+      if (
+        statement.declarationList.declarations.nodes.every(
+          (d) => ts.isIdentifier(d.name) && inert(d.initializer),
+        )
+      )
+        continue;
+      return false;
+    }
+    return false;
+  }
+  return true;
+}
+
 function cjsTableSymbolKeyOf(
   lowerer: Lowerer,
   sym: ts.Symbol,

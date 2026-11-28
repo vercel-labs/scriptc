@@ -606,6 +606,8 @@ describe.each(ts7TestServers())("import elision ($name)", (server) => {
         preserveConstEnums: false,
         preserveImportEdges: false,
         preserveValueImports: false,
+        experimentalDecorators: false,
+        emitDecoratorMetadata: false,
         ...options,
       });
       program.dispose();
@@ -845,6 +847,8 @@ test("verbatimModuleSyntax selects Node's rule; the removed options are still re
     preserveConstEnums: false,
     preserveImportEdges: false,
     preserveValueImports: false,
+    experimentalDecorators: false,
+    emitDecoratorMetadata: false,
   });
   expect(importElisionOptions({ isolatedModules: true })?.preserveConstEnums).toBe(true);
   expect(importElisionOptions({ importsNotUsedAsValues: "preserve" })?.preserveImportEdges).toBe(

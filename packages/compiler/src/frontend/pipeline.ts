@@ -1351,6 +1351,7 @@ function loadFrontend(
           dependencyJs: l.dependencyJs,
           parameterPropertiesFirst: l.parameterPropertiesFirst,
           legacyDecoratorFiles: l.typeWorld?.legacyDecoratorFiles,
+          decoratorMetadataFiles: l.typeWorld?.decoratorMetadataFiles,
           externalTypes: l.externalTypes,
           externalTypeSpecifiersByFile: l.externalTypeSpecifiersByFile,
         });

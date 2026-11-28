@@ -721,9 +721,11 @@ export interface TypeWorldDifferences {
   projectSources: ReadonlySet<string> | null;
   /** Every file whose tsconfig sets `experimentalDecorators`: its classes
    * and their decorators take the legacy calling convention, evaluation
-   * order and descriptor rules (lowering reads the set through LowerOptions).
-   * A file compiled with `emitDecoratorMetadata` is still refused (SC0016). */
+   * order and descriptor rules (lowering reads the set through LowerOptions). */
   legacyDecoratorFiles: ReadonlySet<string>;
+  /** The files whose tsconfig also sets `emitDecoratorMetadata`: their
+   * decorated declarations carry the design-type metadata decorators. */
+  decoratorMetadataFiles: ReadonlySet<string>;
   /** The project's `module` setting, or null. */
   projectModule: string | null;
 }
@@ -1525,8 +1527,6 @@ function entryPackageProgramRoots7(
 /** TS 7's ESNext temporal declarations: a lib slice scriptc adds only for
  * programs whose sources name the global (programNamesTemporal7). */
 const TEMPORAL_LIB = "lib.esnext.temporal.d.ts";
-
-const DECORATORS: ReadonlySet<ts.SyntaxKind> = new Set([ts.SyntaxKind.Decorator]);
 
 /** True when a program source (user code or compiled npm JavaScript)
  * contains the temporal global's name as a whole word. A cheap syntactic
@@ -2337,8 +2337,7 @@ function loadProgram7(
     // with its own support.
     const parameterPropertiesFirst = new Set<string>();
     const legacyDecoratorFiles = new Set<string>();
-    let metadataDecorators = 0;
-    let firstMetadataDecorator: ts.Node | null = null;
+    const decoratorMetadataFiles = new Set<string>();
     for (const sf of program.getImplementationSourceFiles()) {
       if (sf.isDeclarationFile || !/\.(?:[mc]?ts|tsx)$/.test(sf.fileName)) continue;
       const dialect = dialectOf(sf.fileName);
@@ -2349,31 +2348,7 @@ function loadProgram7(
       // the lowering's class-statement order and calling convention follow
       // the file's dialect, and only files with the setting have one.
       legacyDecoratorFiles.add(sf.fileName);
-      if (dialect.legacyDecorators !== "all") continue;
-      ts.walkPreorder(
-        sf,
-        (node) => {
-          metadataDecorators++;
-          firstMetadataDecorator ??= node;
-        },
-        DECORATORS,
-      );
-    }
-    if (firstMetadataDecorator !== null) {
-      const at: ts.Node = firstMetadataDecorator;
-      config.diags.push(
-        unfollowedSettingDiag(
-          '"emitDecoratorMetadata"',
-          'this project sets "emitDecoratorMetadata", and scriptc does not emit the design-type metadata it asks for yet',
-          {
-            file: ts.getSourceFileOfNode(at).fileName,
-            start: ts.tokenStartOfNode(at),
-            end: at.end,
-          },
-          metadataDecorators,
-          'remove "emitDecoratorMetadata" from the tsconfig until metadata support lands, or drop the decorators it covers',
-        ),
-      );
+      if (dialect.legacyDecorators === "all") decoratorMetadataFiles.add(sf.fileName);
     }
     const entry = program.getSourceFile(entryPath);
     if (!entry) throw new Error(`could not load ${entryPath}`);
@@ -2417,6 +2392,7 @@ function loadProgram7(
         projectCheckJs: config.checkJs ?? false,
         projectSources,
         legacyDecoratorFiles,
+        decoratorMetadataFiles,
         projectModule: config.module ?? null,
       },
       externalTypes,

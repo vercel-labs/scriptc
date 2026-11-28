@@ -275,6 +275,7 @@ import {
   registerLinkedHelper,
 } from "./record-links.js";
 import { lowerPrototypeReflectionCall, lowerReflectCall } from "./builtins/reflection.js";
+import { builtinNamespaceValue } from "./builtin-namespaces.js";
 import {
   lowerAbsenceProbe,
   nullishBranches,
@@ -734,6 +735,25 @@ function lowerVoidTruthinessCall(
   return stmts.length === 0 ? call : { kind: "seqExpr", stmts, result: call, type: DYN, loc };
 }
 
+/** The ES2015 `Reflect` statics. Any other member a package adds to the
+ * global object (reflect-metadata's metadata API) reaches the program at run
+ * time through the namespace value's checked-dynamic property. */
+const REFLECT_BUILTIN_MEMBERS: ReadonlySet<string> = new Set([
+  "apply",
+  "construct",
+  "defineProperty",
+  "deleteProperty",
+  "get",
+  "getOwnPropertyDescriptor",
+  "getPrototypeOf",
+  "has",
+  "isExtensible",
+  "ownKeys",
+  "preventExtensions",
+  "set",
+  "setPrototypeOf",
+]);
+
 function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   refuseOwnCallPrototype(lowerer, expr);
   // node:cluster's own event registration (`cluster.on('exit', ...)`) is a
@@ -759,6 +779,48 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     if (text) return text;
   }
   const loc = locOf(expr);
+  // A member an installed package adds to the global Reflect (reflect-metadata
+  // adds the metadata API): the ES2015 members keep their lowerings, and every
+  // other member is a runtime property of the global object the compiled
+  // module graph mutates. Calling it through the shared Reflect namespace
+  // value keeps the package's own implementation in play.
+  if (
+    process.env["SCRIPTC_DEBUG_REFLECT"] === "1" &&
+    ts.getTextOfNode(expr.expression).startsWith("Reflect.")
+  )
+    console.error(
+      "REFLECT-DBG",
+      ts.getTextOfNode(expr.expression),
+      stdlibGlobalNameOf(lowerer, (expr.expression as ts.PropertyAccessExpression).expression),
+      lowerer.stdlibGlobalMember(expr.expression as ts.PropertyAccessExpression, "Reflect"),
+    );
+  if (
+    expr.questionDotToken === undefined &&
+    ts.isPropertyAccessExpression(expr.expression) &&
+    expr.expression.questionDotToken === undefined &&
+    !expr.arguments.nodes.some(ts.isSpreadElement) &&
+    stdlibGlobalNameOf(lowerer, expr.expression.expression) === "Reflect" &&
+    !REFLECT_BUILTIN_MEMBERS.has(expr.expression.name.text)
+  ) {
+    const namespace = builtinNamespaceValue(lowerer, "Reflect", loc);
+    if (namespace !== null) {
+      const callee: IrExpr = {
+        kind: "dynKeyGet",
+        value: namespace,
+        key: { kind: "strLit", value: expr.expression.name.text, type: STRING, loc },
+        type: DYN,
+        loc,
+      };
+      return {
+        kind: "dynCall",
+        callee,
+        calleeName: `Reflect.${expr.expression.name.text}`,
+        args: expr.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+        type: DYN,
+        loc,
+      };
+    }
+  }
   // A JavaScript source calling a member that resizes, grows or detaches a
   // buffer is the mutableBuffers fact (buffers.ts, t262-dc §2.4). The
   // receiver may be a checked-dynamic value, so the callee's name decides;
@@ -11248,6 +11310,21 @@ function lowerObjectStaticCall(
         locOf(call),
       );
     }
+    if (value.type.kind === "record" && member.startsWith("is")) {
+      // A record's integrity state is its frozen bit: a frozen record is
+      // neither extensible nor sealable further.
+      const loc = locOf(call);
+      const frozen: IrExpr = {
+        kind: "libCall",
+        fn: "record.isFrozen",
+        args: [value],
+        type: BOOL,
+        loc,
+      };
+      return member === "isExtensible"
+        ? { kind: "unary", op: "!", operand: frozen, type: BOOL, loc }
+        : frozen;
+    }
     if (member === "preventExtensions" || member === "seal") {
       const integrity = lowerClassIntegrity(lowerer, call, member, value);
       if (integrity) return integrity;
@@ -11261,12 +11338,16 @@ function lowerObjectStaticCall(
         loc: locOf(call),
       };
     }
-    if (value.type.kind === "dyn") {
+    if (
+      value.type.kind === "dyn" ||
+      (value.type.kind === "union" && lowerer.dynConvertible(value.type))
+    ) {
       // The kind is only known at runtime: the queries refuse a native
       // handle or a promise, whose integrity state scriptc does not track
       // (Object.preventExtensions and Object.seal do not change it, so any
       // answer would be invented). The static arms above keep the plain
       // queries for the kinds whose state is modeled.
+      const boxed = value.type.kind === "dyn" ? value : lowerer.coerceToExpected(value, DYN);
       const operation = {
         preventExtensions: "dyn.preventExtensions",
         isExtensible: "dyn.isExtensibleQuery",
@@ -11278,7 +11359,7 @@ function lowerObjectStaticCall(
       return {
         kind: "libCall",
         fn,
-        args: [value],
+        args: [boxed],
         type: member.startsWith("is") ? BOOL : DYN,
         loc: locOf(call),
       };

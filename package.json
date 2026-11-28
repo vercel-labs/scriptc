@@ -50,6 +50,7 @@
     "js-yaml": "4.3.2",
     "oxfmt": "0.71.0",
     "oxlint": "1.86.0",
+    "reflect-metadata": "0.2.2",
     "rollup": "4.62.2",
     "smol-toml": "1.7.1",
     "three": "0.186.1",

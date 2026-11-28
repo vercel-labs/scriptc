@@ -1,8 +1,6 @@
-tsconfig-legacy-decorators/main.ts:14:3 - error SC0016: this project's tsconfig sets "emitDecoratorMetadata", which scriptc does not follow: this project sets "emitDecoratorMetadata", and scriptc does not emit the design-type metadata it asks for yet (3 places in this program)
+tsconfig-legacy-decorators/main.ts:14:3 - error SC1090: instance property decorators under "experimentalDecorators" in a project whose fields are assigned in the constructor (useDefineForClassFields: false or a target below ES2022; a decorator-installed prototype accessor would be bypassed by the compiled field write) is not supported yet
 
   13 | class Row {
   14 |   @column id = 1;
      |   ^~~~~~~
   15 |   @column name = "n";
-
-  hint: remove "emitDecoratorMetadata" from the tsconfig until metadata support lands, or drop the decorators it covers

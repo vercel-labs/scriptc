@@ -2,6 +2,7 @@
   "compilerOptions": {
     "strict": true,
     "experimentalDecorators": true,
-    "emitDecoratorMetadata": true
+    "emitDecoratorMetadata": true,
+    "useDefineForClassFields": false
   }
 }

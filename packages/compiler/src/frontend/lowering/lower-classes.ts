@@ -74,6 +74,11 @@ import { staticsEvaluationStatementOf } from "../class-statics-position.js";
 import { inertReadOf } from "./inert-reads.js";
 import { withoutParentheses } from "../outer-expressions.js";
 import { lowerZlibStreamNew, zlibClassName, zlibStreamModeOf } from "./builtins/compression.js";
+import {
+  classMetadata,
+  declarationMetadata,
+  wantsDecoratorMetadata,
+} from "./decorator-metadata.js";
 import { everyStmtList } from "../../ir/traverse.js";
 import {
   type BuiltinClassRef,
@@ -4300,8 +4305,11 @@ export function collectClassShapeInner(
           );
           if (!isParamProp) {
             // Non-keyword modifiers (parameter decorators) are rejected
-            // by tsc under standard decorators; defensive.
-            if (p.modifiers?.nodes.length) lowerer.unsupported("SC1090", p, "this parameter form");
+            // by tsc under standard decorators; under
+            // `experimentalDecorators` they are legal and belong to the
+            // decoration event (legacyCtorParameters), not to the fields.
+            if (p.modifiers?.nodes.some((m) => m.kind !== ts.SyntaxKind.Decorator) === true)
+              lowerer.unsupported("SC1090", p, "this parameter form");
             continue;
           }
           // tsc rejects binding patterns (TS1187) and rest params
@@ -6853,6 +6861,11 @@ function lowerLegacyParameterApplications(
   targetValue: IrExpr,
   keyValue: IrExpr | null,
   at: SrcLoc,
+  /** `emitDecoratorMetadata` values: tsc's `__metadata` entries follow the
+   * `__param` entries in the array, so they EVALUATE after the parameter
+   * decorator expressions and APPLY before them. A class's design:paramtypes
+   * entry is a class decorator: it receives the class value alone. */
+  metadata: readonly IrExpr[] = [],
 ): IrStmt[] {
   const stmts: IrStmt[] = [];
   const targetLocal = lowerer.declareHiddenLocal("legacyparamtarget", DYN);
@@ -6886,6 +6899,37 @@ function lowerLegacyParameterApplications(
       });
       callees.push({ localId: callee.id, index: entry.index });
     }
+  // The metadata entries evaluate after every parameter decorator expression
+  // (they follow the __param entries in tsc's array).
+  const metadataCallees: string[] = [];
+  for (const value of metadata) {
+    const callee = lowerer.declareHiddenLocal("legacymeta", DYN);
+    stmts.push({ kind: "varDecl", localId: callee.id, init: value, loc: at });
+    metadataCallees.push(callee.id);
+  }
+  // ...and apply before them, in reverse array order. Each application is
+  // skipped when its decorator is falsy, as tsc's helper skips a falsy
+  // array entry (Reflect.metadata is undefined without the polyfill).
+  for (let i = metadataCallees.length - 1; i >= 0; i--)
+    stmts.push({
+      kind: "exprStmt",
+      expr: {
+        kind: "logical",
+        op: "&&",
+        left: { kind: "varRef", localId: metadataCallees[i]!, type: DYN, loc: at },
+        right: {
+          kind: "dynCall",
+          callee: { kind: "varRef", localId: metadataCallees[i]!, type: DYN, loc: at },
+          calleeName: "decorator",
+          args: [{ kind: "varRef", localId: targetId, type: DYN, loc: at }],
+          type: DYN,
+          loc: at,
+        },
+        type: DYN,
+        loc: at,
+      },
+      loc: at,
+    });
   for (let i = callees.length - 1; i >= 0; i--) {
     const p = callees[i]!;
     stmts.push({
@@ -6925,6 +6969,7 @@ function lowerLegacyConstructorDecorations(lowerer: Lowerer, info: ClassInfo): I
       classValueRef(lowerer, info, info.decl),
       null,
       loc,
+      wantsDecoratorMetadata(lowerer, info.decl) ? classMetadata(lowerer, info.decl) : [],
     );
   } catch (e) {
     if (!(e instanceof PoisonError)) throw e;
@@ -7108,7 +7153,17 @@ function lowerLegacyMemberDecorations(lowerer: Lowerer, info: ClassInfo): IrStmt
           });
           paramCallees.push({ localId: callee.id, index: parameter.index });
         }
-      if (entry.kind === "method" && entry.decorators.length === 0) {
+      // `emitDecoratorMetadata` design-type entries follow the __param
+      // entries in tsc's array: evaluated after every decorator expression
+      // and applied before them, in reverse array order.
+      const metaCallees: string[] = [];
+      if (wantsDecoratorMetadata(lowerer, entry.member))
+        for (const value of declarationMetadata(lowerer, entry.member, info.decl)) {
+          const callee = lowerer.declareHiddenLocal("legacymeta", DYN);
+          stmts.push({ kind: "varDecl", localId: callee.id, init: value, loc: at });
+          metaCallees.push(callee.id);
+        }
+      if (entry.kind === "method" && entry.decorators.length === 0 && metaCallees.length === 0) {
         // Only parameter decorators: they receive the prototype, the key
         // and the index; the member's own descriptor is unchanged, so no
         // descriptor object or definition is needed.
@@ -7160,6 +7215,50 @@ function lowerLegacyMemberDecorations(lowerer: Lowerer, info: ClassInfo): IrStmt
           },
           loc: at,
         });
+        // The design-type decorators apply before the parameter decorators
+        // (tsc's array order is [member decorators, __param entries,
+        // __metadata entries], applied in reverse), each skipped when
+        // falsy, as the helper skips a falsy array entry.
+        for (let i = metaCallees.length - 1; i >= 0; i--) {
+          const calleeRef = varRef(metaCallees[i]!, DYN, at);
+          const previous = varRef(descriptorId, DYN, at);
+          const result = lowerer.declareHiddenLocal("legacyres", DYN);
+          stmts.push({
+            kind: "varDecl",
+            localId: result.id,
+            init: {
+              kind: "logical",
+              op: "||",
+              left: {
+                kind: "logical",
+                op: "&&",
+                left: calleeRef,
+                right: {
+                  kind: "logical",
+                  op: "||",
+                  left: {
+                    kind: "dynCall",
+                    callee: calleeRef,
+                    calleeName: "decorator",
+                    args: [target(at), key(at), previous],
+                    type: DYN,
+                    loc: at,
+                  },
+                  right: previous,
+                  type: DYN,
+                  loc: at,
+                },
+                type: DYN,
+                loc: at,
+              },
+              right: previous,
+              type: DYN,
+              loc: at,
+            },
+            loc: at,
+          });
+          descriptorId = result.id;
+        }
         // Parameter decorators apply first (reverse parameter order, and
         // within one parameter reverse source order); __param ignores the
         // descriptor and its undefined result leaves `r` alone.
@@ -7281,17 +7380,26 @@ function lowerLegacyMemberDecorations(lowerer: Lowerer, info: ClassInfo): IrStmt
         }
         // tsc passes the accumulated result (initially undefined) as the
         // decorator's third argument and keeps a truthy return; after the
-        // reverse applications a truthy result is defined on the target.
+        // reverse applications a truthy result is defined on the target. The
+        // design-type entries follow the member decorators in the array, so
+        // they apply first.
+        const propertyChain = [
+          ...callees.map((c) => ({ localId: c.localId, loc: locOf(c.decorator) })),
+          ...metaCallees.map((localId) => ({ localId, loc: at })),
+        ];
         let resultId: string | null = null;
-        for (let i = callees.length - 1; i >= 0; i--) {
-          const d = callees[i]!.decorator;
-          const dLoc = locOf(d);
-          const callee = callees[i]!.localId;
-          const calleeRef: IrExpr = { kind: "varRef", localId: callee, type: DYN, loc: dLoc };
+        for (let i = propertyChain.length - 1; i >= 0; i--) {
+          const dLoc = propertyChain[i]!.loc;
           const previous: IrExpr =
             resultId === null
               ? dynUndefinedExpr(dLoc)
               : { kind: "varRef", localId: resultId, type: DYN, loc: dLoc };
+          const calleeRef: IrExpr = {
+            kind: "varRef",
+            localId: propertyChain[i]!.localId,
+            type: DYN,
+            loc: dLoc,
+          };
           const result = lowerer.declareHiddenLocal("legacyres", DYN);
           stmts.push({
             kind: "varDecl",
@@ -7660,17 +7768,25 @@ function lowerClassDecoration(lowerer: Lowerer, info: ClassInfo): IrStmt[] {
     }
     // 1b. LEGACY constructor parameter decorators evaluate after the class
     // decorator expressions and apply before them (tsc's `__param` entries
-    // follow the class decorators in the array).
-    if (cd.legacy === true && info.legacyConstructorDecorations !== undefined)
-      stmts.push(
-        ...lowerLegacyParameterApplications(
-          lowerer,
-          info.legacyConstructorDecorations,
-          classValueRef(lowerer, info, info.decl),
-          null,
-          loc,
-        ),
-      );
+    // follow the class decorators in the array). `emitDecoratorMetadata`
+    // appends a `design:paramtypes` entry after them.
+    if (cd.legacy === true) {
+      const parameters = info.legacyConstructorDecorations ?? [];
+      const metadata = wantsDecoratorMetadata(lowerer, info.decl)
+        ? classMetadata(lowerer, info.decl)
+        : [];
+      if (parameters.length > 0 || metadata.length > 0)
+        stmts.push(
+          ...lowerLegacyParameterApplications(
+            lowerer,
+            parameters,
+            classValueRef(lowerer, info, info.decl),
+            null,
+            loc,
+            metadata,
+          ),
+        );
+    }
     // 1c. STANDARD semantics: the heritage is read after every decorator
     // factory evaluated and before the class exists, so a cycle class read
     // there throws its ReferenceError at this point, exactly where Node

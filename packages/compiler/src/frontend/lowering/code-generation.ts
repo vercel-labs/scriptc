@@ -154,7 +154,10 @@ export function lowerCodeGenerationCall(
     stmts.push({ kind: "exprStmt", expr: receiver, loc: locOf(receiverNode) });
   }
   for (const operand of indirectEvalPrefix(expr.expression)) {
-    stmts.push({ kind: "exprStmt", expr: lowerer.lowerExpr(operand), loc: locOf(operand) });
+    // The operands are evaluated for their effects and discarded; a unit
+    // value (`void 0` in `(void 0, eval)(...)`) has no standalone IR value,
+    // so it lowers as a statement, which discards it exactly.
+    stmts.push(lowerer.lowerExprStatement(operand));
   }
   const argNodes = expr.arguments?.nodes ?? [];
   if (kind === "Function" && argNodes.some((arg) => ts.isSpreadElement(arg))) {

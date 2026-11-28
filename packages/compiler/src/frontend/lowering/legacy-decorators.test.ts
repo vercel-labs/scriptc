@@ -565,3 +565,214 @@ test("constructor parameter decorators on a function-local class are refused", a
   ].join("\n");
   expect(await refusalCodes(source, legacyTsconfig)).toContain("SC1090");
 });
+
+const metadataTsconfig = {
+  compilerOptions: { ...legacyTsconfig.compilerOptions, emitDecoratorMetadata: true },
+};
+
+/** The `design:*` keys of the `Reflect.metadata(k, v)` values the lowering
+ * emitted, in evaluation order. */
+function metadataKeys(init: IrFunction): string[] {
+  const keys: string[] = [];
+  for (const e of exprs(init)) {
+    if (e.kind !== "dynCall" || e.calleeName !== "Reflect.metadata") continue;
+    // The key crosses into the checked-dynamic tree (dynFrom around the
+    // string literal).
+    let key: IrExpr = e.args[0]!;
+    while (key.kind === "dynFrom") key = key.value;
+    if (key.kind === "strLit") keys.push(key.value);
+  }
+  return keys;
+}
+
+test("design-type metadata evaluates after the parameter decorators and applies first", async () => {
+  const source = [
+    "class Dep {}",
+    "function dec(..._a: any[]): any { return undefined; }",
+    "function pdec(..._a: any[]): any { return undefined; }",
+    "class Box {",
+    "  @dec",
+    "  run(@pdec x: Dep): Dep { return x; }",
+    "}",
+    "console.log(new Box().run(new Dep()) instanceof Dep);",
+    "",
+  ].join("\n");
+  const mod = await lower(source, metadataTsconfig);
+  const init = initFunction(mod);
+  const stmts = statements(init);
+  expect(metadataKeys(init)).toEqual(["design:type", "design:paramtypes", "design:returntype"]);
+  // tsc's array order is [member decorators, __param entries, __metadata
+  // entries]: the metadata values evaluate last...
+  const firstMetadata = stmts.findIndex(
+    (s) => s.kind === "varDecl" && s.localId.startsWith("legacymeta"),
+  );
+  const lastParameter = stmts.reduce(
+    (last, s, i) => (s.kind === "varDecl" && s.localId.startsWith("legacyparam") ? i : last),
+    -1,
+  );
+  expect(lastParameter).toBeGreaterThanOrEqual(0);
+  expect(firstMetadata).toBeGreaterThan(lastParameter);
+  // ...and apply before the parameter decorators.
+  const metadataApplication = stmts.findIndex(
+    (s) =>
+      s.kind === "varDecl" &&
+      s.localId.startsWith("legacyres") &&
+      JSON.stringify(s.init).includes("legacymeta"),
+  );
+  const parameterApplication = stmts.findIndex(
+    (s) =>
+      s.kind === "exprStmt" &&
+      JSON.stringify(s.expr).includes('"legacymeta"') === false &&
+      JSON.stringify(s.expr).includes('"decorator"') === true &&
+      JSON.stringify(s.expr).includes('"numLit"') === true,
+  );
+  expect(metadataApplication).toBeGreaterThanOrEqual(0);
+  expect(parameterApplication).toBeGreaterThan(metadataApplication);
+});
+
+test("a decorated class's constructor parameters serialize as design:paramtypes", async () => {
+  const source = [
+    "class Dep {}",
+    "function make(): (target: any) => any {",
+    "  return (target: any): any => { return undefined; };",
+    "}",
+    "@make()",
+    "class Service { constructor(dep: Dep, ...rest: string[]) { void dep; void rest; } }",
+    "console.log(new Service(new Dep()) instanceof Service);",
+    "",
+  ].join("\n");
+  const mod = await lower(source, metadataTsconfig);
+  const init = initFunction(mod);
+  expect(metadataKeys(init)).toEqual(["design:paramtypes"]);
+});
+
+test("no design-type metadata exists without emitDecoratorMetadata", async () => {
+  const source = [
+    "class Dep {}",
+    "function dec(..._a: any[]): any { return undefined; }",
+    "class Box { @dec p: Dep = new Dep(); }",
+    "console.log(new Box().p instanceof Dep);",
+    "",
+  ].join("\n");
+  const mod = await lower(source, legacyTsconfig);
+  expect(metadataKeys(initFunction(mod))).toEqual([]);
+});
+
+test("a design type naming a later class throws the temporal-dead-zone ReferenceError", async () => {
+  const source = [
+    "function dec(..._a: any[]): any { return undefined; }",
+    "class Early { @dec late: Later = null as any; }",
+    "class Later {}",
+    "",
+  ].join("\n");
+  const mod = await lower(source, metadataTsconfig);
+  const throws = exprs(initFunction(mod)).filter(
+    (e): e is Extract<IrExpr, { kind: "libCall" }> =>
+      e.kind === "libCall" && e.fn === "error.nodeThrow",
+  );
+  expect(throws).toHaveLength(1);
+  const kind = throws[0]!.args[0]!;
+  const message = throws[0]!.args[2]!;
+  expect(kind.kind === "numLit" ? kind.value : -1).toBe(5);
+  expect(message.kind === "strLit" ? message.value : "").toBe(
+    "Cannot access 'Later' before initialization",
+  );
+});
+
+test("a design type keeps a value import the file names only in the type position", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-legacy-decorators-import-"));
+  try {
+    const entry = join(dir, "main.ts");
+    await writeFile(join(dir, "dep.ts"), "export class Dep {}\n");
+    await writeFile(
+      entry,
+      [
+        'import { Dep } from "./dep.js";',
+        "function dec(..._a: any[]): any { return undefined; }",
+        "class Box { @dec dep!: Dep; }",
+        "console.log(new Box() !== undefined);",
+        "",
+      ].join("\n"),
+    );
+    await writeFile(join(dir, "tsconfig.json"), JSON.stringify(metadataTsconfig));
+    const result = await compile(entry, {
+      outDir: dir,
+      outPath: join(dir, "main.ir.json"),
+      outputKind: "ir",
+    });
+    if (!result.ok) throw new Error(result.diagnostics.map((d) => d.message).join("\n"));
+    const mod = deserializeModule(await readFile(join(dir, "main.ir.json"), "utf8"));
+    // The dependency module is part of the program: its class value is what
+    // the emitted design:type reads.
+    expect(
+      mod.functions.filter((fn) => fn.name.startsWith("%init.")).length,
+    ).toBeGreaterThanOrEqual(2);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a namespace import used only by a decorated annotation is kept", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-legacy-decorators-ns-"));
+  try {
+    const entry = join(dir, "main.ts");
+    await writeFile(join(dir, "dep.ts"), "export class Dep {}\n");
+    await writeFile(
+      entry,
+      [
+        'import * as dep from "./dep.js";',
+        "function dec(..._a: any[]): any { return undefined; }",
+        "class Box { @dec p: dep.Dep = new dep.Dep(); }",
+        "console.log(new Box().p instanceof dep.Dep);",
+        "",
+      ].join("\n"),
+    );
+    await writeFile(join(dir, "tsconfig.json"), JSON.stringify(metadataTsconfig));
+    const result = await compile(entry, {
+      outDir: dir,
+      outPath: join(dir, "main.ir.json"),
+      outputKind: "ir",
+    });
+    if (!result.ok) throw new Error(result.diagnostics.map((d) => d.message).join("\n"));
+    const mod = deserializeModule(await readFile(join(dir, "main.ir.json"), "utf8"));
+    // The dependency module stays in the program (the namespace import is a
+    // value import), and design:type carries the imported class value.
+    expect(
+      mod.functions.filter((fn) => fn.name.startsWith("%init.")).length,
+    ).toBeGreaterThanOrEqual(2);
+    expect(JSON.stringify(initFunction(mod).body)).toContain('"classRef"');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a type-only imported class serializes as Function", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-legacy-decorators-typeonly-"));
+  try {
+    const entry = join(dir, "main.ts");
+    await writeFile(join(dir, "dep.ts"), "export class Dep {}\n");
+    await writeFile(
+      entry,
+      [
+        'import type { Dep } from "./dep.js";',
+        "function dec(..._a: any[]): any { return undefined; }",
+        "class Box { @dec p!: Dep; }",
+        "console.log(new Box() !== undefined);",
+        "",
+      ].join("\n"),
+    );
+    await writeFile(join(dir, "tsconfig.json"), JSON.stringify(metadataTsconfig));
+    const result = await compile(entry, {
+      outDir: dir,
+      outPath: join(dir, "main.ir.json"),
+      outputKind: "ir",
+    });
+    if (!result.ok) throw new Error(result.diagnostics.map((d) => d.message).join("\n"));
+    const mod = deserializeModule(await readFile(join(dir, "main.ir.json"), "utf8"));
+    const body = JSON.stringify(initFunction(mod).body);
+    expect(body).toContain('"Function"');
+    expect(body).not.toContain('"classRef"');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

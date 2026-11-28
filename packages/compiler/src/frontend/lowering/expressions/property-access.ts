@@ -7269,6 +7269,9 @@ const BUILTIN_VALUE_REFLECTION: ReadonlySet<string> = new Set([
   "isExtensible",
   "isFrozen",
   "isSealed",
+  // The runtime answers a function value's prototype edge (Function.prototype),
+  // which is what reflect-metadata's target checks need.
+  "getPrototypeOf",
 ]);
 
 /** The value `builtinGlobalValue` gives the stdlib global `expr` read at its

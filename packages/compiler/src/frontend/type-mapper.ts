@@ -6061,6 +6061,21 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   ) {
     return { kind: "spawnRes" };
   }
+  // node:worker_threads' LockManager (the Web Locks manager): a
+  // checked-dynamic value whose request()/query() lower at the call site
+  // (worker-locks.ts).
+  if (
+    psym !== undefined &&
+    (psymName === "LockManager" || psymName === "LockManagerSnapshot" || psymName === "Lock") &&
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "worker_threads"),
+    )
+  ) {
+    return { kind: "dyn" };
+  }
   // child_process.ChildProcess and @types/node's stdio-refined return
   // interfaces: all carry the same runtime child handle; the generic
   // refinements only tell the checker which stdio properties are null.

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/worker-locks-option-errors.ts"
+ ],
+ "diags": []
+}

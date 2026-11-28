@@ -44,6 +44,7 @@
 #include "scr_lib.h"
 #include "scr_dc.h"
 #include "scr_child.h"
+#include "scr_worker_locks.h"
 #include "scr_crypto.h"
 #include "scr_path.h"
 #include "scr_file_handle.h"

@@ -166,6 +166,33 @@ declare module "worker_threads" {
   }
   export const parentPort: MessagePort | null;
   export const workerData: any;
+  /* The Web Locks manager: one lock store for the process, shared by every
+   * thread. request() runs the callback while the lock is held and resolves
+   * with { name, mode } once the callback's result settles; query() answers
+   * this client's held and pending locks. A lock's name is converted with
+   * ToString and may not start with "-". */
+  export interface Lock {
+    readonly name: string;
+    readonly mode: "exclusive" | "shared";
+  }
+  export interface LockOptions {
+    mode?: "exclusive" | "shared";
+    ifAvailable?: boolean;
+    steal?: boolean;
+    signal?: AbortSignal;
+  }
+  export interface LockManagerSnapshot {
+    held: Lock[];
+    pending: Lock[];
+  }
+  export interface LockManager {
+    /* The promise answers the callback's own result once the callback
+     * finished holding the lock; the result is checked-dynamic. */
+    request(name: string, callback: (lock: Lock) => unknown): Promise<any>;
+    request(name: string, options: LockOptions, callback: (lock: Lock) => unknown): Promise<any>;
+    query(): Promise<LockManagerSnapshot>;
+  }
+  export const locks: LockManager;
 }
 
 declare module "node:worker_threads" {

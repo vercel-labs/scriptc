@@ -126117,6 +126117,26 @@
           "tests/corpus/worker-cpu-usage.ts",
           "tests/corpus/worker-env-option.ts",
           "tests/corpus/worker-heap-statistics.ts",
+          "tests/corpus/worker-locks-async-callback.mjs",
+          "tests/corpus/worker-locks-callback-throw.mjs",
+          "tests/corpus/worker-locks-caught-exception.mjs",
+          "tests/corpus/worker-locks-errors.ts",
+          "tests/corpus/worker-locks-if-available.mjs",
+          "tests/corpus/worker-locks-init-hook.mjs",
+          "tests/corpus/worker-locks-nested-requests.mjs",
+          "tests/corpus/worker-locks-option-errors.ts",
+          "tests/corpus/worker-locks-query.ts",
+          "tests/corpus/worker-locks-request.ts",
+          "tests/corpus/worker-locks-shared.ts",
+          "tests/corpus/worker-locks-signal-abort.mjs",
+          "tests/corpus/worker-locks-signal-option.ts",
+          "tests/corpus/worker-locks-signal-throw.mjs",
+          "tests/corpus/worker-locks-signal-thrown-value.mjs",
+          "tests/corpus/worker-locks-steal-bookkeeping.mjs",
+          "tests/corpus/worker-locks-steal-option.ts",
+          "tests/corpus/worker-locks-steal-signal.mjs",
+          "tests/corpus/worker-locks-thenable.mjs",
+          "tests/corpus/worker-locks-thrown-value.mjs",
           "tests/corpus/worker-messageerror-events.ts",
           "tests/corpus/worker-messageerror-surface.ts",
           "tests/corpus/worker-performance.ts",
@@ -127900,8 +127920,12 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.locks",
+        "tests": [
+          "tests/corpus/worker-locks-request.ts",
+          "tests/corpus/worker-locks-query.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -127923,8 +127947,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "supported",
+        "evidence": "compiler-feature:worker_threads.Lock",
+        "tests": [
+          "tests/corpus/worker-locks-request.ts",
+          "tests/corpus/worker-locks-query.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -127946,8 +127974,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "supported",
+        "evidence": "compiler-feature:worker_threads.name",
+        "tests": [
+          "tests/corpus/worker-locks-request.ts",
+          "tests/corpus/worker-locks-query.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -127969,8 +128001,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "supported",
+        "evidence": "compiler-feature:worker_threads.mode",
+        "tests": [
+          "tests/corpus/worker-locks-request.ts",
+          "tests/corpus/worker-locks-query.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -127992,8 +128028,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.LockManager",
+        "tests": [
+          "tests/corpus/worker-locks-request.ts",
+          "tests/corpus/worker-locks-query.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -128015,8 +128055,29 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.locks.request",
+        "tests": [
+          "tests/corpus/worker-locks-request.ts",
+          "tests/corpus/worker-locks-shared.ts",
+          "tests/corpus/worker-locks-errors.ts",
+          "tests/corpus/worker-locks-option-errors.ts",
+          "tests/corpus/worker-locks-signal-option.ts",
+          "tests/corpus/worker-locks-steal-option.ts",
+          "tests/corpus/worker-locks-nested-requests.mjs",
+          "tests/corpus/worker-locks-async-callback.mjs",
+          "tests/corpus/worker-locks-signal-abort.mjs",
+          "tests/corpus/worker-locks-callback-throw.mjs",
+          "tests/corpus/worker-locks-thrown-value.mjs",
+          "tests/corpus/worker-locks-steal-bookkeeping.mjs",
+          "tests/corpus/worker-locks-if-available.mjs",
+          "tests/corpus/worker-locks-signal-throw.mjs",
+          "tests/corpus/worker-locks-signal-thrown-value.mjs",
+          "tests/corpus/worker-locks-steal-signal.mjs",
+          "tests/corpus/worker-locks-caught-exception.mjs",
+          "tests/corpus/worker-locks-init-hook.mjs",
+          "tests/corpus/worker-locks-thenable.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -128038,8 +128099,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.locks.query",
+        "tests": [
+          "tests/corpus/worker-locks-query.ts"
+        ]
       },
       "anchorSource": "exact"
     },

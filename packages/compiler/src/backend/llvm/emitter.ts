@@ -125,7 +125,12 @@ import {
   everyStmtChild,
   everyStmtList,
 } from "../../ir/traverse.js";
-import { SourceLocations, type SourcePosition } from "../source-locations.js";
+import {
+  type FilePrefixMap,
+  shownFile,
+  SourceLocations,
+  type SourcePosition,
+} from "../source-locations.js";
 import { NEVER_THROW_LIB_FNS } from "../../ir/builtin-never-throw.js";
 import {
   INT32_RANGE,
@@ -649,6 +654,9 @@ export interface LlvmTargetOptions {
    * it: a build from an IR artifact, which records the file names and offsets
    * but not the sources (source-text-loader.ts). */
   positionSourceLoader?: (file: string) => string | undefined;
+  /** The folders debug info and stack frames name in place of the ones the
+   * sources were compiled from (a library profile's file_prefix_map). */
+  filePrefixMap?: FilePrefixMap;
   /** The output is linked with the report of failed checked conversions
    * (scr_conversion_trace.c, runtime feature conversionTrace), so each
    * conversion's failure path calls it with the conversion's position. Set
@@ -2578,7 +2586,11 @@ export class LlEmitter {
     this.positionOf =
       this.stackPositions && positionSources !== undefined
         ? (() => {
-            const locations = new SourceLocations(positionSources, options.positionSourceLoader);
+            const locations = new SourceLocations(
+              positionSources,
+              options.positionSourceLoader,
+              options.filePrefixMap,
+            );
             return (loc: SrcLoc) => locations.position(loc);
           })()
         : null;
@@ -2611,6 +2623,7 @@ export class LlEmitter {
             options.pointerBits,
             mod.unions,
             this.nullableUnions.armTypes(),
+            options.filePrefixMap,
           );
     this.constantNumericTables = findConstantNumericTables(mod);
     this.staticArrayTables = findStaticArrayTables(mod);
@@ -4102,6 +4115,11 @@ export class LlEmitter {
     this.B.line(`store i32 ${position.column}, ptr ${slot(5)}`);
   }
 
+  /** `file` as debug info and stack frames name it. */
+  shownFile(file: string): string {
+    return shownFile(file, this.targetOptions.filePrefixMap ?? []);
+  }
+
   conversionTraceAt(loc: SrcLoc): (() => void) | undefined {
     const debug = this.debug;
     if (!this.conversionTrace || debug === null) return undefined;
@@ -4111,8 +4129,8 @@ export class LlEmitter {
       pos !== null
         ? positionedFrameText(name, pos)
         : name === undefined
-          ? `    at ${loc.file}`
-          : frameText(name, loc.file);
+          ? `    at ${this.shownFile(loc.file)}`
+          : frameText(name, this.shownFile(loc.file));
     return () => {
       this.declare("declare void @scr_conversion_trace(ptr)");
       this.B.line(`call void @scr_conversion_trace(ptr ${this.cstr(text)})`);

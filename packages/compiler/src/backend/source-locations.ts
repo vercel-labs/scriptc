@@ -6,6 +6,27 @@ export interface SourcePosition {
   column: number;
 }
 
+/** Source folders and the folders debug info and stack frames name in their
+ * place, as a C compiler's -ffile-prefix-map. Paths are spelled as the
+ * frontend spells them, with forward slashes. */
+export type FilePrefixMap = readonly (readonly [from: string, to: string])[];
+
+/** `file` as debug info and stack frames name it: the first folder of `map`
+ * that holds it gives its place. */
+export function shownFile(file: string, map: FilePrefixMap): string {
+  for (const [from, to] of map) {
+    const prefix = folderPrefix(from);
+    if (file.startsWith(prefix)) return folderPrefix(to) + file.slice(prefix.length);
+  }
+  return file;
+}
+
+/** What the paths in `folder` start with. A filesystem root, such as `/` or
+ * `D:/`, ends with its separator. */
+function folderPrefix(folder: string): string {
+  return folder.endsWith("/") ? folder : `${folder}/`;
+}
+
 /** The UTF-16 offsets at which each line of `text` starts. */
 function lineStarts(text: string): number[] {
   const starts = [0];
@@ -28,6 +49,7 @@ export class SourceLocations {
   constructor(
     sources: ReadonlyMap<string, string>,
     private readonly load: ((file: string) => string | undefined) | undefined = undefined,
+    private readonly filePrefixMap: FilePrefixMap = [],
   ) {
     for (const [file, text] of sources) this.starts.set(file, lineStarts(text));
   }
@@ -53,6 +75,10 @@ export class SourceLocations {
       if (starts[mid]! <= loc.start) lo = mid;
       else hi = mid - 1;
     }
-    return { file: loc.file, line: lo + 1, column: loc.start - starts[lo]! + 1 };
+    return {
+      file: shownFile(loc.file, this.filePrefixMap),
+      line: lo + 1,
+      column: loc.start - starts[lo]! + 1,
+    };
   }
 }

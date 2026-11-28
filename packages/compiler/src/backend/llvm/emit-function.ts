@@ -675,8 +675,8 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
     const frame = emitter.cstr(
       positions?.textAt(fn.loc) ??
         (fn.sourceName === undefined
-          ? `    at ${fn.loc.file}`
-          : frameText(fn.sourceName, fn.loc.file)),
+          ? `    at ${emitter.shownFile(fn.loc.file)}`
+          : frameText(fn.sourceName, emitter.shownFile(fn.loc.file))),
     );
     if (
       B.excCellInvariant &&

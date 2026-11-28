@@ -6,7 +6,7 @@
  * bytes of the structured trap-teaching encoding refused in both). */
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
 import {
   loadLibraryProfile,
@@ -63,6 +63,28 @@ describe("library profile validation", () => {
       expectSc4001({ ...good, npm_static }, "npm_static");
     }
   });
+  test("file_prefix_map folders resolve against the profile's directory", () => {
+    const folder = (path: string) => join(dir, path).replaceAll(sep, "/");
+    const result = loadLibraryProfile(
+      writeProfile({ ...good, file_prefix_map: { "stage/src": "src", "./stage/": "../app" } }),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok)
+      expect(result.profile.filePrefixMap).toEqual([
+        [folder("stage/src"), folder("src")],
+        [folder("stage"), folder("../app")],
+      ]);
+    for (const file_prefix_map of [
+      null,
+      "src",
+      ["src"],
+      { stage: 1 },
+      { stage: "" },
+      { "": "src" },
+    ]) {
+      expectSc4001({ ...good, file_prefix_map }, "file_prefix_map");
+    }
+  });
   test("well-formed profile resolves", () => {
     const path = writeProfile(good);
     const r = loadLibraryProfile(path);
@@ -71,6 +93,7 @@ describe("library profile validation", () => {
     expect(r.profile.name).toBe("conformance-test");
     expect(r.profile.emission).toBe("llvm");
     expect(r.profile.optimization).toBe("release");
+    expect(r.profile.filePrefixMap).toEqual([]);
     expect(r.profile.prefix).toBe("kx_");
     expect(r.profile.initSymbol).toBe("kx_init");
     expect(r.profile.collectSymbol).toBe("kx_collect");

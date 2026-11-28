@@ -10,7 +10,12 @@ import {
   type IrUnionDef,
   type SrcLoc,
 } from "../../ir/ir.js";
-import { SourceLocations, type SourcePosition } from "../source-locations.js";
+import {
+  type FilePrefixMap,
+  shownFile,
+  SourceLocations,
+  type SourcePosition,
+} from "../source-locations.js";
 import { mangleFunction } from "../mangle.js";
 
 /** A request a range emitter made of its debug info that added nodes
@@ -61,9 +66,10 @@ export class LlvmDebugInfo {
     private readonly unions: readonly IrUnionDef[] = [],
     /** Unions whose values are the nullable arm pointer itself. */
     private readonly nullableArms: ReadonlyMap<string, IrType> = new Map(),
+    filePrefixMap: FilePrefixMap = [],
   ) {
-    this.source = new SourceLocations(sources);
-    this.unit(sourceFile);
+    this.source = new SourceLocations(sources, undefined, filePrefixMap);
+    this.unit(shownFile(sourceFile, filePrefixMap));
     this.version = this.add('!{i32 2, !"Debug Info Version", i32 3}');
     this.dwarf = this.add('!{i32 2, !"Dwarf Version", i32 4}');
   }

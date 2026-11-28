@@ -1003,7 +1003,7 @@ export function emitErrorsEventsLibCall(host: LlvmEmitterContext, e: LibCallExpr
         fn.sourceName !== undefined &&
         !host.unframedFunctions.has(fn.name)
       )
-        through = host.cstr(frameText(fn.sourceName, fn.loc.file));
+        through = host.cstr(frameText(fn.sourceName, host.shownFile(fn.loc.file)));
     }
     host.declare(`declare void @scr_error_capture_stack_trace(ptr, ptr, i1)`);
     B.line(

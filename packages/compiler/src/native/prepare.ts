@@ -794,6 +794,7 @@ export function prepareNativeLibrary(
     ...(carriesDebugSources(profile.optimization, false)
       ? { debugSources: prepared.sourceTexts }
       : {}),
+    filePrefixMap: profile.filePrefixMap,
   });
   timing("llvm-emit");
   const input: NativeExecutableInput = {

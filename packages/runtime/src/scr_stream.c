@@ -9876,7 +9876,17 @@ static void scr_stream_live_remove(const void *ptr) {
     if (scr_stream_live[slot] == ptr) {
       scr_stream_live[slot] = scr_stream_live_tomb;
       scr_stream_live_count--;
-      scr_stream_live_tombs++;
+      /* The table is the thread's, and a worker's streams can all be gone
+       * long before it exits: free it with the last stream so nothing is
+       * left for a thread-exit leak check to find. */
+      if (scr_stream_live_count == 0) {
+        free(scr_stream_live);
+        scr_stream_live = NULL;
+        scr_stream_live_cap = 0;
+        scr_stream_live_tombs = 0;
+      } else {
+        scr_stream_live_tombs++;
+      }
       return;
     }
     slot = (slot + 1) & (scr_stream_live_cap - 1);

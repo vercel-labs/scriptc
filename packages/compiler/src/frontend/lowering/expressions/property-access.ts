@@ -6360,8 +6360,11 @@ export function fieldTarget(
   // A write to a member of a checked-dynamic value: Node writes the own
   // property on the object itself, whatever static shape the checker gives
   // the receiver. The receiver is lowered once here and used only on this
-  // path, so a typed store below keeps its own evaluation.
-  if (!readOnlyAccess(access)) {
+  // path, so a typed store below keeps its own evaluation. A private name
+  // is not a property key: it keeps the brand-checked write below, which
+  // throws Node's TypeError on a wrong brand instead of writing a public
+  // string-key property.
+  if (!readOnlyAccess(access) && !ts.isPrivateIdentifier(access.name)) {
     const represented = lowerer.lowerExpr(access.expression);
     if (represented.type.kind === "dyn") {
       return { container: "dynamic", obj: represented, field: access.name.text, fieldType: DYN };

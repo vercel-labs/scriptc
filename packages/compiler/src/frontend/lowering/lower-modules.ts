@@ -4398,7 +4398,7 @@ export function collectGlobals(
             isJsSourceFile(sf) &&
             decl.initializer !== undefined &&
             ts.isPropertyAccessExpression(decl.initializer) &&
-            cjsDynamicExportStorage(lowerer, decl.initializer) !== null
+            cjsDynamicExportStorage(lowerer, decl.initializer, true) !== null
           )
             type = DYN;
           const symbol = lowerer.checker.getSymbolAtLocation(nameNode);

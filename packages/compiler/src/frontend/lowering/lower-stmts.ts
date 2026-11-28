@@ -1809,7 +1809,7 @@ function jsDeclarationExpandsObject(
     (isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
       decl.initializer !== undefined &&
       ts.isPropertyAccessExpression(decl.initializer) &&
-      (cjsDynamicExportStorage(lowerer, decl.initializer) !== null ||
+      (cjsDynamicExportStorage(lowerer, decl.initializer, true) !== null ||
         dynamicStorageReceiver(lowerer, decl.initializer))) ||
     (!decl.type &&
       !hasJsTypeAnnotation(decl) &&

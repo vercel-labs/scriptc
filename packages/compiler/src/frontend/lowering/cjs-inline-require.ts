@@ -2072,6 +2072,11 @@ export function cjsExportIsRuntimeOptional(
 export function cjsDynamicExportStorage(
   lowerer: Lowerer,
   access: ts.PropertyAccessExpression,
+  /** A type-only question (does this read reach a checked-dynamic export
+   * slot?): answer the storage without the module-init lowering a read at
+   * this position would need. Collection asks before any module's %init is
+   * named, so a require at file scope must not lower its initializer there. */
+  probe = false,
 ): IrExpr | null {
   if (lowerer.cjsInFileExportMemberGlobals.size === 0) return null;
   const recv = access.expression;
@@ -2092,7 +2097,7 @@ export function cjsDynamicExportStorage(
     (symbol === undefined ? undefined : lowerer.globalsBySymbol.get(symbol));
   if (g === undefined || g.type.kind !== "dyn") return null;
   const storage: IrExpr = { kind: "varRef", localId: g.id, type: g.type, loc: locOf(access) };
-  if (ts.isCallExpression(access.expression)) {
+  if (!probe && ts.isCallExpression(access.expression)) {
     const req = inlineProgramRequireOf(lowerer, access.expression);
     if (req !== null && !lowerer.inlineRequireInitDone.has(req.call))
       return withRequireInit(lowerer, req, storage);

@@ -218,6 +218,10 @@ describe.skipIf(!zigOnPath() || !wasmPackInstalled())("wasm32-wasi differential"
     "buffer-codec-boundaries.ts",
     "text-encode-into-boundaries.ts",
     "object-key-indexes.js",
+    // A private-name write through an untyped receiver keeps the brand check.
+    "dyn-private-write-brand.js",
+    // A file-scope binding from a checked-dynamic CommonJS export.
+    "cjs-dynamic-export-file-binding/main.cjs",
     "record-key-order.ts",
     "typed-array-bulk-conversion.mjs",
     "typed-array-numeric-import.ts",

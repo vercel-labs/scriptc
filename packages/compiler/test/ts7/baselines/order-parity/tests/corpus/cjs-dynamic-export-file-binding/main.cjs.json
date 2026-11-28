@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/cjs-dynamic-export-file-binding/state.cjs",
+  "<repo>/tests/corpus/cjs-dynamic-export-file-binding/main.cjs"
+ ],
+ "diags": []
+}

@@ -148,3 +148,27 @@ console.log(sa.a, sb.b);
   expect(result.diagnostics).toEqual([]);
   expect(result.stdout).toBe("1 6\n");
 });
+
+test("an unknown-to-record assertion beside a width conversion keeps the view", async () => {
+  // The assertion boxes its source as a live capsule, so the backend plans a
+  // view for it too. That pair is the one its own source can reach (the
+  // width source sits among the assertion source's sources), so the backend
+  // drops the assertion pair and keeps the width pair: the conversion still
+  // views, the program matches Node, and no SC6001 is due.
+  const source = `interface Narrow { extra: number }
+interface AssertTarget { ta: number }
+interface AssertSource { ta: number; inner: Narrow }
+interface Wide { name: string; extra: number; holder: AssertTarget }
+const source: AssertSource = { ta: 1, inner: { extra: 2 } };
+const unknownValue: unknown = source;
+const target = unknownValue as AssertTarget;
+const wide: Wide = { name: "w", extra: 1, holder: target };
+const narrow: Narrow = wide;
+narrow.extra = 5;
+console.log(wide.name, wide.extra);
+`;
+  const result = await run("assertion-beside-width", source);
+  expect(result.warnings.filter((w) => w.code === "SC6001")).toEqual([]);
+  expect(result.diagnostics).toEqual([]);
+  expect(result.stdout).toBe("w 5\n");
+});

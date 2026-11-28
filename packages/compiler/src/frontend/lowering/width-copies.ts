@@ -347,6 +347,40 @@ export function viewObservedRecordCopies(lowerer: Lowerer, functions: IrFunction
     });
   if (publishes) return 0;
   const scan = new CopyScan(helpers, functions, false, (id) => lowerer.unions.get(id)?.arms);
+  // Shapes whose values may carry properties their shape does not declare:
+  // the target of a narrowing copy keeps the source's other properties
+  // beside it, and a conversion of such a value keeps them again. A view of
+  // such a value answers its own-key queries (in, hasOwnProperty,
+  // getOwnPropertyNames, Object.keys/values/entries, JSON, spread, assign)
+  // from the target shape, so a pair with such a source keeps its copy.
+  const extraCarrying = extraCarryingShapes(lowerer, functions, scan.sites());
+  // Record shapes a union-typed binding holds: the arm keeps the properties
+  // its conversion kept beside it, and a view of the same shape loses them
+  // for the union's value.
+  const unionFed = unionFedShapes(lowerer, functions);
+  // Record shapes a width conversion reads: a copy made FROM a view loses
+  // the properties the view's source kept beside it, so a conversion whose
+  // result another width conversion reads stays a copy itself.
+  // Record shapes whose value the program also holds in a union arm: the
+  // arm keeps the properties its conversion kept beside it, and a view of
+  // the same shape would lose them for the arm.
+  const unionWrapped = new Set<string>();
+  const wrappedSource = (value: IrExpr): void => {
+    const target = value.kind === "dynCheck" ? value.value : value;
+    const source = target.kind === "dynFrom" ? target.value : target;
+    if (source.type.kind === "record") unionWrapped.add(source.type.shapeId);
+  };
+  function walkExpr(expr: IrExpr): boolean {
+    if (expr.kind === "unionWrap") wrappedSource(expr.value);
+    return everyExprChild(expr, walkExpr, walkStmt);
+  }
+  function walkStmt(stmt: IrStmt): boolean {
+    return everyStmtChild(stmt, walkExpr, walkStmt);
+  }
+  for (const fn of functions) for (const stmt of fn.body) walkStmt(stmt);
+  const widthSources = new Set<string>();
+  for (const site of scan.sites())
+    if (site.kind === "width" && site.from.kind === "record") widthSources.add(site.from.shapeId);
   const sites = scan.sites().filter(
     (site) =>
       site.call !== undefined &&
@@ -369,8 +403,15 @@ export function viewObservedRecordCopies(lowerer: Lowerer, functions: IrFunction
   const candidates = new Map<string, { target: string; source: string }>();
   for (const site of sites) {
     if (!site.aliasable || observations.of(site) === null) continue;
-    if (!viewableRecordPair(lowerer, site.from, site.to)) continue;
     if (site.from.kind !== "record" || site.to.kind !== "record") continue;
+    if (extraCarrying.has(site.from.shapeId)) continue;
+    if (unionFed.has(site.from.shapeId)) continue;
+    if (widthSources.has(site.to.shapeId)) continue;
+    const fromFields = lowerer.shapes.get(site.from.shapeId)?.fields ?? [];
+    const toNames = new Set((lowerer.shapes.get(site.to.shapeId)?.fields ?? []).map((f) => f.name));
+    const drops = fromFields.some((field) => !toNames.has(field.name));
+    if (drops && unionWrapped.has(site.from.shapeId)) continue;
+    if (!viewableRecordPair(lowerer, site.from, site.to)) continue;
     candidates.set(pairOf(site), { target: site.to.shapeId, source: site.from.shapeId });
   }
   // A pair the backend's planner would refuse is not a view: rewriting it
@@ -378,7 +419,7 @@ export function viewObservedRecordCopies(lowerer: Lowerer, functions: IrFunction
   // The planner's refusal depends on every other planned pair (a source can
   // hold the target through the sources of the views it reaches), so the
   // pairs are settled together.
-  const observed = survivingPairs(lowerer, candidates);
+  const observed = survivingPairs(lowerer, functions, candidates);
   if (observed.size === 0) return 0;
   const views = new Map<IrExpr & { kind: "call" }, IrType>();
   for (const site of sites) {
@@ -487,6 +528,106 @@ function viewableRecordPair(lowerer: Lowerer, from: IrType, to: IrType): boolean
   );
 }
 
+/** Record shapes a union-typed binding holds. A record assigned to a union
+ * keeps the properties its conversion kept beside it; a view of the same
+ * shape would lose them for the union's value. */
+function unionFedShapes(lowerer: Lowerer, functions: readonly IrFunction[]): Set<string> {
+  const declared = new Map<string, IrType>();
+  for (const fn of functions)
+    for (const local of fn.locals ?? []) declared.set(local.id, local.type);
+  // Top-level bindings are globals: their declared types live in the
+  // lowerer's global table, not in a function's locals.
+  for (const global of lowerer.globalsList) declared.set(global.id, global.type);
+  const out = new Set<string>();
+  const recordTypeOf = (expr: IrExpr): (IrType & { kind: "record" }) | null => {
+    let cur = expr;
+    for (;;) {
+      if (cur.kind === "unionWrap" || cur.kind === "dynCheck" || cur.kind === "dynFrom") {
+        cur = cur.value;
+        continue;
+      }
+      // A conversion call reads its source from its first argument: the
+      // record value the union arm was converted from.
+      if (cur.kind === "call" && isConversionHelper(cur.callee) && cur.args[0] !== undefined) {
+        cur = cur.args[0];
+        continue;
+      }
+      break;
+    }
+    return cur.type.kind === "record" ? cur.type : null;
+  };
+  const note = (expr: IrExpr, localId: string): void => {
+    if (expr.type.kind !== "union" && declared.get(localId)?.kind !== "union") return;
+    const record = recordTypeOf(expr);
+    if (record !== null) out.add(record.shapeId);
+  };
+  for (const fn of functions)
+    everyStmtList(fn.body, {
+      stmt: (stmt) => {
+        if (stmt.kind === "varDecl" && stmt.init !== null) note(stmt.init, stmt.localId);
+        else if (stmt.kind === "assign") note(stmt.value, stmt.localId);
+        return true;
+      },
+      expr: (expr) => {
+        if (expr.kind === "unionWrap") {
+          const record = recordTypeOf(expr.value);
+          if (record !== null) out.add(record.shapeId);
+        }
+        return true;
+      },
+    });
+  return out;
+}
+
+/** Record shapes whose values may carry properties their shape does not
+ * declare. A narrowing copy keeps the source's other properties beside the
+ * copy (the runtime's record-source table), and a conversion of such a value
+ * keeps them further on. */
+function extraCarryingShapes(
+  lowerer: Lowerer,
+  functions: readonly IrFunction[],
+  sites: readonly CopySite[],
+): Set<string> {
+  const pairs: { from: string; to: string }[] = [];
+  for (const link of lowerer.recordLinks.values()) pairs.push({ from: link.from, to: link.to });
+  for (const site of sites)
+    if (site.kind === "width" && site.from.kind === "record" && site.to.kind === "record")
+      pairs.push({ from: site.from.shapeId, to: site.to.shapeId });
+  const declared = new Map<string, IrType>();
+  for (const fn of functions)
+    for (const local of fn.locals ?? []) declared.set(local.id, local.type);
+  const binding = (value: IrType, localId: string): void => {
+    const type = declared.get(localId);
+    if (value.kind === "record" && type?.kind === "record")
+      pairs.push({ from: value.shapeId, to: type.shapeId });
+  };
+  for (const fn of functions)
+    everyStmtList(fn.body, {
+      stmt: (stmt) => {
+        if (stmt.kind === "varDecl" && stmt.init !== null) binding(stmt.init.type, stmt.localId);
+        else if (stmt.kind === "assign") binding(stmt.value.type, stmt.localId);
+        return true;
+      },
+      expr: () => true,
+    });
+  const extra = new Set<string>();
+  for (let changed = true; changed;) {
+    changed = false;
+    for (const pair of pairs) {
+      const from = lowerer.shapes.get(pair.from);
+      const to = lowerer.shapes.get(pair.to);
+      if (from === undefined || to === undefined) continue;
+      const carried =
+        extra.has(pair.from) ||
+        from.fields.some((field) => !to.fields.some((other) => other.name === field.name));
+      if (!carried || extra.has(pair.to)) continue;
+      extra.add(pair.to);
+      changed = true;
+    }
+  }
+  return extra;
+}
+
 /** The pairs among `pairs` the backend's view planner keeps: a pair whose
  * source can hold the target through its fields, elements or the sources of
  * the pairs its records reach is refused there (record-views.ts's `holds`
@@ -495,14 +636,40 @@ function viewableRecordPair(lowerer: Lowerer, from: IrType, to: IrType): boolean
  * fixpoint. */
 function survivingPairs(
   lowerer: Lowerer,
+  functions: readonly IrFunction[],
   pairs: ReadonlyMap<string, { target: string; source: string }>,
 ): Set<string> {
   const sourcesOf = new Map<string, Set<string>>();
-  for (const pair of pairs.values()) {
-    const set = sourcesOf.get(pair.target);
-    if (set === undefined) sourcesOf.set(pair.target, new Set([pair.source]));
-    else set.add(pair.source);
-  }
+  const add = (target: string, source: string): void => {
+    const set = sourcesOf.get(target);
+    if (set === undefined) sourcesOf.set(target, new Set([source]));
+    else set.add(source);
+  };
+  for (const pair of pairs.values()) add(pair.target, pair.source);
+  // The planner's graph holds every value it can view, not only this pass's
+  // candidates: an existing checked conversion of a boxed record (an
+  // `unknown`-to-record assertion, say) is a view source too, and a record
+  // that reaches it reaches what it holds.
+  const covers = (sourceId: string, targetId: string): boolean => {
+    const source = lowerer.shapes.get(sourceId);
+    const target = lowerer.shapes.get(targetId);
+    if (source === undefined || target === undefined) return false;
+    const fields = new Map(source.fields.map((field) => [field.name, typeKey(field.type)]));
+    return target.fields.every((field) => fields.get(field.name) === typeKey(field.type));
+  };
+  for (const fn of functions)
+    everyStmtList(fn.body, {
+      stmt: () => true,
+      expr: (expr) => {
+        if (expr.kind !== "dynCheck" || expr.value.kind !== "dynFrom") return true;
+        if (expr.value.liveRef !== true) return true;
+        const from = expr.value.value.type;
+        const to = expr.type;
+        if (from.kind === "record" && to.kind === "record" && covers(from.shapeId, to.shapeId))
+          add(to.shapeId, from.shapeId);
+        return true;
+      },
+    });
   const holds = (shapeId: string): Set<string> | "any" => {
     const out = new Set<string>();
     const seen = new Set<string>();

@@ -131,3 +131,226 @@ test(
     expect(plan).not.toContain("__scriptc_iter_");
   },
 );
+
+test(
+  "non-data element arms (a class member and a method member) are projected",
+  { timeout: 600_000 },
+  async () => {
+    const dir = project(
+      {
+        types:
+          "export type PollItem =\n" +
+          '  | { _tag: "Timeout"; newInterval: number }\n' +
+          '  | { _tag: "Error"; error: Error }\n' +
+          '  | { _tag: "Response"; response: { text(): Promise<string> } };\n' +
+          "export declare function poll(): AsyncGenerator<PollItem, void, void>;\n",
+        js:
+          "export async function* poll() {\n" +
+          '  yield { _tag: "Timeout", newInterval: 1000 };\n' +
+          '  yield { _tag: "Error", error: new Error("boom") };\n' +
+          '  yield { _tag: "Response", response: { text: async () => "body" } };\n' +
+          "}\n",
+      },
+      'import { poll } from "sdk-pkg";\n' +
+        "async function main() {\n" +
+        "  for await (const event of poll()) {\n" +
+        "    switch (event._tag) {\n" +
+        '      case "Timeout":\n' +
+        "        console.log(1000 / event.newInterval);\n" +
+        "        break;\n" +
+        '      case "Error":\n' +
+        "        console.log(event.error.message);\n" +
+        "        break;\n" +
+        '      case "Response":\n' +
+        "        console.log(await event.response.text());\n" +
+        "        break;\n" +
+        "    }\n" +
+        "  }\n" +
+        "}\n" +
+        "main();\n",
+    );
+    const { result, plan } = await compileCapturingPlan(join(dir, "main.ts"), dir);
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    expect(plan).toContain("iterate poll() as __scriptc_decl_");
+    const { stdout } = await execFileAsync(result.binaryPath, [], { encoding: "utf8" });
+    expect(stdout).toBe("1\nboom\nbody\n");
+  },
+);
+
+test(
+  "a lying element fails the per-element check instead of passing through",
+  { timeout: 600_000 },
+  async () => {
+    const dir = project(
+      {
+        types:
+          "export type Item =\n" +
+          '  | { _tag: "Error"; error: Error }\n' +
+          '  | { _tag: "Response"; response: { text(): Promise<string> } };\n' +
+          "export declare function poll(): AsyncGenerator<Item, void, void>;\n",
+        js:
+          "export async function* poll() {\n" +
+          '  yield { _tag: "Error", error: JSON.parse(\'"nope"\') };\n' +
+          "}\n",
+      },
+      'import { poll } from "sdk-pkg";\n' +
+        "async function main() {\n" +
+        "  try {\n" +
+        "    for await (const event of poll()) {\n" +
+        '      if (event._tag === "Error") console.log(event.error.message);\n' +
+        "    }\n" +
+        "  } catch (error) {\n" +
+        "    console.log((error as Error).name, (error as Error).message);\n" +
+        "  }\n" +
+        "}\n" +
+        "main();\n",
+    );
+    const { result } = await compileCapturingPlan(join(dir, "main.ts"), dir);
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const { stdout } = await execFileAsync(result.binaryPath, [], { encoding: "utf8" });
+    console.log("NEG OUT:", JSON.stringify(stdout));
+    expect(stdout).toContain("TypeError");
+  },
+);
+
+test(
+  "a package type merely named Error is not the global Error",
+  { timeout: 600_000 },
+  async () => {
+    const dir = project(
+      {
+        types:
+          "export interface Error { code: number }\n" +
+          'export type PollItem = { _tag: "Error"; error: Error };\n' +
+          "export declare function poll(): AsyncGenerator<PollItem, void, void>;\n",
+        js:
+          "export async function* poll() {\n" +
+          '  yield { _tag: "Error", error: { code: "7" } };\n' +
+          "}\n",
+      },
+      'import { poll } from "sdk-pkg";\n' +
+        "async function main() {\n" +
+        "  for await (const event of poll()) {\n" +
+        '    if (event._tag === "Error") console.log(event.error.code / 2);\n' +
+        "  }\n" +
+        "}\n" +
+        "main();\n",
+    );
+    const { result, plan } = await compileCapturingPlan(join(dir, "main.ts"), dir);
+    // The package interface is not the global Error: naming it as one would
+    // check instanceof the global class at run time. The element type must
+    // stay unprojected (the site then refuses by name).
+    expect(plan).not.toContain("error: Error");
+    expect(plan).not.toContain("iterate poll()");
+    if (result.ok) throw new Error("compiled; the package Error was treated as the global one");
+    expect(result.diagnostics.map((d) => d.code)).toContain("SC1043");
+  },
+);
+
+test(
+  "a quoted method name prints quoted in the boundary declaration",
+  { timeout: 600_000 },
+  async () => {
+    const dir = project(
+      {
+        types:
+          'export type Item = { _tag: "R"; "read-text"(): string };\n' +
+          "export declare function poll(): AsyncGenerator<Item, void, void>;\n",
+        js:
+          "export async function* poll() {\n" +
+          '  yield { _tag: "R", "read-text": () => "hi" };\n' +
+          "}\n",
+      },
+      'import { poll } from "sdk-pkg";\n' +
+        "async function main() {\n" +
+        "  for await (const event of poll()) {\n" +
+        '    if (event._tag === "R") console.log(event["read-text"]());\n' +
+        "  }\n" +
+        "}\n" +
+        "main();\n",
+    );
+    const { result, plan } = await compileCapturingPlan(join(dir, "main.ts"), dir);
+    // A quoted member name must stay quoted in the generated declaration or
+    // it is not valid TypeScript.
+    expect(plan).toContain('"read-text"(): string');
+    expect(plan).not.toContain("read-text(): string;");
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const { stdout } = await execFileAsync(result.binaryPath, [], { encoding: "utf8" });
+    expect(stdout).toBe("hi\n");
+  },
+);
+
+test(
+  "a package file named lib.d.ts is not the standard library",
+  { timeout: 600_000 },
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scriptc-decl-libname-"));
+    const module = join(dir, "node_modules", "sdk-pkg");
+    mkdirSync(module, { recursive: true });
+    writeFileSync(
+      join(module, "package.json"),
+      JSON.stringify({ name: "sdk-pkg", version: "1.0.0", main: "index.js", types: "lib.d.ts" }),
+    );
+    writeFileSync(
+      join(module, "lib.d.ts"),
+      "export interface Error { code: number }\n" +
+        'export type PollItem = { _tag: "Error"; error: Error };\n' +
+        "export declare function poll(): AsyncGenerator<PollItem, void, void>;\n",
+    );
+    writeFileSync(
+      join(module, "index.js"),
+      'export async function* poll() { yield { _tag: "Error", error: { code: "7" } }; }\n',
+    );
+    writeFileSync(
+      join(dir, "main.ts"),
+      'import { poll } from "sdk-pkg";\n' +
+        "async function main() {\n" +
+        "  for await (const event of poll()) {\n" +
+        '    if (event._tag === "Error") console.log(event.error.code / 2);\n' +
+        "  }\n" +
+        "}\n" +
+        "main();\n",
+    );
+    const { result, plan } = await compileCapturingPlan(join(dir, "main.ts"), dir);
+    // The file's name does not make it TypeScript's own lib: the package
+    // interface is not named as the global Error and the site refuses.
+    expect(plan).not.toContain("error: Error");
+    if (result.ok)
+      throw new Error("compiled; the package lib.d.ts Error was treated as the global one");
+    expect(result.diagnostics.map((d) => d.code)).toContain("SC1043");
+  },
+);
+
+test(
+  "an optional method parameter stays optional in the boundary declaration",
+  { timeout: 600_000 },
+  async () => {
+    const dir = project(
+      {
+        types:
+          'export type Item = { _tag: "R"; read(from?: string): string };\n' +
+          "export declare function poll(): AsyncGenerator<Item, void, void>;\n",
+        js:
+          "export async function* poll() {\n" +
+          '  yield { _tag: "R", read: (from) => String(from ?? "all") };\n' +
+          "}\n",
+      },
+      'import { poll } from "sdk-pkg";\n' +
+        "async function main() {\n" +
+        "  for await (const event of poll()) {\n" +
+        '    if (event._tag === "R") console.log(event.read(), event.read("x"));\n' +
+        "  }\n" +
+        "}\n" +
+        "main();\n",
+    );
+    const { result, plan } = await compileCapturingPlan(join(dir, "main.ts"), dir);
+    expect(plan).toContain("read(from?: string): string");
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const { stdout } = await execFileAsync(result.binaryPath, [], { encoding: "utf8" });
+    expect(stdout).toBe("all x\n");
+  },
+);

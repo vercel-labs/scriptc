@@ -31,6 +31,7 @@
  * other program is untouched (the zero-cost rule). See
  * scriptc-perf/results/design-decl-boundary/DESIGN.md. */
 
+import { RUNTIME_ERROR_CLASSES } from "../ir/ir.js";
 import * as ts from "./ts7/adapter.js";
 import { withoutParenthesesNonNullAwait } from "./outer-expressions.js";
 import { declarationSelector, originAt } from "./lowering/decl-origin.js";
@@ -264,7 +265,13 @@ class TypePrinter {
   /** While set, printing registers no recursive alias (projectable()). */
   private dry = false;
 
-  constructor(private readonly checker: ts.TypeChecker) {}
+  constructor(
+    private readonly checker: ts.TypeChecker,
+    /** Whether a source file is one of TypeScript's own default libraries:
+     * the checker's answer, never the file name (a package may ship a file
+     * named lib.d.ts). */
+    private readonly isDefaultLib: (file: ts.SourceFile) => boolean = () => false,
+  ) {}
 
   /** Whether a type projects, without naming it in the generated file. */
   projectable(type: ts.Type): boolean {
@@ -293,6 +300,24 @@ class TypePrinter {
     }
     return name;
   }
+
+  /** Element mode: the type is an iteration element, whose non-data arms
+   * are checked per element rather than adopted. A runtime error class
+   * prints by name (the lowering checks it with instanceof against
+   * %Error and its peers) and a method member prints as a method
+   * signature (the lowering checks it as callable, keeping the receiver).
+   * Everything else that is not pure data still refuses. */
+  projectElement(type: ts.Type): string | null {
+    const was = this.elementMode;
+    this.elementMode = true;
+    try {
+      return this.project(type);
+    } finally {
+      this.elementMode = was;
+    }
+  }
+
+  private elementMode = false;
 
   /** The printed arms of a type (its own print when it is no union), with
    * null for an arm that is not pure data. Registers no alias. */
@@ -372,6 +397,21 @@ class TypePrinter {
     return this.checker.getBaseTypes(target).every((base) => this.userInterface(base, seen));
   }
 
+  /** Whether a symbol is declared by the TypeScript standard library (a
+   * lib.*.d.ts or a bundled library), not by a package or a user file: the
+   * element-mode names for the global Error and Promise apply only there,
+   * never to a package type that merely shares the name. */
+  private isStandardLibrarySymbol(symbol: ts.Symbol): boolean {
+    const declarations = symbol.declarations ?? [];
+    return (
+      declarations.length > 0 &&
+      declarations.every((d) => {
+        const sf = ts.getSourceFileOfNode(d);
+        return this.isDefaultLib(sf) || sf.fileName.split("\\").join("/").startsWith("bundled:");
+      })
+    );
+  }
+
   private printObject(type: ts.Type, depth: number): string | null {
     const checker = this.checker;
     if (checker.isArrayType(type)) {
@@ -397,8 +437,41 @@ class TypePrinter {
     }
     const symbol = type.getSymbol();
     if (symbol !== undefined) {
+      // A runtime error class is a value the lowering checks by instanceof
+      // (`expected type Error at $, got object`).
+      if (
+        this.elementMode &&
+        (symbol.flags & ts.SymbolFlags.Class) !== 0 &&
+        this.isStandardLibrarySymbol(symbol) &&
+        RUNTIME_ERROR_CLASSES.has(`%${ts.symbolName(symbol)}`)
+      )
+        return ts.symbolName(symbol);
       if (symbol.flags & (ts.SymbolFlags.Class | ts.SymbolFlags.Function | ts.SymbolFlags.Method))
         return null;
+      // The lib's Error instance type is an interface; element mode names
+      // it for the instanceof check all the same.
+      if (
+        this.elementMode &&
+        (symbol.flags & ts.SymbolFlags.Interface) !== 0 &&
+        this.isStandardLibrarySymbol(symbol) &&
+        RUNTIME_ERROR_CLASSES.has(`%${ts.symbolName(symbol)}`)
+      )
+        return ts.symbolName(symbol);
+      // A Promise in an element position is the lowering's promise kind:
+      // the per-element check tests it is a promise and unwraps it.
+      if (
+        this.elementMode &&
+        ts.symbolName(symbol) === "Promise" &&
+        this.isStandardLibrarySymbol(symbol) &&
+        type.isTypeReference()
+      ) {
+        const [inner] = checker.getTypeArguments(type);
+        if (inner !== undefined) {
+          const text = this.print(inner, depth + 1);
+          if (text !== null) return `Promise<${text}>`;
+        }
+        return null;
+      }
       // Interfaces: only user-declared ones describe plain data reliably
       // (package and lib interfaces often describe class instances), and
       // only when every interface they extend is user-declared too: a user
@@ -406,11 +479,9 @@ class TypePrinter {
       // inherits members the package's own constructors create.
       if (symbol.flags & ts.SymbolFlags.Interface && !this.userInterface(type)) return null;
     }
-    if (
-      checker.getCallSignatures(type).length > 0 ||
-      checker.getConstructSignatures(type).length > 0
-    )
-      return null;
+    if (checker.getConstructSignatures(type).length > 0) return null;
+    if (checker.getCallSignatures(type).length > 0)
+      return this.elementMode ? this.printFunctionType(type, depth) : null;
     const memo = this.inProgress.get(type.id);
     if (memo !== undefined) {
       memo.name ??= `${DECL_BOUNDARY_PREFIX}r${type.id}`;
@@ -425,18 +496,24 @@ class TypePrinter {
       for (const prop of props) {
         const key = String(prop.escapedName);
         if (key.startsWith("__@")) continue; // symbol-keyed (brands)
-        if (
-          prop.flags &
-          (ts.SymbolFlags.Method | ts.SymbolFlags.GetAccessor | ts.SymbolFlags.SetAccessor)
-        )
-          return null;
+        if (prop.flags & (ts.SymbolFlags.GetAccessor | ts.SymbolFlags.SetAccessor)) return null;
+        // A member name that is not an identifier (`"read-text"`) prints
+        // quoted or the generated declaration is not valid TypeScript.
+        const name = /^[A-Za-z_$][\w$]*$/.test(key) ? key : JSON.stringify(key);
+        if (prop.flags & ts.SymbolFlags.Method) {
+          if (!this.elementMode) return null;
+          const propType = checker.getTypeOfSymbol(prop);
+          const method = this.printMethodSignature(propType, name, depth);
+          if (method === null) return null;
+          members.push(method);
+          continue;
+        }
         const propType = checker.getTypeOfSymbol(prop);
         const optional = (prop.flags & ts.SymbolFlags.Optional) !== 0;
         let p = this.print(propType, depth + 1);
         if (p === null) return null;
         const readonly = (prop.checkFlags & READONLY_CHECK_FLAG) !== 0 || hasReadonlyModifier(prop);
         if (readonly) readonlyCount++;
-        const name = /^[A-Za-z_$][\w$]*$/.test(key) ? key : JSON.stringify(key);
         if (optional && !/\bundefined\b/.test(p)) p = `${p} | undefined`;
         members.push(`${readonly ? "readonly " : ""}${name}${optional ? "?" : ""}: ${p}`);
       }
@@ -458,6 +535,58 @@ class TypePrinter {
     } finally {
       this.inProgress.delete(type.id);
     }
+  }
+
+  /** `name(a: T): R` for a method member in element mode: the lowering
+   * checks the member is callable and keeps its receiver. Rest parameters
+   * and overload sets refuse (the check would have to pick a signature). */
+  private printMethodSignature(type: ts.Type, name: string, depth: number): string | null {
+    const signatures = this.checker.getSignaturesOfType(type, ts.SignatureKind.Call);
+    if (signatures.length !== 1) return null;
+    const params = this.printSignatureParams(signatures[0]!, depth);
+    if (params === null) return null;
+    const result = this.print(this.checker.getReturnTypeOfSignature(signatures[0]!), depth + 1);
+    if (result === null) return null;
+    return `${name}(${params}): ${result}`;
+  }
+
+  /** `(a: T) => R` for a function-typed member in element mode. */
+  private printFunctionType(type: ts.Type, depth: number): string | null {
+    const signatures = this.checker.getSignaturesOfType(type, ts.SignatureKind.Call);
+    if (signatures.length !== 1) return null;
+    const params = this.printSignatureParams(signatures[0]!, depth);
+    if (params === null) return null;
+    const result = this.print(this.checker.getReturnTypeOfSignature(signatures[0]!), depth + 1);
+    if (result === null) return null;
+    return `(${params}) => ${result}`;
+  }
+
+  private printSignatureParams(signature: ts.Signature, depth: number): string | null {
+    const out: string[] = [];
+    for (const param of signature.getParameters()) {
+      if (
+        (param.declarations ?? []).some((d) => ts.isParameter(d) && d.dotDotDotToken !== undefined)
+      )
+        return null;
+      const type = this.checker.getTypeOfSymbol(param);
+      const text = this.print(type, depth + 1);
+      if (text === null) return null;
+      // A signature parameter's OPTIONAL flag is not always set; its
+      // declaration's question token is, and its type carries undefined.
+      const optional =
+        (param.flags & ts.SymbolFlags.Optional) !== 0 ||
+        (param.declarations ?? []).some((d) => ts.isParameter(d) && d.questionToken !== undefined);
+      const paramName = ts.symbolName(param);
+      const name = /^[A-Za-z_$][\w$]*$/.test(paramName) ? paramName : "arg";
+      const spelled = optional
+        ? text
+            .split(" | ")
+            .filter((part) => part.trim() !== "undefined")
+            .join(" | ")
+        : text;
+      out.push(`${name}${optional ? "?" : ""}: ${spelled}`);
+    }
+    return out.join(", ");
   }
 }
 
@@ -665,7 +794,13 @@ export function collectProjectionTypeQueries(
 export function planDeclProjection(input: DeclProjectionInput): DeclProjection | null {
   const jsChecker = input.jsProgram.getTypeChecker();
   const declChecker = input.declProgram.getTypeChecker();
-  const printer = new TypePrinter(declChecker);
+  const printer = new TypePrinter(declChecker, (sf) => {
+    try {
+      return input.declProgram.isSourceFileDefaultLibrary(sf);
+    } catch {
+      return false;
+    }
+  });
   const plan: string[] = [];
   const edits = new Map<string, Edit[]>();
   /** The marker declarations, one per iteration site (a `declare
@@ -883,8 +1018,9 @@ export function planDeclProjection(input: DeclProjectionInput): DeclProjection |
       if (binding === undefined) return;
       const elementType = typeAt(declChecker, binding.name);
       if (elementType === null || isAnyish(elementType)) return;
-      if (!printer.projectable(elementType)) return;
-      const alias = printer.project(elementType);
+      // Element mode decides printability: a runtime class member and a
+      // method member are printable there and checked per element.
+      const alias = printer.projectElement(elementType);
       if (alias === null) return;
       const name = `${DECL_ITER_PREFIX}${iterSites++}`;
       iterDeclarations.push(

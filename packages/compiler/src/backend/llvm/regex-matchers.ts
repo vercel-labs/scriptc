@@ -1992,7 +1992,7 @@ export function compileRegexMatcher(
     decls.push(`declare ptr @memchr(ptr, i32, ${sizeType})`);
   if (replacement !== null) {
     decls.push(`declare void @scr_re_replace_out_reserve(ptr, i64)`);
-  decls.push(`declare void @scr_str_throw_too_long()`);
+    decls.push(`declare void @scr_str_throw_too_long()`);
     decls.push(`declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1 immarg)`);
   }
   const globals = [...gen.globals];

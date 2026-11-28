@@ -1,33 +1,40 @@
-// worker.terminate() while a worker grows strings through the mixed
-// self-append forms (string + number, string + template): the unwind runs
-// once the binding owns the result the runtime returned, so every reference
-// is released exactly once. Every iteration starts from a fresh 48 MiB text,
-// so the append it feeds must copy, and the terminate lands inside that copy.
+// worker.terminate() while a worker grows one string through the mixed
+// self-append form (string + number + template) in a tight loop. The result
+// must be stored into the binding before the pending check runs: the runtime
+// releases the head it moved, so a check that ran first would unwind through
+// the freed head and release it again (ASan use-after-free).
 import { Worker, isMainThread, parentPort } from "node:worker_threads";
 
-function grow(): string {
-  let text = "";
-  for (let round = 0; ; round++) {
-    text = "x".repeat(50331648);
-    text += round;
-    text += `${round}:`;
-    if (round === 2) parentPort!.postMessage("ready");
-  }
-  return text;
-}
-
 if (isMainThread) {
-  await new Promise<void>((resolve) => {
+  const rounds = 40;
+  let index = 0;
+  const next = (): void => {
+    if (index >= rounds) {
+      console.log("terminate rounds done");
+      return;
+    }
+    index++;
     const worker = new Worker(new URL(import.meta.url));
-    worker.once("message", () => {
-      void worker.terminate().then((code: number) => console.log("terminate", code));
-    });
-    worker.once("exit", (code: number) => {
-      console.log("exit", code);
-      resolve();
-    });
-  });
+    let settled = false;
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      setTimeout(next, 1);
+    };
+    worker.on("exit", () => finish());
+    // Long enough to be inside a concat when the terminate lands.
+    setTimeout(() => {
+      void worker.terminate();
+    }, 3 + (index % 11));
+  };
+  next();
 } else {
-  grow();
-  console.log("unexpected return");
+  let s = "start";
+  let n = 0;
+  for (;;) {
+    s = s + "x" + (n & 7) + `${n % 3}`;
+    n++;
+    if (s.length > 50000) s = s.slice(s.length - 500);
+    if ((n & 255) === 0) s += "y".repeat(20000);
+  }
 }

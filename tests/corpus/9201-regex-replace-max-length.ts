@@ -16,4 +16,8 @@ const big = "x".repeat(536870888);
 console.log(big.length);
 check("replace", () => "baac".replace(/a+/, big));
 check("replaceAll", () => "baac".replaceAll(/a+/g, big));
+// The anchored and global forms take the runtime's own replace loop.
+check("anchored", () => big.replace(/^a/, "ab"));
+check("anchored-global", () => big.replace(/^a/g, "ab"));
+check("anchored-all", () => big.replaceAll(/^a/g, "ab"));
 console.log("small", "naan".replace(/a+/g, "X"));

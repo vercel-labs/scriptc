@@ -3399,9 +3399,13 @@ ScrDyn *scr_dyn_symbol_get(const ScrDyn *value, const ScrStr *key) {
 /* Small integers are immutable primitives, just like the boolean and null
  * singletons. The table is process-wide, like those: a published graph
  * (scr_message.c, scr_publish.c) may hold these nodes after the thread that
- * created them has exited. It is filled before main, so no thread writes it
- * later, and it neither grows nor owns heap references. */
+ * created them has exited. It is filled on first use instead of before main,
+ * so a program that never boxes a number does not root the dynamic tier's
+ * unit from a constructor; the fill publishes with a release store and a
+ * thread that finds it in progress makes its own box, which the language
+ * cannot tell apart from the shared one. 0 empty, 1 being filled, 2 done. */
 static ScrDyn scr_dyn_small_ints[384];
+static int scr_dyn_small_ints_state;
 
 /* Single-character ASCII strings are primitives with one value each, so
  * their boxes are shared the way the small integers are. The character
@@ -3434,19 +3438,31 @@ static ScrDyn *scr_dyn_ascii_fill(unsigned char c) {
 
 const char *(*scr_gen_tag_reader)(const ScrGen *g) = NULL;
 
-__attribute__((constructor)) static void scr_dyn_small_ints_init(void) {
+/* Fills the small-integer table on first use, so the fast path in
+ * scr_dyn_new_num stays a load and a branch. Returns the resulting state. */
+static int scr_dyn_small_ints_fill(void) {
+  int empty = 0;
+  if (!__atomic_compare_exchange_n(&scr_dyn_small_ints_state, &empty, 1, false,
+                                   __ATOMIC_ACQUIRE, __ATOMIC_ACQUIRE))
+    return __atomic_load_n(&scr_dyn_small_ints_state, __ATOMIC_ACQUIRE);
   for (int i = 0; i < 384; i++) {
     scr_dyn_small_ints[i].rc = SIZE_MAX;
     scr_dyn_small_ints[i].kind = SCR_DYN_NUM;
     scr_dyn_small_ints[i].v.num = (double)(i - 128);
   }
+  __atomic_store_n(&scr_dyn_small_ints_state, 2, __ATOMIC_RELEASE);
+  return 2;
 }
 
 ScrDyn *scr_dyn_new_num(double n) {
   /* Preserve negative zero as a distinct payload. */
   if (n >= -128 && n <= 255) {
     int value = (int)n;
-    if ((double)value == n && (value != 0 || !signbit(n))) return &scr_dyn_small_ints[value + 128];
+    if ((double)value == n && (value != 0 || !signbit(n))) {
+      int state = __atomic_load_n(&scr_dyn_small_ints_state, __ATOMIC_ACQUIRE);
+      if (__builtin_expect(state != 2, 0)) state = scr_dyn_small_ints_fill();
+      if (state == 2) return &scr_dyn_small_ints[value + 128];
+    }
   }
   ScrDyn *d = scr_dyn_leaf_alloc(SCR_DYN_NUM);
   d->v.num = n;

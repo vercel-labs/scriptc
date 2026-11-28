@@ -146,6 +146,10 @@ export const httpSignatures = defineLibFnSignatures({
   /* writeInformation(status[, headers]): the generic informational
    * response, answering write()'s backpressure boolean. */
   "http.resWriteInformation": { argTypes: [HTTPRES_T, F64, arrayOf(STRING)], result: BOOL },
+  "http.resWriteInformationCb": {
+    argTypes: [HTTPRES_T, F64, arrayOf(STRING), { kind: "func", params: [], ret: VOID }],
+    result: BOOL,
+  },
   /** The callback forms: the callback fires once the head is written. */
   "http.resWriteContinueCb": {
     argTypes: [HTTPRES_T, { kind: "func", params: [], ret: VOID }],
@@ -277,6 +281,20 @@ export const httpSignatures = defineLibFnSignatures({
   "http.reqPipeRes": { argTypes: [HTTPREQ_T, HTTPRES_T], result: VOID },
   "http.reqPipeClient": { argTypes: [HTTPREQ_T, HTTPCLIENTREQ_T], result: VOID },
   "http.reqPipeSock": { argTypes: [HTTPREQ_T, NETSOCKET_T], result: VOID },
+  /** req.unpipe(dest): that destination stops receiving the body; a
+   * destination the request is not piping to changes nothing. */
+  "http.reqUnpipeRes": { argTypes: [HTTPREQ_T, HTTPRES_T], result: VOID },
+  "http.reqUnpipeClient": { argTypes: [HTTPREQ_T, HTTPCLIENTREQ_T], result: VOID },
+  "http.reqUnpipeSock": { argTypes: [HTTPREQ_T, NETSOCKET_T], result: VOID },
+  /** req.off(event, listener) / removeListener: [message, listener
+   * closure, list kind]. The kind selects the event's registry (1 data,
+   * 2 end, 3 error, 4 close, 5 aborted — the scr_http.h
+   * SCR_HTTP_REQ_OFF_* values); Node removes the most recently added
+   * matching listener. Never throws. */
+  "http.reqOff": { argTypes: [HTTPREQ_T, null, F64], result: VOID },
+  /** res.off(event, listener) / removeListener, the ServerResponse twin
+   * (1 close, 2 finish, 3 prefinish, 4 drain). */
+  "http.resOff": { argTypes: [HTTPRES_T, null, F64], result: VOID },
   "http.reqResume": { argTypes: [HTTPREQ_T], result: VOID },
   "http.reqPause": { argTypes: [HTTPREQ_T], result: VOID },
   "http.reqDestroy": { argTypes: [HTTPREQ_T], result: VOID },

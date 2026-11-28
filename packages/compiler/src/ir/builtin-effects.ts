@@ -191,6 +191,7 @@ const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
   "stream.isDyn",
   "stream.stateDyn",
   "stream.dynIterableSource",
+  "stream.dynHandsValue",
   "stream.dynSourceValue",
   "stream.unboxDynStage",
   "stream.dynTransformResult",
@@ -353,6 +354,8 @@ const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
   // proxy trap may run) and raise ECMA-402's RangeError and TypeError;
   // format raises RangeError for a time value out of range.
   "icu.numberFormatNew",
+  "icu.listFormatNew",
+  "icu.listFormatFormat",
   "icu.numberFormatFormat",
   "icu.numberFormatFormatDyn",
 ];
@@ -484,6 +487,7 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "http.resOnWriteFlush",
   "http.resWriteProcessingCb",
   "http.resWriteEarlyHintsCb",
+  "http.resWriteInformationCb",
   "http.validateHeaderName",
   "http.validateHeaderValue",
   "http.setMaxIdleParsers",

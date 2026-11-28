@@ -38,6 +38,7 @@
 #include <unicode/udata.h>
 #include <unicode/uenum.h>
 #include <unicode/uloc.h>
+#include <unicode/ulistformatter.h>
 #include <unicode/unum.h>
 #include <unicode/ures.h>
 #include <unicode/unumberformatter.h>
@@ -2651,4 +2652,332 @@ ScrStr *scr_intl_date_to_locale_dyn(double ms, double kind, ScrDyn *locale, ScrD
   ScrStr *text = scr_intl_date_to_locale(ms, kind, tag, options);
   scr_str_release(tag);
   return text;
+}
+
+/* ── Intl.ListFormat ──────────────────────────────────────────────────
+ * format(list) takes an ITERABLE whose elements must already be strings
+ * (Node 24 / ECMA-402): the runtime steps the iterator and throws the
+ * TypeError "Iterable yielded <text> which is not a string" for any other
+ * element, quoting V8's side-effect-free text for the value. type and style
+ * map to ICU's list formatter. */
+
+typedef struct {
+  size_t rc;
+  UListFormatter *formatter;
+} ScrIntlListFormat;
+
+static void *scr_intl_list_format_retain(void *ptr) {
+  ScrIntlListFormat *value = ptr;
+  value->rc++;
+  return value;
+}
+
+static void scr_intl_list_format_release(void *ptr) {
+  ScrIntlListFormat *value = ptr;
+  if (--value->rc) return;
+  if (value->formatter != NULL) ulistfmt_close(value->formatter);
+  free(value);
+}
+
+static ScrIntlListFormat *scr_intl_list_format_resolve(const ScrStr *locale, ScrDyn *optionsValue,
+                                                       const char *method) {
+  char icuLocale[ULOC_FULLNAME_CAPACITY];
+  if (!scr_intl_locale_of(locale, icuLocale, sizeof icuLocale)) return NULL;
+  // Node's ListFormat takes only an object (or undefined) for its options:
+  // null and every primitive are V8's invalid_argument TypeError, unlike the
+  // sibling formatters, which read a primitive as no options.
+  if (optionsValue != NULL && optionsValue->kind != SCR_DYN_UNDEF) {
+    switch (optionsValue->kind) {
+    case SCR_DYN_NULL:
+    case SCR_DYN_BOOL:
+    case SCR_DYN_NUM:
+    case SCR_DYN_STR:
+    case SCR_DYN_BIGINT:
+    case SCR_DYN_SYMBOL: {
+      static const char message[] = "invalid_argument";
+      scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+      return NULL;
+    }
+    default: break;
+    }
+  }
+  ScrIntlOptions options;
+  if (!scr_intl_options(optionsValue, method, &options)) return NULL;
+  static const char *const MATCHERS[] = { "lookup", "best fit" };
+  if (scr_intl_choice_option(&options, "localeMatcher", MATCHERS, 2, 1) < 0) return NULL;
+  static const char *const TYPES[] = { "conjunction", "disjunction", "unit" };
+  int type = scr_intl_choice_option(&options, "type", TYPES, 3, 0);
+  if (type < 0) return NULL;
+  static const char *const STYLES[] = { "long", "short", "narrow" };
+  int style = scr_intl_choice_option(&options, "style", STYLES, 3, 0);
+  if (style < 0) return NULL;
+  UErrorCode status = U_ZERO_ERROR;
+  UListFormatter *formatter = ulistfmt_openForType(
+    icuLocale,
+    type == 1 ? ULISTFMT_TYPE_OR : type == 2 ? ULISTFMT_TYPE_UNITS : ULISTFMT_TYPE_AND,
+    style == 1 ? ULISTFMT_WIDTH_SHORT : style == 2 ? ULISTFMT_WIDTH_NARROW : ULISTFMT_WIDTH_WIDE,
+    &status);
+  if (U_FAILURE(status) || formatter == NULL) {
+    if (formatter != NULL) ulistfmt_close(formatter);
+    scr_intl_refuse("Intl.ListFormat with these options");
+    return NULL;
+  }
+  ScrIntlListFormat *result = calloc(1, sizeof *result);
+  if (result == NULL) scr_trap("scriptc: out of memory\n");
+  result->rc = 1;
+  result->formatter = formatter;
+  return result;
+}
+
+/** The TypeError Node throws for an element that is not a string, quoting
+ * V8's side-effect-free text for the value it yielded. */
+static void scr_intl_list_format_element_error(const ScrDyn *element) {
+  ScrStr *text = scr_dyn_side_effect_free_string(element);
+  if (text == NULL) return;
+  ScrJsonBuf message;
+  scr_jb_init(&message);
+  scr_jb_puts(&message, "Iterable yielded ");
+  scr_jb_put_str(&message, text);
+  scr_str_release(text);
+  scr_jb_puts(&message, " which is not a string");
+  scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&message));
+}
+
+/* IteratorStepValue over (iterator, next): true with *done and the owned
+ * value, or false with the exception pending. The native fast path serves a
+ * real native iterator; every other iterator (a program's, a generator)
+ * steps through its own next method, as the collection iterables do. */
+static bool scr_intl_list_format_step(ScrDyn *iterator, ScrDyn *next, bool *done,
+                                      ScrDyn **value) {
+  *done = false;
+  *value = NULL;
+  if (scr_dyn_iterator_can_step(iterator, next)) {
+    ScrDyn *item = scr_dyn_iterator_step(iterator);
+    if (item == NULL) return false;
+    *done = scr_dyn_iterator_step_done(iterator);
+    *value = item;
+    return true;
+  }
+  scr_dyn_this_push_dyn(iterator);
+  ScrDyn *raw = scr_dyn_call(next, NULL, 0, "next");
+  scr_dyn_this_pop();
+  if (raw == NULL) return false;
+  ScrDyn *finished = scr_dyn_iterator_result_get(raw, "done", 4);
+  if (finished == NULL) {
+    scr_dyn_release(raw);
+    return false;
+  }
+  *done = scr_dyn_truthy(finished);
+  scr_dyn_release(finished);
+  if (*done) {
+    scr_dyn_release(raw);
+    *value = scr_dyn_retain(scr_dyn_undefined());
+    return true;
+  }
+  *value = scr_dyn_iterator_result_get(raw, "value", 5);
+  scr_dyn_release(raw);
+  return *value != NULL;
+}
+
+/* IteratorClose(iterator, throw completion): the pending error stays and
+ * everything return() raises is dropped, so the element's TypeError is the
+ * one the program sees. */
+static void scr_intl_list_format_close(ScrDyn *iterator) {
+  ScrCaught *first = scr_exc_take();
+  ScrDyn *method = scr_dyn_iterator_member(iterator, "return");
+  if (method != NULL) {
+    if (method->kind != SCR_DYN_UNDEF && method->kind != SCR_DYN_NULL) {
+      scr_dyn_this_push_dyn(iterator);
+      ScrDyn *result = scr_dyn_call(method, NULL, 0, "return");
+      scr_dyn_this_pop();
+      if (result == NULL) {
+        ScrCaught *dropped = scr_exc_take();
+        scr_caught_release(dropped);
+      } else {
+        scr_dyn_release(result);
+      }
+    }
+    scr_dyn_release(method);
+  }
+  if (first != NULL) {
+    scr_rethrow(first);
+    scr_caught_release(first);
+  }
+}
+
+static ScrStr *scr_intl_list_format_run(const ScrIntlListFormat *format, ScrDyn *list) {
+  if (list == NULL || list->kind == SCR_DYN_UNDEF) return scr_str_new("", 0);
+  /* Intl.ListFormat takes a SYNCHRONOUS iterable: Symbol.iterator, never a
+   * dual-protocol object's async iterator. */
+  ScrDyn *iterator = scr_dyn_iterator(list, NULL);
+  if (iterator == NULL) {
+    if (!scr_exc_pending()) scr_dyn_throw_not_iterable(list);
+    return NULL;
+  }
+  ScrDyn *next = scr_dyn_iterator_member(iterator, "next");
+  if (next == NULL) {
+    scr_dyn_release(iterator);
+    return NULL;
+  }
+  ScrStr **parts = NULL;
+  size_t count = 0;
+  size_t cap = 0;
+  for (;;) {
+    bool done = false;
+    ScrDyn *item = NULL;
+    if (!scr_intl_list_format_step(iterator, next, &done, &item)) {
+      scr_dyn_release(next);
+      scr_dyn_release(iterator);
+      for (size_t i = 0; i < count; i++) scr_str_release(parts[i]);
+      free(parts);
+      return NULL;
+    }
+    if (done) {
+      scr_dyn_release(item);
+      break;
+    }
+    if (item->kind != SCR_DYN_STR) {
+      scr_intl_list_format_element_error(item);
+      scr_dyn_release(item);
+      scr_intl_list_format_close(iterator);
+      scr_dyn_release(next);
+      scr_dyn_release(iterator);
+      for (size_t i = 0; i < count; i++) scr_str_release(parts[i]);
+      free(parts);
+      return NULL;
+    }
+    if (count == cap) {
+      size_t grown_cap = cap != 0 ? cap * 2 : 4;
+      ScrStr **grown = realloc(parts, grown_cap * sizeof *parts);
+      if (grown == NULL) scr_trap("scriptc: out of memory\n");
+      parts = grown;
+      cap = grown_cap;
+    }
+    parts[count++] = scr_str_retain(item->v.str);
+    scr_dyn_release(item);
+  }
+  scr_dyn_release(next);
+  scr_dyn_release(iterator);
+  if (count == 0) {
+    free(parts);
+    return scr_str_new("", 0);
+  }
+  {
+    UChar **strings = calloc(count, sizeof *strings);
+    int32_t *lengths = calloc(count, sizeof *lengths);
+    if (strings == NULL || lengths == NULL) scr_trap("scriptc: out of memory\n");
+    for (size_t i = 0; i < count; i++) {
+      lengths[i] =
+        (int32_t)scr_intl_utf16_units((const unsigned char *)parts[i]->data, parts[i]->len);
+      strings[i] = malloc((size_t)(lengths[i] > 0 ? lengths[i] : 1) * sizeof(UChar));
+      if (strings[i] == NULL) scr_trap("scriptc: out of memory\n");
+      scr_intl_utf16_fill((const unsigned char *)parts[i]->data, parts[i]->len,
+                          (uint16_t *)strings[i]);
+      scr_str_release(parts[i]);
+    }
+    free(parts);
+    UErrorCode status = U_ZERO_ERROR;
+    int32_t capacity = 64;
+    UChar *text = malloc((size_t)capacity * sizeof(UChar));
+    if (text == NULL) scr_trap("scriptc: out of memory\n");
+    int32_t length = ulistfmt_format(format->formatter, (const UChar *const *)strings, lengths,
+                                     (int32_t)count, text, capacity, &status);
+    if (status == U_BUFFER_OVERFLOW_ERROR) {
+      status = U_ZERO_ERROR;
+      capacity = length + 1;
+      UChar *grown = realloc(text, (size_t)capacity * sizeof(UChar));
+      if (grown == NULL) scr_trap("scriptc: out of memory\n");
+      text = grown;
+      length = ulistfmt_format(format->formatter, (const UChar *const *)strings, lengths,
+                               (int32_t)count, text, capacity, &status);
+    }
+    for (size_t i = 0; i < count; i++) free(strings[i]);
+    free(strings);
+    free(lengths);
+    ScrStr *result = U_SUCCESS(status) ? scr_intl_from_utf16(text, length) : NULL;
+    free(text);
+    if (result == NULL) scr_intl_no_data();
+    return result;
+  }
+}
+
+static ScrIntlListFormat *scr_intl_list_format_of(ScrDyn *value) {
+  if (value != NULL && value->kind == SCR_DYN_HANDLE &&
+      value->v.handle.tag == SCR_DYNH_INTL_LIST_FORMAT)
+    return value->v.handle.ptr;
+  static const char message[] =
+    "Method Intl.ListFormat.prototype.format called on incompatible receiver";
+  scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+  return NULL;
+}
+
+static ScrDyn *scr_intl_list_format_invoke(void *ptr, ScrDyn *self, const char *method,
+                                           ScrDyn *const *args, size_t argc, const char *what) {
+  (void)self;
+  ScrIntlListFormat *format = ptr;
+  if (strcmp(method, "format") == 0) {
+    ScrStr *text = scr_intl_list_format_run(format, argc ? args[0] : NULL);
+    if (text == NULL) return NULL;
+    ScrDyn *boxed = scr_dyn_new_str(text);
+    scr_str_release(text);
+    return boxed;
+  }
+  if (strcmp(method, "formatToParts") == 0 || strcmp(method, "resolvedOptions") == 0) {
+    scr_intl_refuse(strcmp(method, "formatToParts") == 0
+                      ? "Intl.ListFormat.prototype.formatToParts"
+                      : "Intl.ListFormat.prototype.resolvedOptions");
+    return NULL;
+  }
+  ScrJsonBuf message;
+  scr_jb_init(&message);
+  scr_jb_puts(&message, what);
+  scr_jb_puts(&message, " is not a function");
+  scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&message));
+  return NULL;
+}
+
+static ScrDyn *scr_intl_list_format_get(void *ptr, const char *key, size_t len) {
+  (void)ptr;
+  static const char *const METHODS[] = { "format", "formatToParts", "resolvedOptions" };
+  for (size_t i = 0; i < sizeof METHODS / sizeof *METHODS; i++) {
+    if (strlen(METHODS[i]) == len && memcmp(key, METHODS[i], len) == 0) {
+      scr_intl_refuse("a stored Intl formatter method");
+      return NULL;
+    }
+  }
+  return NULL;
+}
+
+static bool scr_intl_list_format_set(void *ptr, const char *key, size_t len, const ScrDyn *value) {
+  (void)ptr;
+  (void)key;
+  (void)len;
+  (void)value;
+  return false;
+}
+
+static void scr_intl_list_format_ops_install(void) {
+  static const ScrDynHandleOps ops = {
+    .cls = "ListFormat",
+    .retain = scr_intl_list_format_retain,
+    .release = scr_intl_list_format_release,
+    .invoke = scr_intl_list_format_invoke,
+    .get = scr_intl_list_format_get,
+    .set = scr_intl_list_format_set,
+  };
+  scr_dyn_handle_install(SCR_DYNH_INTL_LIST_FORMAT, &ops);
+}
+
+ScrDyn *scr_intl_list_format_new(ScrStr *locale, ScrDyn *options) {
+  ScrIntlListFormat *format = scr_intl_list_format_resolve(locale, options, "Intl.ListFormat");
+  if (format == NULL) return NULL;
+  scr_intl_list_format_ops_install();
+  ScrDyn *boxed = scr_dyn_new_handle(format, SCR_DYNH_INTL_LIST_FORMAT);
+  scr_intl_list_format_release(format);
+  return boxed;
+}
+
+ScrStr *scr_intl_list_format_format(ScrDyn *format, ScrDyn *list) {
+  ScrIntlListFormat *value = scr_intl_list_format_of(format);
+  return value == NULL ? NULL : scr_intl_list_format_run(value, list);
 }

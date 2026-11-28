@@ -2833,6 +2833,94 @@ export function lowerFsStatOptionsCall(
  * result is Stats or BigIntStats, never undefined. A descriptor or options
  * value the compiler did not pin down takes the run-time ladder: Node reads
  * options.bigint before the binding validates the descriptor. */
+/** fs.promises.stat / fs.promises.lstat(path, options). Node's promise
+ * bindings differ from the synchronous ones: stat reads throwIfNoEntry and
+ * resolves undefined for a missing entry with false, while lstat never reads
+ * it and always rejects ENOENT. The result type names the member table
+ * (Stats or BigIntStats) and whether the undefined arm can answer; the
+ * runtime ladder fills the nullable pointer. A union of both tables would
+ * need a tagged box the promise payload cannot carry, so a bigint option
+ * only the runtime knows is refused by name. */
+export function lowerFspStatOptionsCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  loc: SrcLoc,
+  noFollow: boolean,
+): IrExpr {
+  const spelling = noFollow ? "lstat" : "stat";
+  const optsNode = call.arguments.nodes[1]!;
+  const path = lowerFsPath(lowerer, call.arguments.nodes[0]!);
+  const callType = lowerer.mapTypeOf(lowerer.typeOf(call));
+  if (callType?.kind !== "promise") {
+    lowerer.noLowering(
+      `fs.promises.${spelling} at this result type`,
+      call,
+      "the promise form answers a Promise: annotate the call or its binding",
+    );
+  }
+  const inner = callType.inner;
+  const arms = inner.kind === "union" ? lowerer.unions.get(inner.unionId)?.arms : undefined;
+  let representation: "number" | "bigint" | null =
+    inner.kind === "stats" ? "number" : inner.kind === "bigintStats" ? "bigint" : null;
+  let nullable = false;
+  if (arms !== undefined && arms.length === 2) {
+    const statsArms = arms.filter((arm) => arm.kind === "stats" || arm.kind === "bigintStats");
+    if (statsArms.length === 1 && arms.some((arm) => arm.kind === "undefinedT")) {
+      representation = statsArms[0]!.kind === "stats" ? "number" : "bigint";
+      nullable = true;
+    }
+  }
+  if (representation === null) {
+    lowerer.noLowering(
+      `fs.promises.${spelling} where the result is not Stats, BigIntStats, Stats | undefined or BigIntStats | undefined`,
+      call,
+      "the bigint option must be the literal true or false: a runtime-valued flag chooses the member table at the call, and a union of both has no static member table",
+    );
+  }
+  if (ts.isObjectLiteralExpression(optsNode)) {
+    for (const property of optsNode.properties.nodes) {
+      const member = optionMember(property);
+      if (!member) continue; // the runtime ladder reads spreads and computed keys
+      if (member.name === "bigint") {
+        const literal = statBoolLiteral(lowerer, member.value);
+        if (literal === null) {
+          lowerer.noLowering(
+            `${spelling} with a bigint option only the runtime knows`,
+            member.value,
+            "pass the literal true or false: a runtime-valued flag chooses the member table at the call, which the result type cannot carry",
+          );
+        }
+        const pinned = literal === "true" ? "bigint" : "number";
+        if (pinned !== representation) {
+          lowerer.noLowering(
+            `${spelling} with bigint: ${literal} where the result is not ${literal === "true" ? "BigIntStats" : "Stats"}`,
+            member.value,
+            "pass bigint: true to receive BigIntStats, or omit it to receive Stats",
+          );
+        }
+      } else if (member.name === "throwIfNoEntry" && !noFollow) {
+        // lstat ignores the member entirely, as Node's binding does.
+        const literal = statBoolLiteral(lowerer, member.value);
+        if (literal !== "true" && !nullable) {
+          lowerer.noLowering(
+            `${spelling} with a throwIfNoEntry that may be false where the result is not Stats | undefined`,
+            member.value,
+            "the result must be Stats | undefined when throwIfNoEntry may be false",
+          );
+        }
+      }
+    }
+  }
+  const options = lowerer.lowerExprExpecting(optsNode, DYN);
+  return {
+    kind: "libCall",
+    fn: noFollow ? "fsp.lstatOpts" : "fsp.statOpts",
+    args: [path, options],
+    type: callType,
+    loc,
+  };
+}
+
 export function lowerFsStatFdOptionsCall(
   lowerer: Lowerer,
   call: ts.CallExpression,

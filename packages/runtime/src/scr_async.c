@@ -2950,6 +2950,10 @@ static void scr_promise_cb_run(struct ScrPromiseCbWaiter *cb, ScrPromise *src) {
   if (async_tracked) async_scope = scr_async_prom_scope_enter(src);
   if (SCR_PROMISE_IS_REACTION(cb)) {
     scr_promise_reaction_run(cb, src);
+    /* The scope this waiter entered closes with it, as every other branch
+     * here does: an early return left one async-hook scope open per
+     * reaction. */
+    if (async_tracked) scr_async_prom_scope_leave(async_scope);
     return;
   }
   if (cb->all) {
@@ -4665,6 +4669,21 @@ ScrPromise *scr_fsp_realpath(ScrStr *path) {
 
 ScrPromise *scr_fsp_lstat(ScrStr *path) {
   ScrStats *st = scr_fs_lstat(path);
+  return scr_promise_settled_ref(st, &scr_stats_retain_v, &scr_stats_release_v, NULL);
+}
+
+/* fs.promises.stat/lstat(path, options): the options ladder from the
+ * synchronous forms, with a pending exception or a real error becoming the
+ * rejection and a suppressed miss fulfilling undefined. Only stat honors
+ * throwIfNoEntry; lstat always rejects a missing entry, as Node's binding
+ * does (it never reads the member). */
+ScrPromise *scr_fsp_stat_opts(ScrStr *path, const ScrDyn *options) {
+  ScrStats *st = scr_fs_stat_opts(path, options, false);
+  return scr_promise_settled_ref(st, &scr_stats_retain_v, &scr_stats_release_v, NULL);
+}
+
+ScrPromise *scr_fsp_lstat_opts(ScrStr *path, const ScrDyn *options) {
+  ScrStats *st = scr_fs_stat_opts(path, options, true);
   return scr_promise_settled_ref(st, &scr_stats_retain_v, &scr_stats_release_v, NULL);
 }
 

@@ -594,6 +594,9 @@ declare module "node:fs" {
   export interface StatSyncOptions extends StatOptions {
     throwIfNoEntry?: boolean;
   }
+  /* The promise forms read both members: throwIfNoEntry: false resolves
+   * undefined for a missing entry instead of rejecting. */
+  export interface StatPromiseOptions extends StatSyncOptions {}
   export function statSync(path: string | URL, options?: undefined): Stats;
   export function statSync(
     path: string | URL,

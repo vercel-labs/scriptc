@@ -22,19 +22,31 @@ import {
  * the old value. Constructors themselves may still write their own
  * `this`'s fields, so the facts do not apply while one runs. */
 export class ImmutableFields {
+  /** Record shapes that may be read through a view of another shape (a
+   * record vew, record-views.ts): a write through either name replaces a
+   * field the other reads, so none of their fields counts as immutable. */
+  private readonly viewAliases = new Set<string>();
+
   constructor(
     private readonly mutability: CycleMutability,
     private readonly unitOfClass: (className: string) => string,
   ) {}
+
+  /** Marks record shapes whose values alias each other (the target and the
+   * sources of a planned view). Their fields are never borrowed. */
+  markViewAliases(shapeIds: Iterable<string>): void {
+    for (const id of shapeIds) this.viewAliases.add(id);
+  }
 
   /** `obj.field` on a class instance is construction-only. */
   classField(className: string, field: string): boolean {
     return this.unit(this.unitOfClass(className), field);
   }
 
-  /** `obj.field` on a record is never written after the literal. */
+  /** `obj.field` on a record is never written after the literal. A shape
+   * that a view aliases may be written through the other name. */
   recordField(shapeId: string, field: string): boolean {
-    return this.unit(`record:${shapeId}`, field);
+    return !this.viewAliases.has(shapeId) && this.unit(`record:${shapeId}`, field);
   }
 
   private unit(unit: string, field: string): boolean {

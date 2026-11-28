@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/stream-adapter-throw-handled.mjs"
+ ],
+ "diags": []
+}

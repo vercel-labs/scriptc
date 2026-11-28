@@ -499,6 +499,12 @@ function dynIteratorAdapter(
                     },
                     loc,
                   },
+                  /* The source stepped itself to answer the throw, so the
+                   * finally must leave it alone: resumed marks the yield as
+                   * resolved and the source advanced, and a throw the source
+                   * handled is that resolution. Set before the done check,
+                   * whose return runs the finally too. */
+                  setResumed(true, loc),
                   {
                     kind: "if",
                     cond: {
@@ -512,7 +518,6 @@ function dynIteratorAdapter(
                     else_: null,
                     loc,
                   },
-                  setResumed(false, loc),
                   { kind: "continue", loc },
                 ],
                 else_: [{ kind: "throw", value: caughtDyn(), loc }],

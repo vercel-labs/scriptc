@@ -108,4 +108,51 @@ describe("a field keyed by a module's exported symbol", () => {
     expect(result.diagnostics.map((d) => d.code)).toContain("SC1090");
     rmSync(attackDir, { recursive: true, force: true });
   });
+
+  test("an instance that can exist before the export assignment keeps the refusal", async () => {
+    const earlyDir = mkdtempSync(join(tmpdir(), "scriptc-exported-symbol-early-"));
+    mkdirSync(join(earlyDir, "node_modules/sym-pkg"), { recursive: true });
+    writeFileSync(join(earlyDir, "package.json"), '{"type":"module"}\n');
+    writeFileSync(
+      join(earlyDir, "node_modules/sym-pkg/package.json"),
+      '{"name":"sym-pkg","version":"1.0.0","main":"index.js","types":"index.d.ts"}\n',
+    );
+    writeFileSync(
+      join(earlyDir, "node_modules/sym-pkg/index.js"),
+      [
+        '"use strict";',
+        "class Holder {",
+        "  constructor(v) {",
+        "    this[exports.SYM] = v;",
+        "  }",
+        "  read() {",
+        "    return this[exports.SYM];",
+        "  }",
+        "}",
+        "exports.Holder = Holder;",
+        "// The key is undefined when this instance is constructed.",
+        "new Holder(0);",
+        'exports.SYM = Symbol("sym");',
+        "",
+      ].join("\n"),
+    );
+    writeFileSync(
+      join(earlyDir, "node_modules/sym-pkg/index.d.ts"),
+      "export declare const SYM: unique symbol;\nexport declare class Holder {\n  constructor(v: number);\n  read(): number;\n}\n",
+    );
+    writeFileSync(
+      join(earlyDir, "main.ts"),
+      'import { Holder } from "sym-pkg";\nconsole.log(new Holder(1).read());\n',
+    );
+    const result = await compile(join(earlyDir, "main.ts"), {
+      outDir: join(earlyDir, "out"),
+      outPath: join(earlyDir, "out/main"),
+      sanitize,
+      nodeIslands: { mode: "off" },
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected the early instance to keep the refusal");
+    expect(result.diagnostics.map((d) => d.code)).toContain("SC1090");
+    rmSync(earlyDir, { recursive: true, force: true });
+  });
 });

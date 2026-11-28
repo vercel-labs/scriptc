@@ -395,6 +395,7 @@ function cjsMemberSymbolKeyOf(
   // that reads it is defined or constructed (Node's computed key reads the
   // export at the class statement, and a constructor before the assignment
   // writes the property key `undefined`).
+  if (!assignmentPrecedesClassUses(decl)) return null;
   return symbolKeyOf(lowerer, sym, call.registered, call.description);
 }
 
@@ -495,6 +496,52 @@ function isUndefinedInitialization(write: ts.BinaryExpression): boolean {
 function precedes(a: ts.Node, b: ts.Node): boolean {
   if (ts.getSourceFileOfNode(a) !== ts.getSourceFileOfNode(b)) return true;
   return ts.tokenStartOfNode(a) < ts.tokenStartOfNode(b);
+}
+
+/** Whether the defining assignment precedes every top-level statement of its
+ * module that can construct or define a class: an instance cannot exist
+ * before the export member holds the symbol (Node's key would be undefined).
+ * Imports, function declarations and inert variable declarations may
+ * precede it; a class declaration, an expression statement, a loop, or a
+ * variable initializer that can run code may not. */
+function assignmentPrecedesClassUses(decl: ts.BinaryExpression): boolean {
+  const stmt = decl.parent;
+  if (stmt === undefined) return false;
+  const sf = ts.getSourceFileOfNode(decl);
+  const at = sf.statements.nodes.indexOf(stmt as ts.Statement);
+  if (at < 0) return false;
+  const inert = (init: ts.Expression | undefined): boolean => {
+    if (init === undefined) return true;
+    while (ts.isParenthesizedExpression(init)) init = init.expression;
+    return (
+      ts.isStringLiteralLike(init) ||
+      ts.isNumericLiteral(init) ||
+      ts.isArrowFunction(init) ||
+      ts.isFunctionExpression(init) ||
+      init.kind === ts.SyntaxKind.TrueKeyword ||
+      init.kind === ts.SyntaxKind.FalseKeyword ||
+      init.kind === ts.SyntaxKind.NullKeyword ||
+      (init.kind === ts.SyntaxKind.ThisKeyword && false)
+    );
+  };
+  for (let i = 0; i < at; i++) {
+    const statement = sf.statements.nodes[i]!;
+    // A directive prologue ("use strict") runs nothing.
+    if (ts.isExpressionStatement(statement) && ts.isStringLiteral(statement.expression)) continue;
+    if (ts.isImportDeclaration(statement) || ts.isImportEqualsDeclaration(statement)) continue;
+    if (ts.isFunctionDeclaration(statement)) continue;
+    if (ts.isVariableStatement(statement)) {
+      if (
+        statement.declarationList.declarations.nodes.every(
+          (d) => ts.isIdentifier(d.name) && inert(d.initializer),
+        )
+      )
+        continue;
+      return false;
+    }
+    return false;
+  }
+  return true;
 }
 
 function cjsTableSymbolKeyOf(

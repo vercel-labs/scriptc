@@ -1,0 +1,17 @@
+await-void-wrapper-indirection.mjs:18:10 - error SC1090: a truthiness test of a void-typed expression that can hold a value is not supported yet
+
+  17 | function checkOr(req) {
+  18 |   return isBlocked(req) || false;
+     |          ^~~~~~~~~~~~~~
+  19 | }
+
+  hint: the checker types the operand 'void', but a callback typed that way can return a value at run time; the test needs a runtime value that the lowering does not model (TypeScript reports TS1345 here.)
+
+await-void-wrapper-indirection.mjs:22:7 - error SC1090: a truthiness test of a void-typed expression that can hold a value is not supported yet
+
+  21 | async function main() {
+  22 |   if (await check({ path: "/admin" })) {
+     |       ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  23 |     console.log("blocked");
+
+  hint: the checker types the operand 'void', but a callback typed that way can return a value at run time; the test needs a runtime value that the lowering does not model (TypeScript reports TS1345 here.)

@@ -1144,7 +1144,7 @@ function namedValuePreservingCallee(program: ts.Program, callee: ts.Node): boole
     // so only an unwritten binding is proof.
     const written = bindingWritten(program, checker, symbol, decl);
     if (ts.isFunctionDeclaration(decl))
-      return decl.body !== undefined && bodyReturnsValue(decl) && !written;
+      return decl.body !== undefined && declarationReturnsOwnValue(checker, decl) && !written;
     if (!ts.isVariableDeclaration(decl) || decl.initializer === undefined) return false;
     const list = decl.parent;
     if (!ts.isVariableDeclarationList(list) || (list.flags & ts.NodeFlags.Const) === 0)
@@ -1185,16 +1185,49 @@ function bindingWritten(
   return written;
 }
 
-/** Whether a function body has a return statement with an expression. A
- * nested function's returns answer that function, not this one. */
-function bodyReturnsValue(decl: ts.SignatureDeclaration): boolean {
+/** Whether a function answers a value its OWN body produces: at least one
+ * return with an expression, and no return of a void-typed expression. A
+ * declaration that returns another void-typed call's result (`function
+ * check(req) { return isBlocked(req); }`, where isBlocked is a void-ABI
+ * function) answers undefined at run time, so it is no proof that the call
+ * carries a value; a nested function's returns answer that function. */
+function declarationReturnsOwnValue(
+  checker: ts.TypeChecker,
+  decl: ts.SignatureDeclaration,
+): boolean {
   const body = (decl as ts.SignatureDeclaration & { body?: ts.Node }).body;
   if (body === undefined) return false;
   let found = false;
+  let voidReturn = false;
+  // A void-typed call inside the returned expression (an operand of `||`,
+  // an argument, an awaited operand) is a value the callee discarded, so
+  // the declaration still answers whatever that call's void ABI allowed.
+  const containsVoidCall = (node: ts.Node): boolean => {
+    if (
+      ts.isCallExpression(node) &&
+      (checker.getTypeAtLocation(node).flags & ts.TypeFlags.Void) !== 0
+    )
+      return true;
+    if (
+      ts.isFunctionDeclaration(node) ||
+      ts.isFunctionExpression(node) ||
+      ts.isArrowFunction(node) ||
+      ts.isMethodDeclaration(node) ||
+      ts.isClassDeclaration(node)
+    )
+      return false;
+    let hit = false;
+    ts.forEachChild(node, (child) => {
+      if (!hit && containsVoidCall(child)) hit = true;
+    });
+    return hit;
+  };
   const visit = (node: ts.Node): void => {
-    if (found) return;
     if (ts.isReturnStatement(node) && node.expression !== undefined) {
-      found = true;
+      const type = checker.getTypeAtLocation(node.expression);
+      if ((type.flags & ts.TypeFlags.Void) !== 0 || containsVoidCall(node.expression))
+        voidReturn = true;
+      else found = true;
       return;
     }
     if (
@@ -1205,10 +1238,10 @@ function bodyReturnsValue(decl: ts.SignatureDeclaration): boolean {
       ts.isClassDeclaration(node)
     )
       return;
-    ts.forEachChild?.(node, visit);
+    ts.forEachChild(node, visit);
   };
   visit(body);
-  return found;
+  return found && !voidReturn;
 }
 
 /** A void-typed truthiness operand whose value Node reads at run time: a

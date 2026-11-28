@@ -1405,10 +1405,11 @@ export function lowerForAwaitBuiltin(lowerer: Lowerer, stmt: ts.ForOfStatement):
     if (node.shape !== "iterator" && lowerer.replacedSymbolMethods.has("sym:asyncIterator")) {
       const loc = locOf(stmt);
       if (node.shape === "symbol") {
-        // The source is the member call itself: its result is the iterator
-        // record, stepped as it is (Node validates only `next` on it).
+        // The source is the member call itself: the loop opens what the call
+        // answered, as Node's GetIterator does — the answer's own
+        // [Symbol.asyncIterator] (a wrapper on it included) answers first.
         const iterator = lowerer.coerceToExpected(lowerer.lowerExpr(stmt.expression), DYN);
-        return lowerForOfDyn(lowerer, stmt, iterator, undefined, true, false, true);
+        return lowerForOfDyn(lowerer, stmt, iterator, undefined, true);
       }
       // The stream value itself: call its member once, on the receiver
       // bound once (a source expression with side effects runs once).

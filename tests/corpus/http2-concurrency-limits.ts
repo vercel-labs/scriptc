@@ -103,4 +103,121 @@ function close(server: http2.Http2Server): Promise<void> {
   });
 }
 
+
+// C: closing the session while a request is deferred: the held-back block
+// goes out as the session closes (it gets its id and 'ready'), the peer
+// refuses it past the limit, and the graceful-close callback runs.
+{
+  const server = http2.createServer();
+  server.on("session", (session) => session.settings({ maxConcurrentStreams: 1 }));
+  server.on("stream", (stream, headers) => {
+    stream.on("error", () => {});
+    stream.respond({ ":status": 200 });
+    stream.write("x");
+    if (String(headers[":path"]) === "/one") setTimeout(() => stream.end(), 500);
+    else stream.end();
+  });
+  const port = await listen(server);
+  await new Promise<void>((resolve) => {
+    const client = http2.connect(`http://127.0.0.1:${port}`);
+    client.on("error", () => {});
+    client.on("remoteSettings", (settings) => {
+      if (String(settings.maxConcurrentStreams) !== "1") return;
+      const one = client.request({ ":path": "/one" });
+      one.on("error", () => {});
+      one.resume();
+      setTimeout(() => {
+        const two = client.request({ ":path": "/two" });
+        two.on("error", (error) => {
+          const err = error as Error & { code?: string };
+          lines.push(`C client /two error ${err.code ?? "-"} ${err.message}`);
+        });
+        two.on("ready", () => lines.push(`C client /two ready id=${String(two.id)}`));
+        two.on("close", () => lines.push(`C client /two close rst=${two.rstCode}`));
+        setTimeout(() => {
+          client.close(() => {
+            lines.push("C close callback");
+            close(server).then(() => resolve());
+          });
+        }, 50);
+      }, 30);
+    });
+  });
+}
+
+// D: a completed response whose body nobody read must not keep the peer's
+// concurrency slot: the next request goes out and answers.
+{
+  const server = http2.createServer();
+  server.on("session", (session) => session.settings({ maxConcurrentStreams: 1 }));
+  server.on("stream", (stream) => {
+    stream.respond({ ":status": 200 });
+    stream.end("body");
+  });
+  const port = await listen(server);
+  await new Promise<void>((resolve) => {
+    const client = http2.connect(`http://127.0.0.1:${port}`);
+    client.on("error", () => {});
+    client.on("remoteSettings", (settings) => {
+      if (String(settings.maxConcurrentStreams) !== "1") return;
+      const one = client.request({ ":path": "/one" });
+      one.on("error", () => {});
+      setTimeout(() => {
+        const two = client.request({ ":path": "/two" });
+        two.on("error", (error) => {
+          const err = error as Error & { code?: string };
+          lines.push(`D client /two error ${err.code ?? "-"}`);
+        });
+        two.on("ready", () => lines.push(`D client /two ready id=${String(two.id)}`));
+        two.on("response", (headers) =>
+          lines.push(`D client /two response ${String(headers[":status"])}`),
+        );
+        two.resume();
+      }, 60);
+      setTimeout(() => {
+        client.destroy();
+        close(server).then(() => resolve());
+      }, 500);
+    });
+  });
+}
+
+// E: destroying a request that is still deferred must only end that request —
+// no frame for a stream without an id, and the session stays usable.
+{
+  const server = http2.createServer();
+  server.on("session", (session) => session.settings({ maxConcurrentStreams: 1 }));
+  server.on("stream", (stream) => {
+    stream.on("error", () => {});
+    stream.respond({ ":status": 200 });
+    stream.write("x");
+    setTimeout(() => stream.end(), 500);
+  });
+  const port = await listen(server);
+  await new Promise<void>((resolve) => {
+    const client = http2.connect(`http://127.0.0.1:${port}`);
+    client.on("error", (error) => lines.push(`E client session error ${(error as Error).message}`));
+    client.on("remoteSettings", (settings) => {
+      if (String(settings.maxConcurrentStreams) !== "1") return;
+      const one = client.request({ ":path": "/one" });
+      one.on("error", () => {});
+      one.resume();
+      setTimeout(() => {
+        const two = client.request({ ":path": "/two" });
+        two.on("error", () => {});
+        two.on("close", () => lines.push(`E client /two close rst=${two.rstCode}`));
+        setTimeout(() => {
+          two.destroy();
+          lines.push(`E destroyed ${two.destroyed}`);
+        }, 50);
+        setTimeout(() => {
+          lines.push(`E session alive ${!client.destroyed}`);
+          client.destroy();
+          close(server).then(() => resolve());
+        }, 400);
+      }, 30);
+    });
+  });
+}
+
 for (const line of lines.sort()) console.log(line);

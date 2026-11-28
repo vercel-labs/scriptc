@@ -2152,6 +2152,30 @@ export class ClassDynamicDispatch {
   }
   /** The class values whose static property table this pass installed. */
   private readonly staticTablesInstalled = new Set<string>();
+  /** staticTablesInstalled in insertion order (the set only grows). */
+  private readonly staticTablesInstalledOrder: string[] = [];
+  /** Per key class, its strict descendants among the installed tables, in
+   * installation order, and how many installed tables that list has seen.
+   * A class's chain does not change once the class exists, so the list only
+   * extends with the tables installed since. */
+  private readonly installedDescendantsOf = new Map<string, { seen: number; list: string[] }>();
+
+  /** The installed static tables of strict descendants of `keyClass`, in
+   * installation order: `[...staticTablesInstalled].filter(isSubclassOf)`
+   * without walking every installed class's chain on every call. */
+  private installedDescendants(lowerer: Lowerer, keyClass: string): readonly string[] {
+    let entry = this.installedDescendantsOf.get(keyClass);
+    if (!entry) {
+      entry = { seen: 0, list: [] };
+      this.installedDescendantsOf.set(keyClass, entry);
+    }
+    const order = this.staticTablesInstalledOrder;
+    for (; entry.seen < order.length; entry.seen++) {
+      const other = order[entry.seen]!;
+      if (lowerer.isSubclassOf(other, keyClass)) entry.list.push(other);
+    }
+    return entry.list;
+  }
 
   /** The static-field writes a value boxed as `keyClass` can receive for
    * `name`: one per class the value can hold (`keyClass` or a descendant
@@ -2165,10 +2189,7 @@ export class ClassDynamicDispatch {
     const keyInfo = lowerer.classes.get(keyClass);
     if (!keyInfo || runtimeStaticDefines(lowerer, keyInfo, name)) return [];
     if (findGenericStaticOn(lowerer, keyInfo, name)) return [];
-    const actuals = [
-      keyClass,
-      ...[...this.staticTablesInstalled].filter((other) => lowerer.isSubclassOf(other, keyClass)),
-    ];
+    const actuals = [keyClass, ...this.installedDescendants(lowerer, keyClass)];
     const targets: {
       actual: string;
       own: boolean;
@@ -3035,6 +3056,7 @@ export class ClassDynamicDispatch {
       if (!ready || !classStaticsRepresentable(lowerer, info)) continue;
       if (!insertClassStaticsInstall(lowerer, info, functions)) continue;
       this.staticTablesInstalled.add(info.def.name);
+      this.staticTablesInstalledOrder.push(info.def.name);
       changed = true;
     }
     return changed;
@@ -5693,7 +5715,7 @@ export class ClassDynamicDispatch {
             changed = true;
           }
         }
-      if (dispatch.write)
+      if (dispatch.write && !dispatch.name.startsWith("#"))
         // A write to a static field of a class value updates the native
         // storage the class's own code reads, and the field's own data
         // property in the installed table (Node's class object holds the
@@ -5702,7 +5724,6 @@ export class ClassDynamicDispatch {
         // the type it was boxed as: a subclass boxed through a slot typed
         // with its base must not write the base's storage.
         for (const name of this.boxedConstructors) {
-          if (dispatch.name.startsWith("#")) continue;
           const loc = dispatch.fn.loc;
           for (const branch of this.staticWriteTargets(lowerer, name, dispatch.name)) {
             const key = `constructor:${name}:${branch.actual}`;

@@ -41,6 +41,10 @@ static uintptr_t chunk_of(const void *p) {
 extern bool scr_sa_test_fail_move;
 extern bool scr_sa_test_fail_map_dest;
 extern bool scr_sa_test_fail_map_src;
+extern bool scr_sa_test_fail_move_back;
+/* Whether the calling thread's keep registry records a block (a worker that
+ * keeps its memory apart records its runs there). */
+extern bool scr_sa_test_keep_has(const void *p);
 #endif
 
 /* The allocator unit needs only scr_trap from the rest of the runtime: the
@@ -1453,6 +1457,85 @@ static size_t resident_pages_at(const void *p, size_t n) {
 /* Blocks a 32-bit reference may name come from the window above SCR_SA_MAX
  * too: large classes up to 2 MiB, runs of chunks beyond. They keep their
  * contents through realloc, come back zeroed from calloc, and are reused. */
+#if defined(SCR_WORKERS) && defined(SCR_SA_TEST)
+/* A grow that leaves a run at a new address moves the worker's record of it
+ * (the keep registry the discard path reads): every relocating path keeps
+ * the record with the block. The move fails and so does the map that would
+ * stand in for it, so the block is copied to a fresh run. */
+static void *keep_growth_worker(void *arg) {
+  (void)arg;
+  scr_sa_thread_starting();
+  size_t small_run = (size_t)5 << 20, big_run = (size_t)21 << 20;
+  unsigned char *r = scr_mem_alloc_ref(small_run);
+  assert(r && ref_in_window(r));
+  fill(r, small_run, 0x5a);
+  assert(scr_sa_test_keep_has(r));
+  scr_sa_test_fail_move = true;
+  scr_sa_test_fail_map_dest = true;
+  unsigned char *g = scr_mem_realloc_ref(r, big_run);
+  assert(!scr_sa_test_fail_move && !scr_sa_test_fail_map_dest);
+  assert(g && g != r && ref_in_window(g));
+  verify(g, small_run, 0x5a);
+  assert(scr_sa_test_keep_has(g));
+  assert(!scr_sa_test_keep_has(r));
+  fill(g, big_run, 0x71);
+  verify(g, big_run, 0x71);
+  scr_mem_free(g);
+  scr_sa_thread_park();
+  return NULL;
+}
+
+/* The move fails and the map that stands in for it succeeds: the block is
+ * copied to the new run, whose record the keep registry must hold. */
+static void *keep_move_worker(void *arg) {
+  (void)arg;
+  scr_sa_thread_starting();
+  size_t small_run = (size_t)5 << 20, big_run = (size_t)21 << 20;
+  unsigned char *r = scr_mem_alloc_ref(small_run);
+  assert(r && ref_in_window(r));
+  fill(r, small_run, 0x48);
+  assert(scr_sa_test_keep_has(r));
+  scr_sa_test_fail_move = true;
+  unsigned char *g = scr_mem_realloc_ref(r, big_run);
+  assert(!scr_sa_test_fail_move);
+  assert(g && g != r && ref_in_window(g));
+  verify(g, small_run, 0x48);
+  assert(scr_sa_test_keep_has(g));
+  assert(!scr_sa_test_keep_has(r));
+  scr_mem_free(g);
+  scr_sa_thread_park();
+  return NULL;
+}
+
+/* The move works, the old range cannot be mapped back, and the move back into
+ * it fails too: the contents stay at the new run, whose record the keep
+ * registry must hold. */
+static void *keep_rollback_worker(void *arg) {
+  (void)arg;
+  scr_sa_thread_starting();
+  size_t small_run = (size_t)5 << 20, big_run = (size_t)21 << 20;
+  unsigned char *r = scr_mem_alloc_ref(small_run);
+  assert(r && ref_in_window(r));
+  fill(r, small_run, 0x62);
+  assert(scr_sa_test_keep_has(r));
+  /* The move itself succeeds; the maps that would give the old range back and
+   * move the block back into it fail. */
+  scr_sa_test_fail_map_src = true;
+  scr_sa_test_fail_move_back = true;
+  unsigned char *g = scr_mem_realloc_ref(r, big_run);
+  assert(!scr_sa_test_fail_map_src && !scr_sa_test_fail_move_back);
+  assert(g && g != r && ref_in_window(g));
+  verify(g, small_run, 0x62);
+  assert(scr_sa_test_keep_has(g));
+  assert(!scr_sa_test_keep_has(r));
+  fill(g, big_run, 0x37);
+  verify(g, big_run, 0x37);
+  scr_mem_free(g);
+  scr_sa_thread_park();
+  return NULL;
+}
+#endif
+
 static void check_large_blocks(void) {
   static const size_t sizes[] = {513, 640, 641, 1000, 4096, 65536, 100000, (size_t)2 << 20,
                                  ((size_t)2 << 20) + 1, (size_t)5 << 20, (size_t)9 << 20};
@@ -1588,6 +1671,22 @@ static void check_large_blocks(void) {
     assert(scr_mem_block_size(g3) >= big_run);
     scr_mem_free(g3);
   }
+#if defined(SCR_WORKERS)
+  /* A worker that keeps its memory apart records its runs; a grow that
+   * relocates one moves the record with it. */
+  {
+    pthread_t keep_thread;
+    assert(pthread_create(&keep_thread, NULL, keep_growth_worker, NULL) == 0);
+    assert(pthread_join(keep_thread, NULL) == 0);
+    scr_sa_wait_trims();
+    assert(pthread_create(&keep_thread, NULL, keep_move_worker, NULL) == 0);
+    assert(pthread_join(keep_thread, NULL) == 0);
+    scr_sa_wait_trims();
+    assert(pthread_create(&keep_thread, NULL, keep_rollback_worker, NULL) == 0);
+    assert(pthread_join(keep_thread, NULL) == 0);
+    scr_sa_wait_trims();
+  }
+#endif
 #endif
 #endif
   /* A class whose blocks are not whole pages: a trimmed block's last page

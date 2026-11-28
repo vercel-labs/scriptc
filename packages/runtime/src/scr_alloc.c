@@ -2059,6 +2059,21 @@ static bool scr_sa_keep_remove(ScrSaKeep *k, const void *p) {
   return false;
 }
 
+#ifdef SCR_SA_TEST
+/* The allocator checks: whether the calling thread's keep registry records a
+ * block. A grow that leaves a run at a new address must have moved its
+ * record. Always false where the registry is not compiled (non-worker
+ * builds). */
+bool scr_sa_test_keep_has(const void *p) {
+  ScrSaKeep *k = scr_sa_keep;
+  if (!k || !k->live) return false;
+  for (size_t j = scr_sa_sys_slot(p, k->cap); k->sys[j]; j = (j + 1) & (k->cap - 1)) {
+    if (k->sys[j] == p) return true;
+  }
+  return false;
+}
+#endif
+
 /* The calling thread's arena keeps the worker's memory (it shared): the
  * free lists set aside go back, followed by the worker's own free blocks,
  * and so do the returned regions, past which the worker carved. */
@@ -2227,6 +2242,14 @@ static void scr_sa_discard(ScrSaKeep *k) {
 /* Hooks of the allocator's system paths and of sharing (scr_rc.h). */
 static void scr_sa_keep_note_system(void *p) {
   if (p && scr_sa_keep) scr_sa_keep_add(scr_sa_keep, p);
+}
+
+/* A block that leaves p for q keeps the worker's record with it: a record
+ * left at the old address names a range the block no longer occupies. Every
+ * path of a grow that returns a block at a new address moves it. */
+static void scr_sa_keep_move(void *from, void *to) {
+  if (from != to && scr_sa_keep && scr_sa_keep_remove(scr_sa_keep, from))
+    scr_sa_keep_add(scr_sa_keep, to);
 }
 
 void scr_sa_thread_shares(void) {
@@ -2840,10 +2863,12 @@ __attribute__((noinline)) void *scr_sa_slow_ref(size_t n, bool zero) {
  * before 6.17 fails a fixed move that spans mappings (the destination is
  * unmapped). Consumed once. */
 bool scr_sa_test_fail_move;
-/* The next destination map of a run move, and the next re-map of the run it
- * left, fail the way an exhausted address space fails them. Consumed once. */
+/* The next destination map of a run move, the next re-map of the run it
+ * left, and the next move back into that run fail the way an exhausted
+ * address space fails them. Consumed once. */
 bool scr_sa_test_fail_map_dest;
 bool scr_sa_test_fail_map_src;
+bool scr_sa_test_fail_move_back;
 #endif
 
 #if defined(__linux__) && defined(MREMAP_FIXED)
@@ -2923,6 +2948,9 @@ static void *scr_sa_run_move(void *p, size_t have, size_t n) {
     }
     memcpy(q, p, have);
     scr_sa_run_free(p);
+#ifdef SCR_SA_TRIM
+    scr_sa_keep_move(p, q);
+#endif
     return q;
   }
 #ifdef SCR_SA_TEST
@@ -2938,11 +2966,20 @@ static void *scr_sa_run_move(void *p, size_t have, size_t n) {
      * one when the kernel allows it, and keep them at the new run when it
      * does not, burning the range that cannot be mapped. */
     scr_sa_move_refused("the old run back", src_failed ? ENOMEM : errno, p, have, q, n);
-    if (mremap(q, have, have, MREMAP_MAYMOVE | MREMAP_FIXED, p) == p) {
+#ifdef SCR_SA_TEST
+    bool back_failed = scr_sa_test_fail_move_back;
+    scr_sa_test_fail_move_back = false;
+#else
+    bool back_failed = false;
+#endif
+    if (!back_failed && mremap(q, have, have, MREMAP_MAYMOVE | MREMAP_FIXED, p) == p) {
       scr_sa_run_burn(q, n);
       return NULL;
     }
     scr_sa_run_burn(p, have);
+#ifdef SCR_SA_TRIM
+    scr_sa_keep_move(p, q);
+#endif
     return q;
   }
 #ifdef SCR_SA_THP
@@ -2953,7 +2990,7 @@ static void *scr_sa_run_move(void *p, size_t have, size_t n) {
 #endif
   scr_sa_run_release(p, true);
 #ifdef SCR_SA_TRIM
-  if (scr_sa_keep && scr_sa_keep_remove(scr_sa_keep, p)) scr_sa_keep_add(scr_sa_keep, q);
+  scr_sa_keep_move(p, q);
 #endif
   return q;
 }
@@ -2981,7 +3018,7 @@ void *scr_mem_realloc_ref(void *p, size_t n) {
     char *q = w ? scr_sa_run_take(1, n, false) : NULL;
     if (q) {
 #ifdef SCR_SA_TRIM
-      if (scr_sa_keep) scr_sa_keep_add(scr_sa_keep, q);
+      scr_sa_keep_move(p, q);
 #endif
       memcpy(q, p, have);
       scr_mem_free(p);
@@ -3006,6 +3043,9 @@ void *scr_mem_realloc_ref(void *p, size_t n) {
   }
   void *q = scr_mem_alloc_ref(n ? n : 1);
   if (!q) return NULL;
+#ifdef SCR_SA_TRIM
+  scr_sa_keep_move(p, q);
+#endif
   memcpy(q, p, have < n ? have : n);
   scr_mem_free(p);
   return q;

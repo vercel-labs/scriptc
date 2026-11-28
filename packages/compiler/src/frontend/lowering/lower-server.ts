@@ -10738,7 +10738,24 @@ function lowerHttpClientMethodCall(
       );
     const receiver = coerceToHandle(lowerer, access.expression, HTTPCLIENTREQ_T);
     const header = lowerer.lowerExprExpecting(args[0]!, STRING);
-    const raw = lowerer.coerceToExpected(lowerer.lowerExpr(args[1]!), DYN);
+    const valueExpr = lowerer.lowerExpr(args[1]!);
+    if (
+      name === "setHeader" &&
+      valueExpr.type.kind === "array" &&
+      valueExpr.type.elem.kind === "string"
+    ) {
+      /* a typed string array crosses in its own entry: a hole or a present
+       * undefined reads as the text "undefined" on the way, as Node writes
+       * it, instead of trapping in the dynamic conversion */
+      return {
+        kind: "libCall",
+        fn: "http.clientSetHeaderArray",
+        args: [receiver, header, valueExpr],
+        type: VOID,
+        loc,
+      };
+    }
+    const raw = lowerer.coerceToExpected(valueExpr, DYN);
     if (raw.type.kind !== "dyn")
       lowerer.noLowering(
         `request.${name} with a '${lowerer.fmt(raw.type)}' value that cannot cross the header boundary`,

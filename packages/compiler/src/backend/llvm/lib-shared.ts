@@ -2185,6 +2185,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "http.clientWrite": "scr_http_client_write_str",
   "http.clientSetHeader": "scr_http_client_set_header",
   "http.clientSetHeaderDyn": "scr_http_client_set_header_dyn",
+  "http.clientSetHeaderArray": "scr_http_client_set_header_array",
   "http.clientAppendHeaderDyn": "scr_http_client_append_header_dyn",
   "http.clientHasHeader": "scr_http_client_has_header_named",
   "http.clientRemoveHeader": "scr_http_client_remove_header",

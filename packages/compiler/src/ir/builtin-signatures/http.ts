@@ -466,6 +466,12 @@ export const httpSignatures = defineLibFnSignatures({
   /** setHeader / appendHeader with a string, number, null or array value;
    * the stored value keeps its type for getHeader/getHeaders. MAY THROW. */
   "http.clientSetHeaderDyn": { argTypes: [HTTPCLIENTREQ_T, STRING, DYN], result: VOID },
+  /** setHeader with a string array: elements that are holes or present
+   * undefined values read as the text "undefined", as Node writes them. */
+  "http.clientSetHeaderArray": {
+    argTypes: [HTTPCLIENTREQ_T, STRING, arrayOf(STRING)],
+    result: VOID,
+  },
   "http.clientAppendHeaderDyn": { argTypes: [HTTPCLIENTREQ_T, STRING, DYN], result: VOID },
   "http.clientGetHeader": { argTypes: [HTTPCLIENTREQ_T, STRING], result: VOID },
   /** getHeader as Node answers it: the number, string or string[] that was

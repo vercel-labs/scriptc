@@ -18,6 +18,7 @@ server.listen(0, "127.0.0.1", () => {
   holey.length = 3;
   const copied = holey.toReversed() as string[];
   const request = http.request({ port, host: "127.0.0.1", headers: { "x-copied": copied } });
+  request.setHeader("x-set-copied", copied);
   request.on("response", (res) => {
     res.resume();
     res.on("end", () => server.close());

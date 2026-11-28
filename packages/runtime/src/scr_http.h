@@ -420,6 +420,8 @@ void scr_http_client_set_header(ScrHttpClientReq *c, ScrStr *name /*borrowed*/, 
 /* setHeader / appendHeader for a string, number, null or array value. */
 void scr_http_client_set_header_dyn(ScrHttpClientReq *c, ScrStr *name /*borrowed*/,
                                     ScrDyn *raw /*borrowed*/);
+void scr_http_client_set_header_array(ScrHttpClientReq *c, ScrStr *name /*borrowed*/,
+                                      ScrArr *values /*borrowed*/);
 void scr_http_client_append_header_dyn(ScrHttpClientReq *c, ScrStr *name /*borrowed*/,
                                        ScrDyn *raw /*borrowed*/);
 ScrStr *scr_http_header_array_element(ScrArr *values /*borrowed*/, double index); /* +1 */

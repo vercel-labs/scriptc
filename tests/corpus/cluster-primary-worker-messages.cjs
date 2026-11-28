@@ -10,20 +10,35 @@ if (cluster.isPrimary) {
   // Keeps the primary's loop alive until the worker's exit, so the
   // disconnect and exit events below are always delivered.
   const keepAlive = setTimeout(() => {}, 5000);
-  worker.on("online", () => worker.send({ ping: 1 }));
+  // The ping answers the worker's ready message, so the two messages the
+  // primary logs have one order: sending on 'online' raced the worker's own
+  // ready send (both messages then arrived in either order).
   worker.on("message", (message) => {
     console.log("primary message", JSON.stringify(message));
+    if (message.ready) worker.send({ ping: 1 });
     if (message.echo) worker.disconnect();
   });
+  // A failed send's callback and the child's exit are separate events, and
+  // Node and a compiled program can deliver either first under load. Report
+  // both once they have both arrived, in one fixed order.
+  let lateCallback = null;
+  let exitEvent = null;
+  const reportLate = () => {
+    if (lateCallback === null || exitEvent === null) return;
+    console.log("late callback", lateCallback.code, lateCallback.message);
+    console.log("exit", exitEvent.code, exitEvent.signal);
+  };
   worker.on("disconnect", () => {
     const sent = worker.send({ late: 1 }, (error) => {
-      console.log("late callback", error && error.code, error && error.message);
+      lateCallback = { code: error && error.code, message: error && error.message };
+      reportLate();
     });
     console.log("late send", sent, worker.isConnected());
   });
   worker.on("exit", (code, signal) => {
     clearTimeout(keepAlive);
-    console.log("exit", code, signal);
+    exitEvent = { code, signal };
+    reportLate();
   });
 } else {
   cluster.worker.on("message", (message) => {

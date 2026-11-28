@@ -9,7 +9,11 @@ const cert = readFileSync("tests/fixtures/server/certs/localhost.pem");
 const key = readFileSync("tests/fixtures/server/certs/localhost-key.pem");
 const ca = readFileSync("tests/fixtures/server/certs/ca.pem");
 
-const socketPath = join(tmpdir(), "scriptc-tls-unix-connect.sock");
+// A fixed name in the shared temp directory collides with the other suite
+// running this program at the same time (its Node oracle against this
+// binary): one run removes or listens on the other's socket, and the oracle
+// itself exits non-zero. Name the socket after the process.
+const socketPath = join(tmpdir(), `scriptc-tls-unix-connect-${process.pid}.sock`);
 rmSync(socketPath, { force: true });
 
 const server = tls.createServer({ key, cert }, (socket) => {

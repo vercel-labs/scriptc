@@ -78,7 +78,11 @@ await new Promise<void>((resolve) => {
         "key expansion",
         "key expansion extra",
         "Client finished",
-        "client finishe",
+        // Any other label exports. A near-miss of a reserved name is not
+        // stable ground: Node itself refused "client finishe" in one CI run
+        // and exported it in every other, so pin a label that is plainly
+        // unrelated.
+        "application traffic",
       ]) {
         try {
           console.log("tls12 label", JSON.stringify(label), client.exportKeyingMaterial(16, label).length);

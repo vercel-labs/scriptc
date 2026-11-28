@@ -46,71 +46,9 @@ export function lowerModuleNamespaceElement(
       loc: locOf(expr),
     };
   }
-  const source = lowerer.sourceFileOfModuleNamespace(type);
-  if (!source) return null;
   const loc = locOf(expr);
-  const name = `%module.element:${type.moduleId}`;
-  if (lowerer.liftedFnNamed(name) === undefined) {
-    const context = newFnCtx(false, null, null, DYN);
-    const previousClass = lowerer.currentClass;
-    lowerer.currentClass = null;
-    lowerer.fnStack.push(context);
-    try {
-      const body: IrStmt[] = [];
-      const symbol = lowerer.checker.getSymbolAtLocation(source);
-      const runtimeNames = lowerer.runtimeExportNames(source);
-      for (const exported of symbol ? lowerer.checker.getExportsOfModule(symbol) : []) {
-        const key = ts.symbolName(exported);
-        // A name a type-only export forwards has no runtime binding.
-        if (!runtimeNames.has(key)) continue;
-        const target =
-          exported.flags & ts.SymbolFlags.Alias
-            ? lowerer.checker.getAliasedSymbol(exported)
-            : exported;
-        if (!(target.flags & ts.SymbolFlags.Value)) continue;
-        const declaration = target.valueDeclaration;
-        const identifier = declaration?.name as ts.Node | undefined;
-        if (!identifier || !ts.isIdentifier(identifier)) {
-          lowerer.unsupported("SC1090", expr, "computed namespace reads of unnamed exports");
-        }
-        const value = lowerer.lowerExprExpecting(identifier, DYN);
-        body.push({
-          kind: "if",
-          cond: {
-            kind: "strEq",
-            negated: false,
-            left: varRef("key", STRING, loc),
-            right: strLit(key, loc),
-            type: { kind: "bool" },
-            loc,
-          },
-          then: [{ kind: "return", value, loc }],
-          else_: null,
-          loc,
-        });
-      }
-      body.push({ kind: "return", value: dynUndefinedExpr(loc), loc });
-      const fn: IrFunction = {
-        name,
-        params: [
-          { localId: "namespace", name: "namespace", type },
-          { localId: "key", name: "key", type: STRING },
-        ],
-        returnType: DYN,
-        locals: [
-          { id: "namespace", name: "namespace", type, mutable: false },
-          { id: "key", name: "key", type: STRING, mutable: false },
-          ...context.locals,
-        ],
-        body,
-        loc,
-      };
-      lowerer.liftedFns.push(fn);
-    } finally {
-      lowerer.fnStack.pop();
-      lowerer.currentClass = previousClass;
-    }
-  }
+  const name = moduleNamespaceDispatch(lowerer, type, expr, loc);
+  if (name === null) return null;
   const receiver = lowerer.lowerExpr(expr.expression);
   const key = lowerer.lowerExpr(expr.argumentExpression);
   const text: IrExpr =
@@ -124,6 +62,144 @@ export function lowerModuleNamespaceElement(
           loc,
         };
   return { kind: "call", callee: name, args: [receiver, text], type: DYN, loc };
+}
+
+/** The interned `%module.element:<id>(namespace, key)` dispatcher over a
+ * program module's runtime value exports: each export's live binding,
+ * keyed by its name. Null when the module has no source in the program. */
+function moduleNamespaceDispatch(
+  lowerer: Lowerer,
+  type: IrType & { kind: "moduleNs" },
+  blame: ts.Node,
+  loc: SrcLoc,
+): string | null {
+  const source = lowerer.sourceFileOfModuleNamespace(type);
+  if (!source) return null;
+  const name = `%module.element:${type.moduleId}`;
+  if (lowerer.liftedFnNamed(name) !== undefined) return name;
+  const context = newFnCtx(false, null, null, DYN);
+  const previousClass = lowerer.currentClass;
+  lowerer.currentClass = null;
+  lowerer.fnStack.push(context);
+  try {
+    const body: IrStmt[] = [];
+    const symbol = lowerer.checker.getSymbolAtLocation(source);
+    const runtimeNames = lowerer.runtimeExportNames(source);
+    for (const exported of symbol ? lowerer.checker.getExportsOfModule(symbol) : []) {
+      const key = ts.symbolName(exported);
+      // A name a type-only export forwards has no runtime binding.
+      if (!runtimeNames.has(key)) continue;
+      const target =
+        exported.flags & ts.SymbolFlags.Alias
+          ? lowerer.checker.getAliasedSymbol(exported)
+          : exported;
+      if (!(target.flags & ts.SymbolFlags.Value)) continue;
+      const declaration = target.valueDeclaration;
+      const identifier = declaration?.name as ts.Node | undefined;
+      let value: IrExpr;
+      if (identifier !== undefined && ts.isIdentifier(identifier)) {
+        value = lowerer.lowerExprExpecting(identifier, DYN);
+      } else {
+        // An export with no binding identifier (an unnamed default): the
+        // module's registered global of that export symbol holds the value,
+        // which is what a default import reads.
+        const global = lowerer.globalsBySymbol.get(target) ?? lowerer.globalsBySymbol.get(exported);
+        if (global !== undefined) {
+          value = lowerer.coerceToExpected(
+            { kind: "varRef", localId: global.id, type: global.type, loc },
+            DYN,
+          );
+        } else {
+          // An unnamed FUNCTION default has no binding to read: its collected
+          // signature interns the zero-capture closure a default import reads.
+          const sig = lowerer.fnSigsBySymbol.get(target) ?? lowerer.fnSigsBySymbol.get(exported);
+          if (sig !== undefined) {
+            lowerer.noteEdge(sig.name);
+            value = lowerer.coerceToExpected(
+              {
+                kind: "closure",
+                fnName: sig.name,
+                captures: [],
+                type: funcTypeFromParamShapes(sig.params, sig.returnType),
+                loc,
+              },
+              DYN,
+            );
+          } else {
+            // An unnamed CLASS default (`export default class { ... }`) has
+            // neither a global nor a signature: the class object registered
+            // for its declaration is the value, as the dotted read answers.
+            const info = lowerer.classBySymbol.get(target) ?? lowerer.classBySymbol.get(exported);
+            if (info === undefined) continue;
+            value = lowerer.coerceToExpected(lowerer.classValueRef(info, blame), DYN);
+          }
+        }
+      }
+      body.push({
+        kind: "if",
+        cond: {
+          kind: "strEq",
+          negated: false,
+          left: varRef("key", STRING, loc),
+          right: strLit(key, loc),
+          type: { kind: "bool" },
+          loc,
+        },
+        then: [{ kind: "return", value, loc }],
+        else_: null,
+        loc,
+      });
+    }
+    body.push({ kind: "return", value: dynUndefinedExpr(loc), loc });
+    const fn: IrFunction = {
+      name,
+      params: [
+        { localId: "namespace", name: "namespace", type },
+        { localId: "key", name: "key", type: STRING },
+      ],
+      returnType: DYN,
+      locals: [
+        { id: "namespace", name: "namespace", type, mutable: false },
+        { id: "key", name: "key", type: STRING, mutable: false },
+        ...context.locals,
+      ],
+      body,
+      loc,
+    };
+    lowerer.liftedFns.push(fn);
+  } finally {
+    lowerer.fnStack.pop();
+    lowerer.currentClass = previousClass;
+  }
+  return name;
+}
+
+/** A DOTTED read of a module namespace VALUE
+ * (`(await import("./m.mjs")).default`): the dispatch the computed read
+ * uses, with the member name as its key. The receiver evaluates first (a
+ * dynamic import loads the module), then the export's live binding is
+ * read. Null for builtin namespaces and non-module receivers. */
+export function lowerModuleNamespaceProperty(
+  lowerer: Lowerer,
+  expr: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (expr.questionDotToken !== undefined || !ts.isIdentifier(expr.name)) return null;
+  // Only a receiver that EVALUATES (a dynamic import): a bound namespace
+  // keeps its identifier-resolution paths (live bindings, snapshots).
+  if (!nsReceiverEvaluates(expr.expression)) return null;
+  const type = lowerer.mapTypeOf(lowerer.typeOf(expr.expression));
+  if (type?.kind !== "moduleNs" || type.moduleId.startsWith("builtin:")) return null;
+  const loc = locOf(expr);
+  const name = moduleNamespaceDispatch(lowerer, type, expr, loc);
+  if (name === null) return null;
+  const receiver = lowerer.lowerExpr(expr.expression);
+  return {
+    kind: "call",
+    callee: name,
+    args: [receiver, strLit(expr.name.text, loc)],
+    type: DYN,
+    loc,
+  };
 }
 
 /** A module namespace taken as an untyped value (`{ ...ns }`, `{ iso: ns }`

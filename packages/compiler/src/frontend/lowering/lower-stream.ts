@@ -9248,6 +9248,94 @@ export function lowerStreamMethodCall(
   return null;
 }
 
+/** `stream[Symbol.asyncIterator]()` on a receiver the checker types as a
+ * readable: Node's Readable.prototype answers the stream's own iterator,
+ * `iterator()` with its defaults, so the call lowers to the same runtime
+ * entry that spelling does — a fresh iterator per call. Null for other
+ * element-access calls; a class that declares the member itself is the
+ * caller's earlier case, and a dynamically typed receiver reads the member
+ * through the runtime stream view. */
+export function lowerStreamSymbolIteratorCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+): IrExpr | null {
+  const access = call.expression;
+  if (!ts.isElementAccessExpression(access) || access.questionDotToken || call.questionDotToken) {
+    return null;
+  }
+  let key = access.argumentExpression;
+  while (ts.isParenthesizedExpression(key)) key = key.expression;
+  if (!ts.isPropertyAccessExpression(key)) return null;
+  if (lowerer.stdlibGlobalMember(key, "Symbol") !== "asyncIterator") return null;
+  let classT: IrType | null;
+  try {
+    classT = lowerer.mapTypeOf(lowerer.typeOf(access.expression));
+  } catch {
+    return null;
+  }
+  if (classT?.kind !== "object") return null;
+  const info = lowerer.classes.get(classT.className);
+  const sides = streamSidesOf(lowerer, info);
+  if (sides !== "r" && sides !== "rw") return null;
+  // A program that writes Symbol.asyncIterator on an instance or prototype
+  // may hand the call a JS wrapper (an access-checking iterator): the
+  // compiled property read sees it, the stream's own iterator cannot.
+  if (lowerer.replacedSymbolMethods.has("sym:asyncIterator")) return null;
+  // Node's member takes no arguments, and iterator(options) would read one
+  // as its options: only the argument-less call has this lowering.
+  if (call.arguments.nodes.length > 0) {
+    lowerer.noLowering("a stream's [Symbol.asyncIterator] with arguments", call);
+  }
+  const loc = locOf(call);
+  const native = (recv: IrExpr): IrExpr => ({
+    kind: "libCall",
+    fn: "readable.iterator",
+    args: [recv, boolLit(true, loc)],
+    type: DYN,
+    loc,
+  });
+  const receiver = streamReceiverExpr(lowerer, access.expression);
+  const overriders = streamSymbolMethodOverriders(info!, "sym:asyncIterator");
+  // Node dispatches the member on the prototype chain, so a value typed as a
+  // base class can hold a subclass whose [Symbol.asyncIterator] runs instead
+  // of the stream's own iterator (a filtering or permission-checking one).
+  // The stream's native iterator is the exact-class fast path; a static type
+  // with an override below it tests the value's class here, the receiver
+  // bound once.
+  if (overriders.length === 0) return native(receiver);
+  const type: IrType = DYN;
+  const slot = lowerer.declareHiddenLocal("%iteratorRecv", receiver.type);
+  const recv = (): IrExpr => varRef(slot.id, receiver.type, loc);
+  let answer = native(recv());
+  for (let i = overriders.length - 1; i >= 0; i--) {
+    const child = overriders[i]!;
+    const sig = child.methods.get("sym:asyncIterator")!;
+    const overridden = lowerer.accessorCall(
+      child.def.name,
+      "sym:asyncIterator",
+      { kind: "downcast", value: recv(), type: { kind: "object", className: child.def.name }, loc },
+      lowerer.completeArgs([], sig.params, loc, call),
+      sig.ret,
+      loc,
+    );
+    answer = {
+      kind: "ternary",
+      cond: { kind: "instanceOf", value: recv(), className: child.def.name, type: BOOL, loc },
+      then: lowerer.coerceToExpected(overridden, type),
+      else_: answer,
+      type,
+      loc,
+    };
+  }
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "varDecl", localId: slot.id, init: receiver, loc }],
+    result: answer,
+    type,
+    loc,
+  };
+}
+
 /** `stream[Symbol.asyncDispose]()` on a receiver the checker types as a
  * stream class: Node's Readable.prototype and Writable.prototype define
  * it (a Duplex inherits Readable's). Null for other element-access calls;
@@ -9290,11 +9378,17 @@ export function lowerStreamAsyncDisposeCall(
 /** The stream subclasses below `info` that declare their own concrete
  * [Symbol.asyncDispose], most-derived first. */
 function streamAsyncDisposeOverriders(info: ClassInfo): ClassInfo[] {
+  return streamSymbolMethodOverriders(info, "sym:asyncDispose");
+}
+
+/** The stream subclasses below `info` that declare their own concrete
+ * `name` method (`sym:asyncDispose`), most-derived first. */
+export function streamSymbolMethodOverriders(info: ClassInfo, name: string): ClassInfo[] {
   const out: ClassInfo[] = [];
   const visit = (parent: ClassInfo): void => {
     for (const child of parent.subclasses) {
       visit(child);
-      const sig = child.methods.get("sym:asyncDispose");
+      const sig = child.methods.get(name);
       if (sig !== undefined && sig.abstract !== true) out.push(child);
     }
   };

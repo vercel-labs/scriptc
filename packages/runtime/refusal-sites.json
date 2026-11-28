@@ -1861,6 +1861,12 @@
  },
  {
   "file": "scr_stream.c",
+  "function": "scr_stream_async_iter_call",
+  "message": "'readable.iterator' has no native lowering in this program",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_stream.c",
   "function": "scr_stream_throw_web_stage",
   "message": "pipeline stages that are untyped web streams are not supported yet",
   "code": "SC2020"

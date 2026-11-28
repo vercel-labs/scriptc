@@ -16647,13 +16647,18 @@ function lowerForOfClassIterator(
 /** A checked IteratorRecord stays live throughout the loop. Cache next once,
  * read done before value, and close only after a yielded value has arrived.
  * Abrupt body throws retain precedence over errors raised by return(). */
-function lowerForOfDyn(
+export function lowerForOfDyn(
   lowerer: Lowerer,
   stmt: ts.ForOfStatement,
   iterable: IrExpr,
   labels?: string[],
   asyncLoop = false,
   syncOpen = false,
+  /** `iterable` is itself the iterator record (the result of the value's
+   * own async-iterator member call): it is stepped as it is, not opened
+   * again — Node's GetIterator validates only `next` on the method's
+   * answer. */
+  opened = false,
 ): IrStmt {
   const loc = locOf(stmt);
   const spell = notIterableSpelling(stmt.expression, asyncLoop ? "async iterable" : "iterable");
@@ -16912,13 +16917,15 @@ function lowerForOfDyn(
         {
           kind: "varDecl",
           localId: iterator.id,
-          init: check({
-            kind: "libCall",
-            fn: asyncLoop && !syncOpen ? "dyn.asyncIteratorOpen" : "dyn.iterator",
-            args: [iterable, { kind: "strLit", value: spell, type: STRING, loc }],
-            type: DYN,
-            loc,
-          }),
+          init: opened
+            ? iterable
+            : check({
+                kind: "libCall",
+                fn: asyncLoop && !syncOpen ? "dyn.asyncIteratorOpen" : "dyn.iterator",
+                args: [iterable, { kind: "strLit", value: spell, type: STRING, loc }],
+                type: DYN,
+                loc,
+              }),
           loc,
         },
         ...(syncIterator
@@ -16926,15 +16933,17 @@ function lowerForOfDyn(
               {
                 kind: "varDecl",
                 localId: syncIterator.id,
-                init: syncOpen
-                  ? { kind: "boolLit", value: true, type: BOOL, loc }
-                  : {
-                      kind: "libCall",
-                      fn: "dyn.asyncIteratorWasSync",
-                      args: [],
-                      type: BOOL,
-                      loc,
-                    },
+                init: opened
+                  ? { kind: "boolLit", value: false, type: BOOL, loc }
+                  : syncOpen
+                    ? { kind: "boolLit", value: true, type: BOOL, loc }
+                    : {
+                        kind: "libCall",
+                        fn: "dyn.asyncIteratorWasSync",
+                        args: [],
+                        type: BOOL,
+                        loc,
+                      },
                 loc,
               } satisfies IrStmt,
             ]

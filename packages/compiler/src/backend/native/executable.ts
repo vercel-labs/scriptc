@@ -483,7 +483,15 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // stream unit.
   unit((u) => u.opts.zlib && u.opts.stream, "scr_zlib_stream.c"),
   // readable.iterator builds the async iterator over the readable's chunks.
-  unit((u) => u.opts.stream && u.opts.dynAsync && u.opts.symbol === true, "scr_stream_iterator.c"),
+  // readable.iterator and a stream value's Symbol.asyncIterator member both
+  // answer the iterator unit's iterator: the member can be reached without
+  // anything awaiting it (streamSymbol), where no dyn-async call selects the
+  // unit on its own.
+  unit(
+    (u) =>
+      u.opts.streamSymbol === true || (u.opts.stream && u.opts.dynAsync && u.opts.symbol === true),
+    "scr_stream_iterator.c",
+  ),
   unit((u) => u.opts.stream && u.opts.dynAsync, "scr_stream_ops.c"),
   // Checked-dynamic stream slots test values and call JavaScript stream
   // members through the dyn-invoke unit.

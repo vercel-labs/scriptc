@@ -274,7 +274,7 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // The zlib stream classes reference both the zlib engine and the stream unit.
   ["scr_zlib_stream.c", all("zlib", "stream")],
   // The Readable operators await through the dyn-async unit.
-  ["scr_stream_iterator.c", all("stream", "dynAsync", "symbol")],
+  ["scr_stream_iterator.c", "streamSymbol"],
   ["scr_stream_ops.c", all("stream", "dynAsync")],
   // Checked-dynamic stream slots call JavaScript members through the dyn-invoke unit.
   ["scr_stream_dyn.c", "streamDyn"],

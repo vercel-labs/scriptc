@@ -37,6 +37,15 @@ export function executableLinkFeatures(
     (features.dynSignalKey && features.http) ||
     features.fsWebStream ||
     (features.nodeIsland && features.eventTarget);
+  // The symbol unit's programs (the rule below ORs the same four facts): a
+  // stream's async-iterator member is reachable through Symbol.asyncIterator
+  // even when nothing awaits it, so the iterator unit is linked for streams
+  // with symbols (streamSymbol).
+  const symbolFeature =
+    features.symbol ||
+    features.fsWebStream ||
+    features.inspectFunctionValue === true ||
+    features.utilPromisify === true;
   // A feature that calls into another feature's units links those too
   // (LINK_FEATURE_REQUIREMENTS), whichever fact selected it.
   return withRequiredLinkFeatures({
@@ -87,6 +96,10 @@ export function executableLinkFeatures(
     ...(features.promiseGeneric ? { promiseGeneric: true } : {}),
     ...(features.dynTier ? { dynTier: true } : {}),
     ...(features.streamDyn ? { streamDyn: true } : {}),
+    // A stream program that names Symbol.asyncIterator can reach a stream's
+    // async-iterator member without awaiting anything: the iterator unit is
+    // linked for it (and streamSymbol pulls the dyn-async unit in).
+    ...(features.stream === true && symbolFeature ? { streamSymbol: true } : {}),
     ...(features.handleProps ? { handleProps: true } : {}),
     ...(features.childLifecycle ? { childLifecycle: true } : {}),
     ...(features.processFeatures ? { processFeatures: true } : {}),
@@ -141,11 +154,7 @@ export function executableLinkFeatures(
     // Symbol.for('nodejs.util.inspect.custom') (inspectFunctionValue) and
     // util.promisify consults Symbol.for('nodejs.util.promisify.custom')
     // (utilPromisify): both build their symbol in scr_symbol.c.
-    symbol:
-      features.symbol ||
-      features.fsWebStream ||
-      features.inspectFunctionValue === true ||
-      features.utilPromisify === true,
+    symbol: symbolFeature,
     ...(features.fsOpenAsBlob ? { fsOpenAsBlob: true } : {}),
     bigint: features.bigint,
     ...(features.bigstats || features.fsOpenAsBlob ? { bigstats: true } : {}),

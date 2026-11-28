@@ -356,6 +356,7 @@ import {
   lowerStreamAsyncDisposeCall,
   lowerStreamMethodCall,
   lowerStreamStaticCall,
+  lowerStreamSymbolIteratorCall,
   streamSidesOf,
 } from "./lower-stream.js";
 import {
@@ -2613,6 +2614,8 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     if (fileHandleDispose) return fileHandleDispose;
     const mkdtempDispose = lowerMkdtempResultDisposeCall(lowerer, expr);
     if (mkdtempDispose) return mkdtempDispose;
+    const streamIterator = lowerStreamSymbolIteratorCall(lowerer, expr);
+    if (streamIterator) return streamIterator;
     const streamDispose = lowerStreamAsyncDisposeCall(lowerer, expr);
     if (streamDispose) return streamDispose;
     const netServerDispose = lowerNetServerAsyncDisposeCall(lowerer, expr);

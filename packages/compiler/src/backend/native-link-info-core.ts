@@ -29,6 +29,10 @@ export interface NativeLinkFeatures {
   fileHandle: boolean;
   /** fs.openAsBlob: scr_fs_blob.c, the Blob unit over a file's reads. */
   fsOpenAsBlob?: boolean;
+  /** A stream's async-iterator member is reachable through
+   * Symbol.asyncIterator: the iterator unit's hook must be linked even when
+   * nothing awaits its result. */
+  streamSymbol?: boolean;
   /** filehandle.readableWebStream: scr_fs_web_stream.c. */
   fsWebStream?: boolean;
   /** fs.Utf8Stream: scr_fs_utf8_stream.c, the buffered file writer. */
@@ -548,6 +552,9 @@ export const LINK_FEATURE_REQUIREMENTS: readonly LinkFeatureRequirement[] = [
   // would select them, so the requirement is stated here.
   { feature: "webStreams", requires: ["dynAsync", "dynInvoke"] },
   { feature: "fsOpenAsBlob", requires: ["fileHandle", "dynAsync"] },
+  // A stream's Symbol.asyncIterator member answers the iterator unit's own
+  // iterator; the unit's promises are the checked-dynamic async unit's.
+  { feature: "streamSymbol", requires: ["dynAsync"] },
 ];
 
 /** Turns on, in `features`, every feature that one of its features

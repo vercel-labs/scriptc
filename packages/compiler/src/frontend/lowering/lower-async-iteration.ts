@@ -23,16 +23,21 @@ import {
 } from "../../ir/ir.js";
 import { locOf } from "../program.js";
 import { extractIteratorValue, type GenType } from "./lower-generators.js";
-import { streamSidesOf } from "./lower-stream.js";
+import { streamSidesOf, streamSymbolMethodOverriders } from "./lower-stream.js";
 import { staticReadableStreamElementType } from "./lower-stdlib.js";
 import { genResultRecord } from "../type-mapper.js";
 import { sideEffectFreeOptionValue } from "./surfaces.js";
 import { isReadlineTyped } from "./builtins/readline.js";
+import { lowerForOfDyn } from "./lower-stmts.js";
 
 interface NodeReadablePlan {
   source: ts.Expression;
   type: IrType & { kind: "object" };
   destroyOnReturn: boolean;
+  /** The member the loop opens: the stream value itself (Symbol.asyncIterator),
+   * an explicit `s[Symbol.asyncIterator]()`, or `s.iterator(options)` — a
+   * method of its own that a Symbol.asyncIterator override does not change. */
+  shape: "value" | "symbol" | "iterator";
 }
 
 interface WebReadablePlan {
@@ -132,7 +137,7 @@ function nodeReadablePlan(lowerer: Lowerer, expression: ts.Expression): NodeRead
   if (direct?.kind === "object") {
     const sides = streamSidesOf(lowerer, lowerer.classes.get(direct.className));
     if (sides === "r" || sides === "rw") {
-      return { source: expression, type: direct, destroyOnReturn: true };
+      return { source: expression, type: direct, destroyOnReturn: true, shape: "value" };
     }
   }
   const call = withoutParenthesesAssertionsNonNull(expression);
@@ -155,6 +160,7 @@ function nodeReadablePlan(lowerer: Lowerer, expression: ts.Expression): NodeRead
     destroyOnReturn: iteratorCall
       ? literalBooleanOption(lowerer, call, "destroyOnReturn", true, "readable.iterator")
       : true,
+    shape: iteratorCall ? "iterator" : "symbol",
   };
 }
 
@@ -1312,6 +1318,77 @@ function lowerWatchEvents(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
   }
 }
 
+/** A for-await over a stream value whose static class has subclasses that
+ * override [Symbol.asyncIterator]: Node opens the member on the instance, so
+ * the loop must run the override (a filtering or permission-checking
+ * iterator) and fall back to the stream's own iterator only for the exact
+ * class. The value is bound once and each concrete overrider below the
+ * static type is tested, as the explicit member call dispatches. Null when
+ * no subclass overrides it, where the native stream loop serves. */
+function lowerNodeReadableOverrides(
+  lowerer: Lowerer,
+  stmt: ts.ForOfStatement,
+  plan: NodeReadablePlan,
+): IrStmt | null {
+  // `s.iterator(options)` is a different member from [Symbol.asyncIterator]:
+  // a subclass overriding the symbol does not change it, and the call's
+  // destroyOnReturn must still be honored by the native loop.
+  if (plan.shape === "iterator") return null;
+  const info = lowerer.classes.get(plan.type.className);
+  if (info === undefined) return null;
+  const overriders = streamSymbolMethodOverriders(info, "sym:asyncIterator");
+  if (overriders.length === 0) return null;
+  const loc = locOf(stmt);
+  lowerer.scopes.push(new Map());
+  try {
+    const source = lowerer.declareHiddenLocal("%faSource", plan.type);
+    const recv = (): IrExpr => ({ kind: "varRef", localId: source.id, type: plan.type, loc });
+    let iterable: IrExpr = {
+      kind: "libCall",
+      fn: "readable.iterator",
+      args: [recv(), { kind: "boolLit", value: true, type: BOOL, loc }],
+      type: DYN,
+      loc,
+    };
+    for (let i = overriders.length - 1; i >= 0; i--) {
+      const child = overriders[i]!;
+      const sig = child.methods.get("sym:asyncIterator")!;
+      const overridden = lowerer.accessorCall(
+        child.def.name,
+        "sym:asyncIterator",
+        {
+          kind: "downcast",
+          value: recv(),
+          type: { kind: "object", className: child.def.name },
+          loc,
+        },
+        lowerer.completeArgs([], sig.params, loc, stmt),
+        sig.ret,
+        loc,
+      );
+      iterable = {
+        kind: "ternary",
+        cond: { kind: "instanceOf", value: recv(), className: child.def.name, type: BOOL, loc },
+        then: lowerer.coerceToExpected(overridden, DYN),
+        else_: iterable,
+        type: DYN,
+        loc,
+      };
+    }
+    const loop = lowerForOfDyn(lowerer, stmt, iterable, undefined, true);
+    return {
+      kind: "block",
+      body: [
+        { kind: "varDecl", localId: source.id, init: streamSource(lowerer, plan, loc), loc },
+        loop,
+      ],
+      loc,
+    };
+  } finally {
+    lowerer.scopes.pop();
+  }
+}
+
 export function lowerForAwaitBuiltin(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt | null {
   const watching = watchEventsCall(lowerer, stmt.expression);
   if (watching) return lowerWatchEvents(lowerer, stmt);
@@ -1320,7 +1397,66 @@ export function lowerForAwaitBuiltin(lowerer: Lowerer, stmt: ts.ForOfStatement):
   const readline = readlinePlan(lowerer, stmt.expression);
   if (readline) return lowerReadlineLines(lowerer, stmt, readline);
   const node = nodeReadablePlan(lowerer, stmt.expression);
-  if (node) return lowerNodeReadable(lowerer, stmt, node);
+  if (node) {
+    // A program that wrote Symbol.asyncIterator on an instance or prototype
+    // may hand the loop a JS wrapper: the compiled value's checked protocol
+    // sees it, the stream's own chunk loop cannot. `s.iterator(options)` is
+    // a different member, untouched by such a write.
+    if (node.shape !== "iterator" && lowerer.replacedSymbolMethods.has("sym:asyncIterator")) {
+      const loc = locOf(stmt);
+      if (node.shape === "symbol") {
+        // The source is the member call itself: the loop opens what the call
+        // answered, as Node's GetIterator does — the answer's own
+        // [Symbol.asyncIterator] (a wrapper on it included) answers first.
+        const iterator = lowerer.coerceToExpected(lowerer.lowerExpr(stmt.expression), DYN);
+        return lowerForOfDyn(lowerer, stmt, iterator, undefined, true);
+      }
+      // The stream value itself: call its member once, on the receiver
+      // bound once (a source expression with side effects runs once).
+      lowerer.scopes.push(new Map());
+      try {
+        const receiver = lowerer.declareHiddenLocal("%faMember", DYN);
+        const receiverRef: IrExpr = { kind: "varRef", localId: receiver.id, type: DYN, loc };
+        const symbol: IrExpr = {
+          kind: "libCall",
+          fn: "sym.wellKnown",
+          args: [{ kind: "strLit", value: "asyncIterator", type: STRING, loc }],
+          type: { kind: "symbol" },
+          loc,
+        };
+        const key = lowerer.coerceToExpected(symbol, DYN);
+        const callee: IrExpr = { kind: "dynKeyGet", value: receiverRef, key, type: DYN, loc };
+        const iterator: IrExpr = {
+          kind: "dynCall",
+          callee,
+          receiver: receiverRef,
+          calleeName: "value[Symbol.asyncIterator]",
+          args: [],
+          type: DYN,
+          loc,
+        };
+        const loop = lowerForOfDyn(lowerer, stmt, iterator, undefined, true, false, true);
+        return {
+          kind: "block",
+          body: [
+            {
+              kind: "varDecl",
+              localId: receiver.id,
+              init: lowerer.coerceToExpected(lowerer.lowerExpr(stmt.expression), DYN),
+              loc,
+            },
+            loop,
+          ],
+          loc,
+        };
+      } finally {
+        lowerer.scopes.pop();
+      }
+    }
+    const overrides = lowerNodeReadableOverrides(lowerer, stmt, node);
+    if (overrides) return overrides;
+    return lowerNodeReadable(lowerer, stmt, node);
+  }
   const web = webReadablePlan(lowerer, stmt.expression);
   if (web) return lowerWebReadable(lowerer, stmt, web);
   const classIterator = classAsyncIteratorPlan(lowerer, stmt.expression);

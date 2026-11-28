@@ -1,6 +1,0 @@
-{
- "order": [
-  "<repo>/tests/diagnostics/class-field-self-reaching-union-stringify.ts"
- ],
- "diags": []
-}

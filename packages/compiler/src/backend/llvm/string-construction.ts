@@ -76,7 +76,9 @@ export function emitMixedConcatInputs(
 
 /** scr_str_concat_mixed over evaluated inputs: `head` is a string the
  * caller owns, or null. Returns the +1 result. A result past Node's maximum
- * string length throws its catchable RangeError, hence the pending check. */
+ * string length throws its catchable RangeError; the caller registers the
+ * result's ownership (or stores it) and then runs the pending check, so an
+ * unwind never releases a reference the runtime already took. */
 export function emitMixedConcatCall(
   host: LlvmEmitterContext,
   head: string | null,
@@ -89,7 +91,6 @@ export function emitMixedConcatCall(
   host.B.line(
     `${result} = call ptr @${fn}(ptr ${head ?? "null"}, ptr ${slots.strings}, ptr ${slots.numbers}, ${host.sizeType} ${slots.count})`,
   );
-  host.emitPendingCheck();
   return result;
 }
 
@@ -169,7 +170,9 @@ export function emitMixedConcat(
 export function emitStringParts(host: LlvmEmitterContext, parts: readonly IrExpr[]): LlValue {
   if (parts.some((part) => numberPart(part) !== null)) {
     const result = emitMixedConcat(host, null, emitConcatInputs(host, parts));
-    return host.own({ name: result, type: parts[0]!.type });
+    const owned = host.own({ name: result, type: parts[0]!.type });
+    host.emitPendingCheck();
+    return owned;
   }
   const values = emitStringInputs(host, parts);
   const B = host.B;
@@ -185,6 +188,7 @@ export function emitStringParts(host: LlvmEmitterContext, parts: readonly IrExpr
   B.line(
     `${result} = call ptr @scr_str_concat_parts(ptr ${storage}, ${host.sizeType} ${parts.length})`,
   );
+  const owned = host.own({ name: result, type: parts[0]!.type });
   host.emitPendingCheck();
-  return host.own({ name: result, type: parts[0]!.type });
+  return owned;
 }

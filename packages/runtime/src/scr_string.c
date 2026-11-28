@@ -674,7 +674,10 @@ static __attribute__((noinline, cold)) ScrStr *scr_str_concat_joined(ScrStr *a, 
 ScrStr *scr_str_concat(ScrStr *a, ScrStr *b) {
   if (a->len == 0) return scr_str_retain(b);
   if (b->len == 0) return scr_str_retain(a);
-  if (a->len > SIZE_MAX - b->len - sizeof(ScrStr) - 1) scr_oom();
+  if (a->len > SIZE_MAX - b->len - sizeof(ScrStr) - 1) {
+    scr_str_throw_too_long();
+    return scr_str_empty();
+  }
   /* Only two strings that are not proven ASCII can complete a pair. */
   if (__builtin_expect(scr_wtf8_any(), 0) && !a->ascii && !b->ascii &&
       scr_wtf8_joins(a->data, a->len, b->data, b->len))
@@ -787,11 +790,19 @@ scr_str_concat_mixed_bytes(ScrStr *head, ScrStr *const *parts, const double *num
     } else {
       lens[i] = scr_f64_to_str(nums[i], text[i]);
     }
-    if (lens[i] > limit - extra) scr_oom();
+    if (lens[i] > limit - extra) {
+      /* More bytes than the capacity field holds is past Node's maximum
+       * length whatever the text. */
+      scr_str_throw_too_long();
+      return scr_str_empty();
+    }
     extra += lens[i];
   }
   size_t base = head ? head->len : 0;
-  if (extra > limit - base) scr_oom();
+  if (extra > limit - base) {
+    scr_str_throw_too_long();
+    return scr_str_empty();
+  }
   size_t newlen = base + extra;
   if (__builtin_expect(newlen > SCR_STR_MAX_UNITS, 0) &&
       scr_str_too_many_units(scr_str_joined_units(head, parts, nums, count))) {
@@ -903,7 +914,10 @@ static __attribute__((noinline)) ScrStr *scr_str_concat_fresh(ScrStr *const *par
       text_len[i] = n;
       used += n;
     }
-    if (n > SCR_STR_MAX_CAP - len) scr_oom();
+    if (n > SCR_STR_MAX_CAP - len) {
+      scr_str_throw_too_long();
+      return scr_str_empty();
+    }
     len += n;
   }
   if (__builtin_expect(len > SCR_STR_MAX_UNITS, 0) &&
@@ -983,7 +997,10 @@ static inline void scr_copy_piece(char *dst, const char *src, size_t n) {
  * holds no more memory than one built there. The bytes do not change, so a
  * proven-ASCII fact survives the regrow's reset. */
 static ScrStr *scr_str_grow_owned(ScrStr *a, size_t more) {
-  if (more > SCR_STR_MAX_CAP - a->len) scr_oom();
+  if (more > SCR_STR_MAX_CAP - a->len) {
+    scr_str_throw_too_long();
+    return scr_str_empty();
+  }
   size_t need = a->len + more;
   size_t grown = (size_t)a->cap + (a->cap >> 1) + 16;
   if (grown > SCR_STR_MAX_CAP) grown = SCR_STR_MAX_CAP;
@@ -1124,7 +1141,10 @@ ScrStr *scr_str_concat_f64(ScrStr *a, double x) {
   if (a->rc != 1) {
     char text[SCR_F64_TEXT_MAX];
     size_t n = scr_f64_to_str(x, text);
-    if (a->len > SCR_STR_MAX_CAP - n) scr_oom();
+    if (a->len > SCR_STR_MAX_CAP - n) {
+      scr_str_throw_too_long();
+      return scr_str_empty();
+    }
     size_t len = a->len + n;
     if (__builtin_expect(len > SCR_STR_MAX_UNITS, 0) &&
         scr_str_too_many_units(scr_str_units_of(a) + n)) {
@@ -1149,7 +1169,10 @@ ScrStr *scr_str_concat_parts(ScrStr *const *parts, size_t count) {
   size_t nonempty = 0;
   for (size_t i = 0; i < count; i++) {
     const size_t n = parts[i]->len;
-    if (n > limit - len) scr_oom();
+    if (n > limit - len) {
+      scr_str_throw_too_long();
+      return scr_str_empty();
+    }
     len += n;
     if (n != 0) {
       only = parts[i];

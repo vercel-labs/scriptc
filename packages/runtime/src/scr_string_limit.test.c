@@ -66,6 +66,17 @@ int main(void) {
   check_range("padStart", scr_str_pad_start(a20, 65, sep));
   check_range("padEnd", scr_str_pad_end(a20, 1e9, sep));
 
+  /* Re-indenting a document widens it: a document inside the limit can
+   * pass it, and the builder throws. */
+  {
+    ScrStr *compact =
+        scr_str_new("[\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"]", 62);
+    ScrStr *gap = scr_str_new("  ", 2);
+    check_range("json indent", scr_json_indent(compact, gap->data, gap->len));
+    scr_str_release(compact);
+    scr_str_release(gap);
+  }
+
   /* The JSON builder: a document past the limit throws from its finish, and
    * the buffer it held goes back. */
   {
@@ -78,6 +89,25 @@ int main(void) {
     scr_jb_init(&b);
     scr_jb_write(&b, fill, sizeof fill);
     check_fits("json builder fits", scr_jb_finish(&b), 64);
+  }
+
+  /* The byte-field guards on the same paths throw the catchable RangeError
+   * instead of the old out-of-memory trap. The pieces describe their lengths
+   * only, so nothing is allocated. */
+  {
+    ScrStr big_a, big_b;
+    memset(&big_a, 0, sizeof big_a);
+    memset(&big_b, 0, sizeof big_b);
+    big_a.rc = SIZE_MAX;
+    big_a.len = (size_t)0x7ffff000;
+    big_a.ascii = 1;
+    big_b.rc = SIZE_MAX;
+    big_b.len = (size_t)0x7ffff000;
+    big_b.ascii = 1;
+    ScrStr *fake[2] = {&big_a, &big_b};
+    const double zeros[2] = {0, 0};
+    check_range("concat over the field", scr_str_concat_mixed(NULL, fake, zeros, 2));
+    check_range("parts over the field", scr_str_concat_parts(fake, 2));
   }
 
   /* replace: a replacement that grows the subject past the limit. */

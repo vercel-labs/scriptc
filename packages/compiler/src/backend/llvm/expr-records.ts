@@ -215,7 +215,11 @@ function emitReplaceWith(
   host.B.line(
     `${t} = call ptr @scr_regex_replace_with(ptr ${r.name}, ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr ${replacer})`,
   );
-  return host.own({ name: t, type: e.type });
+  // A result past the maximum string length throws inside the replacer: the
+  // frame owns the result before the poll runs.
+  const out = host.own({ name: t, type: e.type });
+  host.emitPendingCheck();
+  return out;
 }
 
 /** Substitutions whose result owns its text: once the runtime call returns,
@@ -415,7 +419,10 @@ function emitRegexOperation(
       B.line(
         `${t} = call ptr @scr_regex_replace(ptr ${r.name}, ptr ${args[0]!.name}, ptr ${args[1]!.name})`,
       );
-      return host.own({ name: t, type: e.type });
+      // As for a result past the maximum string length: own, then poll.
+      const out = host.own({ name: t, type: e.type });
+      host.emitPendingCheck();
+      return out;
     }
     default: {
       const _exhaustive: never = method;

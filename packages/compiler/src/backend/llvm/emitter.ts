@@ -8791,6 +8791,10 @@ export class LlEmitter {
     // The +1 result moves straight into the (now empty) field.
     if (owned) this.storeField(ptr, fieldType, raw, false);
     else this.replaceField(ptr, fieldType, false, this.own({ name: raw, type: fieldType }));
+    // The mixed concat is the only form that can leave an exception pending:
+    // poll once the field owns the result, so an unwind releases a reference
+    // the runtime has not already taken.
+    if (slots !== null) this.emitPendingCheck();
     return true;
   }
 
@@ -8862,6 +8866,8 @@ export class LlEmitter {
       B.line(`${raw} = call ptr @scr_str_concat(ptr ${snapshot.name}, ptr ${right!.name})`);
     }
     emitDenseArraySet(this, arr.name, idx, s.index, "ref", elem, raw);
+    // As in the field self-append: poll after the slot owns the result.
+    if (slots !== null) this.emitPendingCheck();
     return true;
   }
 
@@ -8926,6 +8932,9 @@ export class LlEmitter {
       B.line(`${raw} = call ptr @scr_str_concat_move(ptr ${head}, ptr ${right!.name})`);
     }
     B.line(`store ptr ${raw}, ptr ${b.slot}`);
+    // The moved mixed concat may leave an exception pending; the binding owns
+    // the result before the poll runs.
+    if (slots !== null) this.emitPendingCheck();
     return { name: raw, type: left.type }; // moved into the binding
   }
 

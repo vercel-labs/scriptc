@@ -1992,6 +1992,7 @@ export function compileRegexMatcher(
     decls.push(`declare ptr @memchr(ptr, i32, ${sizeType})`);
   if (replacement !== null) {
     decls.push(`declare void @scr_re_replace_out_reserve(ptr, i64)`);
+  decls.push(`declare void @scr_str_throw_too_long()`);
     decls.push(`declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1 immarg)`);
   }
   const globals = [...gen.globals];
@@ -2096,6 +2097,12 @@ function emitReplaceMatch(fn: string[], sym: string, replacement: string, vector
   fn.push(`  %m.room = sub i64 %m.cap, %m.len0`);
   // 16 bytes of slack past the gap and the replacement for the 16-byte copy.
   fn.push(`  %m.need = add i64 %m.gapw, ${n + 32}`);
+  // Past the capacity field the result is past Node's maximum string
+  // length: throw its RangeError and stop without writing.
+  fn.push(`  %m.want = add i64 %m.len0, %m.need`);
+  fn.push(`  %m.over = icmp ugt i64 %m.want, 2147483647`);
+  fn.push(`  br i1 %m.over, label %m.fail, label %m.test`);
+  fn.push(`m.test:`);
   fn.push(`  %m.fits = icmp uge i64 %m.room, %m.need`);
   fn.push(`  br i1 %m.fits, label %m.put, label %m.grow`);
   fn.push(`m.grow:`);
@@ -2142,4 +2149,7 @@ function emitReplaceMatch(fn: string[], sym: string, replacement: string, vector
   fn.push(`  store i32 %m.at, ptr %at`);
   fn.push(`  %m.past = icmp sgt i32 %m.at, %len`);
   fn.push(`  br i1 %m.past, label %nomatch, label %scan`);
+  fn.push(`m.fail:`);
+  fn.push(`  call void @scr_str_throw_too_long()`);
+  fn.push(`  br label %nomatch`);
 }

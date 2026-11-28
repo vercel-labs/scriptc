@@ -1484,10 +1484,17 @@ typedef struct {
   char *data;
   size_t len;
   size_t cap;
+  /* A piece past the capacity field is past Node's maximum string length:
+   * the growth throws the catchable RangeError and the loop stops. */
+  bool failed;
 } ScrReOut;
 
 static ScrReOut scr_re_out_grow(ScrReOut o, size_t n) {
-  if (n > SCR_STR_MAX_CAP - o.len) scr_regex_oom();
+  if (n > SCR_STR_MAX_CAP - o.len) {
+    o.failed = true;
+    scr_str_throw_too_long();
+    return o;
+  }
   size_t cap = o.cap * 2;
   if (cap < o.len + n) cap = o.len + n;
   if (cap > SCR_STR_MAX_CAP) cap = SCR_STR_MAX_CAP;
@@ -1499,7 +1506,11 @@ static ScrReOut scr_re_out_grow(ScrReOut o, size_t n) {
 }
 
 static inline void scr_re_out_put(ScrReOut *o, const char *p, size_t n) {
-  if (n > o->cap - o->len) *o = scr_re_out_grow(*o, n);
+  if (o->failed) return;
+  if (n > o->cap - o->len) {
+    *o = scr_re_out_grow(*o, n);
+    if (o->failed) return;
+  }
   scr_copy_bytes(o->data + o->len, p, n);
   o->len += n;
 }
@@ -1525,7 +1536,7 @@ static ScrStr *scr_replace_matcher(ScrStr *s, ScrRegex *re, ScrStr *rep,
   int next = 0, pos = sticky ? scr_regex_start(re, input) : 0;
   if (pos < 0) pos = len + 1;
   if (sticky && !global) re->last_index = 0;
-  ScrReOut out = { NULL, NULL, 0, 0 };
+  ScrReOut out = { NULL, NULL, 0, 0, false };
   while (pos <= len) {
     if (matcher(data, len, pos, capture) != 1) break;
     int start = (int)(capture[0] - data);
@@ -1551,12 +1562,21 @@ static ScrStr *scr_replace_matcher(ScrStr *s, ScrRegex *re, ScrStr *rep,
       }
     }
     next = end;
+    if (out.failed) break;
     if (!global) break;
     /* ASCII holds no surrogate pair: an empty match advances one unit. */
     pos = end == start ? end + 1 : end;
   }
   if (!out.s) return scr_str_retain(s);
+  if (out.failed) {
+    scr_str_release(out.s);
+    return scr_str_empty_value();
+  }
   scr_re_out_put(&out, text + next, (size_t)(len - next));
+  if (out.failed) {
+    scr_str_release(out.s);
+    return scr_str_empty_value();
+  }
   out.s->len = out.len;
   out.data[out.len] = '\0';
   /* The subject is ASCII, so a surrogate pair can only form where two
@@ -1566,6 +1586,11 @@ static ScrStr *scr_replace_matcher(ScrStr *s, ScrRegex *re, ScrStr *rep,
     scr_str_fuse_surrogates(out.s);
   else if (scr_str_known_ascii(rep) || scr_bytes_all_ascii(rep->data, rep->len))
     scr_str_note_ascii(out.s);
+  if (__builtin_expect(out.len > SCR_STR_MAX_UNITS, 0) && !scr_str_units_fit(scr_str_units_count(out.s))) {
+    scr_str_release(out.s);
+    scr_str_throw_too_long();
+    return scr_str_empty_value();
+  }
   return out.s;
 }
 
@@ -1634,7 +1659,13 @@ ScrStr *scr_regex_replace(ScrStr *s, ScrRegex *re, ScrStr *rep) {
 }
 
 void scr_re_replace_out_reserve(ScrReReplaceOut *o, int64_t need) {
-  if (need < 0 || (uint64_t)need > SCR_STR_MAX_CAP - (uint64_t)o->len) scr_regex_oom();
+  if (need < 0 || (uint64_t)need > SCR_STR_MAX_CAP - (uint64_t)o->len) {
+    /* The emitted replacer checks the capacity before it reserves, so only
+     * the tail can arrive here; it checks the pending exception before it
+     * copies. */
+    scr_str_throw_too_long();
+    return;
+  }
   size_t cap = (size_t)o->cap * 2;
   if (cap < (size_t)(o->len + need)) cap = (size_t)(o->len + need);
   if (cap > SCR_STR_MAX_CAP) cap = SCR_STR_MAX_CAP;
@@ -1663,18 +1694,36 @@ ScrStr *scr_regex_replace_with(ScrStr *s, ScrRegex *re, ScrStr *rep,
   o.cap = (int64_t)o.str->cap;
   o.next = 0;
   int32_t n = replacer((const uint8_t *)s->data, (int32_t)s->len, 0, (uint8_t **)(void *)&o);
+  if (scr_exc_pending()) {
+    o.str->len = 0;
+    scr_str_release(o.str);
+    return scr_str_empty_value();
+  }
   if (n == 0) {
     o.str->len = 0;
     scr_str_release(o.str);
     return scr_str_retain(s);
   }
   size_t tail = s->len - (size_t)o.next;
-  if ((int64_t)(tail + 1) > o.cap - o.len) scr_re_replace_out_reserve(&o, (int64_t)tail + 1);
+  if ((int64_t)(tail + 1) > o.cap - o.len) {
+    scr_re_replace_out_reserve(&o, (int64_t)tail + 1);
+    if (scr_exc_pending()) {
+      o.str->len = 0;
+      scr_str_release(o.str);
+      return scr_str_empty_value();
+    }
+  }
   scr_copy_bytes(o.data + o.len, s->data + o.next, tail);
   o.len += (int64_t)tail;
   o.str->len = (size_t)o.len;
   o.data[o.len] = '\0';
   scr_str_note_ascii(o.str);
+  if (__builtin_expect(o.len > SCR_STR_MAX_UNITS, 0) && !scr_str_units_fit(scr_str_units_count(o.str))) {
+    o.str->len = 0;
+    scr_str_release(o.str);
+    scr_str_throw_too_long();
+    return scr_str_empty_value();
+  }
   return o.str;
 }
 

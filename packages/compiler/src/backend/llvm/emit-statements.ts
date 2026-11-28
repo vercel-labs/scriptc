@@ -3598,6 +3598,8 @@ export function emitStringSelfConcatAssign(
     if (b.kind === "boxed") emitter.boxSet(emitter.loadBox(b.slot), b.type, result.name);
     else B.line(`store ptr ${result.name}, ptr ${b.slot}`);
   }
+  // The binding owns the result before the mixed concat's pending check runs.
+  if (slots !== null) emitter.emitPendingCheck();
   return result;
 }
 

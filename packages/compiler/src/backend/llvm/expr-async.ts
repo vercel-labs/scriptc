@@ -366,7 +366,12 @@ export function emitSerializationExpr(
       B.line(
         `${t2} = call ptr @${rewriter}(ptr ${compact.name}, ptr ${host.cstr(indent)}, ${host.sizeType} ${Buffer.byteLength(indent, "utf8")})`,
       );
-      return host.own({ name: t2, type: e.type });
+      // The re-indenter builds the document through the same builder: a
+      // result past the maximum string length throws there, so the poll runs
+      // once the frame owns the result.
+      const pretty = host.own({ name: t2, type: e.type });
+      host.emitPendingCheck();
+      return pretty;
     }
     case "dynCheck": {
       // The dynamic boundary: validate the checked-dynamic tree against the target type

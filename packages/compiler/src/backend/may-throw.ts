@@ -410,6 +410,7 @@ export function computeMayThrow(
           // Keep the conservative exception check for these operations;
           // replaceAll and matchAll without /g throw Node's TypeError.
           if (
+            rec.method === "replace" ||
             rec.method === "replaceAll" ||
             rec.method === "split" ||
             rec.method === "matchAll" ||

@@ -930,16 +930,19 @@ export function emitStringExpr(
         host.declare(`declare ptr @scr_str_concat_f64(ptr, double)`);
         const t = B.tmp();
         B.line(`${t} = call ptr @scr_str_concat_f64(ptr ${l.name}, double ${x.name})`);
-        // A result past Node's maximum length throws its catchable RangeError.
+        // A result past Node's maximum length throws its catchable RangeError:
+        // the frame owns the result before the poll runs.
+        const owned = host.own({ name: t, type: e.type });
         host.emitPendingCheck();
-        return host.own({ name: t, type: e.type });
+        return owned;
       }
       const [r] = emitStringInputs(host, [e.right]);
       host.declare(`declare ptr @scr_str_concat(ptr, ptr)`);
       const t = B.tmp();
       B.line(`${t} = call ptr @scr_str_concat(ptr ${l.name}, ptr ${r!.name})`);
+      const owned = host.own({ name: t, type: e.type });
       host.emitPendingCheck();
-      return host.own({ name: t, type: e.type });
+      return owned;
     }
     case "strEq": {
       // `s.charAt(i) === "c"` (and `s[i]`, which lowers to charAt) for a

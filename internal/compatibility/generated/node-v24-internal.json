@@ -424,6 +424,7 @@
           "tests/corpus/1604-assert-deep-structures.ts",
           "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
+          "tests/corpus/1724-assert-iferror.ts",
           "tests/corpus/2936-static-loose-equality.ts",
           "tests/corpus/5510-assert-error-properties.js",
           "tests/corpus/5511-assert-error-class.ts",
@@ -798,7 +799,8 @@
           "tests/corpus/2936-static-loose-equality.ts",
           "tests/corpus/5515-assert-deep-strict-typed-messages.ts",
           "tests/corpus/assert-fail-deprecated-overloads.cjs",
-          "tests/corpus/assert-deep-errors.cjs"
+          "tests/corpus/assert-deep-errors.cjs",
+          "tests/corpus/1724-assert-iferror.ts"
         ]
       },
       "anchorSource": "exact"
@@ -943,7 +945,8 @@
           "tests/corpus/2936-static-loose-equality.ts",
           "tests/corpus/5515-assert-deep-strict-typed-messages.ts",
           "tests/corpus/assert-fail-deprecated-overloads.cjs",
-          "tests/corpus/assert-deep-errors.cjs"
+          "tests/corpus/assert-deep-errors.cjs",
+          "tests/corpus/1724-assert-iferror.ts"
         ]
       },
       "anchorSource": "exact"
@@ -1034,7 +1037,8 @@
           "tests/corpus/2936-static-loose-equality.ts",
           "tests/corpus/5515-assert-deep-strict-typed-messages.ts",
           "tests/corpus/assert-fail-deprecated-overloads.cjs",
-          "tests/corpus/assert-deep-errors.cjs"
+          "tests/corpus/assert-deep-errors.cjs",
+          "tests/corpus/1724-assert-iferror.ts"
         ]
       },
       "anchorSource": "exact"
@@ -1124,7 +1128,8 @@
           "tests/corpus/2936-static-loose-equality.ts",
           "tests/corpus/5515-assert-deep-strict-typed-messages.ts",
           "tests/corpus/assert-fail-deprecated-overloads.cjs",
-          "tests/corpus/assert-deep-errors.cjs"
+          "tests/corpus/assert-deep-errors.cjs",
+          "tests/corpus/1724-assert-iferror.ts"
         ]
       },
       "anchorSource": "exact"
@@ -1157,7 +1162,8 @@
           "tests/corpus/2936-static-loose-equality.ts",
           "tests/corpus/5515-assert-deep-strict-typed-messages.ts",
           "tests/corpus/assert-fail-deprecated-overloads.cjs",
-          "tests/corpus/assert-deep-errors.cjs"
+          "tests/corpus/assert-deep-errors.cjs",
+          "tests/corpus/1724-assert-iferror.ts"
         ]
       },
       "anchorSource": "exact"
@@ -1190,7 +1196,8 @@
           "tests/corpus/2936-static-loose-equality.ts",
           "tests/corpus/5515-assert-deep-strict-typed-messages.ts",
           "tests/corpus/assert-fail-deprecated-overloads.cjs",
-          "tests/corpus/assert-deep-errors.cjs"
+          "tests/corpus/assert-deep-errors.cjs",
+          "tests/corpus/1724-assert-iferror.ts"
         ]
       },
       "anchorSource": "exact"
@@ -1252,7 +1259,8 @@
           "tests/corpus/2936-static-loose-equality.ts",
           "tests/corpus/5515-assert-deep-strict-typed-messages.ts",
           "tests/corpus/assert-fail-deprecated-overloads.cjs",
-          "tests/corpus/assert-deep-errors.cjs"
+          "tests/corpus/assert-deep-errors.cjs",
+          "tests/corpus/1724-assert-iferror.ts"
         ]
       },
       "anchorSource": "exact"
@@ -1285,7 +1293,8 @@
           "tests/corpus/2936-static-loose-equality.ts",
           "tests/corpus/5515-assert-deep-strict-typed-messages.ts",
           "tests/corpus/assert-fail-deprecated-overloads.cjs",
-          "tests/corpus/assert-deep-errors.cjs"
+          "tests/corpus/assert-deep-errors.cjs",
+          "tests/corpus/1724-assert-iferror.ts"
         ]
       },
       "anchorSource": "exact"
@@ -1318,7 +1327,8 @@
           "tests/corpus/2936-static-loose-equality.ts",
           "tests/corpus/5515-assert-deep-strict-typed-messages.ts",
           "tests/corpus/assert-fail-deprecated-overloads.cjs",
-          "tests/corpus/assert-deep-errors.cjs"
+          "tests/corpus/assert-deep-errors.cjs",
+          "tests/corpus/1724-assert-iferror.ts"
         ]
       },
       "anchorSource": "exact"

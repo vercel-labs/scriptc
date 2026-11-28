@@ -24,6 +24,12 @@ console.log("D ", JSON.stringify(messageOf(() => assert.ifError(0))));
 console.log("E ", JSON.stringify(messageOf(() => assert.ifError(false))));
 console.log("F ", JSON.stringify(messageOf(() => assert.ifError(0 / 0))));
 console.log("G ", JSON.stringify(messageOf(() => assert.ifError(-0))));
+// Composites throw too, rendered with util.inspect's defaults.
+console.log("H ", JSON.stringify(messageOf(() => assert.ifError({ a: 1 }))));
+console.log("I ", JSON.stringify(messageOf(() => assert.ifError([1, 2, 3]))));
+console.log("J ", JSON.stringify(messageOf(() => assert.ifError(new Map([["a", 1]])))));
+console.log("K ", JSON.stringify(messageOf(() => assert.ifError(function namedFn() {}))));
+console.log("L ", JSON.stringify(messageOf(() => assert.ifError(Symbol("s")))));
 
 // The callback-error idiom: Error | null | undefined per arm.
 function viaUnion(e: Error | null | undefined): string {

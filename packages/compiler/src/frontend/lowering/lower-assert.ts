@@ -2849,6 +2849,37 @@ function lowerAssertIfError(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcL
   if (v.type.kind === "dyn") {
     return { kind: "libCall", fn: "assert.ifErrorDyn", args: [v], type: VOID, loc };
   }
+  // A composite that can cross into the checked-dynamic tree takes the
+  // runtime's dyn arm instead of a fence: Node throws for every non-nullish
+  // value, rendering the value's inspection for everything that is not an
+  // error (records, arrays, Maps, Sets, functions, symbols). Bytes and class
+  // instances keep their fence — the copy would lose the brand or prototype
+  // Node renders — and so do cycles, which have no tree.
+  if (
+    v.type.kind !== "union" &&
+    v.type.kind !== "bytes" &&
+    v.type.kind !== "object" &&
+    v.type.kind !== "moduleNs" &&
+    lowerer.dynConvertible(v.type) &&
+    !typeReachesCycle(lowerer, v.type)
+  ) {
+    const fnName = v.type.kind === "func" ? jsFuncNameOf(argNode, lowerer) : null;
+    return {
+      kind: "libCall",
+      fn: "assert.ifErrorDyn",
+      args: [
+        {
+          kind: "dynFrom",
+          value: v,
+          ...(fnName !== null ? { fnName } : {}),
+          type: DYN,
+          loc,
+        },
+      ],
+      type: VOID,
+      loc,
+    };
+  }
   if (v.type.kind !== "union") fence(v.type);
   const unionT = v.type as IrType & { kind: "union" };
   const def = lowerer.unions.get(unionT.unionId);

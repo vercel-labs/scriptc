@@ -3330,7 +3330,9 @@ void scr_assert_iferror_dyn(const ScrDyn *v) {
       return;
     }
   }
-  ScrStr *q = scr_assert_cf_inspect(v);
+  /* Node's ifError renders any other value with util.inspect's defaults
+   * (compact, depth 2), so a short object or array stays on one line. */
+  ScrStr *q = scr_insp_dyn((ScrDyn *)v, 0, 2);
   scr_assert_iferror_fail(q->data, q->len, scr_dyn_retain((ScrDyn *)v));
   scr_str_release(q);
 }

@@ -1324,6 +1324,9 @@ export interface IrModule {
    * their dyn.keySet/keySetComputed calls ignore an assignment that strict
    * mode refuses with a TypeError. */
   sloppyDynWrites?: string[];
+  /** Array element writes in sloppy-mode code (loc keys): a write to a
+   * frozen array is ignored there, where strict code throws. */
+  sloppyArrayWrites?: string[];
   /** The program freezes, seals or prevents extensions of untyped values
    * (frontend frozen-records.ts noteUntypedIntegrity). Class hierarchies
    * that can be held there carry an integrity word, which the runtime sets

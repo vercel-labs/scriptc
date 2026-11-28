@@ -546,6 +546,18 @@ int scr_throw_published_array_range(int op, const ScrArr *a, double x, double y,
   return scr_array_frozen_guard(op, a, a->len, x, y, z);
 }
 
+/* A sloppy-mode element write (op 0) or delete (op 5) on an array that was
+ * FROZEN is ignored: Node's [[Set]]/[[Delete]] answer false there and the
+ * caller's escape is the sloppy one. Every other operation — a mutating
+ * method, or an array that is only published — keeps throwing. */
+int scr_throw_published_array_sloppy(int op, const ScrArr *a, double index, double n) {
+  /* An element write (0), a delete (5) and a length store (3) on a FROZEN
+   * array answer false from Node's [[Set]]/[[Delete]]/length setter in
+   * sloppy code, so they are ignored; everything else keeps throwing. */
+  if ((op == 0 || op == 3 || op == 5) && scr_arr_frozen(a)) return SCR_FROZEN_NOOP;
+  return scr_array_frozen_guard(op, a, a->len, index, n, 0);
+}
+
 void scr_throw_published_collection(bool set) {
   scr_pub_throw("Cannot modify a published %s%s", set ? "Set" : "Map", "");
 }

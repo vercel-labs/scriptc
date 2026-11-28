@@ -316,7 +316,7 @@ import {
 import { settleClassIdentityHelpers } from "./class-instance-constructor.js";
 import { addUntypedIntegrityWords, guardClassAttributeWrites } from "./class-attributes.js";
 import { inferredCollectionType } from "./js-collection-types.js";
-import { sloppyDynamicWrites } from "./frozen-records.js";
+import { sloppyArrayWrites, sloppyDynamicWrites } from "./frozen-records.js";
 import { guardFrozenWrites, markSloppyRecordWrites } from "./frozen-records.js";
 import { FunctionCensus } from "./function-census.js";
 import { applyHandleProperties, handlePropertyScanRoots } from "./handle-properties.js";
@@ -15851,6 +15851,10 @@ export class Lowerer {
     refuseUnseenBuiltinMemberWrites(this);
     markInferredFactChecks(functions, this.program);
     const sloppyDynWrites = sloppyDynamicWrites(this, functions, census);
+    // Only a program that may freeze an array emits the array guard, so
+    // nothing else pays for the walk.
+    const sloppyArrayWriteKeys =
+      this.freezableArrays.size > 0 ? sloppyArrayWrites(this, functions) : [];
     const module: IrModule | null =
       this.diags.length > 0
         ? null
@@ -15892,6 +15896,7 @@ export class Lowerer {
             ...(this.untypedIntegrity ? { untypedIntegrity: true as const } : {}),
             ...(buffersMutable ? { bytesHeadersMutable: true as const } : {}),
             ...(sloppyDynWrites.length > 0 ? { sloppyDynWrites } : {}),
+            ...(sloppyArrayWriteKeys.length > 0 ? { sloppyArrayWrites: sloppyArrayWriteKeys } : {}),
             ...(isNodeEsmFile(this.entry, this.program) ? {} : { commonJsEntry: true }),
             ...(this.ffiImports.length > 0 ? { ffiImports: [...this.ffiImports] } : {}),
           };

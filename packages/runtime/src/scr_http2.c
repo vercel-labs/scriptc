@@ -64,6 +64,7 @@
 #include <string.h>
 #include <time.h>
 #ifndef _WIN32
+#include <poll.h>
 #include <unistd.h>
 #else
 #include <io.h>
@@ -742,6 +743,15 @@ struct ScrH2Stream {
   int file_fd;             /* -1 when there is no source */
   bool file_owns_fd;       /* the unit opened it and closes it */
   bool file_done;          /* drained, gone, or replaced */
+  /* A non-regular source (FIFO, character device) has no length: the pump
+   * streams it until a writer's data has arrived and the source then ends,
+   * Node's file-stream shape. */
+  bool file_eof_mode;
+  bool file_got_data;
+  /* FIFO sources only: whether a writer has been connected (poll tells a
+   * writer-less FIFO from one whose writer closed without writing). */
+  bool file_is_fifo;
+  bool file_saw_writer;
   scr_h2_file_off file_off;
   scr_h2_file_off file_remaining;
   double file_retry_handle; /* a pending backpressure retry timer (0 none) */
@@ -3098,6 +3108,72 @@ static bool scr_h2_file_pump(ScrH2Stream *st) {
     }
     int64_t window = st->send_window < s->send_window ? st->send_window : s->send_window;
     if (window <= 0) return false;
+    if (st->file_eof_mode) {
+      /* A source with no length streams until it ends. A non-blocking read
+       * that returns 0 before any byte arrived means no writer has produced
+       * one yet (Node's open/read wait off the loop); the pump parks like a
+       * window-blocked body and retries instead of ending the response. */
+      size_t chunk = (size_t)window;
+      if (chunk > max_frame) chunk = max_frame;
+      char *buf = malloc(chunk);
+      if (!buf) scr_h2_oom();
+#ifndef _WIN32
+      ssize_t got = read(st->file_fd, buf, chunk);
+#else
+      int got = _read(st->file_fd, buf, (unsigned)chunk);
+#endif
+      if (got < 0) {
+        int err = errno;
+        free(buf);
+#ifndef _WIN32
+        if (err == EAGAIN || err == EWOULDBLOCK || err == EINTR) {
+          scr_h2_file_schedule_retry(st);
+          return false;
+        }
+#endif
+        scr_h2_file_close(st);
+        scr_http2_stream_close(st, 2 /* NGHTTP2_INTERNAL_ERROR */, NULL);
+        return false;
+      }
+      if (got == 0) {
+        free(buf);
+        /* With no writer a FIFO reads as ended, and one whose writer closed
+         * without writing reads the same; Node's blocking open/read only
+         * reaches the second. poll tells them apart: a connected writer
+         * clears POLLHUP, and a closed one sets it again. Any other
+         * lengthless source (/dev/null, a device) ends at its first zero
+         * read, as Node's stream does. */
+        bool ends = true;
+        if (st->file_is_fifo) {
+#ifndef _WIN32
+          struct pollfd pfd;
+          pfd.fd = st->file_fd;
+          pfd.events = POLLIN;
+          pfd.revents = 0;
+          int pr = poll(&pfd, 1, 0);
+          if (pr > 0 && (pfd.revents & POLLHUP) == 0) {
+            st->file_saw_writer = true; /* a writer is connected */
+            ends = false;
+          } else {
+            ends = st->file_saw_writer; /* no writer yet, or it closed */
+          }
+#endif
+        }
+        if (!ends) {
+          scr_h2_file_schedule_retry(st);
+          return false;
+        }
+        st->file_remaining = 0;
+        break;
+      }
+      st->file_got_data = true;
+      scr_h2_send_frame(s, SCR_H2_F_DATA, 0, st->id, buf, (size_t)got);
+      scr_h2_stream_touch_timeout(st);
+      free(buf);
+      st->send_window -= got;
+      s->send_window -= got;
+      continue;
+    }
     size_t chunk = (size_t)window;
     if (chunk > max_frame) chunk = max_frame;
     if ((scr_h2_file_off)chunk > st->file_remaining) chunk = (size_t)st->file_remaining;
@@ -3171,9 +3247,14 @@ static void scr_h2_file_call_release(void *p) {
 
 static int scr_h2_open_read(const char *path) {
 #ifdef _WIN32
-  return _open(path, _O_RDONLY | _O_BINARY);
+  /* _O_NOINHERIT: Node's descriptors are not inherited by spawned children */
+  return _open(path, _O_RDONLY | _O_BINARY | _O_NOINHERIT);
 #else
-  return open(path, O_RDONLY);
+  /* Node (libuv) opens files non-inheritable and without blocking the loop:
+   * O_CLOEXEC keeps the descriptor out of spawned children, and O_NONBLOCK
+   * makes a FIFO with no writer answer EAGAIN instead of parking the event
+   * loop inside open() (regular files ignore it; the caller retries). */
+  return open(path, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
 #endif
 }
 
@@ -3263,6 +3344,8 @@ static bool scr_h2_file_on_error(ScrH2FileCall *c, int err, const char *action, 
   return true;
 }
 
+static void scr_h2_file_call_defer_ms(ScrH2FileCall *c, double ms);
+
 static void scr_h2_file_call_cleanup(ScrH2FileCall *c) {
   scr_h2_file_call_release(c);
 }
@@ -3282,6 +3365,19 @@ static void scr_h2_file_call_fire(ScrClosure *cb) {
     fd = scr_h2_open_read(cpath);
     if (fd < 0) {
       int err = errno;
+#ifndef _WIN32
+      if (err == EAGAIN || err == EWOULDBLOCK) {
+        /* a FIFO nobody writes yet: Node's open waits off the loop and the
+         * request stays pending — retry from the timer, never in open() */
+        scr_str_utf8_end(owned);
+        /* the timer's box owns a reference of its own: retain for it before
+         * this fire releases the one it took */
+        scr_h2_file_call_retain(c);
+        scr_h2_file_call_defer_ms(c, SCR_H2_FILE_RETRY_MS);
+        scr_h2_file_call_cleanup(c);
+        return;
+      }
+#endif
       if (!scr_h2_file_on_error(c, err, "open", cpath, strlen(cpath))) {
         scr_h2_stream_fail_file(st, err, "open", cpath, strlen(cpath));
       }
@@ -3411,8 +3507,16 @@ static void scr_h2_file_call_fire(ScrClosure *cb) {
     st->file_fd = fd;
     st->file_owns_fd = owns;
     st->file_done = false;
+    st->file_eof_mode = !is_file;
+    st->file_got_data = false;
+#ifndef _WIN32
+    st->file_is_fifo = S_ISFIFO(info.st_mode);
+#else
+    st->file_is_fifo = false;
+#endif
+    st->file_saw_writer = false;
     st->file_off = start;
-    st->file_remaining = want;
+    st->file_remaining = !is_file ? (scr_h2_file_off)INT64_MAX : want;
     scr_h2_stream_flush(st);
   } else if (owns) {
     scr_h2_close_fd(fd);
@@ -3420,16 +3524,18 @@ static void scr_h2_file_call_fire(ScrClosure *cb) {
   scr_h2_file_call_cleanup(c);
 }
 
-static void scr_h2_file_call_defer(ScrH2FileCall *c) {
+static void scr_h2_file_call_defer_ms(ScrH2FileCall *c, double ms) {
   /* A zero-delay timer, not scr_next_tick: the open/stat error delivery is
    * an ordinary IO callback turn in Node, and the timer runner is the
    * runtime's deferral path for it. */
   ScrClosure *tick = scr_closure_new((void *)&scr_h2_file_call_fire, 1);
   tick->caps[0] = scr_box_new_obj(scr_h2_file_call_retain, scr_h2_file_call_release, NULL);
   scr_box_set_ref(tick->caps[0], c);
-  double handle = scr_set_timeout_handle(tick, 0);
+  double handle = scr_set_timeout_handle(tick, ms);
   if (handle > 0) scr_timer_unref(handle);
 }
+
+static void scr_h2_file_call_defer(ScrH2FileCall *c) { scr_h2_file_call_defer_ms(c, 0); }
 
 void scr_http2_stream_respond_with_file(ScrH2Stream *st, ScrStr *path /*borrowed*/,
                                        ScrArr *pairs /*borrowed, nullable*/, double offset,
@@ -5227,33 +5333,58 @@ ScrH2Session *scr_http2_connect(ScrStr *url /*borrowed*/, bool reject_unauthoriz
                                  ScrClosure *cb /*moves, nullable*/, ScrH2ConnectFn fn) {
   const char *p = url->data;
   const char *sep = strstr(p, "://");
-  if (sep == NULL || url->len == 0) {
+  if (sep == NULL || url->len == 0 || sep == p) {
+    /* Node parses the authority with WHATWG URL rules: an unparsable or
+     * empty one is a bare "Invalid URL" TypeError. */
     if (cb) scr_closure_release(cb);
-    char msg[128];
-    int n = snprintf(msg, sizeof msg, "Invalid URL: %.*s", (int)(url->len > 80 ? 80 : url->len), p);
-    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)n, "ERR_INVALID_URL");
+    static const char text[] = "Invalid URL";
+    scr_throw_error_msg_code(SCR_ERR_TYPE, text, sizeof text - 1, "ERR_INVALID_URL");
     return NULL;
   }
   size_t scheme_len = (size_t)(sep - p);
   bool secure = scheme_len == 5 && memcmp(p, "https", 5) == 0;
   if (!secure && !(scheme_len == 4 && memcmp(p, "http", 4) == 0)) {
     if (cb) scr_closure_release(cb);
-    char msg[128];
-    int n = snprintf(msg, sizeof msg, "Protocol \"%.*s:\" not supported. Expected \"http:\"",
+    /* Node's ERR_HTTP2_UNSUPPORTED_PROTOCOL: `protocol "ftp:" is
+     * unsupported.` */
+    char msg[96];
+    int n = snprintf(msg, sizeof msg, "protocol \"%.*s:\" is unsupported.",
                      (int)(scheme_len > 40 ? 40 : scheme_len), p);
-    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)n, "ERR_INVALID_PROTOCOL");
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, (size_t)n, "ERR_HTTP2_UNSUPPORTED_PROTOCOL");
     return NULL;
   }
   const char *host = sep + 3;
   const char *end = p + url->len;
   const char *host_end = host;
-  while (host_end < end && *host_end != ':' && *host_end != '/') host_end++;
+  while (host_end < end && *host_end != ':' && *host_end != '/' && *host_end != '?' &&
+         *host_end != '#') {
+    host_end++;
+  }
   double default_port = secure ? 443 : 80;
   double port = default_port;
   if (host_end < end && *host_end == ':') {
-    port = 0;
-    for (const char *q = host_end + 1; q < end && *q >= '0' && *q <= '9'; q++) {
-      port = port * 10 + (*q - '0');
+    const char *q = host_end + 1;
+    if (q < end && *q != '/' && *q != '?' && *q != '#') {
+      /* a port is present: WHATWG URL rules — digits only, below 65536
+       * (Node rejects anything else as an invalid URL before dialing) */
+      if (*q < '0' || *q > '9') {
+        if (cb) scr_closure_release(cb);
+        static const char text[] = "Invalid URL";
+        scr_throw_error_msg_code(SCR_ERR_TYPE, text, sizeof text - 1, "ERR_INVALID_URL");
+        return NULL;
+      }
+      double parsed = 0;
+      while (q < end && *q >= '0' && *q <= '9') {
+        parsed = parsed * 10 + (*q - '0');
+        q++;
+      }
+      if ((q < end && *q != '/' && *q != '?' && *q != '#') || parsed > 65535) {
+        if (cb) scr_closure_release(cb);
+        static const char text[] = "Invalid URL";
+        scr_throw_error_msg_code(SCR_ERR_TYPE, text, sizeof text - 1, "ERR_INVALID_URL");
+        return NULL;
+      }
+      port = parsed;
     }
   }
   ScrH2Session *s = scr_h2_session_new(true);
@@ -5277,6 +5408,15 @@ ScrH2Session *scr_http2_connect(ScrStr *url /*borrowed*/, bool reject_unauthoriz
   ScrStr *dial_addr = scr_net_blocking_lookup(host_str);
   ScrNetSocket *sock = scr_net_connect(port, dial_addr, NULL);
   scr_str_release(dial_addr);
+  if (sock == NULL) {
+    /* the net layer refused the dial (its exception is pending): no socket
+     * to install, and the session goes with it */
+    scr_str_release(host_str);
+    free(auth.data);
+    scr_http2_session_release(s);
+    if (cb) scr_closure_release(cb);
+    return NULL;
+  }
   if (secure) scr_tls_h2_client_wrap(sock, host_str, reject_unauthorized, ca, ca_len);
   scr_str_release(host_str);
   s->sock = sock; /* scr_net_connect returned +1 — the session takes it */

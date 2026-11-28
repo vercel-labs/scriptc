@@ -27,7 +27,11 @@ async function main(): Promise<void> {
 
   const all = await Promise.all([...pending]);
   console.log("all", all.join(","));
-  console.log("settled", settled.join(","));
+  // Timer completion order is Node's own timing, not the set's contract: the
+  // two timers sit 4 ms apart and both can fire in one turn on a loaded
+  // machine. Report the members, not the order (the set's identity and
+  // insertion order are pinned by the lines around this one).
+  console.log("settled", settled.slice().sort().join(","));
   console.log("size after", pending.size);
 
   console.log("delete b", pending.delete(b), "size", pending.size);

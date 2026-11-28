@@ -856,6 +856,8 @@ bool scr_http_req_readable(ScrHttpReq *r) { return !r->ended && !r->destroyed; }
 
 /* destroy(): tears the underlying connection down NOW; the teardown
  * events flow through the socket's native hooks like a peer close. */
+static void scr_http_queue_req_close(ScrHttpReq *req);
+
 void scr_http_req_destroy(ScrHttpReq *r) {
   /* Abort listeners run user code: hold the request across the abort and the
    * teardown so a listener that destroys the connection cannot free it while
@@ -879,6 +881,10 @@ void scr_http_req_destroy(ScrHttpReq *r) {
     scr_http_req_release(r);
     return;
   }
+  /* Node's order for a destroyed request: 'aborted', then the request's
+   * 'close', and the response's close after it — the request's close is
+   * queued here, before the socket teardown queues the response's. */
+  scr_http_queue_req_close(r);
   if (r->sock) scr_net_sock_destroy(r->sock);
   scr_http_req_release(r);
 }

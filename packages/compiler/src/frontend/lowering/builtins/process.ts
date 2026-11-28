@@ -1236,6 +1236,12 @@ export function lowerProcessStreamProperty(
       loc,
     };
   }
+  // Node's special stdout/stderr streams answer destroyed=false, before and
+  // after destroy() (the stdin socket keeps its own flag, which the value
+  // path serves). Without this branch the read fell through to the terminal
+  // geometry tail below and answered process.columns.
+  if (member === "destroyed" && stream !== "stdin")
+    return { kind: "boolLit", value: false, type: BOOL, loc };
   if (stream === "stdin") {
     if (member !== "isRaw") return null;
     // Node answers the raw-mode flag of a TTY stdin and undefined on

@@ -86,7 +86,6 @@ import { hasRuntimeStatics } from "../class-runtime-statics.js";
 import {
   classMemberNameOf,
   classValueIsExactlyOwn,
-  classValueRef,
   findStaticOn,
   lowerClassStaticRead,
   staticReceiverClass,

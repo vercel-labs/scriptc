@@ -4,6 +4,8 @@ import type { IrExpr } from "../../ir/ir.js";
 import type { Lowerer } from "./lowerer.js";
 import { accessorCall, type ClassInfo } from "./lower-classes.js";
 import { classSymbolKeyOf } from "./symbol-fields.js";
+import { classValueIsExactlyOwn, findStaticOn, staticMethodFunctionFor } from "./lower-classes.js";
+import { usesStaticReceiver } from "./static-this.js";
 
 /** A stable symbol method (a module-scope symbol, or a well-known symbol
  * such as `Symbol.iterator`) uses the same completed arguments and virtual
@@ -17,6 +19,35 @@ export function lowerClassSymbolMethodCall(
   if (!ts.isElementAccessExpression(access) || access.questionDotToken || call.questionDotToken)
     return null;
   const type = lowerer.mapTypeOf(lowerer.typeOf(access.expression));
+  // A class value calls a symbol-keyed STATIC method with the class as its
+  // `this` (a `this`-reading body needs the receiver the detached value
+  // cannot supply). `C[k]()` is a static call, exactly like `C.m()`.
+  if (type?.kind === "classval") {
+    const classInfo = lowerer.classes.get(type.className);
+    const key = classSymbolKeyOf(lowerer, access.argumentExpression);
+    const found = classInfo && key ? findStaticOn(lowerer, classInfo, key.fieldName) : null;
+    if (!classInfo || !found?.method || !found.method.member.body) return null;
+    const loc = locOf(call);
+    if (usesStaticReceiver(found.method.member)) {
+      if (!classValueIsExactlyOwn(lowerer, access.expression, classInfo))
+        lowerer.unsupported(
+          "SC1090",
+          call,
+          "receiver-dependent symbol-keyed static methods through a polymorphic class value",
+        );
+      const target = staticMethodFunctionFor(lowerer, call, classInfo, key!.fieldName);
+      if (!target) return null;
+      lowerer.noteEdge(target.fn);
+      return {
+        kind: "call",
+        callee: target.fn,
+        args: lowerer.completeArgs(call.arguments.nodes, target.params, loc, call),
+        type: target.ret,
+        loc,
+      };
+    }
+    return null;
+  }
   if (type?.kind !== "object") return null;
   const info = lowerer.classes.get(type.className);
   const key = classSymbolKeyOf(lowerer, access.argumentExpression);

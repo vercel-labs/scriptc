@@ -475,6 +475,7 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
           );
         let storage: "module" | "table" | "declared" | null = null;
         let accessor = false;
+        let declarer: ClassInfo | null = null;
         for (let owner: ClassInfo | null = classInfo; owner !== null; owner = owner.base) {
           const ownerAccessor =
             owner.staticMethods?.has(`get:${name}`) === true ||
@@ -494,6 +495,7 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
           });
           if (inTable) {
             storage = "table";
+            declarer = owner;
             break;
           }
           // The class declares the member but nothing lowered it: Node's
@@ -539,14 +541,34 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
         // answers undefined for a key nobody installed — Node's answer. A
         // class value that could carry properties set outside the
         // declaration (a callable base) keeps its fence instead of guessing.
+        if (storage === "table") {
+          // The table answers a method as a bare function: calling it drops
+          // the class receiver a `this`-reading body needs, so refuse by name.
+          const method = (declarer?.runtimeStatics ?? []).find((member) => {
+            const memberName = (member as { name?: ts.PropertyName }).name;
+            return (
+              memberName !== undefined &&
+              ts.isMethodDeclaration(member) &&
+              classMemberNameOf(lowerer, memberName) === name &&
+              member.body !== undefined &&
+              usesStaticReceiver(member)
+            );
+          });
+          if (method !== undefined)
+            lowerer.unsupported(
+              "SC1090",
+              expr,
+              "receiver-dependent symbol-keyed static methods on a class whose statics live in its property table",
+            );
+        }
         if (storage === "table" || (storage === null && !classInfo.callableBase)) {
+          // The RECEIVER's class object answers — the value the expression
+          // holds, which may be a subclass of the static class (a class-value
+          // binding) and carries its own run-time-installed properties.
           return lowerer.maybeNarrow(
             {
               kind: "dynKeyGet",
-              value: lowerer.coerceToExpected(
-                classValueRef(lowerer, classInfo, expr.expression),
-                DYN,
-              ),
+              value: lowerer.coerceToExpected(receiver, DYN),
               key: lowerer.lowerExprExpecting(expr.argumentExpression, DYN),
               type: DYN,
               loc: locOf(expr),

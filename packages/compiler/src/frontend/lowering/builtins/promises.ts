@@ -992,6 +992,37 @@ export function lowerPromiseStaticCall(
       let entry: IrExpr & { type: IrType & { kind: "promise" } };
       if (resolvedEntry.type.kind === "promise") {
         entry = resolvedEntry as IrExpr & { type: IrType & { kind: "promise" } };
+      } else if (resolvedEntry.type.kind === "dyn") {
+        // A checked-dynamic entry may hold a promise at run time: PromiseResolve
+        // answers that promise as it is, and the race must join the promise,
+        // not fulfill with the promise object. The same construction
+        // Promise.resolve uses for a dynamic value.
+        const promiseType: IrType & { kind: "promise" } = {
+          kind: "promise",
+          inner: resultT.inner,
+        };
+        const local = lowerer.declareHiddenLocal("%raceEntry", DYN);
+        const ref = varRef(local.id, DYN, locOf(el));
+        entry = {
+          kind: "seqExpr",
+          stmts: [{ kind: "varDecl", localId: local.id, init: resolvedEntry, loc: locOf(el) }],
+          result: {
+            kind: "ternary",
+            cond: { kind: "dynTest", test: "promise", value: ref, type: BOOL, loc: locOf(el) },
+            then: { kind: "dynCheck", value: ref, type: promiseType, loc: locOf(el) },
+            else_: {
+              kind: "intrinsic",
+              name: "promise.resolve",
+              args: [ref],
+              type: promiseType,
+              loc: locOf(el),
+            },
+            type: promiseType,
+            loc: locOf(el),
+          },
+          type: promiseType,
+          loc: locOf(el),
+        };
       } else {
         // JS resolves a plain value: PromiseResolve fulfills a fresh promise
         // with it at once, and the race joins that promise like any other

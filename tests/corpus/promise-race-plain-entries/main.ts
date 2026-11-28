@@ -19,6 +19,19 @@ async function main(): Promise<void> {
     () => "caught",
   );
   console.log(kept);
+
+  // A checked-dynamic entry may hold a promise at run time: PromiseResolve
+  // answers it as it is, so the race joins the promise instead of fulfilling
+  // with the promise object.
+  const dynamic: unknown = Promise.resolve("from-promise");
+  const joined = await Promise.race([
+    dynamic,
+    new Promise<string>((resolve) => setTimeout(() => resolve("slow"), 25)),
+  ]);
+  console.log(joined);
+
+  const dynamicValue: unknown = "from-value";
+  console.log(await Promise.race([dynamicValue, Promise.resolve("other")]));
 }
 
 main();

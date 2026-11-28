@@ -27,7 +27,11 @@ const steps = [
       try {
         fs.fstatSync(fd);
       } catch (error) {
-        console.log("after close", error.code);
+        // The close runs on the thread pool, so which error this read meets
+        // is the host's: Node has answered EBADF here and, in the same
+        // race, an error without a code. Pin that the descriptor became
+        // invalid, not the code.
+        console.log("after close", "invalid");
         next();
         return;
       }

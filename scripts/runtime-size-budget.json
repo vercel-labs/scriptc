@@ -1,0 +1,17 @@
+{
+  "note": "Stripped --optimization=release executable sizes (bytes) of the programs tests/harness/runtime-dce-guard.test.ts compiles, recorded on Linux x64 with the 0.4.17 LLVM helper and a Zig 0.16-built linux-x64-gnu pack. A change that grows one of them past the allowance records the new size here, so the growth shows up as a diff in review.",
+  "allowance": {
+    "percent": 2,
+    "bytes": 2048
+  },
+  "targets": {
+    "linux-x64-gnu": {
+      "hello": 63312,
+      "n-body": 179488,
+      "dynamic-properties": 998616,
+      "http-signal": 1181832,
+      "abort-controller": 786280,
+      "inspect-stack": 717280
+    }
+  }
+}

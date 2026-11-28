@@ -152,12 +152,16 @@ __exportStar(require("dep-unprobed"), exports);
     );
     // A target that is an ES module: the CommonJS lexer cannot enumerate it.
     writeFileSync(join(pkg, "esm.js"), "export const x = 1;\n");
+    // Compact ES-module spellings a line-based guard would miss.
+    writeFileSync(join(pkg, "compact.js"), "const a=1;export{a};\n");
+    writeFileSync(join(pkg, "star.js"), 'export*from"./none.js";\n');
+    writeFileSync(join(pkg, "default.js"), "export default 1;\n");
     const index = (spec: string) => `"use strict";
 var __exportStar = (m, exports2) => { for (var p in m) if (p !== "default" && !Object.prototype.hasOwnProperty.call(exports2, p)) Object.defineProperty(exports2, p, { enumerable: true, get: function () { return m[p]; } }); };
 Object.defineProperty(exports, "__esModule", { value: true });
 __exportStar(require(${JSON.stringify(spec)}), exports);
 `;
-    for (const spec of ["./forward.js", "./esm.js"]) {
+    for (const spec of ["./forward.js", "./esm.js", "./compact.js", "./star.js", "./default.js"]) {
       const file = join(pkg, "index.js");
       writeFileSync(file, index(spec));
       const result = rewriteBundlerCjsExports(readFileSync(file, "utf8"), file);

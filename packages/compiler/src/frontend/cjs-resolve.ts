@@ -25,6 +25,7 @@ import {
   trackedRealpath,
 } from "./input-tracker.js";
 import type { RuntimeResolveError, RuntimeResolveResult } from "./runtime-resolve.js";
+import { applyPreferredConditions } from "./scriptc-condition.js";
 
 interface PackageConfig {
   path: string;
@@ -205,6 +206,7 @@ class CjsResolver {
       fail("ERR_INVALID_PACKAGE_CONFIG", `Invalid package config ${toNamespacedPath(path)}.`);
     }
     const data = value as Record<string, unknown>;
+    applyPreferredConditions(data);
     // Node's package reader only exposes non-null string/object map fields.
     for (const field of ["exports", "imports"]) {
       const entry = data[field];

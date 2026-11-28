@@ -72,6 +72,7 @@ test("package settings: strings and objects", () => {
   expect(c.packages.get("proper-lockfile")).toEqual({
     unloaded: false,
     shapes: true,
+    conditions: [],
     run: "node",
     evaluate: "lazy",
     share: "duplicate",
@@ -95,6 +96,27 @@ test("shapes: false turns off the shape overlay for one package", () => {
   expect(c.packages.has("ms")).toBe(false);
   expect(c.diagnostics.map((d) => d.message)).toEqual([
     `package.json 'scriptc.packages.ms.shapes' must be true or false, not "no"`,
+  ]);
+});
+
+test("conditions names the export conditions a package's code is selected by", () => {
+  const c = config({
+    packages: {
+      rxjs: { conditions: ["es2015", "module"] },
+      empty: { conditions: [] },
+      typed: { conditions: ["types"] },
+      sub: { conditions: ["./x"] },
+    },
+  });
+  expect(c.packages.get("rxjs")?.conditions).toEqual(["es2015", "module"]);
+  expect(c.packages.get("rxjs")?.run).toBe("auto");
+  expect(c.packages.has("empty")).toBe(false);
+  expect(c.packages.has("typed")).toBe(false);
+  expect(c.packages.has("sub")).toBe(false);
+  expect(c.diagnostics.map((d) => d.message)).toEqual([
+    "package.json 'scriptc.packages.empty.conditions' must be a non-empty array of export condition names, not an array",
+    "package.json 'scriptc.packages.typed.conditions' must be a non-empty array of export condition names, not an array",
+    "package.json 'scriptc.packages.sub.conditions' must be a non-empty array of export condition names, not an array",
   ]);
 });
 

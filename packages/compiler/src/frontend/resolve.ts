@@ -29,7 +29,11 @@ import {
   throughBundledShimForwarder,
 } from "./package-shims.js";
 import { provenanceEntryFor } from "./provenance-registry.js";
-import { SCRIPTC_CONDITION, scriptcConditionFirst } from "./scriptc-condition.js";
+import {
+  applyPreferredConditions,
+  SCRIPTC_CONDITION,
+  scriptcConditionFirst,
+} from "./scriptc-condition.js";
 import {
   trackedAccessibleEntries,
   trackedDirectoryExists,
@@ -93,6 +97,9 @@ function pkgJsonOf(dir: string): PkgJson | null {
     if (trackedExists(path)) {
       try {
         parsed = JSON.parse(trackedReadFile(path)!) as PkgJson;
+        // The scriptc branches the project configures (scriptc-condition.ts).
+        if (parsed !== null && typeof parsed === "object")
+          applyPreferredConditions(parsed as Record<string, unknown>);
       } catch {
         parsed = null;
       }

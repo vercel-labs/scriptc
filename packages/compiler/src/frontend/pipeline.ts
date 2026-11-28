@@ -45,6 +45,7 @@ import {
   resolveBareModule,
   resolveWorkspaceSourceModule,
 } from "./resolve.js";
+import { configurePreferredConditions } from "./scriptc-condition.js";
 import { isShimmedImport } from "./package-shims.js";
 import { provenanceEntryFor } from "./provenance-registry.js";
 import { isJsSourceFileName } from "./tsc-codes.js";
@@ -741,6 +742,9 @@ function loadFrontend(
   // separate compiles in a long-lived process.  A cache miss must observe
   // package.json edits before it can publish a new early-library entry.
   clearResolveCaches();
+  // The export conditions the project prefers for its packages
+  // (scriptc-condition.ts), before the first package.json is resolved.
+  configurePreferredConditions(entryPath);
   beginShapeOverlayBuild();
   const statuses: NpmStaticStatus[] = [];
   const npmSites = new Map<string, SrcLoc>();

@@ -10,6 +10,15 @@ import {
 } from "./input-tracker.js";
 import { isUnloadedPackage } from "./package-shims.js";
 import { resolveExports, resolvePackageImports } from "./resolve.js";
+import { applyPreferredConditions } from "./scriptc-condition.js";
+
+/** A parsed package.json with the scriptc branches the project configures
+ * (scriptc-condition.ts). */
+function withPreferredConditions(pkg: PkgJson): PkgJson {
+  if (pkg !== null && typeof pkg === "object")
+    applyPreferredConditions(pkg as Record<string, unknown>);
+  return pkg;
+}
 
 // Node's conditions plus scriptc's own: the package's scriptc branch is
 // the code scriptc compiles, so the graph must follow the same branch
@@ -86,7 +95,7 @@ export function probeNodeImportRefusal(
     const text = host.readFile(join(dir, "package.json"));
     if (text === null) return null;
     try {
-      return JSON.parse(text) as PkgJson;
+      return withPreferredConditions(JSON.parse(text) as PkgJson);
     } catch {
       return null;
     }
@@ -298,7 +307,7 @@ export class NodePackageResolver {
     let cached = this.pkgJsonCache.get(dir);
     if (cached === undefined) {
       const text = this.host.readFile(join(dir, "package.json"));
-      cached = text === null ? null : (JSON.parse(text) as PkgJson);
+      cached = text === null ? null : withPreferredConditions(JSON.parse(text) as PkgJson);
       this.pkgJsonCache.set(dir, cached);
     }
     return cached;

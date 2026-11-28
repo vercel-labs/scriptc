@@ -19,6 +19,7 @@ import {
   setProjectRealm,
 } from "./resolve.js";
 import { setNpmStaticPackages } from "./npm-static.js";
+import { configurePreferredConditions } from "./scriptc-condition.js";
 
 const fixturesRoot = join(import.meta.dirname, "../../../..", "tests/fixtures");
 
@@ -345,6 +346,68 @@ test("the scriptc export condition is selected before node, require and default"
     ).toBe(runtime("platform-choice-require/scriptc.cjs"));
   } finally {
     clearResolveCaches();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a project's configured export condition is selected like a scriptc branch", async () => {
+  // rxjs 7's root map: Node's import and require both take "node" (the
+  // CommonJS build); the ES2015 module build sits under "es2015".
+  const rxjsLike = (name: string) =>
+    JSON.stringify({
+      name,
+      version: "7.8.2",
+      exports: {
+        ".": {
+          types: "./dist/types/index.d.ts",
+          node: "./dist/cjs/index.js",
+          require: "./dist/cjs/index.js",
+          es2015: "./dist/esm/index.js",
+          default: "./dist/esm5/index.js",
+        },
+      },
+    });
+  const dir = await projectTree({
+    "package.json": JSON.stringify({
+      name: "condition-app",
+      scriptc: { packages: { "observable-kit": { conditions: ["es2015"] } } },
+    }),
+    "main.ts": "",
+    "node_modules/observable-kit/package.json": rxjsLike("observable-kit"),
+    "node_modules/observable-kit/dist/types/index.d.ts": "export declare const value: string;\n",
+    "node_modules/observable-kit/dist/cjs/index.js": 'exports.value = "cjs";\n',
+    "node_modules/observable-kit/dist/esm/package.json":
+      '{ "type": "module", "sideEffects": false }',
+    "node_modules/observable-kit/dist/esm/index.js": 'export const value = "esm";\n',
+    "node_modules/observable-kit/dist/esm5/index.js": 'export var value = "esm5";\n',
+    "node_modules/unconfigured-kit/package.json": rxjsLike("unconfigured-kit"),
+    "node_modules/unconfigured-kit/dist/types/index.d.ts": "export declare const value: string;\n",
+    "node_modules/unconfigured-kit/dist/cjs/index.js": 'exports.value = "cjs";\n',
+    "node_modules/unconfigured-kit/dist/esm/index.js": 'export const value = "esm";\n',
+  });
+  try {
+    clearResolveCaches();
+    const main = join(dir, "main.ts");
+    configurePreferredConditions(main);
+    const runtime = (path: string) => realpathSync(join(dir, "node_modules", path));
+    // The configured condition answers both edges, ahead of node and require.
+    expect(resolveBareModule(main, "observable-kit", "js-only")?.typesFile).toBe(
+      runtime("observable-kit/dist/esm/index.js"),
+    );
+    expect(resolveBareModule(main, "observable-kit", "js-only", "require")?.typesFile).toBe(
+      runtime("observable-kit/dist/esm/index.js"),
+    );
+    // The declarations still type it.
+    expect(resolveBareModule(main, "observable-kit", "types-only")?.typesFile).toBe(
+      runtime("observable-kit/dist/types/index.d.ts"),
+    );
+    // A package the project does not configure keeps Node's answer.
+    expect(resolveBareModule(main, "unconfigured-kit", "js-only")?.typesFile).toBe(
+      runtime("unconfigured-kit/dist/cjs/index.js"),
+    );
+  } finally {
+    clearResolveCaches();
+    configurePreferredConditions(join(tmpdir(), "no-project", "main.ts"));
     await rm(dir, { recursive: true, force: true });
   }
 });

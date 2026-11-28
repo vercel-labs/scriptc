@@ -2769,6 +2769,12 @@ declare module "node:readline/promises" {
  * and the supported structural view of a process output stream. */
 declare module "tty" {
   export interface WriteStream extends NodeJS.WritableStream, __scriptcTerminalStream.Methods {
+    /* Node's destroy() tears the stream down and emits 'close' on a later
+     * tick; the compiled stream does the same (writes that follow still
+     * reach the descriptor, as in Node 24). Node's special stdout/stderr
+     * streams answer destroyed=false even after destroy. */
+    destroy(): void;
+    readonly destroyed: boolean;
     write(data: string | Uint8Array, callback?: (error?: Error | null) => void): boolean;
     write(
       data: string | Uint8Array,

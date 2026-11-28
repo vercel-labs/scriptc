@@ -3171,6 +3171,21 @@ export class LlEmitter {
       });
       this.shapeHost.recordViews = views;
       this.recordViewTargets = views.targets as Set<string>;
+      // A view aliases its source: a write through either name replaces a
+      // field the other reads, so neither shape's fields keep their values
+      // while the object lives. Without this a read of the wider name is
+      // lent to a call whose other argument (or the callee) writes the field
+      // through the narrower name and frees the string while it is borrowed.
+      if (this.immutableFields !== null) {
+        const aliases = new Set<string>();
+        for (const target of views.targets) {
+          aliases.add(target);
+          for (const source of views.sources(target)) aliases.add(source);
+        }
+        for (const target of views.partialTargets) aliases.add(target);
+        for (const source of views.partialSources) aliases.add(source);
+        this.immutableFields.markViewAliases(aliases);
+      }
       // A partial record assertion without a view would compile into a
       // checked conversion that throws every time it runs: name it instead.
       const refused = views.declinedPartials.map(

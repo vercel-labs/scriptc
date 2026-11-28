@@ -10883,6 +10883,10 @@ export class Lowerer {
       ts.walkPreorder(sf, (node) => {
         if (!ts.isVariableDeclaration(node) || node.type || !node.initializer) return undefined;
         if (!ts.isIdentifier(node.name)) return undefined;
+        // A JavaScript binding stays whatever it is assigned: the source
+        // widening analysis owns its storage, and pinning `string |
+        // undefined` here would make a later `s = 3` throw.
+        if (isJsSourceFile(ts.getSourceFileOfNode(node))) return undefined;
         let init: ts.Expression = node.initializer;
         while (ts.isParenthesizedExpression(init)) init = init.expression;
         // The syntactic guard keeps every other call's arguments out of the

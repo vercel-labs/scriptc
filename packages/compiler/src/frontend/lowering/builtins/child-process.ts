@@ -1631,6 +1631,9 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
   let inMode: IrExpr = numLit(0, loc);
   let outMode: IrExpr = numLit(0, loc);
   let errMode: IrExpr = numLit(0, loc);
+  // The child fd of an "ipc" stdio slot (3 for the documented
+  // ["ignore", "pipe", "pipe", "ipc"] form); -1 when there is none.
+  let ipcFd: IrExpr = numLit(-1, loc);
   let outFd: IrExpr = numLit(0, loc);
   let errFd: IrExpr = numLit(0, loc);
   let detached: IrExpr = boolLit(false, loc);
@@ -1724,7 +1727,21 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
           // A slot EXPRESSION whose type is a union of the three literals
           // (`useStdin ? "pipe" : "ignore"`) evaluates once into a hidden
           // local and maps to its mode at the call.
-          if (ts.isArrayLiteralExpression(m.value) && m.value.elements.nodes.length === 3) {
+          const stdioSlots = ts.isArrayLiteralExpression(m.value) ? m.value.elements.nodes : null;
+          const ipcSlot = stdioSlots !== null && stdioSlots.length === 4;
+          if (stdioSlots !== null && (stdioSlots.length === 3 || ipcSlot)) {
+            if (ipcSlot) {
+              const ipcEl = stdioSlots[3]!;
+              const ipcT = lowerer.typeOf(ipcEl);
+              if (!ipcT.isStringLiteralType() || ipcT.value !== "ipc") {
+                lowerer.noLowering(
+                  "spawn with this stdio option",
+                  ipcEl,
+                  '"ipc" is the supported fourth stdio slot (the channel process.send writes to)',
+                );
+              }
+              ipcFd = numLit(3, loc);
+            }
             const slot = (el: ts.Expression, which: 0 | 1 | 2): void => {
               const t = lowerer.typeOf(el);
               // null and undefined mean Node's default "pipe" entry.
@@ -1785,7 +1802,7 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
                 errFd = fd;
               }
             };
-            m.value.elements.nodes.forEach((el, i) => slot(el, i as 0 | 1 | 2));
+            stdioSlots.slice(0, 3).forEach((el, i) => slot(el, i as 0 | 1 | 2));
             sawStdio = true;
             plain = false;
             break;
@@ -1964,6 +1981,7 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
               timeoutMs,
               killSignalOpt,
               signalOpt,
+              ipcFd,
             ],
             type: CHILD_T,
             loc,
@@ -1984,6 +2002,7 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
               hasEnv,
               envPairs,
               cwd,
+              ipcFd,
             ],
             type: CHILD_T,
             loc,

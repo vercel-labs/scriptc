@@ -233,13 +233,14 @@ export const cpSignatures = defineLibFnSignatures({
   // pairs, cwd ("" = inherit).
   /** spawn with options (scr_child.c): the cp.spawn core plus PER-SLOT
    * stdio — args are (cmd, argv, inMode, outMode, errMode, outFd, errFd,
-   * detached, hasEnv, envPairs, cwd); modes 0 ignore (/dev/null), 1
+   * detached, hasEnv, envPairs, cwd, ipcFd); modes 0 ignore (/dev/null), 1
    * inherit, 2 fd (out/err only — the fd dup2s into the child's slot,
    * Node's stdio fd form; the daemon-log idiom ["ignore", logFd, logFd]).
    * detached is POSIX_SPAWN_SETSID (the child gets its own session and
    * process group, Node's semantics), env is a REPLACEMENT ([k,v,...]
-   * pairs like cp.execSync's), cwd ""=inherit. Same event/loop story as
-   * cp.spawn. */
+   * pairs like cp.execSync's), cwd ""=inherit, ipcFd is the child fd of an
+   * "ipc" stdio slot (-1 for none: the channel socketpair and
+   * NODE_CHANNEL_FD). Same event/loop story as cp.spawn. */
   "cp.spawnOpts": {
     argTypes: [
       STRING,
@@ -254,6 +255,7 @@ export const cpSignatures = defineLibFnSignatures({
       BOOL,
       arrayOf(STRING),
       STRING,
+      F64,
     ],
     result: CHILD_T,
   },
@@ -264,7 +266,7 @@ export const cpSignatures = defineLibFnSignatures({
    * without case, or a signal number). Node's launch checks run in its
    * order — validateTimeout, validateAbortSignal, sanitizeKillSignal —
    * before the child starts, so unlike cp.spawnOpts this call can throw
-   * synchronously. */
+   * synchronously. ipcFd rides after signal, as in cp.spawnOpts. */
   "cp.spawnArmed": {
     argTypes: [
       STRING,
@@ -282,6 +284,7 @@ export const cpSignatures = defineLibFnSignatures({
       F64,
       DYN,
       DYN,
+      F64,
     ],
     result: CHILD_T,
   },

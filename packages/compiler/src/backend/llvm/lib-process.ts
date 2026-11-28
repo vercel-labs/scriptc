@@ -113,11 +113,11 @@ export function emitChildProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr
       add = "@scr_events_add_abort_listener";
     }
     host.declare(
-      `declare ptr @scr_spawn_armed(ptr, ptr, double, double, double, double, double, i1 zeroext, i1 zeroext, i1 zeroext, ptr, ptr, double, ptr, ptr, ptr)`,
+      `declare ptr @scr_spawn_armed(ptr, ptr, double, double, double, double, double, i1 zeroext, i1 zeroext, i1 zeroext, ptr, ptr, double, ptr, ptr, double, ptr)`,
     );
     const t = B.tmp();
     B.line(
-      `${t} = call ptr @scr_spawn_armed(ptr ${args[0]!.name}, ptr ${args[1]!.name}, double ${args[2]!.name}, double ${args[3]!.name}, double ${args[4]!.name}, double ${args[5]!.name}, double ${args[6]!.name}, i1 ${args[7]!.name}, i1 ${args[8]!.name}, i1 ${args[9]!.name}, ptr ${args[10]!.name}, ptr ${args[11]!.name}, double ${args[12]!.name}, ptr ${args[13]!.name}, ptr ${args[14]!.name}, ptr ${add})`,
+      `${t} = call ptr @scr_spawn_armed(ptr ${args[0]!.name}, ptr ${args[1]!.name}, double ${args[2]!.name}, double ${args[3]!.name}, double ${args[4]!.name}, double ${args[5]!.name}, double ${args[6]!.name}, i1 ${args[7]!.name}, i1 ${args[8]!.name}, i1 ${args[9]!.name}, ptr ${args[10]!.name}, ptr ${args[11]!.name}, double ${args[12]!.name}, ptr ${args[13]!.name}, ptr ${args[14]!.name}, double ${args[15]!.name}, ptr ${add})`,
     );
     const out = host.own({ name: t, type: e.type });
     host.emitPendingCheck();

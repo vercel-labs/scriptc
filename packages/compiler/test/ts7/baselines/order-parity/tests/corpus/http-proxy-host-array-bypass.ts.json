@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/http-proxy-host-array-bypass.ts"
+ ],
+ "diags": []
+}

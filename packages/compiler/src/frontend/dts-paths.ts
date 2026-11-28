@@ -74,6 +74,7 @@ export function compilerOwnedFileName(file: string): string | null {
     overridesDtsPath(),
     fallbackDtsPath(),
     domExceptionDtsPath(),
+    webStreamsDtsPath(),
   ]) {
     if (path === declaration) return `scriptc:${path.slice(path.lastIndexOf("/") + 1)}`;
   }
@@ -115,6 +116,18 @@ export function fallbackDtsPath(): string {
  * declaration themselves. A standard-library file, like them. */
 export function domExceptionDtsPath(): string {
   return declarationPath("scriptc-dom-exception.d.ts");
+}
+
+/** Path of the shipped declaration of the web stream globals (ReadableStream,
+ * WritableStream, TransformStream and their readers, writers, controllers and
+ * strategies) for a program whose own @types/node declares none: added beside
+ * those types when the program names one of the globals (program.ts,
+ * nodeTypesSupplementRoots7). Node's runtime provides them whatever the
+ * project's @types/node says; @types/node 20.11 and earlier declare none. The
+ * fallback declarations carry the same declarations through a reference. A
+ * standard-library file, like them. */
+export function webStreamsDtsPath(): string {
+  return declarationPath("scriptc-web-streams.d.ts");
 }
 
 const FALLBACK_MODULE_DIRECTORY = "node-fallback";
@@ -249,13 +262,15 @@ export function isFallbackModuleDtsPath(file: string): boolean {
   return tsgoPath(file).startsWith(fallbackModuleRoot() + "/");
 }
 
-/** True for the fallback declarations: the core file, the module files, and
- * the DOMException declaration that stands beside an older @types/node. */
+/** True for the fallback declarations: the core file, the module files, the
+ * DOMException declaration that stands beside an older @types/node, and the
+ * web stream globals the fallback carries. */
 export function isFallbackDtsPath(file: string): boolean {
   const path = tsgoPath(file);
   return (
     path === fallbackDtsPath() ||
     path === domExceptionDtsPath() ||
+    path === webStreamsDtsPath() ||
     path.startsWith(fallbackModuleRoot() + "/")
   );
 }

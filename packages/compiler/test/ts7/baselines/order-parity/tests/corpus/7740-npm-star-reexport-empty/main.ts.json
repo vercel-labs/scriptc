@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7740-npm-star-reexport-empty/main.ts"
+ ],
+ "diags": []
+}

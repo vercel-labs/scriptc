@@ -69,10 +69,11 @@
  * clients send a cert and key when asked. A `ca` also completes the
  * chain its owner sends, as OpenSSL's automatic chain does.
  *
- * Bounds (SEMANTICS.md divergence 55): no session resumption or
- * tickets, no renegotiation/post-handshake auth, and non-verify client
- * handshake failures carry a generic message where Node prints an
- * OpenSSL one.
+ * Bounds (SEMANTICS.md divergence 55): no renegotiation/post-handshake
+ * auth, and non-verify client handshake failures carry a generic message
+ * where Node prints an OpenSSL one. Sessions resume through tickets in
+ * both versions — tls.connect's session option and isSessionReused — and a
+ * session Buffer is the engine's own serialization, not OpenSSL's bytes.
  *
  * Certificate names: a client always checks the leaf against one name,
  * the servername when it is non-empty and the host otherwise. SNI carries
@@ -259,6 +260,31 @@ static int scr_tls_parse_ca_bundle(mbedtls_x509_crt *crt, const char *pem, size_
       return any ? 0 : last_error != 0 ? last_error : MBEDTLS_ERR_X509_CERT_UNKNOWN_FORMAT;
   }
   return scr_tls_parse_ca_segment(crt, pem, len);
+}
+
+/* tls.connect's crl option (one PEM/DER CRL, or an array whose PEM blocks
+ * join on line boundaries): mbedTLS parses the whole PEM bundle. */
+static bool scr_tls_crl_same_issuer(const mbedtls_x509_crl *a, const mbedtls_x509_crl *b) {
+  return a->issuer_raw.len == b->issuer_raw.len &&
+         (a->issuer_raw.len == 0 ||
+          memcmp(a->issuer_raw.p, b->issuer_raw.p, a->issuer_raw.len) == 0);
+}
+
+static int scr_tls_parse_crl(mbedtls_x509_crl *crl, const char *pem, size_t len) {
+  unsigned char *buf = malloc(len + 1);
+  if (!buf) scr_tls_oom();
+  memcpy(buf, pem, len);
+  buf[len] = 0;
+  int r = mbedtls_x509_crl_parse(crl, buf, len + 1);
+  free(buf);
+  if (r != 0) return r;
+  /* Every CRL in the bundle is kept. OpenSSL's store can hold several CRLs
+   * with one issuer name (a key-rollover CA and its predecessor share a DN
+   * but not a key), and it selects the one whose signature verifies under
+   * the issuer it is checking; reducing a name to one CRL here would drop
+   * the root's CRL when a self-issued intermediate's CRL came first. The
+   * selection lives in scr_tls_crl_check_chain. */
+  return 0;
 }
 
 static int scr_tls_parse_key(mbedtls_pk_context *pk, const char *pem, size_t len) {
@@ -686,6 +712,17 @@ static void scr_tls_ticket_install(ScrTlsSrv *s) {
 
 /* The ticket key context every server config needs: the engine's own
  * ticket module writes and parses them, minted under a key kept here. */
+/* The socket whose handshake this unit is driving (defined with the SNI
+ * pre-parse below): the ticket callbacks record a resumed session on it. */
+typedef struct ScrTlsSock ScrTlsSock;
+static SCR_TL ScrTlsSock *scr_tls_current;
+/* A server resumes a connection when the ticket its peer offers parses:
+ * the engine's ticket callback runs during the handshake, so the socket
+ * being driven records it (isSessionReused answers it, and a resumed
+ * handshake re-sends no certificate). Defined after the socket struct. */
+static int scr_tls_ticket_parse(void *ticket_ctx, mbedtls_ssl_session *session,
+                                unsigned char *buf, size_t len);
+
 static void scr_tls_srv_session_tickets(ScrTlsSrv *s) {
 #if defined(MBEDTLS_SSL_TICKET_C)
   /* Node answers 48 bytes of random key material per server; the engine
@@ -700,8 +737,17 @@ static void scr_tls_srv_session_tickets(ScrTlsSrv *s) {
   }
   s->ticket_ready = true;
   scr_tls_ticket_install(s);
+  /* tickets: Node's servers issue them and resume from them (the engine
+   * enables them for clients only by default) */
+  mbedtls_ssl_conf_session_tickets(&s->conf, MBEDTLS_SSL_SESSION_TICKETS_ENABLED);
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+  /* Node's TLS 1.3 server sends two NewSessionTickets after a full
+   * handshake and none after a resumed one (the engine's count is zero by
+   * default; it zeroes it on a resumed handshake itself) */
+  mbedtls_ssl_conf_new_session_tickets(&s->conf, 2);
+#endif
   mbedtls_ssl_conf_session_tickets_cb(&s->conf, mbedtls_ssl_ticket_write,
-                                      mbedtls_ssl_ticket_parse, &s->ticket_ctx);
+                                      scr_tls_ticket_parse, &s->ticket_ctx);
 #else
   (void)s;
 #endif
@@ -833,6 +879,7 @@ typedef struct {
 
 static mbedtls_x509_crt *scr_tls_system_ca(void);
 
+
 /* Applies a server's client-certificate options. A `ca` also completes the
  * server's own chain, as OpenSSL's automatic chain sends it. */
 static void scr_tls_srv_client_auth(ScrTlsSrv *s, const ScrTlsClientAuth *auth) {
@@ -880,6 +927,10 @@ typedef struct ScrTlsCli {
    * empty ca (an empty trust store) from none */
   bool has_ca;
   mbedtls_x509_crt ca;
+  /* tls.connect's crl option: the CRL bundle mbedTLS checks the chain
+   * against. has_crl tells a provided CRL (even an empty one) from none. */
+  bool has_crl;
+  mbedtls_x509_crl crl;
   char *hostname;    /* the SNI name; NULL sends none (an IP literal, servername: "") */
   char *verify_name; /* the name the leaf is checked against; NULL fails the check */
   /* true when the handshake RECORDS verification (VERIFY_OPTIONAL /
@@ -900,6 +951,16 @@ typedef struct ScrTlsCli {
   bool has_own;
   mbedtls_x509_crt own;
   mbedtls_pk_context own_pk;
+  /* tls.connect's session option: the serialized session (getSession's
+   * Buffer, mbedTLS's own format) the handshake offers for resumption.
+   * A session the engine cannot load is ignored, as Node's engine ignores
+   * what it cannot decode. */
+  bool has_resume;
+  mbedtls_ssl_session resume;
+  /* the verification result the offered session was captured with: a resumed
+   * handshake verifies no certificate, so this verdict stands, and a session
+   * captured unverified is not offered to a connection that now verifies */
+  uint32_t resume_verify;
 } ScrTlsCli;
 
 /* The default trust anchors when no `ca` option is given: the host trust
@@ -986,20 +1047,29 @@ static bool scr_tls_is_ip(const char *h) {
 }
 
 static ScrTlsCli *scr_tls_cli_new2(ScrStr *host, bool reject_unauthorized, const char *ca,
-                                    size_t ca_len, bool verify_optional) {
+                                    size_t ca_len, const char *crl, size_t crl_len,
+                                    bool verify_optional) {
   scr_tls_rng_init();
   ScrTlsCli *c = calloc(1, sizeof *c);
   if (!c) scr_tls_oom();
   mbedtls_ssl_config_init(&c->conf);
   mbedtls_x509_crt_init(&c->ca);
+  mbedtls_x509_crl_init(&c->crl);
   mbedtls_x509_crt_init(&c->own);
   mbedtls_pk_init(&c->own_pk);
+  mbedtls_ssl_session_init(&c->resume);
   if (mbedtls_ssl_config_defaults(&c->conf, MBEDTLS_SSL_IS_CLIENT,
                                   MBEDTLS_SSL_TRANSPORT_STREAM,
                                   MBEDTLS_SSL_PRESET_DEFAULT) != 0) {
     scr_tls_oom();
   }
   mbedtls_ssl_conf_rng(&c->conf, mbedtls_ctr_drbg_random, &scr_tls_drbg);
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+  /* Node's client surfaces every ticket it receives (the 'session' event);
+   * the engine reports the receipt instead of swallowing it */
+  mbedtls_ssl_conf_tls13_enable_signal_new_session_tickets(
+      &c->conf, MBEDTLS_SSL_TLS1_3_SIGNAL_NEW_SESSION_TICKETS_ENABLED);
+#endif
   /* Node refuses a server's finite-field Diffie-Hellman group under 2048
    * bits (OpenSSL's default security level: "dh key too small"); the
    * mbedTLS default accepts 1024. Every client configuration is built
@@ -1018,11 +1088,22 @@ static ScrTlsCli *scr_tls_cli_new2(ScrStr *host, bool reject_unauthorized, const
       mbedtls_x509_crt_init(&c->ca);
     }
   }
+  c->has_crl = crl != NULL;
+  if (crl_len > 0) {
+    int r = scr_tls_parse_crl(&c->crl, crl, crl_len);
+    if (r != 0) scr_tls_bad_material("CRL", r);
+  }
   if (!reject_unauthorized && !verify_optional) {
     mbedtls_ssl_conf_authmode(&c->conf, MBEDTLS_SSL_VERIFY_NONE);
   } else {
     mbedtls_ssl_conf_authmode(&c->conf, reject_unauthorized ? MBEDTLS_SSL_VERIFY_REQUIRED
                                                             : MBEDTLS_SSL_VERIFY_OPTIONAL);
+    /* The crl option's CRLs are checked by scr_tls_crl_check_chain, not by
+     * mbedTLS: a bundle may hold several CRLs with one issuer name (a
+     * key-rollover CA and its predecessor share a DN but not a key), and
+     * mbedTLS's check would take a signature mismatch on the inapplicable
+     * one for a failure. The custom check selects the CRL that verifies
+     * under the issuer it is checking, as OpenSSL's store does. */
     mbedtls_ssl_conf_ca_chain(&c->conf, c->has_ca ? &c->ca : scr_tls_system_ca(), NULL);
   }
   /* The host is the verified name; it is also the SNI name unless it is
@@ -1058,13 +1139,15 @@ static void scr_tls_cli_set_servername(ScrTlsCli *c, const ScrStr *servername) {
 
 static ScrTlsCli *scr_tls_cli_new(ScrStr *host, bool reject_unauthorized, const char *ca,
                                    size_t ca_len) {
-  return scr_tls_cli_new2(host, reject_unauthorized, ca, ca_len, false);
+  return scr_tls_cli_new2(host, reject_unauthorized, ca, ca_len, NULL, 0, false);
 }
 
 static void scr_tls_cli_free(ScrTlsCli *c) {
   mbedtls_ssl_config_free(&c->conf);
+  mbedtls_ssl_session_free(&c->resume);
   scr_tls_alpn_free(c->alpn);
   mbedtls_x509_crt_free(&c->ca);
+  mbedtls_x509_crl_free(&c->crl);
   mbedtls_x509_crt_free(&c->own);
   mbedtls_pk_free(&c->own_pk);
   free(c->hostname);
@@ -1086,6 +1169,29 @@ static void scr_tls_cli_set_own(ScrTlsCli *c, const ScrBytes *cert, const ScrByt
   c->has_own = true;
 }
 
+/* tls.connect's session option: the serialized session the handshake
+ * offers for resumption. A session the engine cannot load is ignored, as
+ * Node's engine ignores bytes it cannot decode. */
+static void scr_tls_cli_set_session(ScrTlsCli *c, const ScrBytes *session) {
+  if (session == NULL || session->len == 0) return;
+  if (mbedtls_ssl_session_load(&c->resume, (const unsigned char *)session->data, session->len) != 0) {
+    mbedtls_ssl_session_free(&c->resume);
+    mbedtls_ssl_session_init(&c->resume);
+    c->has_resume = false;
+    return;
+  }
+  if (c->resume.MBEDTLS_PRIVATE(tls_version) == MBEDTLS_SSL_VERSION_TLS1_3) {
+    /* the 1.3 format carries no verification result: the marker an
+     * unverified origin set is the only trace of it */
+    c->resume_verify = (c->resume.MBEDTLS_PRIVATE(ticket_flags) & 0x80u)
+                           ? MBEDTLS_X509_BADCERT_NOT_TRUSTED
+                           : 0;
+  } else {
+    c->resume_verify = c->resume.MBEDTLS_PRIVATE(verify_result);
+  }
+  c->has_resume = true;
+}
+
 /* ── the per-socket transport ────────────────────────────────────────── */
 
 /* The SNI pre-parse states: NONE (no callback on the server — the
@@ -1101,6 +1207,26 @@ typedef struct ScrTlsSock {
   ScrTlsCli *cli;     /* owned client side, NULL server side */
   bool notify_sent;
   bool established; /* the handshake stood — socket.authorized reads gate on it */
+  /* the handshake that stood resumed the session its peer offered (a server's
+   * ticket parse ran successfully): isSessionReused answers it */
+  bool session_resumed;
+  /* the handshake has begun (set when a client socket is created — Node's
+   * tls.connect starts it at once — and when the driver first runs): a
+   * session set after this point is not offered */
+  bool handshake_started;
+  /* the verification result that describes the standing handshake, captured
+   * when it completes (a later ticket exchange replaces the engine's session
+   * object, whose own field is then 'not available'). Until then the
+   * snapshot does not exist and the engine's live result is the answer. */
+  uint32_t standing_verify;
+  bool standing_verify_set;
+  /* the connection's handshake presented a certificate: a resumed handshake
+   * presents none, which is how a client knows its offered session was taken
+   * (the engine keeps the resumed session's certificate). Set when the chain
+   * is parsed and never cleared for the connection — the handshake driver
+   * runs step by step, so clearing per call would lose the fact after the
+   * final step. */
+  bool peer_cert_parsed;
   /* the client 'session' event: listeners + the fired-once latch (Node
    * fires per received ticket; this surface fires once per socket) */
   ScrNetLs session_ls;
@@ -1124,6 +1250,16 @@ typedef struct ScrTlsSock {
   bool vrfy_bad_sig;
   bool vrfy_pathlen;
   bool vrfy_cn_mismatch;
+  /* the crl option's outcome: a CRL revoked a certificate (CERT_REVOKED),
+   * its validity window or signature failed, or the option held no CRL for
+   * a trusted issuer (Node's UNABLE_TO_GET_CRL) */
+  bool vrfy_crl_revoked;
+  bool vrfy_crl_expired;
+  bool vrfy_crl_future;
+  bool vrfy_crl_sig_fail;
+  /* the CRL's issuer may not sign CRLs (its key usage excludes cRLSign) */
+  bool vrfy_crl_key_usage;
+  bool vrfy_crl_missing;
   /* the leaf's subjectAltName rendered the way OpenSSL prints it, recorded
    * while the peer chain is alive for Node's altname-failure message */
   char *vrfy_altnames;
@@ -1143,6 +1279,12 @@ typedef struct ScrTlsSock {
   /* the topmost certificate the verification walked — the callback runs
    * depth-descending, the leaf last, so the leaf's turn closes the walk */
   mbedtls_x509_crt *vrfy_top;
+  /* the chain mbedTLS actually built, by depth (leaf at 0), recorded by the
+   * callback: the CRL check walks the verified chain, never the presented
+   * list, so a peer cannot shadow the issuer it selected with an extra
+   * certificate */
+  mbedtls_x509_crt *vrfy_chain[16];
+  size_t vrfy_chain_len;
   /* SNI pre-parse state (server side with an SNI callback only) */
   int sni_state;
   bool in_handshake;   /* a synchronous cb answer must not re-pump */
@@ -1187,6 +1329,16 @@ typedef struct ScrTlsSock {
   unsigned char *held;
   size_t held_len, held_off, held_cap;
 } ScrTlsSock;
+
+/* A server resumes a connection when the ticket its peer offers parses: the
+ * engine's ticket callback runs during the handshake (scr_tls_current names
+ * the socket being driven), so the socket records it. */
+static int scr_tls_ticket_parse(void *ticket_ctx, mbedtls_ssl_session *session,
+                                unsigned char *buf, size_t len) {
+  int r = mbedtls_ssl_ticket_parse(ticket_ctx, session, buf, len);
+  if (r == 0 && scr_tls_current != NULL) scr_tls_current->session_resumed = true;
+  return r;
+}
 
 static bool scr_tls_alert_error(ScrTlsSock *t, unsigned char alert);
 
@@ -1360,6 +1512,197 @@ static bool scr_tls_leaf_has_ip(const mbedtls_x509_crt *crt, const char *ip) {
  * (CERT_SIGNATURE_FAILURE) from one whose issuer never arrived. When the
  * leaf names an issuer the trust list holds, verify the leaf's signature
  * against that issuer's key: a failure is Node's CERT_SIGNATURE_FAILURE. */
+/* Whether one of the crl option's CRLs is issued by a trusted CA: an
+ * untrusted issuer is Node's UNABLE_TO_GET_CRL, not a signature failure. */
+static bool scr_tls_crl_issuer_trusted(ScrTlsSock *t) {
+  if (t->cli == NULL || !t->cli->has_crl || t->vrfy_trust == NULL) return false;
+  for (const mbedtls_x509_crl *crl = &t->cli->crl; crl != NULL && crl->raw.len > 0;
+       crl = crl->next) {
+    for (mbedtls_x509_crt *ca = t->vrfy_trust; ca != NULL && ca->raw.len > 0; ca = ca->next) {
+      if (ca->subject_raw.len == crl->issuer_raw.len &&
+          memcmp(ca->subject_raw.p, crl->issuer_raw.p, crl->issuer_raw.len) == 0)
+        return true;
+    }
+  }
+  return false;
+}
+
+/* The crl option's CRLs on a client socket (NULL when none). */
+static const mbedtls_x509_crl *scr_tls_client_crls(ScrTlsSock *t) {
+  if (t->cli == NULL || !t->cli->has_crl) return NULL;
+  return &t->cli->crl;
+}
+
+/* Whether a CRL's signature verifies under the key of the certificate its
+ * issuer field names. */
+static bool scr_tls_crl_signed_by(const mbedtls_x509_crl *crl,
+                                  const mbedtls_x509_crt *issuer) {
+  const mbedtls_md_info_t *md = mbedtls_md_info_from_type(crl->MBEDTLS_PRIVATE(sig_md));
+  if (md == NULL || !mbedtls_pk_can_do(&issuer->pk, crl->MBEDTLS_PRIVATE(sig_pk))) return false;
+  unsigned char hash[MBEDTLS_MD_MAX_SIZE];
+  if (mbedtls_md(md, crl->tbs.p, crl->tbs.len, hash) != 0) return false;
+  return mbedtls_pk_verify_ext(crl->MBEDTLS_PRIVATE(sig_pk), crl->MBEDTLS_PRIVATE(sig_opts),
+                               (mbedtls_pk_context *)&issuer->pk, crl->MBEDTLS_PRIVATE(sig_md),
+                               hash, mbedtls_md_get_size(md), crl->MBEDTLS_PRIVATE(sig).p,
+                               crl->MBEDTLS_PRIVATE(sig).len) == 0;
+}
+
+/* Whether a CRL lists the certificate's serial. */
+static bool scr_tls_crl_lists(const mbedtls_x509_crl *crl, const mbedtls_x509_crt *cert) {
+  if (cert->serial.p == NULL) return false;
+  for (const mbedtls_x509_crl_entry *e = &crl->entry; e != NULL; e = e->next) {
+    if (e->serial.p == NULL) break;
+    if (e->serial.len == cert->serial.len &&
+        memcmp(e->serial.p, cert->serial.p, e->serial.len) == 0)
+      return true;
+  }
+  return false;
+}
+
+
+
+/* Whether the certificate signed itself: the chain's true root. A
+ * key-rollover CA can carry the same issuer and subject DN as the root it
+ * replaced while another key signed it, so equal names alone do not make a
+ * certificate the chain's end. */
+static bool scr_tls_cert_self_signed(const mbedtls_x509_crt *cert) {
+  return cert->issuer_raw.len == cert->subject_raw.len &&
+         memcmp(cert->issuer_raw.p, cert->subject_raw.p, cert->issuer_raw.len) == 0 &&
+         scr_tls_cert_signed_by(cert, (mbedtls_x509_crt *)cert);
+}
+
+/* The built chain for CRL checking: the certificates mbedTLS verified,
+ * completed through the trust list to the self-signed root. */
+static size_t scr_tls_crl_chain(ScrTlsSock *t, const mbedtls_x509_crt *chain[16]) {
+  size_t n = 0;
+  /* The chain mbedTLS verified, leaf first. Its entries are the certificates
+   * that signed each other, not the peer's presented list: an extra
+   * certificate the peer sends (a self-issued decoy carrying an issuer's
+   * public key, say) is never verified into the chain, so it cannot stand in
+   * for an issuer whose CRL would revoke it. */
+  for (size_t depth = 0; depth < t->vrfy_chain_len && n < 16; depth++)
+    chain[n++] = t->vrfy_chain[depth];
+  while (n > 0 && n < 16) {
+    const mbedtls_x509_crt *top = chain[n - 1];
+    if (scr_tls_cert_self_signed(top)) break;
+    const mbedtls_x509_crt *issuer = NULL;
+    if (t->vrfy_trust != NULL && top->issuer_raw.len > 0) {
+      /* Prefer the trust entry whose key verifies the child: a key-rollover
+       * CA and its predecessor can share a subject DN while differing in
+       * key, and the predecessor's key is the one that signed the rollover
+       * certificate (and the one that issued its CRL). */
+      for (mbedtls_x509_crt *ca = t->vrfy_trust; ca != NULL && ca->raw.len > 0; ca = ca->next) {
+        if (ca->subject_raw.len == top->issuer_raw.len &&
+            memcmp(ca->subject_raw.p, top->issuer_raw.p, top->issuer_raw.len) == 0 &&
+            scr_tls_cert_signed_by(top, ca)) {
+          issuer = ca;
+          break;
+        }
+      }
+      if (issuer == NULL) {
+        /* No candidate verifies (an unsupported signature algorithm stops
+         * the check above): keep the name match, as before. */
+        for (mbedtls_x509_crt *ca = t->vrfy_trust; ca != NULL && ca->raw.len > 0; ca = ca->next) {
+          if (ca->subject_raw.len == top->issuer_raw.len &&
+              memcmp(ca->subject_raw.p, top->issuer_raw.p, top->issuer_raw.len) == 0) {
+            issuer = ca;
+            break;
+          }
+        }
+      }
+    }
+    if (issuer == NULL) break;
+    chain[n++] = issuer;
+  }
+  /* A chain beyond the fixed array cannot be checked completely; report it
+   * as uncovered rather than accepting a revocation that was not looked
+   * at. */
+  if (n == 16 && !scr_tls_cert_self_signed(chain[n - 1])) return 0;
+  return n;
+}
+
+/* OpenSSL's CRL checking runs over the whole built chain, including
+ * intermediates that are themselves in `ca` (where mbedTLS stops at the
+ * first trusted certificate and never asks the root's CRL about them).
+ * Every certificate with an issuer needs a CRL from that issuer; the first
+ * valid CRL per issuer decides. A revocation outranks a missing CRL, as
+ * Node reports it. */
+static void scr_tls_crl_check_chain(ScrTlsSock *t) {
+  const mbedtls_x509_crl *crls = scr_tls_client_crls(t);
+  if (crls == NULL) return;
+  const mbedtls_x509_crt *chain[16];
+  size_t n = scr_tls_crl_chain(t, chain);
+  bool revoked = false, missing = n == 0, sig_fail = false, expired = false, future = false;
+  bool key_usage = false;
+  for (size_t i = 0; i < n; i++) {
+    const mbedtls_x509_crt *cert = chain[i];
+    const mbedtls_x509_crt *issuer;
+    if (i + 1 < n) {
+      issuer = chain[i + 1];
+    } else {
+      /* The top of the chain has no issuer of its own unless it is the
+       * self-signed root, and OpenSSL still checks a root's CRL: a CRL the
+       * root issued may revoke the root itself. */
+      if (!scr_tls_cert_self_signed(cert)) break;
+      issuer = cert;
+    }
+    /* OpenSSL's store keeps the first CRL for an issuer name that is
+     * inside its validity window and ignores later ones for that issuer; an
+     * expired or not-yet-valid CRL is skipped when a current one follows,
+     * while a CRL with a bad signature still blocks when it is the selected
+     * one. A key-rollover CA's CRL and the root's can share the issuer DN
+     * while only one verifies under the issuer being checked, so the
+     * selected CRL's signature is checked here, not at parse time. */
+    const mbedtls_x509_crl *match = NULL;
+    const mbedtls_x509_crl *first = NULL;
+    for (const mbedtls_x509_crl *crl = crls; crl != NULL && crl->raw.len > 0; crl = crl->next) {
+      if (crl->issuer_raw.len != cert->issuer_raw.len ||
+          memcmp(crl->issuer_raw.p, cert->issuer_raw.p, crl->issuer_raw.len) != 0)
+        continue;
+      if (first == NULL) first = crl;
+      if (match == NULL && !mbedtls_x509_time_is_past(&crl->next_update) &&
+          !mbedtls_x509_time_is_future(&crl->this_update))
+        match = crl;
+    }
+    if (first == NULL) {
+      missing = true;
+      continue;
+    }
+    if (match == NULL) match = first; /* none current: the first reports why */
+    if (!scr_tls_crl_signed_by(match, issuer)) {
+      sig_fail = true;
+      continue;
+    }
+    /* OpenSSL checks the CRL signer's key usage as soon as the signature
+     * verifies: a CA whose keyUsage extension is present without cRLSign
+     * may not revoke (or vouch for) anything. */
+    if (issuer->MBEDTLS_PRIVATE(key_usage) != 0 &&
+        (issuer->MBEDTLS_PRIVATE(key_usage) & MBEDTLS_X509_KU_CRL_SIGN) == 0) {
+      key_usage = true;
+      continue;
+    }
+    if (mbedtls_x509_time_is_past(&match->next_update)) {
+      expired = true;
+      continue;
+    }
+    if (mbedtls_x509_time_is_future(&match->this_update)) {
+      future = true;
+      continue;
+    }
+    if (scr_tls_crl_lists(match, cert)) revoked = true;
+  }
+  if (revoked) {
+    t->vrfy_crl_revoked = true;
+  } else if (missing) {
+    t->vrfy_crl_missing = true;
+  } else {
+    if (key_usage) t->vrfy_crl_key_usage = true;
+    if (sig_fail) t->vrfy_crl_sig_fail = true;
+    if (expired) t->vrfy_crl_expired = true;
+    if (future) t->vrfy_crl_future = true;
+  }
+}
+
 static bool scr_tls_leaf_bad_sig(ScrTlsSock *t, mbedtls_x509_crt *leaf) {
   if (t->vrfy_trust == NULL || leaf->MBEDTLS_PRIVATE(sig).len == 0) return false;
   const mbedtls_md_info_t *md = mbedtls_md_info_from_type(leaf->MBEDTLS_PRIVATE(sig_md));
@@ -1503,7 +1846,14 @@ static bool scr_tls_pathlen_exceeded(ScrTlsSock *t, mbedtls_x509_crt *crt, int d
 
 static int scr_tls_vrfy_cb(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t *flags) {
   ScrTlsSock *t = (ScrTlsSock *)ctx;
+  t->peer_cert_parsed = true;
   t->vrfy_seen = true;
+  /* Keep the chain mbedTLS built: the CRL check walks these certificates,
+   * not the peer's presented list, whose extra entries it never verified. */
+  if (depth >= 0 && (size_t)depth < 16) {
+    t->vrfy_chain[depth] = crt;
+    if ((size_t)depth + 1 > t->vrfy_chain_len) t->vrfy_chain_len = (size_t)depth + 1;
+  }
   if (depth == 0 && t->cli != NULL && t->cli->hostname == NULL) {
     const char *name = t->cli->verify_name;
     if (name == NULL || name[0] == '\0') {
@@ -1535,6 +1885,17 @@ static int scr_tls_vrfy_cb(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t
   if (depth == 0 && !t->vrfy_blocked && scr_tls_spki_anchor_blocked(t, t->vrfy_top)) {
     *flags |= MBEDTLS_X509_BADCERT_REVOKED;
     t->vrfy_blocked = true;
+  }
+  /* The crl option checks the whole built chain (the leaf's issuer CRL,
+   * every intermediate's issuer CRL, up to the root). Any outcome fails
+   * the handshake like another verification error; rejectUnauthorized:
+   * false still records it for authorizationError. */
+  if (depth == 0 && !t->vrfy_blocked && scr_tls_client_crls(t) != NULL) {
+    scr_tls_crl_check_chain(t);
+    if (t->vrfy_crl_revoked || t->vrfy_crl_missing || t->vrfy_crl_key_usage ||
+        t->vrfy_crl_sig_fail ||
+        t->vrfy_crl_expired || t->vrfy_crl_future)
+      *flags |= MBEDTLS_X509_BADCERT_OTHER;
   }
   /* Node checks every certificate the peer sent when the chain did not
    * verify, the leaf and X509_STORE_CTX_get0_untrusted after it, so a
@@ -1573,6 +1934,22 @@ static int scr_tls_vrfy_cb(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t
     if ((*flags & MBEDTLS_X509_BADCERT_NOT_TRUSTED) != 0 && !self &&
       scr_tls_pathlen_exceeded(t, crt, depth))
     t->vrfy_pathlen = true;
+  }
+  /* the crl option's verdict; the blocked-SPKI policy's own
+   * BADCERT_REVOKED is the same Node code and already recorded */
+  /* a CRL that failed its signature or window reports that instead of its
+   * entries, so its revocation result does not stand (Node's precedence) */
+  if ((*flags & MBEDTLS_X509_BADCERT_REVOKED) != 0 && !t->vrfy_blocked &&
+      (*flags & (MBEDTLS_X509_BADCRL_EXPIRED | MBEDTLS_X509_BADCRL_FUTURE |
+                 MBEDTLS_X509_BADCRL_NOT_TRUSTED | MBEDTLS_X509_BADCRL_BAD_MD |
+                 MBEDTLS_X509_BADCRL_BAD_PK | MBEDTLS_X509_BADCRL_BAD_KEY)) == 0)
+    t->vrfy_crl_revoked = true;
+  if (*flags & MBEDTLS_X509_BADCRL_EXPIRED) t->vrfy_crl_expired = true;
+  if (*flags & MBEDTLS_X509_BADCRL_FUTURE) t->vrfy_crl_future = true;
+  if (*flags & (MBEDTLS_X509_BADCRL_NOT_TRUSTED | MBEDTLS_X509_BADCRL_BAD_MD |
+                MBEDTLS_X509_BADCRL_BAD_PK | MBEDTLS_X509_BADCRL_BAD_KEY)) {
+    if (scr_tls_crl_issuer_trusted(t)) t->vrfy_crl_sig_fail = true;
+    else t->vrfy_crl_missing = true;
   }
   return 0;
 }
@@ -1687,6 +2064,8 @@ static void scr_tls_drain_unread(ScrTlsSock *t) {
 /* ── the transport ops ───────────────────────────────────────────────── */
 
 static void scr_tls_fire_session(ScrTlsSock *t);
+static void scr_tls_fire_ticket_session(ScrTlsSock *t);
+static uint32_t scr_tls_read_verdict(const ScrTlsSock *t);
 
 static ssize_t scr_tls_xread(void *tctx, char *buf, size_t n) {
   ScrTlsSock *t = (ScrTlsSock *)tctx;
@@ -1699,7 +2078,7 @@ static ssize_t scr_tls_xread(void *tctx, char *buf, size_t n) {
 #if defined(MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET)
     if (r == MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET) {
       /* a 1.3 ticket, not app data: the client 'session' event's moment */
-      if (!scr_exc_pending()) scr_tls_fire_session(t);
+      if (!scr_exc_pending()) scr_tls_fire_ticket_session(t);
       continue;
     }
 #endif
@@ -1724,6 +2103,15 @@ static ssize_t scr_tls_xwrite(void *tctx, const char *buf, size_t n) {
   ScrTlsSock *t = (ScrTlsSock *)tctx;
   int r = mbedtls_ssl_write(&t->ssl, (const unsigned char *)buf, n);
   if (r >= 0) return r;
+#if defined(MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET)
+  if (r == MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET) {
+    /* a ticket read while writing: its 'session' event fires now, and the
+     * write retries once the engine is ready */
+    if (!scr_exc_pending()) scr_tls_fire_ticket_session(t);
+    errno = EAGAIN;
+    return -1;
+  }
+#endif
   if (r == MBEDTLS_ERR_SSL_WANT_READ || r == MBEDTLS_ERR_SSL_WANT_WRITE) {
     errno = EAGAIN;
     return -1;
@@ -1744,6 +2132,34 @@ static void scr_tls_verify_msg(ScrTlsSock *t, char *out, size_t n) {
    * own error, so CERT_REVOKED takes precedence */
   if (t->vrfy_blocked) {
     snprintf(out, n, "certificate revoked");
+    return;
+  }
+  /* A revocation outranks a missing CRL (Node reports a revoked
+   * intermediate even when the leaf's issuer CRL was not supplied); a
+   * CRL that fails its signature or window reports that instead of its
+   * entries. */
+  if (t->vrfy_crl_revoked) {
+    snprintf(out, n, "certificate revoked");
+    return;
+  }
+  if (t->vrfy_crl_missing) {
+    snprintf(out, n, "unable to get certificate CRL");
+    return;
+  }
+  if (t->vrfy_crl_key_usage) {
+    snprintf(out, n, "key usage does not include CRL signing");
+    return;
+  }
+  if (t->vrfy_crl_sig_fail) {
+    snprintf(out, n, "CRL signature failure");
+    return;
+  }
+  if (t->vrfy_crl_expired) {
+    snprintf(out, n, "CRL has expired");
+    return;
+  }
+  if (t->vrfy_crl_future) {
+    snprintf(out, n, "CRL is not yet valid");
     return;
   }
   if (t->vrfy_expired) {
@@ -2240,6 +2656,7 @@ static void scr_tls_hold_until_immediate(ScrTlsSock *t) {
 
 static int scr_tls_handshake(void *tctx) {
   ScrTlsSock *t = (ScrTlsSock *)tctx;
+  t->handshake_started = true;
   if (t->cli != NULL && t->cli->no_protocols) {
     /* OpenSSL's reason without its per-process prefix (SEMANTICS.md
      * divergence 55); scr_error_message_code gives Node's code. */
@@ -2259,6 +2676,15 @@ static int scr_tls_handshake(void *tctx) {
               ? scr_tls_handshake_requiring_cert(t)
               : mbedtls_ssl_handshake(&t->ssl);
   scr_tls_current = NULL;
+#if defined(MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET)
+  if (r == MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET) {
+    /* a TLS 1.3 ticket that rode the final handshake flight: its 'session'
+     * event is owed now (the read path was not the caller that saw it, and
+     * waiting for another read stalls when nothing more arrives) */
+    if (!scr_exc_pending()) scr_tls_fire_ticket_session(t);
+    r = MBEDTLS_ERR_SSL_WANT_READ;
+  }
+#endif
   if (r == 0) {
     scr_tls_hold_until_immediate(t);
   } else {
@@ -2433,13 +2859,24 @@ static void scr_tls_drain(void *tctx) {
  * emits it. */
 static void scr_tls_after_established(void *tctx) {
   ScrTlsSock *t = (ScrTlsSock *)tctx;
+  /* the verdict this handshake stands on: recorded now, before a TLS 1.3
+   * ticket exchange swaps the engine's session object. A resumed handshake
+   * verified nothing, so the verdict the offered session carries stands. */
+  t->standing_verify = t->cli != NULL && t->cli->has_resume && !t->peer_cert_parsed
+                           ? t->cli->resume_verify
+                           : mbedtls_ssl_get_verify_result(&t->ssl);
+  t->standing_verify_set = true;
   /* The 1.2 session arrives after secureConnect and before 'secure', as
    * Node emits it. A 1.3 ticket comes after the handshake, so a listener
    * added during secureConnect still sees that session. */
   if (t->cli != NULL && !scr_exc_pending()) {
     const char *ver = mbedtls_ssl_get_version(&t->ssl);
     bool tls13 = ver != NULL && strcmp(ver, "TLSv1.3") == 0;
-    if (tls13 ? t->session_ls.n > 0 : t->session_armed) scr_tls_fire_session(t);
+    bool resumed = t->srv != NULL ? t->session_resumed
+                  : (t->cli != NULL && t->cli->has_resume && !t->peer_cert_parsed);
+    /* TLS 1.2's session rides the handshake; a TLS 1.3 ticket arrives
+     * later and fires the event when it does */
+    if (!resumed && !tls13 && t->session_armed) scr_tls_fire_session(t);
   }
   if (scr_exc_pending()) return;
   scr_net_fire0_this(&t->secure_ls, t->sock, SCR_DYNH_NET_SOCKET);
@@ -2626,6 +3063,14 @@ static void scr_tls_cli_wrap(ScrNetSocket *sock, void *ctx) {
   if (!t) scr_tls_oom();
   mbedtls_ssl_init(&t->ssl);
   if (mbedtls_ssl_setup(&t->ssl, &cli->conf) != 0) scr_tls_oom();
+  /* the session option: offered for resumption from the first handshake. A
+   * session captured before its peer verified is not offered under settings
+   * that now verify: the full handshake re-checks the chain and fails the way
+   * the original verification did (Node/OpenSSL does not carry an unverified
+   * session into a verifying connection). */
+  if (cli->has_resume && !(cli->reject && cli->resume_verify != 0))
+    (void)mbedtls_ssl_set_session(&t->ssl, &cli->resume);
+  t->handshake_started = true; /* tls.connect starts the handshake at once */
   mbedtls_ssl_set_export_keys_cb(&t->ssl, &scr_tls_keylog_cb, t);
   /* NULL sends no SNI and skips mbedTLS's name check; the verify callback
    * checks cli->verify_name instead */
@@ -2724,6 +3169,14 @@ static ScrTlsSock *scr_tls_cli_sock(ScrNetSocket *sock, ScrTlsCli *cli) {
   if (!t) scr_tls_oom();
   mbedtls_ssl_init(&t->ssl);
   if (mbedtls_ssl_setup(&t->ssl, &cli->conf) != 0) scr_tls_oom();
+  /* the session option: offered for resumption from the first handshake. A
+   * session captured before its peer verified is not offered under settings
+   * that now verify: the full handshake re-checks the chain and fails the way
+   * the original verification did (Node/OpenSSL does not carry an unverified
+   * session into a verifying connection). */
+  if (cli->has_resume && !(cli->reject && cli->resume_verify != 0))
+    (void)mbedtls_ssl_set_session(&t->ssl, &cli->resume);
+  t->handshake_started = true; /* tls.connect starts the handshake at once */
   mbedtls_ssl_set_export_keys_cb(&t->ssl, &scr_tls_keylog_cb, t);
   (void)mbedtls_ssl_set_hostname(&t->ssl, cli->hostname);
   mbedtls_ssl_set_verify(&t->ssl, &scr_tls_vrfy_cb, t);
@@ -2944,6 +3397,22 @@ void scr_tls_fetch_tunnel_wrap(ScrNetSocket *sock, void *vctx) {
   scr_net_sock_set_transport(sock, &SCR_TLS_TUNNEL_OPS, tun);
 }
 
+/* A fetch transport context the request never wrapped: the fetch unit owns
+ * it until the socket takes it in the wrap hook, and gives it back here when
+ * the request stops before wrapping. */
+void scr_tls_fetch_ctx_release(void *vctx) {
+  if (vctx != NULL) scr_tls_cli_free(vctx);
+}
+
+void scr_tls_fetch_tunnel_ctx_release(void *vctx) {
+  ScrTlsTunnelCtx *ctx = vctx;
+  if (ctx == NULL) return;
+  if (ctx->proxy != NULL) scr_tls_cli_free(ctx->proxy);
+  if (ctx->target != NULL) scr_tls_cli_free(ctx->target);
+  free(ctx->req);
+  free(ctx);
+}
+
 ScrHttpClientReq *scr_https_request(ScrStr *host /*borrowed*/, double port,
                                      ScrStr *path /*borrowed*/, ScrStr *method /*borrowed*/,
                                      double timeout_ms, ScrArr *header_pairs /*borrowed*/,
@@ -3083,27 +3552,65 @@ static ScrBytes *scr_tls_pem_dyn(const ScrDyn *v, const char *what, bool concat)
       { ScrStr *refused = scr_jb_finish(&b); scr_throw_error_msg_code(SCR_ERR_ERROR, refused->data, refused->len, "SC2020"); scr_str_release(refused); }
       return NULL;
     }
-    /* concatenate (mbedTLS parses concatenated PEM — the ca-bundle shape) */
-    size_t total = 0;
-    for (size_t i = 0; i < v->v.arr.len; i++) {
+    /* concatenate (mbedTLS parses concatenated PEM — the ca-bundle shape).
+     * Snapshot every entry once: a SharedArrayBuffer-backed view can change
+     * between passes, and sizing from one read then copying from another
+     * could overflow the allocation. The sizing keeps the old worst-case
+     * budget (one separator per entry); the copy inserts a separator only
+     * between entries and only when the snapshot does not already end its
+     * line: a trailing newline after the last block leaves mbedTLS a
+     * non-empty buffer it tries to parse as another PEM, which fails. */
+    const size_t count = v->v.arr.len;
+    unsigned char **snap = calloc(count, sizeof *snap);
+    size_t *snap_len = calloc(count, sizeof *snap_len);
+    if (snap == NULL || snap_len == NULL) {
+      free(snap);
+      free(snap_len);
+      scr_tls_oom();
+    }
+    size_t budget = 0;
+    for (size_t i = 0; i < count; i++) {
       const ScrDyn *e = v->v.arr.items[i];
-      if (e->kind == SCR_DYN_STR) total += e->v.str->len + 1;
-      else if (scr_dyn_bytes_is(e, SCR_BYTES_U8)) total += e->v.bytes->len + 1;
+      size_t n;
+      if (e->kind == SCR_DYN_STR) n = e->v.str->len;
+      else if (scr_dyn_bytes_is(e, SCR_BYTES_U8)) n = e->v.bytes->len;
       else {
         scr_dyn_arg_type_fail(what, "of type string or an instance of Buffer or Uint8Array", e);
+        for (size_t k = 0; k < i; k++) free(snap[k]);
+        free(snap);
+        free(snap_len);
         return NULL;
       }
+      unsigned char *copy = malloc(n > 0 ? n : 1);
+      if (copy == NULL) scr_tls_oom();
+      if (e->kind == SCR_DYN_STR) memcpy(copy, e->v.str->data, n);
+      else scr_bytes_read(e->v.bytes, 0, copy, n);
+      snap[i] = copy;
+      snap_len[i] = n;
+      if (n > SIZE_MAX - budget - 1) { /* worst-case separator budget overflow */
+        for (size_t k = 0; k <= i; k++) free(snap[k]);
+        free(snap);
+        free(snap_len);
+        scr_tls_oom();
+      }
+      budget += n + 1; /* worst case: one separator after every entry */
     }
-    ScrBytes *b = scr_bytes_new(SCR_BYTES_U8, (double)total);
+    unsigned char *joined = malloc(budget > 0 ? budget : 1);
+    if (joined == NULL) scr_tls_oom();
     size_t off = 0;
-    for (size_t i = 0; i < v->v.arr.len; i++) {
-      const ScrDyn *e = v->v.arr.items[i];
-      size_t n = e->kind == SCR_DYN_STR ? e->v.str->len : e->v.bytes->len;
-      if (e->kind == SCR_DYN_STR) memcpy(b->data + off, e->v.str->data, n);
-      else scr_bytes_read(e->v.bytes, 0, b->data + off, n);
+    for (size_t i = 0; i < count; i++) {
+      size_t n = snap_len[i];
+      memcpy(joined + off, snap[i], n);
       off += n;
-      b->data[off++] = '\n'; /* PEM blocks join on line boundaries */
+      if (i + 1 < count && (n == 0 || snap[i][n - 1] != '\n'))
+        joined[off++] = '\n'; /* PEM blocks join on line boundaries */
     }
+    ScrBytes *b = scr_bytes_new(SCR_BYTES_U8, (double)off);
+    memcpy(b->data, joined, off);
+    free(joined);
+    for (size_t i = 0; i < count; i++) free(snap[i]);
+    free(snap);
+    free(snap_len);
     return b;
   }
   scr_dyn_arg_type_fail(what, "of type string or an instance of Buffer or Uint8Array", v);
@@ -3173,6 +3680,22 @@ static bool scr_tls_ca_dyn(const ScrDyn *v, const char *what, ScrBytes **out) {
 static const char *scr_tls_ca_data(const ScrBytes *ca) {
   if (ca == NULL) return NULL;
   return ca->data != NULL ? (const char *)ca->data : "";
+}
+
+/* A client's crl for scr_tls_cli_new2, on the same rule as the ca. */
+static const char *scr_tls_crl_data(const ScrBytes *crl) {
+  if (crl == NULL) return NULL;
+  return crl->data != NULL ? (const char *)crl->data : "";
+}
+
+/* Whether the crl option carries at least one parseable CRL; Node throws
+ * ERR_CRYPTO_OPERATION_FAILED ("Failed to parse CRL") when it does not. */
+static bool scr_tls_crl_valid(const ScrBytes *crl) {
+  mbedtls_x509_crl parsed;
+  mbedtls_x509_crl_init(&parsed);
+  int r = scr_tls_parse_crl(&parsed, scr_tls_crl_data(crl), crl->len);
+  mbedtls_x509_crl_free(&parsed);
+  return r == 0;
 }
 
 /* https.request/get with a runtime options record: the http walk, then
@@ -4511,12 +5034,12 @@ static bool scr_tls_alpn_dyn(const ScrDyn *v, char ***out) {
 static const char *const SCR_TLS_CONNECT_FENCED_OPTIONS[] = {
   "allowHalfOpen", "autoSelectFamily",
   "autoSelectFamilyAttemptTimeout", "certificateCompression", "checkServerIdentity",
-  "ciphers", "clientCertEngine", "crl", "dhparam", "ecdhCurve",
+  "ciphers", "clientCertEngine", "dhparam", "ecdhCurve",
   "enableTrace", "family", "fd", "hints", "highWaterMark",
   "honorCipherOrder", "keepAlive", "keepAliveInitialDelay",
   "localAddress", "localPort", "lookup", "minDHSize", "noDelay", "onread", "passphrase", "pfx",
   "privateKeyEngine", "privateKeyIdentifier", "pskCallback", "readable",
-  "secureContext", "secureOptions", "secureProtocol", "session",
+  "secureContext", "secureOptions", "secureProtocol",
   "sessionIdContext", "sigalgs", "signal", "ticketKeys",
   "writable", NULL,
 };
@@ -4564,7 +5087,9 @@ static ScrNetSocket *scr_tls_connect_plain(double port, ScrStr *host /*borrowed,
   scr_tls_rng_init();
   bool reject = true;
   ScrBytes *ca = NULL;
+  ScrBytes *crl = NULL;
   ScrBytes *own_cert = NULL, *own_key = NULL; /* the client certificate */
+  ScrBytes *session_opt = NULL; /* options.session: the session to resume */
   const ScrStr *servername = NULL;
   const ScrStr *opt_host = NULL;
   char **alpn = NULL;
@@ -4638,6 +5163,21 @@ static ScrNetSocket *scr_tls_connect_plain(double port, ScrStr *host /*borrowed,
         if (!scr_tls_ca_dyn(v, "a tls.connect 'ca' option", &ca)) ok = false;
         continue;
       }
+      if (strcmp(e.key, "crl") == 0) {
+        /* Node parses the option whatever its shape: an empty string or
+         * Buffer is a parse failure, not "no CRL". */
+        scr_bytes_release(crl);
+        crl = v->kind == SCR_DYN_STR && v->v.str->len == 0
+                  ? NULL
+                  : scr_tls_pem_dyn(v, "a tls.connect 'crl' option", true);
+        if (crl == NULL || !scr_tls_crl_valid(crl)) {
+          static const char msg[] = "Failed to parse CRL";
+          scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1,
+                                   "ERR_CRYPTO_OPERATION_FAILED");
+          ok = false;
+        }
+        continue;
+      }
       if (strcmp(e.key, "cert") == 0 || strcmp(e.key, "key") == 0) {
         ScrBytes **slot = e.key[0] == 'c' ? &own_cert : &own_key;
         scr_bytes_release(*slot);
@@ -4665,6 +5205,15 @@ static ScrNetSocket *scr_tls_connect_plain(double port, ScrStr *host /*borrowed,
         }
         continue;
       }
+      if (strcmp(e.key, "session") == 0) {
+        /* Node hands the option to the engine as-is: a Buffer that decodes
+         * resumes the handshake, anything else is ignored */
+        scr_bytes_release(session_opt);
+        session_opt = scr_dyn_bytes_is(v, SCR_BYTES_U8)
+                          ? (v->v.bytes->shared ? scr_bytes_copy(v->v.bytes) : scr_dyn_bytes_unbox(v))
+                          : NULL;
+        continue;
+      }
       if (strcmp(e.key, "servername") == 0) {
         if (v->kind == SCR_DYN_STR) servername = v->v.str;
         else {
@@ -4676,7 +5225,7 @@ static ScrNetSocket *scr_tls_connect_plain(double port, ScrStr *host /*borrowed,
       for (size_t k = 0; SCR_TLS_CONNECT_FENCED_OPTIONS[k] != NULL; k++) {
         if (strcmp(e.key, SCR_TLS_CONNECT_FENCED_OPTIONS[k]) == 0) {
           scr_tls_opt_fence("tls.connect", e.key,
-                            "port/host/socket/rejectUnauthorized/ca/servername/ALPNProtocols/minVersion/maxVersion/timeout are the implemented members of a runtime options record");
+                            "port/host/socket/rejectUnauthorized/ca/crl/cert/key/servername/ALPNProtocols/minVersion/maxVersion/timeout/session are the implemented members of a runtime options record");
           ok = false;
           break;
         }
@@ -4718,8 +5267,10 @@ static ScrNetSocket *scr_tls_connect_plain(double port, ScrStr *host /*borrowed,
   if (!ok) {
     scr_tls_alpn_free(alpn);
     scr_bytes_release(ca);
+    scr_bytes_release(crl);
     scr_bytes_release(own_cert);
     scr_bytes_release(own_key);
+    scr_bytes_release(session_opt);
     scr_closure_release(cb);
     return NULL;
   }
@@ -4745,6 +5296,7 @@ static ScrNetSocket *scr_tls_connect_plain(double port, ScrStr *host /*borrowed,
       scr_bytes_release(ca);
       scr_bytes_release(own_cert);
       scr_bytes_release(own_key);
+      scr_bytes_release(session_opt);
       scr_closure_release(cb);
       scr_str_release(localhost_fallback);
       scr_str_release(socket_host);
@@ -4762,9 +5314,12 @@ static ScrNetSocket *scr_tls_connect_plain(double port, ScrStr *host /*borrowed,
     s = scr_net_connect(port, dial_addr, cb); /* cb fires post-handshake — secureConnect */
     if (dial_addr) scr_str_release(dial_addr);
   }
-  ScrTlsCli *cli = scr_tls_cli_new2(verify_host, reject,
-                                     scr_tls_ca_data(ca), ca != NULL ? ca->len : 0, !reject);
+  ScrTlsCli *cli = scr_tls_cli_new2(verify_host, reject, scr_tls_ca_data(ca),
+                                     ca != NULL ? ca->len : 0, scr_tls_crl_data(crl),
+                                     crl != NULL ? crl->len : 0, !reject);
   if (servername != NULL) scr_tls_cli_set_servername(cli, servername);
+  if (session_opt != NULL) scr_tls_cli_set_session(cli, session_opt);
+  scr_bytes_release(session_opt);
   if (own_cert != NULL) scr_tls_cli_set_own(cli, own_cert, own_key);
   scr_bytes_release(own_cert);
   scr_bytes_release(own_key);
@@ -4782,6 +5337,7 @@ static ScrNetSocket *scr_tls_connect_plain(double port, ScrStr *host /*borrowed,
   scr_str_release(localhost_fallback);
   scr_str_release(socket_host);
   scr_bytes_release(ca);
+  scr_bytes_release(crl);
   return s;
 }
 
@@ -4823,7 +5379,8 @@ void scr_tls_server_wrap_h2(ScrNetServer *s, const char *cert, size_t cert_len,
  * preface/SETTINGS ride the socket's write buffer until establishment. */
 void scr_tls_h2_client_wrap(ScrNetSocket *sock, ScrStr *host /*borrowed*/,
                              bool reject_unauthorized, const char *ca, size_t ca_len) {
-  ScrTlsCli *cli = scr_tls_cli_new2(host, reject_unauthorized, ca, ca_len, !reject_unauthorized);
+  ScrTlsCli *cli =
+      scr_tls_cli_new2(host, reject_unauthorized, ca, ca_len, NULL, 0, !reject_unauthorized);
   mbedtls_ssl_conf_alpn_protocols(&cli->conf, SCR_TLS_ALPN_H2);
   scr_tls_cli_wrap(sock, cli);
 }
@@ -5188,6 +5745,12 @@ ScrDyn *scr_tls_check_server_identity(ScrStr *hostname /*borrowed*/, const ScrDy
       scr_str_utf8_end(alt_owned);
       scr_tls_ident_list_free(&ctx.dns);
       scr_tls_ident_list_free(&ctx.ips);
+      /* The certificate's altnames, subject and CN may have been
+       * materialized from typed references at the top of this function;
+       * the malformed-SAN answer must let them go like every other path. */
+      scr_dyn_release(owned_alt);
+      scr_dyn_release(owned_subject);
+      scr_dyn_release(owned_cn);
       scr_dyn_release(owned);
       scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "ERR_TLS_CERT_ALTNAME_FORMAT");
       /* the caller boxes the answer before its pending check: a valid
@@ -5306,13 +5869,45 @@ ScrDyn *scr_tls_check_server_identity(ScrStr *hostname /*borrowed*/, const ScrDy
 
 /* ── the checked-dynamic TLSSocket members (scr_net.c's hook table) ──── */
 
+/* The verdict the socket's authorization answers read: the standing
+ * handshake's own result, or, for a resumed handshake (which verifies no
+ * certificate and reads as success from the engine), the verdict the offered
+ * session was captured with. */
+static uint32_t scr_tls_read_verdict(const ScrTlsSock *t) {
+  if (t->established && t->cli != NULL && t->cli->has_resume && !t->peer_cert_parsed)
+    return t->cli->resume_verify;
+  return mbedtls_ssl_get_verify_result(&t->ssl);
+}
+
+/* The verdict a saved session carries. A TLS 1.3 ticket exchange swaps the
+ * engine's session object after the handshake, so the engine's live result
+ * no longer describes it: the value recorded when the handshake completed
+ * stands instead. */
+static uint32_t scr_tls_saved_verdict(const ScrTlsSock *t) {
+  if (t->cli != NULL && t->cli->has_resume && !t->peer_cert_parsed)
+    return t->cli->resume_verify;
+  /* the connection's ACTUAL result: the snapshot once the handshake has
+   * completed, the engine's live result before that (getSession() inside
+   * secureConnect runs before the snapshot exists), and "not available"
+   * when neither has one — which the resumption filter counts as unverified */
+  if (t->standing_verify_set) return t->standing_verify;
+  return mbedtls_ssl_get_verify_result(&t->ssl);
+}
+
 /* Node's authorizationError: the verify-failure CODE string (null when
  * authorized). Chain errors dominate the identity check — Node records
  * ssl.verifyError() first and only reaches checkServerIdentity's
  * ERR_TLS_CERT_ALTNAME_INVALID on a VERIFIED chain. */
 static const char *scr_tls_auth_code(ScrTlsSock *t) {
-  uint32_t vr = mbedtls_ssl_get_verify_result(&t->ssl);
+  uint32_t vr = scr_tls_read_verdict(t);
   if (t->vrfy_blocked) return "CERT_REVOKED";
+  if (t->vrfy_crl_revoked) return "CERT_REVOKED";
+  if (t->vrfy_crl_missing) return "UNABLE_TO_GET_CRL";
+  if (t->vrfy_crl_key_usage) return "UNSPECIFIED";
+  if (t->vrfy_crl_sig_fail) return "CRL_SIGNATURE_FAILURE";
+  if (t->vrfy_crl_expired) return "CRL_HAS_EXPIRED";
+  if (t->vrfy_crl_future) return "CRL_NOT_YET_VALID";
+  if (t->vrfy_crl_revoked) return "CERT_REVOKED";
   if (t->vrfy_expired) return "CERT_HAS_EXPIRED";
   if (t->vrfy_future) return "CERT_NOT_YET_VALID";
   if (t->vrfy_bad_sig) return "CERT_SIGNATURE_FAILURE";
@@ -5354,12 +5949,11 @@ static ScrBytes *scr_tls_bytes_copy(const ScrBytes *b) {
   return copy;
 }
 
-/* The client 'session' event: fires ONCE per socket with the serialized
- * mbedTLS session — the established session for TLS 1.2 (its ticket rides
- * the handshake), the ticket receipt for TLS 1.3. Node delivers the event
- * once per received ticket and replays nothing to later listeners; this
- * surface's server issues one session, and resumption stays out
- * (SEMANTICS.md divergence 55). */
+/* The client 'session' event with the serialized session: TLS 1.2 fires
+ * it once (its ticket rides the handshake), TLS 1.3 once per received
+ * ticket (Node's server sends two after a full handshake and none after a
+ * resumed one), and a resumed handshake fires none. Later listeners see no
+ * replay, as in Node. */
 /* The current session as a Buffer (+1), NULL when the handshake has no
  * resumable session yet (a TLS 1.3 client before its ticket). */
 static ScrBytes *scr_tls_session_bytes(ScrTlsSock *t) {
@@ -5377,6 +5971,14 @@ static ScrBytes *scr_tls_session_bytes(ScrTlsSock *t) {
     memcpy(tk->data, sess.MBEDTLS_PRIVATE(ticket), sess.MBEDTLS_PRIVATE(ticket_len));
     t->ticket_cached = tk;
   }
+  /* the session carries the connection's verdict, so a later connection can
+   * tell whether resuming it is safe under its own settings. mbedTLS's TLS
+   * 1.3 session format has no verification field: an unverified origin rides
+   * a ticket flag bit the engine's own mask ignores. */
+  sess.MBEDTLS_PRIVATE(verify_result) = scr_tls_saved_verdict(t);
+  if (sess.MBEDTLS_PRIVATE(tls_version) == MBEDTLS_SSL_VERSION_TLS1_3 &&
+      scr_tls_saved_verdict(t) != 0)
+    sess.MBEDTLS_PRIVATE(ticket_flags) |= 0x80u;
   size_t need = 0;
   (void)mbedtls_ssl_session_save(&sess, NULL, 0, &need);
   ScrBytes *buf = scr_bytes_new(SCR_BYTES_U8, (double)need);
@@ -5491,11 +6093,10 @@ static void scr_tls_keylog_cb(void *ctx, mbedtls_ssl_key_export_type type,
   scr_tls_keylog_line(t, label, secret, secret_len, client_random);
 }
 
-static void scr_tls_fire_session(ScrTlsSock *t) {
-  if (t->session_fired || t->session_ls.n == 0 || t->cli == NULL) return;
+/* Emits the 'session' event with the socket's current session. */
+static void scr_tls_session_emit(ScrTlsSock *t) {
   ScrBytes *buf = scr_tls_session_bytes(t);
   if (buf == NULL) return; /* no resumable session yet (1.3 pre-ticket) */
-  t->session_fired = true;
   ScrNetL *snap;
   size_t n = scr_net_ls_snapshot(&t->session_ls, &snap);
   scr_dyn_this_push(t->sock, SCR_DYNH_NET_SOCKET);
@@ -5506,6 +6107,31 @@ static void scr_tls_fire_session(ScrTlsSock *t) {
   scr_dyn_this_pop();
   free(snap);
   scr_bytes_release(buf);
+}
+
+/* TLS 1.2's session rides the handshake: one 'session' event per socket. */
+static void scr_tls_fire_session(ScrTlsSock *t) {
+  if (t->session_fired || t->session_ls.n == 0 || t->cli == NULL) return;
+  t->session_fired = true;
+  scr_tls_session_emit(t);
+}
+
+/* TLS 1.3 tickets arrive one by one: Node fires 'session' for each and
+ * getSession() then answers the latest. A handshake that resumed fires
+ * none (Node's engine issues no ticket a program sees there), though the
+ * ticket it carries is kept for the next connection. */
+static void scr_tls_fire_ticket_session(ScrTlsSock *t) {
+  if (t->cli == NULL) return;
+  bool resumed = t->cli->has_resume && !t->peer_cert_parsed;
+  /* the newest ticket replaces both caches whether or not a listener is
+   * there: getSession()/getTLSTicket() answer it on the next call (Node's
+   * getters read the connection's current session) */
+  scr_bytes_release(t->session_cached);
+  t->session_cached = NULL;
+  scr_bytes_release(t->ticket_cached);
+  t->ticket_cached = NULL;
+  if (resumed || t->session_ls.n == 0) return;
+  scr_tls_session_emit(t);
 }
 
 /* The STATIC-lane TLSSocket members (the lowered socket surface). */
@@ -5709,6 +6335,76 @@ ScrDyn *scr_tls_sock_get_tls_ticket(ScrNetSocket *s) {
   return d;
 }
 
+/* tlsSocket.isSessionReused(): whether the handshake that stands resumed a
+ * session. A server answers the ticket its peer's handshake parsed; a client
+ * answers true when it offered a session and the server resumed it (a
+ * resumed handshake presents no certificate). */
+bool scr_tls_sock_is_session_reused(ScrNetSocket *s) {
+  ScrTlsSock *t = scr_tls_sock_of(s);
+  if (t == NULL || !t->established) return false;
+  if (t->srv != NULL) return t->session_resumed;
+  return t->cli != NULL && t->cli->has_resume && !t->peer_cert_parsed;
+}
+
+/* tlsSocket.setSession(session): Node converts a string from latin1 and
+ * hands the rest to the engine, which uses it only if the handshake has not
+ * started and ignores bytes it cannot decode; a raw session Buffer is
+ * ignored on a verified client (Node's reuse filter). Every socket a
+ * program can hold here has already started its handshake — tls.connect
+ * starts it at once, as Node's does — so the call validates and answers
+ * nothing, exactly like Node's (measured). */
+void scr_tls_sock_set_session(ScrNetSocket *s, const ScrDyn *session) {
+  ScrTlsSock *t = scr_tls_sock_of(s);
+  if (s == NULL || t == NULL || scr_net_sock_destroyed(s)) return;
+  if (t->handshake_started) return;
+  if (t->cli != NULL && t->cli->reject) return; /* the raw-session rule */
+  const ScrDyn *v = session != NULL ? session : scr_dyn_undefined();
+  ScrBytes *bytes = NULL;
+  if (v->kind == SCR_DYN_STR) {
+    ScrStr *latin1 = scr_str_new("latin1", 6);
+    bytes = scr_bytes_from_str_checked(v->v.str, latin1);
+    scr_str_release(latin1);
+  } else if (scr_dyn_bytes_is(v, SCR_BYTES_U8)) {
+    bytes = v->v.bytes->shared ? scr_bytes_copy(v->v.bytes) : scr_dyn_bytes_unbox(v);
+  }
+  if (bytes == NULL) return; /* ignored, as the engine ignores it */
+  if (t->cli != NULL) scr_tls_cli_set_session(t->cli, bytes);
+  scr_bytes_release(bytes);
+}
+
+/* tlsSocket.getEphemeralKeyInfo(): Node answers the negotiated ephemeral
+ * key's facts (null on a server-side socket, before the handshake and
+ * after destroy). The bundled provider does not surface the negotiated
+ * group, so a client answers an empty object — Node's shape without the
+ * provider-specific members. */
+ScrDyn *scr_tls_sock_ephemeral_key_info(ScrNetSocket *s) {
+  ScrTlsSock *t = scr_tls_sock_of(s);
+  if (t == NULL || scr_net_sock_destroyed(s)) return scr_dyn_new_null();
+  if (!t->established || t->srv != NULL) return scr_dyn_new_null();
+  return scr_dyn_new_obj();
+}
+
+/* tlsSocket.setMaxSendFragment(size): Node's ladder over the C++ call.
+ * NaN, an infinity or a fraction throws ERR_OUT_OF_RANGE with Node's text;
+ * an integer answers true inside 512..16384 and false outside it (what the
+ * native call answers when the provider refuses the size). The bundled
+ * provider cannot change the record size after setup, so the accepted
+ * value's effect on fragments is a documented divergence. */
+bool scr_tls_sock_set_max_fragment(ScrNetSocket *s, double size) {
+  if (!(isfinite(size) && trunc(size) == size)) {
+    char received[48];
+    scr_num_received(size, received);
+    char text[192];
+    int n = snprintf(text, sizeof text,
+                     "The value of \"size\" is out of range. It must be an integer. Received %s",
+                     received);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, text, n < 0 ? 0 : (size_t)n, "ERR_OUT_OF_RANGE");
+    return false;
+  }
+  if (s == NULL || scr_net_sock_destroyed(s)) return false;
+  return size >= 512 && size <= 16384;
+}
+
 /* tlsSocket.disableRenegotiation(): TLS renegotiation is off in this
  * provider by default (mbedTLS 3.x), which is what the call asks for. */
 void scr_tls_sock_disable_renegotiation(ScrNetSocket *s) { (void)s; }
@@ -5728,12 +6424,12 @@ ScrDyn *scr_tls_sock_dyn_member(ScrNetSocket *s, double which) {
 
 bool scr_tls_sock_authorized(ScrNetSocket *s) {
   ScrTlsSock *t = scr_tls_sock_of(s);
-  return t != NULL && scr_tls_sock_verifies(t) && mbedtls_ssl_get_verify_result(&t->ssl) == 0;
+  return t != NULL && scr_tls_sock_verifies(t) && scr_tls_read_verdict(t) == 0;
 }
 
 ScrStr *scr_tls_sock_auth_error(ScrNetSocket *s) {
   ScrTlsSock *t = scr_tls_sock_of(s);
-  if (t == NULL || !scr_tls_sock_verdict(t) || mbedtls_ssl_get_verify_result(&t->ssl) == 0) {
+  if (t == NULL || !scr_tls_sock_verdict(t) || scr_tls_read_verdict(t) == 0) {
     return NULL; /* the null arm — authorized, or never verified */
   }
   const char *code = t->srv != NULL ? scr_tls_client_cert_code(t) : scr_tls_auth_code(t);

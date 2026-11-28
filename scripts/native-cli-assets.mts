@@ -107,6 +107,7 @@ export function stageNativeCliAssets(options: {
     "scriptc-overrides.d.ts",
     "scriptc-node-fallback.d.ts",
     "scriptc-dom-exception.d.ts",
+    "scriptc-web-streams.d.ts",
   ]) {
     cpSync(join(repository, "packages/compiler/ambient", name), join(declarations, name));
   }

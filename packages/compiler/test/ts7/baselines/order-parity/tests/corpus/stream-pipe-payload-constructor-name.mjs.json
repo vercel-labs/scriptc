@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/stream-pipe-payload-constructor-name.mjs"
+ ],
+ "diags": []
+}

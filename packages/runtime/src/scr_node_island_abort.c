@@ -43,7 +43,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if !defined(_WIN32) && !defined(__wasi__)
+#if !defined(__wasi__)
 
 const ScrDynHandleOps *scr_dyn_handle_ops_of(const ScrDyn *d); /* scr_json.c */
 
@@ -127,4 +127,4 @@ __attribute__((constructor)) static void nia_install(void) {
   scr_ni_twin_register(&nia_controller);
 }
 
-#endif /* !_WIN32 && !__wasi__ */
+#endif /* !__wasi__ */

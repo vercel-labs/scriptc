@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/port-transfer-detached.mjs"
+ ],
+ "diags": []
+}

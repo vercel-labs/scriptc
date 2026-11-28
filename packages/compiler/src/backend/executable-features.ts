@@ -28,9 +28,13 @@ export function executableLinkFeatures(
   // A Node island can hand its own AbortSignal to any native receiver of one,
   // and a native signal then stands for it (scr_node_island_abort.c); a
   // FileHandle web stream reaches the stream machinery's signals too.
+  // A message's `signal` is the only dynamic handle member whose dispatch
+  // reaches the abort unit, and only node:http has one: the dynamic-read
+  // facts select it only in a program that uses http.
   const abortSignal =
     features.abortSignal ||
-    features.httpSignal ||
+    (features.httpSignal && features.http) ||
+    (features.dynSignalKey && features.http) ||
     features.fsWebStream ||
     (features.nodeIsland && features.eventTarget);
   // A feature that calls into another feature's units links those too
@@ -55,6 +59,7 @@ export function executableLinkFeatures(
     ...(features.fsFlags ? { fsFlags: true } : {}),
     ...(features.fsExistsValue ? { fsExistsValue: true } : {}),
     ...(features.moduleCompileCache ? { moduleCompileCache: true } : {}),
+    ...(features.sourceMap ? { sourceMap: true } : {}),
     ...(features.fnMemberProps ? { fnMemberProps: true } : {}),
     ...(features.fsBytesWrites ? { fsBytesWrites: true } : {}),
     ...(features.strdecDyn ? { strdecDyn: true } : {}),
@@ -111,6 +116,7 @@ export function executableLinkFeatures(
     ...(features.sqlite ? { sqlite: true } : {}),
     ...(features.webStreams || features.fsWebStream ? { webStreams: true } : {}),
     ...(features.fsWebStream ? { fsWebStream: true } : {}),
+    ...(features.fsUtf8Stream ? { fsUtf8Stream: true } : {}),
     ...(features.webBodies ? { webBodies: true } : {}),
     ...(abortSignal ? { abortSignal: true } : {}),
     ...(features.utilTiming ? { utilTiming: true } : {}),
@@ -175,6 +181,7 @@ export function executableLinkFeatures(
     x509: features.x509,
     webcrypto: features.webcrypto,
     perfLoop: features.perfLoop,
+    ...(features.webSocket ? { webSocket: true } : {}),
     ...(features.icu ? { intl: true } : {}),
   });
 }

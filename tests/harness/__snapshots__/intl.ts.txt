@@ -32,7 +32,7 @@ intl.ts:21:15 - error SC2020: 'Intl.NumberFormat.prototype.formatToParts' is par
      |               ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   22 | const big = new Intl.NumberFormat("en-US", {}).format(12n);
 
-  hint: what compiles: new Intl.NumberFormat(locale, options) and new Intl.DateTimeFormat(locale, options) with their format() method, and the toLocaleString(), toLocaleDateString() and toLocaleTimeString() forms with a locale and options, at the default locale (no locale argument, or undefined) or any locale string the program holds (ICU canonicalizes it; an invalid tag throws Node's RangeError); lists of locales, formatToParts, formatRange and resolvedOptions remain unsupported
+  hint: what compiles: new Intl.NumberFormat(locale, options), new Intl.DateTimeFormat(locale, options) and new Intl.ListFormat(locale, options) with their format() method, and the toLocaleString(), toLocaleDateString() and toLocaleTimeString() forms with a locale and options, at the default locale (no locale argument, or undefined) or any locale string the program holds (ICU canonicalizes it; an invalid tag throws Node's RangeError); lists of locales, formatToParts, formatRange and resolvedOptions remain unsupported
 
 intl.ts:22:55 - error SC2020: 'Intl.NumberFormat.prototype.format over a '12n'' is part of the standard library types but has no scriptc lowering yet
 
@@ -50,7 +50,7 @@ intl.ts:23:15 - error SC2020: 'Intl.DateTimeFormat.prototype.formatRange' is par
      |               ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   24 | const buddhist = new Intl.DateTimeFormat("en-US", { calendar: "buddhist" }).format(0);
 
-  hint: what compiles: new Intl.NumberFormat(locale, options) and new Intl.DateTimeFormat(locale, options) with their format() method, and the toLocaleString(), toLocaleDateString() and toLocaleTimeString() forms with a locale and options, at the default locale (no locale argument, or undefined) or any locale string the program holds (ICU canonicalizes it; an invalid tag throws Node's RangeError); lists of locales, formatToParts, formatRange and resolvedOptions remain unsupported
+  hint: what compiles: new Intl.NumberFormat(locale, options), new Intl.DateTimeFormat(locale, options) and new Intl.ListFormat(locale, options) with their format() method, and the toLocaleString(), toLocaleDateString() and toLocaleTimeString() forms with a locale and options, at the default locale (no locale argument, or undefined) or any locale string the program holds (ICU canonicalizes it; an invalid tag throws Node's RangeError); lists of locales, formatToParts, formatRange and resolvedOptions remain unsupported
 
 intl.ts:24:53 - error SC2020: 'the Intl.DateTimeFormat option 'calendar'' is part of the standard library types but has no scriptc lowering yet
 
@@ -86,4 +86,4 @@ intl.ts:29:15 - error SC2020: 'Intl.getCanonicalLocales' is part of the standard
      |               ^~~~~~~~~~~~~~~~~~~~~~~~
   30 | 
 
-  hint: collation and locale negotiation stay outside the static runtime (the localeCompare stance: code-unit order, no collation) — what lowers: Intl.NumberFormat and Intl.DateTimeFormat objects with format(), the toLocaleString(), toLocaleDateString() and toLocaleTimeString() forms with a locale and options (the default locale, "en-US" or "en"), and Intl.Segmenter with grapheme or word granularity; sentence segmentation, resolvedOptions, and the remaining Intl constructors remain unsupported
+  hint: collation and the remaining Intl surfaces stay outside the static runtime (the localeCompare stance: code-unit order, no collation) — what lowers: Intl.NumberFormat and Intl.DateTimeFormat objects with format(), the toLocaleString(), toLocaleDateString() and toLocaleTimeString() forms with a locale and options (the default locale, or one string tag validated and negotiated as Node does), and Intl.Segmenter with grapheme or word granularity; sentence segmentation, resolvedOptions, locale lists, and the remaining Intl constructors remain unsupported

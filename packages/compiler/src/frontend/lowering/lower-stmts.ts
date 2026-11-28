@@ -349,6 +349,8 @@ import { staticAssertInstanceDecl } from "./assert-instances.js";
 import {
   lowerHttpClientFnBindingDecl,
   lowerHttpClientMaxHeadersCountAssignment,
+  lowerHttpReqHeaderWrite,
+  lowerHttpReqPropertyAssignment,
   lowerHttpResPropertyAssignment,
   lowerHttpServerTimeoutAssignment,
   lowerNetServerMaxConnectionsAssignment,
@@ -370,7 +372,7 @@ import {
   createRequireProgramModuleDecl,
   createRequireProgramModuleOf,
 } from "./builtins/module-bindings.js";
-import { lowerNodeModuleCall } from "./builtins/module-resolution.js";
+import { createRequireCreatorThrow, lowerNodeModuleCall } from "./builtins/module-resolution.js";
 import { registerBuiltinCallableAlias } from "./builtins/callable-aliases.js";
 import { builtinClassAliasOwnsNoSlot, registerBuiltinClassAlias } from "./builtins/class-values.js";
 import { lowerEnumDeclaration } from "./lower-enums.js";
@@ -3405,8 +3407,36 @@ function lowerVarDeclarator(
   if (numericIterator) return numericIterator;
   const drained = lowerMatchAllDrainDecl(lowerer, decl, isConst);
   if (drained) return drained;
+  /* TypeScript's `void` says a value is not meant to be used, not that it is
+   * undefined: a void-declared method of a checked-dynamic receiver keeps
+   * its runtime answer (MessagePort.postMessage answers true), so the
+   * binding takes dynamic storage rather than a checked cast to
+   * null | undefined that would throw on the real value. */
+  if (
+    decl.initializer !== undefined &&
+    ts.isIdentifier(decl.name) &&
+    voidDeclaredDynCall(lowerer, decl.initializer)
+  ) {
+    const symbol = lowerer.resolveValueSymbol(decl.name);
+    if (symbol !== null) lowerer.runtimeOptionalBindingTypes.set(symbol, DYN);
+  }
   const lowered = lowerer.lowerVarDecl(decl, isLet);
   return lowered ? [lowered] : [];
+}
+
+/** Whether `expr` is a call through a checked-dynamic receiver whose
+ * declared type is void: the callee's runtime value is checked-dynamic, so a
+ * void-declared result may still be a real value. */
+function voidDeclaredDynCall(lowerer: Lowerer, expr: ts.Expression): boolean {
+  let e: ts.Expression = expr;
+  while (ts.isParenthesizedExpression(e) || ts.isNonNullExpression(e)) e = e.expression;
+  if (!ts.isCallExpression(e) || !ts.isPropertyAccessExpression(e.expression)) return false;
+  if ((lowerer.typeOf(e).flags & ts.TypeFlags.Void) === 0) return false;
+  let receiver: ts.Expression = e.expression.expression;
+  while (ts.isParenthesizedExpression(receiver) || ts.isNonNullExpression(receiver))
+    receiver = receiver.expression;
+  const mapped = lowerer.mapTypeOf(lowerer.typeOf(receiver));
+  return mapped !== null && mapped.kind === "dyn";
 }
 
 function lowerCjsBindingSnapshot(
@@ -7914,6 +7944,12 @@ export function lowerVarDecl(
   // effects happen and its throws unwind the module, even though the
   // loader value stays the deferred fence.
   if (createRequireBindingDecl(lowerer, decl.name, decl.initializer)) {
+    // A statically invalid base makes no loader at all: Node throws its
+    // argument error here, at the declaration, before any use of the
+    // binding, so the declaration lowerings that keep only the base must
+    // not evaluate it as a plain value.
+    const invalid = createRequireCreatorThrow(lowerer, decl.initializer, locOf(decl.initializer!));
+    if (invalid !== null) return { kind: "exprStmt", expr: invalid, loc: locOf(decl.initializer!) };
     const base = createRequireEvaluatedBaseOf(lowerer, decl.initializer);
     return base === null
       ? null
@@ -11993,7 +12029,12 @@ export function lowerExprStatement(
         const dereferenced = lowerDereferencedElementWrite(lowerer, expr);
         if (dereferenced) return dereferenced;
       }
-      if (ts.isElementAccessExpression(expr.left)) return lowerer.lowerElementWrite(expr);
+      if (ts.isElementAccessExpression(expr.left)) {
+        // req.headers[name] = value — the headers object Node mutates.
+        const headerWrite = lowerHttpReqHeaderWrite(lowerer, expr.left, expr.right, locOf(expr));
+        if (headerWrite) return headerWrite;
+        return lowerer.lowerElementWrite(expr);
+      }
       if (ts.isPropertyAccessExpression(expr.left)) {
         fenceNodeModuleMutation(lowerer, expr.left, "assignment");
         // The writable Event accessors on Event subclass instances.
@@ -12087,6 +12128,17 @@ export function lowerExprStatement(
             locOf(expr),
           );
           if (closeOverride) return closeOverride;
+        }
+        // req.method / req.url / req.headers — IncomingMessage's own data
+        // properties (util/dev/server.ts builds a request this way).
+        {
+          const reqProp = lowerHttpReqPropertyAssignment(
+            lowerer,
+            expr.left,
+            expr.right,
+            locOf(expr),
+          );
+          if (reqProp) return reqProp;
         }
         // res.statusCode = 404 / res.statusMessage = "..." — Node's
         // writable ServerResponse properties (same routing).

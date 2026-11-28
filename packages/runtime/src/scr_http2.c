@@ -57,6 +57,7 @@
 #include <math.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <math.h>
 #include <stdio.h>
 #include <sys/stat.h>
 #include <stdlib.h>
@@ -783,6 +784,9 @@ typedef struct ScrH2SrvCtx {
                          * eager handler and server.on("request", ...) */
   ScrNetLs connect_ls; /* traditional/RFC 8441 CONNECT (req, res) listeners */
   ScrNetLs session_error_ls; /* server 'sessionError' (err, session) */
+  ScrNetLs timeout_ls;       /* server 'timeout' (session): the server-level
+                              * idle timeout Node's Http2Server applies to each
+                              * accepted session */
   ScrNetLs check_continue_ls; /* server 'checkContinue' (req, res) */
   void *http1_ctx;     /* borrowed: owned by the TLS wrapper's inner hook */
   bool enable_connect_protocol;
@@ -844,7 +848,8 @@ struct ScrH2Session {
   size_t rc;
   bool client;
   bool destroyed;
-  bool closed;          /* close() called (graceful GOAWAY) */
+  bool closed;          /* close() called, or a GOAWAY received */
+  bool close_requested; /* close() was the caller: it owns the shutdown notice */
   bool close_queued, close_emitted;
   bool connect_queued;  /* client 'connect' emit pending */
   bool preface_done;    /* server: magic received; client: always true */
@@ -855,7 +860,11 @@ struct ScrH2Session {
    * in a later GOAWAY, so the shutdown notice repeats it (nghttp2). */
   uint32_t goaway_last_stream_id;
   ScrNetSocket *sock;   /* +1; dropped (NULLed) when the socket closes */
-  ScrH2SrvCtx *srv;     /* +1; NULL on client sessions */
+  ScrH2SrvCtx *srv;
+  /* Node captures the server's timeout policy when a session is accepted:
+   * whether the server-level timeout forwards to its listeners is fixed for
+   * this session, whatever server.timeout becomes later. */
+  bool srv_timeout_forward;     /* +1; NULL on client sessions */
   /* frame reassembly */
   char *rbuf;
   size_t rlen, rcap;
@@ -874,6 +883,9 @@ struct ScrH2Session {
   size_t nstreams, streams_cap;
   int32_t next_stream_id;      /* client request ids: 1, 3, 5, ... */
   int32_t last_recv_stream_id; /* the GOAWAY last-stream answer */
+  int32_t last_proc_stream_id; /* the highest peer-initiated stream id
+                                * processed (nghttp2's last_proc_stream_id):
+                                * goaway()'s default lastStreamID. */
   /* The highest peer-initiated stream this side created: a HEADERS block
    * on a lower id is a closed stream's late frame, dropped rather than
    * opening a stream again. */
@@ -892,7 +904,7 @@ struct ScrH2Session {
   bool connected;    /* client: the transport is established */
   bool error_emitted;
   ScrNetLs stream_ls, close_ls, err_ls, connect_ls, goaway_ls,
-      remote_settings_ls, local_settings_ls, ping_ls;
+      remote_settings_ls, local_settings_ls, ping_ls, timeout_ls;
   /* The stream the last lookup by id found (borrowed from `streams`):
    * the frames of one stream arrive together, and a frame's context
    * lookup and its handling ask for the same stream. */
@@ -956,6 +968,7 @@ static void scr_h2_srv_ctx_release(ScrH2SrvCtx *ctx) {
   if (--ctx->rc > 0) return;
   scr_net_ls_drop(&ctx->stream_ls);
   scr_net_ls_drop(&ctx->session_ls);
+  scr_net_ls_drop(&ctx->timeout_ls);
   scr_net_ls_drop(&ctx->request_ls);
   scr_net_ls_drop(&ctx->connect_ls);
   scr_net_ls_drop(&ctx->session_error_ls);
@@ -1064,6 +1077,7 @@ static void scr_h2_session_drop_lists(ScrH2Session *s) {
   scr_net_ls_drop(&s->remote_settings_ls);
   scr_net_ls_drop(&s->local_settings_ls);
   scr_net_ls_drop(&s->ping_ls);
+  scr_net_ls_drop(&s->timeout_ls);
 }
 
 static void scr_h2_session_free(ScrH2Session *s) {
@@ -1195,21 +1209,39 @@ static void scr_h2_settings_pending_push(ScrH2Session *s, const ScrH2Settings *a
   s->npending++;
 }
 
-static void scr_h2_send_settings(ScrH2Session *s) {
-  scr_h2_settings_pending_push(s, &s->local_settings, NULL, NULL);
-  /* Defaults on the wire — except the CLIENT's enablePush, sent as 0
-   * because pushed streams are refused here (localSettings reads false). */
-  if (s->client) {
-    static const uint8_t no_push[6] = { 0x0, 0x2, 0, 0, 0, 0 };
-    scr_h2_send_frame(s, SCR_H2_F_SETTINGS, 0, 0, no_push, 6);
-    return;
+/* Send this side's SETTINGS frame. `max_concurrent_streams` is an advertised
+ * limit from the handshake options (0xffffffff = none). The frame's record
+ * is the pending entry's `after`: localSettings keeps answering the ACKED
+ * record until the peer acknowledges the frame, as Node's does. */
+static void scr_h2_send_settings(ScrH2Session *s, uint32_t max_concurrent_streams) {
+  ScrH2Settings after = s->local_settings;
+  if (max_concurrent_streams != 0xffffffffu) after.max_concurrent_streams = max_concurrent_streams;
+  scr_h2_settings_pending_push(s, &after, NULL, NULL);
+  uint8_t payload[12];
+  size_t n = 0;
+  /* An advertised limit from the handshake options: MAX_CONCURRENT_STREAMS
+   * (0x3), as nghttp2 submits it. Defaults stay off the wire: an empty
+   * SETTINGS frame carries ENABLE_PUSH=1, as Node's client leaves push
+   * enabled. (A pushed stream is still declined here — the receive-side push
+   * surface is not modeled.) */
+  if (after.max_concurrent_streams != 0xffffffffu) {
+    uint32_t v = after.max_concurrent_streams;
+    payload[n++] = 0x0;
+    payload[n++] = 0x3;
+    payload[n++] = (uint8_t)(v >> 24);
+    payload[n++] = (uint8_t)(v >> 16);
+    payload[n++] = (uint8_t)(v >> 8);
+    payload[n++] = (uint8_t)v;
   }
-  if (s->local_settings.enable_connect_protocol) {
-    static const uint8_t enable_connect[6] = { 0x0, 0x8, 0, 0, 0, 1 };
-    scr_h2_send_frame(s, SCR_H2_F_SETTINGS, 0, 0, enable_connect, 6);
-    return;
+  if (after.enable_connect_protocol) {
+    payload[n++] = 0x0;
+    payload[n++] = 0x8;
+    payload[n++] = 0;
+    payload[n++] = 0;
+    payload[n++] = 0;
+    payload[n++] = 1;
   }
-  scr_h2_send_frame(s, SCR_H2_F_SETTINGS, 0, 0, NULL, 0);
+  scr_h2_send_frame(s, SCR_H2_F_SETTINGS, 0, 0, n > 0 ? payload : NULL, n);
 }
 
 static void scr_h2_send_settings_ack(ScrH2Session *s) {
@@ -1517,9 +1549,16 @@ static void scr_h2_stream_fire_error(ScrH2Stream *st) {
   int n = name != NULL
       ? snprintf(msg, sizeof msg, "Stream closed with error code %s", name)
       : snprintf(msg, sizeof msg, "Stream closed with error code %" PRIu32, code);
-  ScrStr *m = scr_str_new(msg, (size_t)n);
-  scr_net_fire_err_this(&st->err_ls, m, st, SCR_DYNH_H2_STREAM);
-  scr_str_release(m);
+  /* A raw stream (no compatibility pair) has no internal error listener in
+   * Node, so an unlistened stream error throws there — an empty list here
+   * takes the fatal path on purpose. A compatibility stream swallows it
+   * (Node's compat layer listens), which is why a compat-only server
+   * survives a peer reset. */
+  if (st->err_ls.n > 0 || (st->compat_req == NULL && st->compat_res == NULL)) {
+    ScrStr *m = scr_str_new(msg, (size_t)n);
+    scr_net_fire_err_this(&st->err_ls, m, st, SCR_DYNH_H2_STREAM);
+    scr_str_release(m);
+  }
 }
 
 /* The stream's own 'close' listeners, after its 'error' and after the
@@ -1717,9 +1756,12 @@ static void scr_h2_session_queue_close(ScrH2Session *s) {
 static void scr_h2_session_maybe_finish_close(ScrH2Session *s) {
   if (!s->closed || s->destroyed || s->nstreams > 0) return;
   if (scr_h2_sock_alive(s)) {
-    /* A graceful close's last act is a second GOAWAY (nghttp2's shutdown
-     * notice): the peer hears 'goaway' for it as well, then the FIN. */
-    if (!s->goaway_final_sent) {
+    /* A graceful close()'s last act is a second GOAWAY (nghttp2's shutdown
+     * notice): the peer hears 'goaway' for it as well, then the FIN. A
+     * session that ended because the peer sent GOAWAY answers it once (the
+     * receipt path) and only ends its write half; it has no shutdown notice
+     * of its own, which Node's client does not send. */
+    if (s->close_requested && !s->goaway_final_sent) {
       s->goaway_final_sent = true;
       scr_h2_send_goaway_inner(s, 0, true);
     }
@@ -1811,6 +1853,7 @@ void scr_http2_session_close(ScrH2Session *s, ScrClosure *cb /*moves, nullable*/
   if (cb) scr_net_ls_add(&s->close_ls, cb, NULL, true);
   if (s->closed || s->destroyed) return;
   s->closed = true;
+  s->close_requested = true;
   scr_h2_send_goaway(s, 0 /* NGHTTP2_NO_ERROR */);
   scr_h2_session_maybe_finish_close(s);
 }
@@ -2121,6 +2164,15 @@ static bool scr_h2_on_frame_in(ScrH2Session *s, uint8_t type, uint8_t flags, int
       st->rst_code = code;
       st->destroyed = true;
       scr_h2_stream_begin_close(st);
+      /* Node completes a compatibility request the peer reset: its 'end'
+       * runs with no trailers (after 'aborted'), so a handler never hangs
+       * and the request settles instead of staying retained. A raw stream
+       * gets no 'end' here, as in Node. */
+      if (st->compat_req != NULL && !st->end_recv) {
+        st->end_recv = true;
+        st->end_emitted = true;
+        scr_http_h2_req_end(st->compat_req);
+      }
       scr_h2_stream_settle(st);
       scr_http2_stream_release(st);
       if (scr_exc_pending()) return false;
@@ -2306,6 +2358,7 @@ static void scr_h2_on_closed_in(void *ctx) {
 }
 
 static bool scr_h2_on_err_in(void *ctx, ScrStr *msg);
+static void scr_h2_on_timeout(void *ctx);
 
 static bool scr_h2_on_err(void *ctx, ScrStr *msg) {
   ScrAlsCtx *prev = scr_als_dispatch_enter(((ScrH2Session *)ctx)->als);
@@ -2345,10 +2398,6 @@ static ScrH2Session *scr_h2_session_new(bool client) {
    * getDefaultSettings() names */
   s->local_settings.max_header_list_size = 0xffffffffu;
   s->remote_settings.max_header_list_size = 0xffffffffu;
-  /* This unit does not accept pushed streams, so a client says so on the
-   * wire (ENABLE_PUSH = 0) and its local record reads what it sent. Node's
-   * client leaves push enabled. */
-  if (client) s->local_settings.enable_push = false;
   scr_h2_dyntab_init(&s->dec_table);
 #ifdef SCR_RC_AUDIT
   scr_h2_sessions_live++;
@@ -2828,7 +2877,10 @@ void scr_http2_stream_additional_headers(ScrH2Stream *st, ScrArr *pairs /*borrow
 
 /* Http2Stream.sendTrailers: the trailer block ends the stream. */
 void scr_http2_stream_send_trailers(ScrH2Stream *st, ScrArr *pairs /*borrowed, nullable*/) {
-  if (st->destroyed || st->close_queued || scr_h2_stream_local_closed(st)) {
+  /* Node's order: an explicitly destroyed stream answers first, then a
+   * block that already went out (the send itself closes the stream, so the
+   * closed state must not shadow it). */
+  if (st->destroyed || st->api_destroyed) {
     static const char text[] = "The stream has been destroyed";
     scr_throw_error_msg_code(SCR_ERR_ERROR, text, sizeof text - 1, "ERR_HTTP2_INVALID_STREAM");
     return;
@@ -2837,6 +2889,11 @@ void scr_http2_stream_send_trailers(ScrH2Stream *st, ScrArr *pairs /*borrowed, n
     static const char text[] = "Trailing headers have already been sent";
     scr_throw_error_msg_code(SCR_ERR_ERROR, text, sizeof text - 1,
                              "ERR_HTTP2_TRAILERS_ALREADY_SENT");
+    return;
+  }
+  if (st->destroyed || st->close_queued || scr_h2_stream_local_closed(st)) {
+    static const char text[] = "The stream has been destroyed";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, text, sizeof text - 1, "ERR_HTTP2_INVALID_STREAM");
     return;
   }
   if (!st->trailers_ready) {
@@ -3583,8 +3640,15 @@ static void scr_h2_stream_touch_timeout(ScrH2Stream *st) {
 }
 
 void scr_http2_stream_set_timeout_cb(ScrH2Stream *st, double msecs, ScrClosure *cb /*moves*/) {
-  if (st->destroyed || st->close_emitted || !(msecs > 0)) {
-    /* a zero timeout disables the timer and does not register the callback */
+  if (st->destroyed || st->close_emitted) {
+    scr_closure_release(cb);
+    return;
+  }
+  /* setTimeout(0, cb) disables the timer and does NOT register the
+   * callback; a registration of that same function leaves with it (Node's
+   * removeListener('timeout', callback)), as the session's setTimeout does. */
+  if (!(msecs > 0)) {
+    scr_net_ls_remove_last(&st->timeout_ls, cb);
     scr_closure_release(cb);
     scr_http2_stream_set_timeout(st, msecs);
     return;
@@ -3941,6 +4005,141 @@ static void scr_h2_fire_headers_list(ScrNetLs *ls, ScrH2Stream *st, ScrArr *pair
   free(snap);
 }
 
+/* A received request block's pseudo-headers, validated the way nghttp2 does
+ * for Node's server: :method always; :scheme and :path for every method but
+ * a plain CONNECT (which forbids both and requires :authority); :authority
+ * or a host field for the non-CONNECT case; an extended CONNECT only when
+ * the client enabled the connect protocol, and then with :scheme, :path and
+ * :authority. Unknown and repeated pseudo-headers are malformed too.
+ *
+ * A malformed block is a stream protocol error that never reaches a
+ * listener: without the :path rule a peer could hand a request with no url
+ * (Node's undefined) to a router that assumed a string. */
+/* A regular header field in a received block: field names are lowercase in
+ * HTTP/2, the connection-specific fields are forbidden, and `te` may carry
+ * nothing but "trailers" (nghttp2's HTTP-messaging rules; a mixed proxy
+ * relies on them to keep request smuggling out). */
+static bool scr_h2_regular_field_valid(const ScrStr *name, const ScrStr *value) {
+  for (size_t k = 0; k < name->len; k++) {
+    unsigned char c = (unsigned char)name->data[k];
+    if (c >= 'A' && c <= 'Z') return false;
+  }
+  if (scr_h2_name_is(name, "connection") || scr_h2_name_is(name, "keep-alive") ||
+      scr_h2_name_is(name, "proxy-connection") || scr_h2_name_is(name, "transfer-encoding") ||
+      scr_h2_name_is(name, "upgrade")) {
+    return false;
+  }
+  if (scr_h2_name_is(name, "te")) {
+    static const char want[] = "trailers";
+    if (value->len != sizeof want - 1) return false;
+    for (size_t k = 0; k < value->len; k++) {
+      char c = value->data[k];
+      if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
+      if (c != want[k]) return false;
+    }
+  }
+  return true;
+}
+
+static bool scr_h2_request_block_valid(const ScrH2Session *s, const ScrH2Headers *h) {
+  const ScrStr *method = NULL;
+  const ScrStr *scheme = NULL;
+  const ScrStr *path = NULL;
+  const ScrStr *authority = NULL;
+  const ScrStr *protocol = NULL;
+  bool host = false;
+  for (size_t i = 0; i < h->n; i++) {
+    const ScrStr *name = h->names[i];
+    const ScrStr *value = h->values[i];
+    if (name->len == 0) return false;
+    if (name->data[0] != ':') {
+      if (!scr_h2_regular_field_valid(name, value)) return false;
+      if (scr_h2_name_is(name, "host")) host = true;
+      continue;
+    }
+    const ScrStr **slot;
+    if (scr_h2_name_is(name, ":method")) {
+      slot = &method;
+    } else if (scr_h2_name_is(name, ":scheme")) {
+      slot = &scheme;
+    } else if (scr_h2_name_is(name, ":path")) {
+      slot = &path;
+    } else if (scr_h2_name_is(name, ":authority")) {
+      slot = &authority;
+    } else if (scr_h2_name_is(name, ":protocol")) {
+      slot = &protocol;
+    } else {
+      return false; /* a pseudo-header the request may not carry */
+    }
+    if (*slot != NULL) return false; /* a field the block may carry once */
+    *slot = value;
+  }
+  if (method == NULL || method->len == 0) return false;
+  if (scr_h2_name_is(method, "CONNECT")) {
+    if (protocol != NULL) {
+      /* extended CONNECT: only when the client enabled the setting, and
+       * with a non-empty :protocol, :scheme and :path */
+      /* RFC 8441: the client may use :protocol only when the SERVER
+       * advertised enableConnectProtocol (our local setting) — the
+       * client's own SETTINGS says nothing about what it may send. */
+      if (!s->local_settings.enable_connect_protocol) return false;
+      if (protocol->len == 0) return false;
+      if (scheme == NULL || scheme->len == 0) return false;
+      if (path == NULL || path->len == 0) return false;
+      return authority != NULL;
+    }
+    if (authority == NULL) return false;
+    return scheme == NULL && path == NULL;
+  }
+  if (protocol != NULL) return false; /* :protocol belongs to CONNECT alone */
+  if (scheme == NULL || scheme->len == 0) return false;
+  if (path == NULL || path->len == 0) return false;
+  return authority != NULL || host;
+}
+
+/* A received trailer block: no pseudo-header field at all, and the regular
+ * fields follow the same nghttp2 rules as a request block's. Node answers a
+ * block that breaks them with RST_STREAM(PROTOCOL_ERROR); the request (or
+ * response) still completes, so a handler never loses the message, and the
+ * normalized trailers it sees are empty. */
+static bool scr_h2_trailer_block_valid(const ScrH2Headers *h) {
+  for (size_t i = 0; i < h->n; i++) {
+    const ScrStr *name = h->names[i];
+    if (name->len == 0 || name->data[0] == ':') return false;
+    if (!scr_h2_regular_field_valid(name, h->values[i])) return false;
+  }
+  return true;
+}
+
+/* A received response block (the response itself or an informational one):
+ * exactly one :status — three digits, 100 or more — and no other
+ * pseudo-header, with the regular fields under the same rules. nghttp2
+ * validates every received block, so the client rejects a malformed one
+ * with RST_STREAM(PROTOCOL_ERROR) and reports ERR_HTTP2_STREAM_ERROR
+ * instead of surfacing a response. */
+static bool scr_h2_response_block_valid(const ScrH2Headers *h) {
+  const ScrStr *status = NULL;
+  for (size_t i = 0; i < h->n; i++) {
+    const ScrStr *name = h->names[i];
+    if (name->len == 0) return false;
+    if (name->data[0] != ':') {
+      if (!scr_h2_regular_field_valid(name, h->values[i])) return false;
+      continue;
+    }
+    if (!scr_h2_name_is(name, ":status")) return false;
+    if (status != NULL) return false;
+    status = h->values[i];
+  }
+  if (status == NULL || status->len != 3) return false;
+  unsigned v = 0;
+  for (size_t i = 0; i < 3; i++) {
+    char c = status->data[i];
+    if (c < '0' || c > '9') return false;
+    v = v * 10 + (unsigned)(c - '0');
+  }
+  return v >= 100;
+}
+
 /* Node's test for the Expect header: "100-continue", ASCII-insensitive. */
 static bool scr_h2_expects_continue(const ScrStr *v) {
   static const char want[] = "100-continue";
@@ -3951,6 +4150,65 @@ static bool scr_h2_expects_continue(const ScrStr *v) {
     if (c != want[i]) return false;
   }
   return true;
+}
+
+/* A received block that breaks RFC 9113's request rules: answer the peer
+ * with RST_STREAM(PROTOCOL_ERROR) and settle the stream. Nothing is
+ * dispatched, and no local 'error' fires — Node's server streams surface
+ * the rejection to the peer alone. */
+static void scr_h2_reject_protocol_error(ScrH2Session *s, ScrH2Stream *st, int32_t stream_id) {
+  scr_h2_send_rst(s, stream_id, 1 /* NGHTTP2_PROTOCOL_ERROR */);
+  st->rst_code = 1;
+  st->suppress_rst_error = true;
+  st->destroyed = true;
+  scr_h2_stream_begin_close(st);
+  scr_h2_stream_settle(st);
+}
+
+/* A rejected block on a stream the program already holds (a trailer): Node's
+ * nghttp2 reports the protocol error to the raw stream before it closes, so
+ * a listener sees ERR_HTTP2_STREAM_ERROR. A stream nobody listens on stays
+ * silent (Node's session keeps an internal listener; ours must not treat
+ * the rejection as an unhandled 'error'). */
+static void scr_h2_reject_stream_error(ScrH2Session *s, ScrH2Stream *st, int32_t stream_id) {
+  scr_h2_send_rst(s, stream_id, 1 /* NGHTTP2_PROTOCOL_ERROR */);
+  st->rst_code = 1;
+  st->destroyed = true;
+  /* Node's order on the compat side: the request is marked aborted (its
+   * 'aborted' event fires and its signal aborts) BEFORE the raw stream
+   * reports the protocol error, and both before 'end' — the handler of a
+   * request whose body never arrived never sees a clean success. */
+  scr_h2_stream_begin_close(st);
+  {
+    /* Node's ERR_HTTP2_STREAM_ERROR message for the reset code. */
+    const char *name = scr_h2_code_name(1);
+    char msg[80];
+    int n = snprintf(msg, sizeof msg, "Stream closed with error code %s",
+                     name != NULL ? name : "NGHTTP2_PROTOCOL_ERROR");
+    ScrStr *m = scr_str_new(msg, (size_t)n);
+    /* listeners, or — for a raw stream — Node's unhandled 'error' */
+    if (st->err_ls.n > 0 || (st->compat_req == NULL && st->compat_res == NULL)) {
+      scr_net_fire_err_this(&st->err_ls, m, st, SCR_DYNH_H2_STREAM);
+    }
+    scr_str_release(m);
+  }
+  /* Reported above (or deliberately not: a compatibility stream swallows an
+   * unlistened error, Node's compat layer listens). Either way the settle
+   * below must not raise it again. */
+  st->suppress_rst_error = true;
+  /* Then it completes the request: the compat request's 'end' runs with no
+   * trailers (nghttp2 closes the stream under it), so a handler never hangs
+   * waiting for a body that cannot arrive. */
+  if (!st->end_recv) {
+    st->end_recv = true;
+    st->end_emitted = true;
+    if (st->compat_req != NULL) {
+      scr_http_h2_req_end(st->compat_req);
+    } else {
+      scr_h2_stream_maybe_emit_end(st);
+    }
+  }
+  scr_h2_stream_settle(st);
 }
 
 static void scr_h2_dispatch_headers(ScrH2Session *s, int32_t stream_id, uint8_t flags,
@@ -3973,22 +4231,18 @@ static void scr_h2_dispatch_headers(ScrH2Session *s, int32_t stream_id, uint8_t 
          * peer from appending header fields to one request without bound:
          * every accepted block would land in the request's trailer
          * storage, and nothing else limits how many arrive. */
-        scr_h2_send_rst(s, stream_id, 1 /* NGHTTP2_PROTOCOL_ERROR */);
-        st->rst_code = 1;
-        st->destroyed = true;
-        scr_h2_stream_begin_close(st);
-        scr_h2_stream_settle(st);
+        scr_h2_reject_stream_error(s, st, stream_id);
         return;
       }
       if (st->got_trailers || st->end_recv) {
         /* the trailer block already arrived: further HEADERS on the stream
          * are a protocol error, and accepting them would keep appending to
          * the request's trailer storage while the response is pending. */
-        scr_h2_send_rst(s, stream_id, 1 /* NGHTTP2_PROTOCOL_ERROR */);
-        st->rst_code = 1;
-        st->destroyed = true;
-        scr_h2_stream_begin_close(st);
-        scr_h2_stream_settle(st);
+        scr_h2_reject_stream_error(s, st, stream_id);
+        return;
+      }
+      if (!scr_h2_trailer_block_valid(h)) {
+        scr_h2_reject_stream_error(s, st, stream_id);
         return;
       }
       st->got_trailers = true;
@@ -4019,8 +4273,31 @@ static void scr_h2_dispatch_headers(ScrH2Session *s, int32_t stream_id, uint8_t 
       scr_h2_send_rst(s, stream_id, 7 /* NGHTTP2_REFUSED_STREAM */);
       return;
     }
+    /* A peer stream past the advertised MAX_CONCURRENT_STREAMS is refused
+     * (RFC 9113 5.1.2), and the block opens nothing. */
+    {
+      uint32_t live_limit = s->local_settings.max_concurrent_streams;
+      if (s->npending > 0) live_limit = s->pending[s->npending - 1].after.max_concurrent_streams;
+      if (live_limit != 0xffffffffu && s->nstreams >= (size_t)live_limit) {
+        scr_h2_send_rst(s, stream_id, 7 /* NGHTTP2_REFUSED_STREAM */);
+        return;
+      }
+    }
     st = scr_h2_stream_new(s, stream_id);
     s->max_created_stream_id = stream_id;
+    /* goaway()'s default lastStreamID is the last PEER stream processed
+     * (nghttp2's last_proc_stream_id): the peer's own ids — a client's
+     * locally initiated requests do not count. */
+    if (stream_id > s->last_proc_stream_id) s->last_proc_stream_id = stream_id;
+    if (!scr_h2_request_block_valid(s, h)) {
+      /* RFC 9113's malformed-request rule as nghttp2 applies it: a stream
+       * protocol error, and the block reaches no listener at all. The
+       * dispatcher's own reference (stream_new's +1) goes with it — the
+       * settle dropped the session's. */
+      scr_h2_reject_protocol_error(s, st, stream_id);
+      scr_http2_stream_release(st);
+      return;
+    }
     if (end_stream) {
       st->end_recv = true;
       st->end_after_headers = true;
@@ -4086,7 +4363,13 @@ static void scr_h2_dispatch_headers(ScrH2Session *s, int32_t stream_id, uint8_t 
       for (size_t i = 0; i <= n; i++) {
         if (i == split) {
           scr_dyn_this_pop();
-          if (!scr_exc_pending() && !st->destroyed && scr_net_ls_has_live(listeners)) {
+          /* A compatibility server processes EVERY stream through the
+           * compat layer, listener or not: Node's compat layer creates the
+           * request/response pair for a CONNECT and answers 405 itself when
+           * nobody listens, and that pair is also what keeps a peer reset
+           * from surfacing as an unhandled stream error. */
+          if (!scr_exc_pending() && !st->destroyed &&
+              (srv->compat_placed || scr_net_ls_has_live(listeners))) {
             scr_h2_compat_dispatch(s, st, h, end_stream, listeners, auto_continue);
           }
           scr_dyn_this_push(server, SCR_DYNH_NET_SERVER);
@@ -4111,6 +4394,20 @@ static void scr_h2_dispatch_headers(ScrH2Session *s, int32_t stream_id, uint8_t 
   /* client: response headers on a stream this session opened */
   ScrH2Stream *st = scr_h2_find_stream(s, stream_id);
   if (!st || st->destroyed) return;
+  /* Every received block is validated before it reaches anything, as
+   * nghttp2 does: the response (and each informational block) needs one
+   * three-digit :status and no other pseudo-header, a trailer block needs
+   * none, and both follow the regular field rules. A malformed block
+   * resets the stream; the stream then reports ERR_HTTP2_STREAM_ERROR. */
+  if (!(st->got_response ? scr_h2_trailer_block_valid(h)
+                         : scr_h2_response_block_valid(h))) {
+    scr_h2_send_rst(s, stream_id, 1 /* NGHTTP2_PROTOCOL_ERROR */);
+    st->rst_code = 1;
+    st->destroyed = true;
+    scr_h2_stream_begin_close(st);
+    scr_h2_stream_settle(st);
+    return;
+  }
   int block_status = scr_h2_headers_status(h);
   if (!st->got_response && block_status >= 100 && block_status < 200) {
     /* An informational response — never END_STREAM, never the response.
@@ -4402,18 +4699,25 @@ static void scr_h2_compat_dispatch(ScrH2Session *s, ScrH2Stream *st, const ScrH2
   /* The compat pair's own events follow the stream's context. */
   ScrAlsCtx *prev = scr_als_dispatch_enter(st->als);
   ScrHttpReq *req = scr_http_h2_req_new(s->sock, st);
+  bool path_seen = false;
+  bool connect_request = false;
   for (size_t i = 0; i < h->n; i++) {
     ScrStr *name = h->names[i];
     ScrStr *value = h->values[i];
     if (name->len == 7 && memcmp(name->data, ":method", 7) == 0) {
       scr_http_h2_req_line(req, value, NULL);
+      connect_request = value->len == 7 && memcmp(value->data, "CONNECT", 7) == 0;
     } else if (name->len == 5 && memcmp(name->data, ":path", 5) == 0) {
       scr_http_h2_req_line(req, NULL, value);
+      path_seen = true;
     }
     /* EVERY pair — pseudo-headers included — lands in req.headers
      * (Node's compat shape: req.headers[':path'] answers). */
     scr_http_h2_req_header(req, name, value);
   }
+  /* Node's compat request takes url from the frame's :path, so a CONNECT
+   * block (which carries none; an extended CONNECT does) reads undefined. */
+  if (!path_seen) scr_http_req_clear_url(req);
   ScrHttpRes *res = scr_http_h2_res_new(s->sock, st);
   scr_als_dispatch_leave(prev);
   scr_http_res_set_req(res, req); /* res.req — the compat pair's backref */
@@ -4443,6 +4747,16 @@ static void scr_h2_compat_dispatch(ScrH2Session *s, ScrH2Stream *st, const ScrH2
   }
   scr_dyn_this_pop();
   free(snap);
+  /* Node's compat layer answers a CONNECT nobody listens to itself:
+   * statusCode 405 and end(), no 'request' event. The pair above is what
+   * receives it (and keeps a later peer reset from being unhandled). */
+  if (connect_request && n == 0 && !scr_exc_pending() && !st->destroyed &&
+      !st->respond_sent && !scr_h2_stream_local_closed(st)) {
+    ScrArr *none = scr_arr_new(SCR_ELEM_STR, 0);
+    scr_http_res_write_head_pairs(res, 405, none);
+    scr_arr_release(none);
+    scr_http_res_end(res);
+  }
   /* a body-less request ends NOW — the handler's synchronous listeners
    * see 'end' right after it returns, the http/1 parser's order */
   if (!scr_exc_pending() && end_stream) scr_http_h2_req_end(req);
@@ -4456,6 +4770,10 @@ static void scr_h2_srv_ctx_free_v(void *p) { scr_h2_srv_ctx_release((ScrH2SrvCtx
 
 static void scr_h2_srv_ctx_settle(void *p) {
   ScrH2SrvCtx *ctx = (ScrH2SrvCtx *)p;
+  /* a settled server keeps no listeners: a timeout callback that captures
+   * its server would otherwise close a refcount cycle the collector cannot
+   * trace */
+  scr_net_ls_drop(&ctx->timeout_ls);
   scr_net_ls_drop(&ctx->stream_ls);
   scr_net_ls_drop(&ctx->session_ls);
   scr_net_ls_drop(&ctx->request_ls);
@@ -4485,6 +4803,48 @@ static void scr_h2_fire_server_session(ScrH2Session *sess) {
   scr_http2_session_release(sess);
 }
 
+/* The server-level idle timeout on a session's socket: the server's
+ * 'timeout' listeners hear the SESSION (Node's Http2Server), and with none
+ * the session is destroyed (Node's unhandled server timeout). Answering
+ * handled keeps the net layer from firing the socket payload or destroying
+ * the socket itself. */
+static bool scr_h2_srv_socket_timeout(void *ctx) {
+  ScrH2Session *s = (ScrH2Session *)ctx;
+  /* The net layer's surface path asks on every socket timeout: answer
+   * handled in each case so it never fires the socket payload or destroys
+   * the socket itself. A timer the SESSION armed (session.setTimeout) is not
+   * the server's: its own listeners fire below and the server does nothing. */
+  if (s == NULL || s->destroyed || s->srv == NULL) return true;
+  if (!s->srv_timeout_forward) return true;
+  /* The server's idle timeout is one timer per session (Node fires it once
+   * and does not re-arm): the decision is consumed here, so a timer the
+   * SESSION arms afterwards (session.setTimeout) reaches only its own
+   * listeners and never the server again. */
+  s->srv_timeout_forward = false;
+  ScrH2SrvCtx *srv = s->srv;
+  size_t n = srv->timeout_ls.n;
+  if (n > 0) {
+    ScrNetL *snap;
+    size_t count = scr_net_ls_snapshot(&srv->timeout_ls, &snap);
+    /* Node emits the event on the SERVER (a normal-function listener sees
+     * the server as `this`) and hands it the session as the argument. */
+    ScrNetServer *server = s->sock != NULL ? scr_net_sock_server(s->sock) : NULL;
+    scr_dyn_this_push(server, SCR_DYNH_NET_SERVER);
+    for (size_t i = 0; i < count; i++) {
+      if (!scr_exc_pending())
+        ((ScrH2SessionFn)snap[i].fn)(snap[i].cb, scr_http2_session_retain(s));
+      scr_closure_release(snap[i].cb);
+    }
+    scr_dyn_this_pop();
+    free(snap);
+  }
+  /* the count is the one taken before firing: a once listener that just ran
+   * was a listener, so the timeout was handled (Node destroys only when no
+   * listener exists) */
+  if (!scr_exc_pending() && n == 0) scr_http2_session_destroy(s);
+  return true;
+}
+
 static void scr_h2_on_server_established(void *ctx) { scr_h2_fire_server_session(ctx); }
 
 static void scr_h2_on_connection(void *ctx, ScrNetSocket *sock) {
@@ -4497,9 +4857,17 @@ static void scr_h2_on_connection(void *ctx, ScrNetSocket *sock) {
   sess->local_settings.enable_connect_protocol = srv->enable_connect_protocol;
   scr_net_sock_set_native_reader(sock, &scr_h2_on_data, &scr_h2_on_eof, &scr_h2_on_closed,
                                   sess, &scr_h2_session_ctx_free);
-  scr_net_sock_set_native_events(sock, NULL, &scr_h2_on_err);
+  scr_net_sock_set_native_events(sock, &scr_h2_on_timeout, &scr_h2_on_err);
+  scr_net_sock_set_native_http_timeout(sock, &scr_h2_srv_socket_timeout);
+  /* the server's own idle timeout (server.timeout / setTimeout) arms each
+   * accepted session's socket, as Node's Http2Server applies it per session —
+   * and the forwarding decision is captured here, as Node captures it */
+  ScrNetServer *netsrv = scr_net_sock_server(sock);
+  double server_idle_ms = netsrv != NULL ? scr_net_server_idle_ms(netsrv) : 0;
+  sess->srv_timeout_forward = server_idle_ms > 0;
+  if (server_idle_ms > 0) scr_net_sock_set_timeout(sock, server_idle_ms);
   scr_net_sock_set_h2_bound(sock);
-  scr_h2_send_settings(sess);
+  scr_h2_send_settings(sess, 0xffffffffu);
   /* 'session' fires in the connection callback, before the connection's
    * first frame. Node's server listens to its own 'connection' (cleartext)
    * or 'secureConnection' (TLS) from its construction and creates the
@@ -4528,6 +4896,10 @@ ScrNetServer *scr_http2_create_server(void) {
   ScrH2SrvCtx *ctx = calloc(1, sizeof *ctx);
   if (!ctx) scr_h2_oom();
   ctx->proto = SCR_NET_PROTO_H2;
+  /* server.timeout / setTimeout arm each accepted session's socket through
+   * the net layer's server-timeout path, whose payload this unit overrides
+   * (the session, not the socket). */
+  scr_net_server_enable_http_timeout_surface(s);
   ctx->rc = 1;
   scr_net_server_set_native_conn(s, &scr_h2_on_plain_connection, ctx, &scr_h2_srv_ctx_free_v);
   scr_net_server_set_http_ctx(s, ctx);
@@ -4536,11 +4908,39 @@ ScrNetServer *scr_http2_create_server(void) {
   return s;
 }
 
+/* http2.createServer(options[, handler]) when the options carry
+ * settings.enableConnectProtocol: the server advertises RFC 8441 support
+ * (the secure server's option takes the same path), so a default client may
+ * send an extended CONNECT. Every other tuning knob stays at its default. */
+ScrNetServer *scr_http2_create_server_opts(bool enable_connect_protocol) {
+  ScrNetServer *s = scr_http2_create_server();
+  ScrH2SrvCtx *ctx = (ScrH2SrvCtx *)scr_net_server_get_http_ctx(s);
+  if (ctx != NULL && ctx->proto == SCR_NET_PROTO_H2) {
+    ctx->enable_connect_protocol = enable_connect_protocol;
+  }
+  return s;
+}
+
 /* http2.createServer(handler): the eager (req, res) handler is the first
  * compat 'request' listener — Node's exact route (server.on("request")
  * appends through the scr_http.c hook). */
 ScrNetServer *scr_http2_create_server_req(ScrClosure *handler /*moves*/, ScrHttpReqFn fn) {
   ScrNetServer *s = scr_http2_create_server();
+  ScrH2SrvCtx *ctx = (ScrH2SrvCtx *)scr_net_server_get_http_ctx(s);
+  if (ctx != NULL && ctx->proto == SCR_NET_PROTO_H2) {
+    scr_h2_place_compat(ctx);
+    scr_net_ls_add(&ctx->request_ls, handler, (void *)fn, false);
+  } else {
+    scr_closure_release(handler);
+  }
+  return s;
+}
+
+/* createServer(options, handler): the eager compat handler over the h2c
+ * server that advertises the connect protocol. */
+ScrNetServer *scr_http2_create_server_req_opts(ScrClosure *handler /*moves*/,
+                                                ScrHttpReqFn fn, bool enable_connect_protocol) {
+  ScrNetServer *s = scr_http2_create_server_opts(enable_connect_protocol);
   ScrH2SrvCtx *ctx = (ScrH2SrvCtx *)scr_net_server_get_http_ctx(s);
   if (ctx != NULL && ctx->proto == SCR_NET_PROTO_H2) {
     scr_h2_place_compat(ctx);
@@ -4571,6 +4971,7 @@ ScrNetServer *scr_http2_create_secure_server(const char *cert, size_t cert_len,
   ctx->proto = SCR_NET_PROTO_H2;
   ctx->rc = 1;
   ctx->enable_connect_protocol = enable_connect_protocol;
+  scr_net_server_enable_http_timeout_surface(s);
   scr_net_server_set_http_ctx(s, ctx); /* borrowed alias: 'stream'/'session' registration */
   scr_net_server_set_proto_settle(s, &scr_h2_srv_ctx_settle);
   scr_net_server_set_proto_close(s, &scr_h2_srv_close_sessions);
@@ -4595,6 +4996,7 @@ ScrNetServer *scr_http2_create_secure_server_allow_http1(
   ctx->rc = 1;
   ctx->http1_ctx = http1_ctx;
   ctx->enable_connect_protocol = enable_connect_protocol;
+  scr_net_server_enable_http_timeout_surface(s);
   scr_net_server_set_http_ctx(s, ctx);
   scr_net_server_set_proto_settle(s, &scr_h2_srv_ctx_settle);
   scr_net_server_set_proto_close(s, &scr_h2_srv_close_sessions);
@@ -4725,7 +5127,8 @@ static void scr_h2_on_established(void *ctx) {
  * connected socket (ALPN h2 on TLS, prior knowledge on cleartext) as a
  * server session. The session has no owning server, so only the session's
  * own 'stream' listeners see its streams. */
-ScrH2Session *scr_http2_perform_server_handshake(ScrNetSocket *sock /*borrowed*/) {
+static ScrH2Session *scr_h2_handshake_with(ScrNetSocket *sock /*borrowed*/,
+                                              uint32_t max_concurrent_streams) {
   /* Node binds a socket to one session: a second handshake over it (or over
    * a socket a server or client session already owns) is SOCKET_BOUND rather
    * than two sessions reading one socket. A bound socket reports the binding
@@ -4747,9 +5150,24 @@ ScrH2Session *scr_http2_perform_server_handshake(ScrNetSocket *sock /*borrowed*/
    * CONNECT handover: take it over and release that context */
   scr_net_sock_adopt_native_reader(sock, &scr_h2_on_data, &scr_h2_on_eof, &scr_h2_on_closed,
                                     sess, &scr_h2_session_ctx_free);
-  scr_net_sock_set_native_events(sock, NULL, &scr_h2_on_err);
+  /* the session's setTimeout rides the socket's idle timer: the handshake
+   * path forwards its fire exactly as the accepted-connection and client
+   * paths do */
+  scr_net_sock_set_native_events(sock, &scr_h2_on_timeout, &scr_h2_on_err);
+  scr_net_sock_set_native_http_timeout(sock, &scr_h2_srv_socket_timeout);
+  /* the server's own idle timeout (server.timeout / setTimeout) arms each
+   * accepted session's socket, as Node's Http2Server applies it per session —
+   * and the forwarding decision is captured here, as Node captures it */
+  ScrNetServer *netsrv = scr_net_sock_server(sock);
+  double server_idle_ms = netsrv != NULL ? scr_net_server_idle_ms(netsrv) : 0;
+  sess->srv_timeout_forward = server_idle_ms > 0;
+  if (server_idle_ms > 0) scr_net_sock_set_timeout(sock, server_idle_ms);
   scr_net_sock_set_h2_bound(sock);
-  scr_h2_send_settings(sess);
+  /* The options' settings: the advertised limit goes out with the first
+   * SETTINGS frame and is what the peer sees; localSettings takes it when
+   * the peer ACKs the frame (the ACKED record is what Node answers), and a
+   * peer stream past it is refused below from the pending frame's record. */
+  scr_h2_send_settings(sess, max_concurrent_streams);
   /* Node resumes the socket it takes over: a paused one would never read the
    * preface */
   scr_net_sock_release(scr_net_sock_resume(sock));
@@ -4763,12 +5181,36 @@ ScrH2Session *scr_http2_perform_server_handshake(ScrNetSocket *sock /*borrowed*/
   return scr_http2_session_retain(sess); /* the socket's ctx holds its own */
 }
 
+ScrH2Session *scr_http2_perform_server_handshake(ScrNetSocket *sock /*borrowed*/) {
+  return scr_h2_handshake_with(sock, 0xffffffffu);
+}
+
+/* performServerHandshake(socket, options): the options' settings are the
+ * session's, so settings.maxConcurrentStreams is advertised in the first
+ * SETTINGS frame and enforced when the peer opens streams. maxSessionMemory
+ * has no memory cap here yet, so a non-default value is refused rather than
+ * silently dropped (the default states nothing). */
 ScrH2Session *scr_http2_perform_server_handshake_opts(ScrNetSocket *sock /*borrowed*/,
                                                        const ScrDyn *opts /*borrowed*/) {
-  /* the options are inert in this unit, but the caller's literal has already
-   * evaluated (its calls and spreads run); the value itself is ignored */
-  (void)opts;
-  return scr_http2_perform_server_handshake(sock);
+  uint32_t max_concurrent_streams = 0xffffffffu;
+  if (opts != NULL && opts->kind == SCR_DYN_OBJ) {
+    const ScrDyn *memory = scr_dyn_obj_get(opts, "maxSessionMemory", 16);
+    /* The option is in megabytes; 10 is Node's default, which states nothing. */
+    if (memory != NULL && memory->kind == SCR_DYN_NUM && memory->v.num != 10.0) {
+      static const char text[] = "http2 maxSessionMemory is not supported yet";
+      scr_throw_error_msg_code(SCR_ERR_ERROR, text, sizeof text - 1, "SC2020");
+      return NULL;
+    }
+    const ScrDyn *settings = scr_dyn_obj_get(opts, "settings", 8);
+    if (settings != NULL && settings->kind == SCR_DYN_OBJ) {
+      const ScrDyn *mcs = scr_dyn_obj_get(settings, "maxConcurrentStreams", 20);
+      if (mcs != NULL && mcs->kind == SCR_DYN_NUM && mcs->v.num >= 0 &&
+          mcs->v.num <= 4294967295.0) {
+        max_concurrent_streams = (uint32_t)mcs->v.num;
+      }
+    }
+  }
+  return scr_h2_handshake_with(sock, max_concurrent_streams);
 }
 
 /* http2.connect(authority[, listener]): an http authority dials h2c
@@ -4843,11 +5285,11 @@ ScrH2Session *scr_http2_connect(ScrStr *url /*borrowed*/, bool reject_unauthoriz
   if (cb) scr_net_ls_add(&s->connect_ls, cb, (void *)fn, true);
   scr_net_sock_set_native_reader(sock, &scr_h2_on_data, &scr_h2_on_eof, &scr_h2_on_closed,
                                   s, &scr_h2_session_ctx_free);
-  scr_net_sock_set_native_events(sock, NULL, &scr_h2_on_err);
+  scr_net_sock_set_native_events(sock, &scr_h2_on_timeout, &scr_h2_on_err);
   scr_net_sock_set_h2_bound(sock);
   scr_net_sock_set_native_established(sock, &scr_h2_on_established);
   scr_net_sock_write_native(sock, SCR_H2_PREFACE, 24);
-  scr_h2_send_settings(s);
+  scr_h2_send_settings(s, 0xffffffffu);
   /* TWO owners now: the socket's native ctx and the returned handle. */
   return scr_http2_session_retain(s);
 }
@@ -4870,17 +5312,51 @@ ScrH2Stream *scr_http2_session_request(ScrH2Session *s, ScrArr *pairs /*borrowed
     return NULL;
   }
   if (!scr_h2_regular_names_valid(pairs)) return NULL; /* no stream was created */
-  ScrH2Stream *st = scr_h2_stream_new(s, s->next_stream_id);
-  /* A request on a connected session is initialized inside request(), so
-   * Node's 'ready' fires before any listener can attach; a connecting
-   * session fires it on 'connect' (the emit above). */
-  if (s->connected) scr_h2_stream_fire_ready(st);
-  s->next_stream_id += 2;
-  st->want_trailers = wait_trailers;
   ScrStr *method = scr_h2_pairs_pseudo(pairs, ":method");
   ScrStr *path = scr_h2_pairs_pseudo(pairs, ":path");
   ScrStr *scheme = scr_h2_pairs_pseudo(pairs, ":scheme");
   ScrStr *authority = scr_h2_pairs_pseudo(pairs, ":authority");
+  ScrStr *protocol = scr_h2_pairs_pseudo(pairs, ":protocol");
+  /* Node's prepareRequestHeadersObject: a CONNECT without :protocol (an
+   * extended CONNECT keeps the regular pseudo set) carries :authority and
+   * neither :scheme nor :path, and each violation is a synchronous throw
+   * before any stream exists. */
+  bool plain_connect = method != NULL && scr_h2_name_is(method, "CONNECT") && protocol == NULL;
+  if (plain_connect) {
+    const char *code = NULL;
+    const char *text = NULL;
+    size_t text_len = 0;
+    if (authority == NULL) {
+      code = "ERR_HTTP2_CONNECT_AUTHORITY";
+      text = ":authority header is required for CONNECT requests";
+      text_len = sizeof(":authority header is required for CONNECT requests") - 1;
+    } else if (scheme != NULL) {
+      code = "ERR_HTTP2_CONNECT_SCHEME";
+      text = "The :scheme header is forbidden for CONNECT requests";
+      text_len = sizeof("The :scheme header is forbidden for CONNECT requests") - 1;
+    } else if (path != NULL) {
+      code = "ERR_HTTP2_CONNECT_PATH";
+      text = "The :path header is forbidden for CONNECT requests";
+      text_len = sizeof("The :path header is forbidden for CONNECT requests") - 1;
+    }
+    if (code != NULL) {
+      scr_str_release(method);
+      scr_str_release(path);
+      scr_str_release(scheme);
+      scr_str_release(authority);
+      scr_throw_error_msg_code(SCR_ERR_ERROR, text, text_len, code);
+      return NULL;
+    }
+  }
+  /* The block is valid: the stream exists now. A request on a connected
+   * session is initialized inside request(), so Node's 'ready' fires before
+   * any listener can attach; a connecting session fires it on 'connect' (the
+   * emit above). A rejected block above never reaches this point, so it
+   * creates no stream. */
+  ScrH2Stream *st = scr_h2_stream_new(s, s->next_stream_id);
+  if (s->connected) scr_h2_stream_fire_ready(st);
+  s->next_stream_id += 2;
+  st->want_trailers = wait_trailers;
   ScrH2Buf block = {0};
   scr_h2_hpack_encode(&block, ":method", 7, method ? method->data : "GET", method ? method->len : 3);
   if (authority) {
@@ -4888,12 +5364,14 @@ ScrH2Stream *scr_http2_session_request(ScrH2Session *s, ScrArr *pairs /*borrowed
   } else {
     scr_h2_hpack_encode(&block, ":authority", 10, s->authority ? s->authority : "", s->authority_len);
   }
-  /* the default :scheme follows the transport — https over TLS sessions
-   * (Node derives it from the connect authority the same way) */
-  const char *dscheme = s->sock != NULL && scr_net_sock_encrypted(s->sock) ? "https" : "http";
-  scr_h2_hpack_encode(&block, ":scheme", 7, scheme ? scheme->data : dscheme,
-                      scheme ? scheme->len : strlen(dscheme));
-  scr_h2_hpack_encode(&block, ":path", 5, path ? path->data : "/", path ? path->len : 1);
+  if (!plain_connect) {
+    /* the default :scheme follows the transport — https over TLS sessions
+     * (Node derives it from the connect authority the same way) */
+    const char *dscheme = s->sock != NULL && scr_net_sock_encrypted(s->sock) ? "https" : "http";
+    scr_h2_hpack_encode(&block, ":scheme", 7, scheme ? scheme->data : dscheme,
+                        scheme ? scheme->len : strlen(dscheme));
+    scr_h2_hpack_encode(&block, ":path", 5, path ? path->data : "/", path ? path->len : 1);
+  }
   scr_h2_encode_regulars(&block, pairs);
   bool end;
   if (end_stream < 0) {
@@ -4916,11 +5394,13 @@ ScrH2Stream *scr_http2_session_request(ScrH2Session *s, ScrArr *pairs /*borrowed
                               ? scr_str_retain(authority)
                               : scr_str_new(s->authority != NULL ? s->authority : "",
                                             s->authority_len));
-    scr_arr_push_ref(sent, scr_str_new(":scheme", 7));
-    scr_arr_push_ref(sent, scheme != NULL ? scr_str_retain(scheme)
-                                          : scr_str_new(def_scheme, strlen(def_scheme)));
-    scr_arr_push_ref(sent, scr_str_new(":path", 5));
-    scr_arr_push_ref(sent, path != NULL ? scr_str_retain(path) : scr_str_new("/", 1));
+    if (!plain_connect) {
+      scr_arr_push_ref(sent, scr_str_new(":scheme", 7));
+      scr_arr_push_ref(sent, scheme != NULL ? scr_str_retain(scheme)
+                                            : scr_str_new(def_scheme, strlen(def_scheme)));
+      scr_arr_push_ref(sent, scr_str_new(":path", 5));
+      scr_arr_push_ref(sent, path != NULL ? scr_str_retain(path) : scr_str_new("/", 1));
+    }
     size_t npairs = pairs != NULL ? (size_t)scr_arr_len(pairs) : 0;
     for (size_t i = 0; i < npairs; i++) scr_arr_push_ref(sent, scr_arr_get_ref(pairs, (double)i));
     if (st->sent_headers_dom != NULL) scr_dyn_release(st->sent_headers_dom);
@@ -4931,6 +5411,7 @@ ScrH2Stream *scr_http2_session_request(ScrH2Session *s, ScrArr *pairs /*borrowed
   if (path) scr_str_release(path);
   if (scheme) scr_str_release(scheme);
   if (authority) scr_str_release(authority);
+  if (protocol) scr_str_release(protocol);
   scr_h2_send_headers(s, st->id, &block, end);
   free(block.data);
   if (end) {
@@ -4957,6 +5438,137 @@ void scr_http2_session_on_close(ScrH2Session *s, ScrClosure *cb /*moves*/, bool 
     return;
   }
   scr_net_ls_add(&s->close_ls, cb, NULL, once);
+}
+
+/* The session's 'timeout': the underlying socket's idle timer fired (Node
+ * forwards the socket's event; the listeners run with this === session). */
+void scr_http2_session_on_timeout(ScrH2Session *s, ScrClosure *cb /*moves*/, bool once) {
+  if (s->close_emitted) {
+    scr_closure_release(cb);
+    return;
+  }
+  scr_net_ls_add(&s->timeout_ls, cb, NULL, once);
+}
+
+/* getTimerDuration(msecs, 'msecs'): Node checks the duration before it
+ * touches the timer, so a negative or non-finite value throws
+ * ERR_OUT_OF_RANGE and leaves the armed timer and its listeners alone. */
+static bool scr_h2_timeout_msecs_valid(double msecs) {
+  if (isfinite(msecs) && msecs >= 0) return true;
+  char recv[48], msg[176];
+  scr_num_received(msecs, recv);
+  int len = snprintf(msg, sizeof msg,
+                     "The value of \"msecs\" is out of range. It must be a non-negative finite number. Received %s",
+                     recv);
+  scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+  return false;
+}
+
+/* session.setTimeout(msecs[, callback]): the session socket's idle timer;
+ * the callback is registered as a once 'timeout' listener, as Node does. */
+/* Http2Server.timeout / setTimeout / on('timeout'): the value lives in the
+ * net server (accepted sockets arm from it), the listeners in the h2 server
+ * context so their payload is the session. */
+double scr_http2_server_timeout_get(ScrNetServer *srv) { return scr_net_server_idle_ms(srv); }
+
+void scr_http2_server_set_timeout_plain(ScrNetServer *srv, double ms) {
+  scr_net_server_set_timeout_plain(srv, ms);
+}
+
+void scr_http2_server_on_timeout(ScrNetServer *srv, ScrClosure *cb /*moves*/, ScrH2SessionFn fn,
+                                 bool once) {
+  ScrH2SrvCtx *ctx = srv != NULL ? (ScrH2SrvCtx *)scr_net_server_get_http_ctx(srv) : NULL;
+  if (ctx == NULL || ctx->proto != SCR_NET_PROTO_H2) {
+    scr_closure_release(cb);
+    return;
+  }
+  scr_net_ls_add(&ctx->timeout_ls, cb, (void *)fn, once);
+}
+
+void scr_http2_server_set_timeout_cb(ScrNetServer *srv, double ms, ScrClosure *cb /*moves*/,
+                                     ScrH2SessionFn fn) {
+  scr_net_server_set_timeout_plain(srv, ms);
+  scr_http2_server_on_timeout(srv, cb, fn, false);
+}
+
+void scr_http2_session_set_timeout(ScrH2Session *s, double msecs) {
+  if (s->destroyed || s->close_emitted) return;
+  if (!scr_h2_timeout_msecs_valid(msecs)) return;
+  if (s->sock != NULL) scr_net_sock_set_timeout(s->sock, msecs);
+}
+
+void scr_http2_session_set_timeout_cb(ScrH2Session *s, double msecs, ScrClosure *cb /*moves*/) {
+  if (s->destroyed || s->close_emitted) {
+    scr_closure_release(cb);
+    return;
+  }
+  if (!scr_h2_timeout_msecs_valid(msecs)) {
+    scr_closure_release(cb);
+    return;
+  }
+  if (s->sock != NULL) scr_net_sock_set_timeout(s->sock, msecs);
+  /* setTimeout(0, cb) disables the timer and does NOT register the
+   * callback; a registration of that same function leaves with it
+   * (Node's removeListener('timeout', callback)). */
+  if (msecs == 0) {
+    scr_net_ls_remove_last(&s->timeout_ls, cb);
+    scr_closure_release(cb);
+    return;
+  }
+  scr_net_ls_add(&s->timeout_ls, cb, NULL, true);
+}
+
+/* session.ref()/unref(): the underlying socket's loop reference. */
+void scr_http2_session_set_ref(ScrH2Session *s, bool ref) {
+  if (s->sock != NULL) scr_net_sock_set_ref(s->sock, ref);
+}
+
+void scr_http2_session_ref(ScrH2Session *s) { scr_http2_session_set_ref(s, true); }
+
+void scr_http2_session_unref(ScrH2Session *s) { scr_http2_session_set_ref(s, false); }
+
+/* session.goaway([code][, lastStreamID][, opaqueData]): an explicit GOAWAY
+ * frame. A zero or negative lastStreamID is Node's default — the last
+ * processed peer stream id; opaqueData appends to the frame. The session
+ * refuses peer streams from here on (the session's goaway_sent gate). */
+void scr_http2_session_goaway(ScrH2Session *s, double code, double last_stream_id,
+                              ScrBytes *opaque /*borrowed, nullable*/) {
+  if (s == NULL) return;
+  if (s->destroyed) {
+    /* Node's goaway() on a destroyed session throws its invalid-session
+     * error (ping() and request() share it). */
+    scr_throw_error_msg_code(SCR_ERR_ERROR, "The session has been destroyed", 30,
+                             "ERR_HTTP2_INVALID_SESSION");
+    return;
+  }
+  if (!scr_h2_sock_alive(s)) return;
+  int32_t last = (int32_t)last_stream_id;
+  if (last <= 0) last = s->last_proc_stream_id;
+  uint32_t l32 = (uint32_t)last & 0x7fffffffu;
+  uint32_t code32 = (uint32_t)(int64_t)code;
+  size_t olen = opaque != NULL ? (size_t)opaque->len : 0;
+  ScrH2Buf p = {0};
+  uint8_t hdr[8] = { (uint8_t)(l32 >> 24), (uint8_t)(l32 >> 16), (uint8_t)(l32 >> 8),
+                     (uint8_t)l32,          (uint8_t)(code32 >> 24), (uint8_t)(code32 >> 16),
+                     (uint8_t)(code32 >> 8), (uint8_t)code32 };
+  scr_h2_buf_put(&p, hdr, sizeof hdr);
+  if (olen > 0) scr_h2_buf_put(&p, opaque->data, olen);
+  scr_h2_send_frame(s, SCR_H2_F_GOAWAY, 0, 0, p.data, p.len);
+  free(p.data);
+  s->goaway_sent = true;
+  s->goaway_code = code32;
+  /* RFC 9113 6.8: a later GOAWAY must not increase the boundary, and the
+   * graceful close's shutdown notice repeats it — record what went out. */
+  s->goaway_last_stream_id = l32;
+}
+
+/* The socket's idle timer fired: forward to the session's listeners. */
+static void scr_h2_on_timeout(void *ctx) {
+  ScrH2Session *s = (ScrH2Session *)ctx;
+  if (s == NULL || s->destroyed || s->close_emitted) return;
+  scr_http2_session_retain(s);
+  scr_net_fire0_this(&s->timeout_ls, s, SCR_DYNH_H2_SESSION);
+  scr_http2_session_release(s);
 }
 
 /* Node's util-style number spelling in its range messages (NaN, Infinity,
@@ -5323,6 +5935,10 @@ void scr_http2_session_on_settings(ScrH2Session *s, ScrClosure *cb /*moves*/, Sc
 }
 
 ScrDyn *scr_http2_session_settings_get(ScrH2Session *s, bool local) {
+  /* Node's getters answer an EMPTY record while the client session is still
+   * connecting; the real records appear once it is established (and stay
+   * readable after a destroy). */
+  if (s->client && !s->connected) return scr_dyn_new_obj();
   return scr_h2_settings_dom(local ? &s->local_settings : &s->remote_settings, false);
 }
 
@@ -5522,6 +6138,11 @@ void scr_http2_connect_thunk0(ScrClosure *cb, ScrH2Session *sess, ScrNetSocket *
   if (sock) scr_net_sock_release(sock);
   scr_http2_session_release(sess);
   ((void (*)(ScrClosure *))cb->fn)(cb);
+}
+
+void scr_http2_goaway_thunk3(ScrClosure *cb, double code, double last, ScrBytes *opaque) {
+  ((void (*)(ScrClosure *, double, double, ScrBytes *))cb->fn)(
+      cb, code, last, opaque != NULL ? scr_bytes_retain(opaque) : NULL);
 }
 
 void scr_http2_goaway_thunk2(ScrClosure *cb, double code, double last, ScrBytes *opaque) {
@@ -5951,9 +6572,10 @@ static ScrDyn *scr_h2_dynh_session_invoke(void *h, ScrDyn *self, const char *met
       scr_http2_session_on_settings(s, scr_dyn_listener_closure_fn(args[1], (void *)&scr_h2_dyn_fire_settings), (ScrH2SettingsFn)&scr_h2_dyn_fire_settings, once, ev[0] == 'l');
     } else if (strcmp(ev, "ping") == 0) {
       scr_http2_session_on_ping(s, scr_dyn_listener_closure_data(args[1]), (ScrNetDataFn)&scr_dyn_listener_fire_data, once);
-    } else if (strcmp(ev, "frameError") == 0 || strcmp(ev, "timeout") == 0) {
-      /* never raised here (no frame fails to send, and setTimeout is
-       * refused): accept the registration */
+    } else if (strcmp(ev, "timeout") == 0) {
+      scr_http2_session_on_timeout(s, scr_dyn_listener_closure0(args[1]), once);
+    } else if (strcmp(ev, "frameError") == 0) {
+      /* never raised here: no frame this runtime sends fails to send */
     } else {
       char msg[128];
       int n = snprintf(msg, sizeof msg, "listening for '%s' on an Http2Session is not supported yet", ev);
@@ -5987,7 +6609,19 @@ static ScrDyn *scr_h2_dynh_session_invoke(void *h, ScrDyn *self, const char *met
     if (answer == SCR_H2_PING_NOT_OPEN) return scr_dyn_undefined();
     return scr_dyn_new_bool(answer == SCR_H2_PING_SENT);
   }
-  if (strcmp(method, "setTimeout") == 0 || strcmp(method, "unref") == 0 || strcmp(method, "goaway") == 0 ||
+  if (strcmp(method, "setTimeout") == 0) {
+    /* Node's Http2Session.setTimeout from a checked-dynamic session: the
+     * same two shapes as the typed lowering (msecs alone, or a callback that
+     * registers a once listener, with setTimeout(0, cb) cancelling) */
+    double msecs = argc > 0 && args[0]->kind == SCR_DYN_NUM ? args[0]->v.num : 0;
+    if (argc > 1 && args[1]->kind == SCR_DYN_FUNC) {
+      scr_http2_session_set_timeout_cb(s, msecs, scr_dyn_listener_closure0(args[1]));
+    } else {
+      scr_http2_session_set_timeout(s, msecs);
+    }
+    return scr_dyn_retain(self);
+  }
+  if (strcmp(method, "unref") == 0 || strcmp(method, "goaway") == 0 ||
       strcmp(method, "setLocalWindowSize") == 0 ||
       strcmp(method, "altsvc") == 0 || strcmp(method, "origin") == 0) {
     scr_h2_dyn_refuse_call(method, "Http2Session");

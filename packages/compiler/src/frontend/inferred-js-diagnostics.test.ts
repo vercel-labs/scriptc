@@ -331,6 +331,34 @@ test("JavaScript drops the diagnostic of a discarded negation of a void call", (
   ).toEqual([]);
 });
 
+const DISCARDED_VOID_NEGATION_CHAINS = `/** @param {() => void} callback */
+function invoke(callback) {
+  !!callback();
+  !!!(callback());
+}
+invoke(() => console.log("registered"));`;
+
+test("JavaScript drops the diagnostic of discarded negation chains of a void-typed callback", () => {
+  expect(
+    diagnostics(
+      DISCARDED_VOID_NEGATION_CHAINS,
+      'import * as library from "./library.js"; console.log(library);',
+    ),
+  ).toEqual([]);
+});
+
+test("a consumed negation chain of a void-typed callback keeps the diagnostic", () => {
+  const kept = diagnostics(
+    `/** @param {() => void} callback */
+function invoke(callback) {
+  return !!callback();
+}
+console.log(invoke(() => console.log("registered")));`,
+    'import * as library from "./library.js"; console.log(library);',
+  ).map((diagnostic) => diagnostic.message);
+  expect(kept.some((message) => message.includes("truthiness"))).toBe(true);
+});
+
 test("a checked JavaScript file keeps the void-negation diagnostic", () => {
   // TS1345 is a `checkedJs: "enforce"` row: a project that asked tsc to check
   // its JavaScript keeps the refusal (named here by the code's triage row).
@@ -446,7 +474,9 @@ test("a class declaration assignment names the mutable outer binding", () => {
   const kept = refusal("class Value {}\nValue = class Replacement {};\nexport { Value };");
   expect(kept.message).toContain("assigning to a class binding");
   expect(kept.hint).toContain("outer binding is mutable");
-  expect(kept.hint).toContain("named class expression's inner binding");
+  expect(kept.hint).toContain(
+    "immutable inner binding for a declaration and a named class expression",
+  );
   expect(kept.hint).not.toContain("read-only");
 });
 
@@ -455,7 +485,28 @@ test("a named class expression's inner binding names the immutable inner binding
     "const Outer = class Inner { static reset() { Inner = null; } };\nexport { Outer };",
   );
   expect(kept.message).toContain("assigning to a class binding");
-  expect(kept.hint).toContain("named class expression's inner binding");
+  expect(kept.hint).toContain(
+    "immutable inner binding for a declaration and a named class expression",
+  );
+  expect(kept.hint).toContain("TypeError assigning it once initialized");
+});
+
+test("a class declaration's inner name is immutable too, unlike its outer binding", () => {
+  const kept = refusal("class Value { static reset() { Value = null; } }\nexport { Value };");
+  expect(kept.message).toContain("assigning to a class binding");
+  expect(kept.hint).toContain("outer binding is mutable");
+  expect(kept.hint).toContain("immutable inner binding for a declaration");
+  expect(kept.hint).toContain("TypeError assigning it once initialized");
+});
+
+test("a class-binding write before initialization names the ReferenceError", () => {
+  const kept = diagnostics(
+    "class Value { [Value = null]() {} }\nexport { Value };",
+    'import * as library from "./library.js"; console.log(library);',
+  );
+  const binding = kept.find((diagnostic) => diagnostic.code === "SC1090");
+  expect(binding?.message).toContain("assigning to a class binding");
+  expect(binding?.hint).toContain("ReferenceError assigning (or reading) it before initialization");
 });
 
 test("a function declaration assignment compiles: the binding is mutable", () => {

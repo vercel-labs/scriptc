@@ -11,6 +11,7 @@ import { type IrFunction, type IrModule, type IrType, isRefCounted, typeKey } fr
 import { INT32_FALLBACK_SUFFIX } from "../../ir/parameter-versions.js";
 import { planJsGroups } from "../../ir/js-groups.js";
 import { jsImmediates } from "./jsval.js";
+import { textOfPart } from "../../text-parts.js";
 import { BlockBuilder } from "./blocks.js";
 import { emitCoroFrameAlloc, emitCoroFrameFree } from "./alloc.js";
 import { findPrivateSplitLocals } from "./split-loops.js";
@@ -687,8 +688,8 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
     const frame = emitter.cstr(
       positions?.textAt(fn.loc) ??
         (fn.sourceName === undefined
-          ? `    at ${fn.loc.file}`
-          : frameText(fn.sourceName, fn.loc.file)),
+          ? `    at ${emitter.emittedSourceFile(fn.loc.file)}`
+          : frameText(fn.sourceName, emitter.emittedSourceFile(fn.loc.file))),
     );
     if (
       B.excCellInvariant &&
@@ -1577,12 +1578,14 @@ export function parkingFunctions(emitter: LlEmitter): Set<string> | null {
   const testSub = (text: string): boolean =>
     text.includes("@scr_test_sub") && /@scr_test_sub\b/.test(text);
   for (const decl of emitter.decls) if (testSub(decl)) return null;
-  for (const text of emitter.fnDefText.values()) if (testSub(text)) return null;
-  // Reverse mention edges, then propagate "may park" to every mentioner.
+  // Reverse mention edges, then propagate "may park" to every mentioner. Each
+  // function's text is decoded once, here, for both scans.
   const mentionedBy = new Map<string, Set<string>>();
   const parks = new Set<string>();
   const work: string[] = [];
-  for (const [name, text] of emitter.fnDefText) {
+  for (const [name, part] of emitter.fnDefText) {
+    const text = textOfPart(part);
+    if (testSub(text)) return null;
     if (mentionsSuspension(text)) {
       parks.add(name);
       work.push(name);

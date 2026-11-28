@@ -115,3 +115,56 @@ attempt("padded parameters", () =>
 attempt("padded public", () =>
   crypto.createPublicKey({ key: spki(pInt, gInt, intPadded(paddedY, 1)), format: "der", type: "spki" }),
 );
+
+// PKCS#3's optional privateValueLength: a value that fits an int imports,
+// and one that does not — the q of X9.42 parameters, say — makes the whole
+// key unreadable, which is what OpenSSL's decoder reports for both halves.
+const algorithmWith = (p, g, extra) =>
+  tlv(
+    0x30,
+    Buffer.concat([
+      Buffer.from("06092a864886f70d010301", "hex"),
+      tlv(0x30, Buffer.concat([p, g, ...extra])),
+    ]),
+  );
+const lengthInt = (value) => {
+  let hex = value.toString(16);
+  if (hex.length % 2 === 1) hex = "0" + hex;
+  return intMinimal(Buffer.from(hex, "hex"));
+};
+const pkcs8With = (p, g, extra, x) =>
+  tlv(
+    0x30,
+    Buffer.concat([
+      tlv(0x02, Buffer.from([0])),
+      algorithmWith(p, g, extra),
+      tlv(0x04, x),
+    ]),
+  );
+const spkiWith = (p, g, extra, y) =>
+  tlv(
+    0x30,
+    Buffer.concat([algorithmWith(p, g, extra), tlv(0x03, Buffer.concat([Buffer.from([0]), y]))]),
+  );
+const primeValue = BigInt("0x" + prime.toString("hex"));
+const hugeLength = lengthInt((primeValue - 1n) / 2n);
+const withLength = crypto.createPrivateKey({
+  key: pkcs8With(pInt, gInt, [lengthInt(300n)], intMinimal(smallX)),
+  format: "der",
+  type: "pkcs8",
+});
+console.log("private length", withLength.asymmetricKeyType);
+attempt("huge private length", () =>
+  crypto.createPrivateKey({
+    key: pkcs8With(pInt, gInt, [hugeLength], intMinimal(smallX)),
+    format: "der",
+    type: "pkcs8",
+  }),
+);
+attempt("huge public length", () =>
+  crypto.createPublicKey({
+    key: spkiWith(pInt, gInt, [hugeLength], intMinimal(generator)),
+    format: "der",
+    type: "spki",
+  }),
+);

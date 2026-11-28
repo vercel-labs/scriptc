@@ -2057,8 +2057,8 @@ static __attribute__((noinline)) size_t scr_u16_to_byte_walk(const ScrStr *s, Sc
     return u16 < s->len ? u16 : s->len;
   }
   scr_sidx_materialize_identity_prefix(s, e);
-  ScrSidxPoint near = scr_sidx_near_u16(s, e, u16);
-  return scr_sidx_walk_from(s, e, near.cu, near.cb, u16, mid, true);
+  ScrSidxPoint anchor = scr_sidx_near_u16(s, e, u16);
+  return scr_sidx_walk_from(s, e, anchor.cu, anchor.cb, u16, mid, true);
 }
 
 static size_t scr_byte_to_u16_walk(const ScrStr *s, ScrSidx *e, size_t byte_off);
@@ -2094,8 +2094,8 @@ static __attribute__((noinline)) size_t scr_byte_to_u16_walk(const ScrStr *s, Sc
    * do not rebuild points that scr_sidx_finish() deliberately discarded. */
   if (s->ascii || e->u16len == s->len) return byte_off;
   scr_sidx_materialize_identity_prefix(s, e);
-  ScrSidxPoint near = scr_sidx_near_byte(s, e, byte_off);
-  size_t cu = near.cu, cb = near.cb;
+  ScrSidxPoint anchor = scr_sidx_near_byte(s, e, byte_off);
+  size_t cu = anchor.cu, cb = anchor.cb;
   /* Unlike unit-to-byte conversion, both endpoints are already exact byte
    * boundaries. Count the whole span with the shared word-wise classifier. */
   if (cb > byte_off)
@@ -3688,6 +3688,18 @@ static double scr_digits_to_double(const char *p, size_t n, int radix) {
     acc = acc * (uint64_t)radix + (uint64_t)scr_digit_value(p[i]);
   }
   if (i == n) return (double)acc;
+  /* A digit run longer than a double can hold is Infinity, and V8's
+   * StringToDouble stops there: the value saturates once the digits left
+   * cannot keep it finite. The bound is the largest count whose leading
+   * digit can still fit (radix^(max_digits-1) <= DBL_MAX), so a long size
+   * string costs one scan instead of a bignum multiply-add per digit. */
+  double pow = 1.0;
+  size_t max_digits = 1;
+  while (pow <= 1.7976931348623157e308 / (double)radix) {
+    pow *= (double)radix;
+    max_digits++;
+  }
+  if (n > max_digits) return INFINITY;
   /* Bignum path: base-2^32 limbs, little-endian, multiply-add per digit. */
   size_t cap = 4 + (n * 6) / 32; /* log2(36) < 6 bits per digit */
   uint32_t *limbs = malloc(cap * sizeof(uint32_t));

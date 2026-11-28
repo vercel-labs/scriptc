@@ -408,6 +408,11 @@ export interface LibraryProfile {
   /** Native optimizer posture. release preserves the production -O2 archive;
    * dev uses -O0 for fast iterative embedding builds. */
   optimization: NativeOptimization;
+  /** `-ffile-prefix-map` for emitted source names: `folder` and `prefix`
+   * are absolute (profile-relative in the JSON), and the first entry whose
+   * folder holds a file rewrites its emitted name. Debug info, stack frames
+   * and conversion traces use it; diagnostics keep the paths scriptc read. */
+  filePrefixMap: { folder: string; prefix: string }[];
   /** Explicit source-inference attempts, including packages without declarations. */
   npmStatic: string[];
   prefix: string;
@@ -508,6 +513,60 @@ function rejectUnknownKeys(obj: object, path: string, known: readonly string[]):
   }
 }
 
+/** The profile's `file_prefix_map`, with both sides resolved against the
+ * profile's directory: `{ "stage": "src" }` maps a file read from
+ * `<profile>/stage/...` to `<profile>/src/...`. */
+function parseFilePrefixMap(
+  value: unknown,
+  profilePath: string,
+): { folder: string; prefix: string }[] {
+  if (value === undefined) return [];
+  if (value === null || typeof value !== "object" || Array.isArray(value))
+    throw new ProfileError("'file_prefix_map' must be an object of folder → prefix strings");
+  const base = dirname(profilePath);
+  const entries: { folder: string; prefix: string }[] = [];
+  for (const [folder, prefix] of Object.entries(value as Record<string, unknown>)) {
+    if (folder === "" || typeof prefix !== "string" || prefix === "")
+      throw new ProfileError(
+        "'file_prefix_map' entries must be non-empty strings (a profile-relative folder and its replacement)",
+      );
+    entries.push({ folder: resolve(base, folder), prefix: resolve(base, prefix) });
+  }
+  return entries;
+}
+
+/** The spelling two Windows paths compare in: forward slashes and a
+ * lower-case drive letter. A frontend source path (`C:/build/lib.ts`) and a
+ * profile folder resolved on Windows (`C:\build`) name the same folder. */
+function matchPathName(path: string): string {
+  const slashes = path.replaceAll("\\", "/");
+  return /^[A-Za-z]:/.test(slashes) ? `${slashes[0]!.toLowerCase()}${slashes.slice(1)}` : slashes;
+}
+
+/** The name a library build emits for a source file, through the profile's
+ * `file_prefix_map`; the read path when no folder holds it. Folders compare
+ * with one separator and drive-letter case (matchPathName), and the emitted
+ * name keeps the mapped prefix's own separator form (backslashes for a
+ * Windows prefix). */
+export function emittedSourcePath(
+  profile: Pick<LibraryProfile, "filePrefixMap">,
+  file: string,
+): string {
+  if (profile.filePrefixMap.length === 0) return file;
+  const fileKey = matchPathName(file);
+  for (const { folder, prefix } of profile.filePrefixMap) {
+    const folderKey = matchPathName(folder);
+    if (fileKey === folderKey) return prefix;
+    const withSep = folderKey.endsWith("/") ? folderKey : `${folderKey}/`;
+    if (!fileKey.startsWith(withSep)) continue;
+    const remainder = fileKey.slice(withSep.length);
+    const backslash = prefix.includes("\\") && !prefix.includes("/");
+    const base = prefix.endsWith("/") || prefix.endsWith("\\") ? prefix.slice(0, -1) : prefix;
+    return `${base}${backslash ? "\\" : "/"}${backslash ? remainder.split("/").join("\\") : remainder}`;
+  }
+  return file;
+}
+
 /** Parse + validate a profile file. Returns the profile or the SC4001
  * diagnostics (one per problem found before parsing had to stop). */
 export function loadLibraryProfile(
@@ -558,6 +617,7 @@ export function loadLibraryProfile(
           "entry",
           "emission",
           "optimization",
+          "file_prefix_map",
           "npm_static",
           "abi",
           "exports",
@@ -1037,6 +1097,7 @@ export function loadLibraryProfile(
     }
 
     const entry = isAbsolute(entryRel) ? entryRel : resolve(dirname(profilePath), entryRel);
+    const filePrefixMap = parseFilePrefixMap(p["file_prefix_map"], profilePath);
     return {
       ok: true,
       profile: {
@@ -1046,6 +1107,7 @@ export function loadLibraryProfile(
         entry,
         emission,
         optimization,
+        filePrefixMap,
         npmStatic,
         prefix,
         initSymbol,

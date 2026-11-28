@@ -20,7 +20,7 @@ import {
   staticMethodFunctionFor,
 } from "../lower-classes.js";
 import { lowerRecordOvfCaptureHelper } from "../containers/indexed-objects.js";
-import { builtinMethodRecord } from "./builtin-method-records.js";
+import { builtinMemberHelper, builtinMemberRecord } from "./builtin-member-records.js";
 import type { Lowerer } from "../lowerer.js";
 import { recordLinkPair, registerLinkSite } from "../record-links.js";
 import { carryAbsentFieldsFromSource, type AbsentSourceField } from "../record-sources.js";
@@ -49,10 +49,11 @@ export function widthCoerce(lowerer: Lowerer, expr: IrExpr, expected: IrType): I
     return { kind: "call", callee: helper, args: [expr], type: expected, loc: expr.loc };
   }
   // A builtin handle (process.stdout, process.stderr) flowing into a
-  // record of methods: each method calls the handle's member through its
-  // checked-dynamic view (builtin-method-records.ts).
+  // record of its members: each method calls the handle's member through
+  // its checked-dynamic view, and each data member is read once off it
+  // (builtin-member-records.ts).
   if (expected.kind === "record") {
-    const projected = builtinMethodRecord(lowerer, expr, expected.shapeId, expr.loc);
+    const projected = builtinMemberRecord(lowerer, expr, expected.shapeId, expr.loc);
     if (projected) return projected;
   }
   // A RECORD flowing into a class-instance slot (`{x: 0, y: 0}` into
@@ -338,6 +339,16 @@ export function applyWidthLift(
       const helper = lowerer.objRecordWidthHelper(value.type.className, dst.shapeId, loc);
       if (!helper)
         throw new InternalCompilerError("lowerer bug: planned objWidth lift failed to intern");
+      return { kind: "call", callee: helper, args: [value], type: dst, loc };
+    }
+    case "builtinMembers": {
+      if (dst.kind !== "record")
+        throw new InternalCompilerError("lowerer bug: builtinMembers lift shape");
+      const helper = builtinMemberHelper(lowerer, value.type, dst.shapeId, loc);
+      if (!helper)
+        throw new InternalCompilerError(
+          "lowerer bug: planned builtinMembers lift failed to intern",
+        );
       return { kind: "call", callee: helper, args: [value], type: dst, loc };
     }
     case "clsWidth": {

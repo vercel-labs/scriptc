@@ -16,7 +16,7 @@ import {
   RuntimePackError,
   type RuntimePackManifest,
 } from "./runtime-pack.js";
-import { speedFlavorFallbackWarning } from "./runtime-pack-core.js";
+import { speedFlavorFallbackWarning, selectRuntimePackArtifacts } from "./runtime-pack-core.js";
 import { HUGE_TEXT_MIN_CODE_BYTES } from "./huge-text.js";
 import { createNativeLinkPlan } from "./link-plan.js";
 import {
@@ -41,7 +41,10 @@ const PROGRAM_IMAGE = Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01, 0x01, 0x0
 
 const BASE: NativeLinkFeatures = noLinkFeatures();
 
-async function fixture(target: NativeTargetSpec = MACOS_ARM64_TARGET) {
+async function fixture(
+  target: NativeTargetSpec = MACOS_ARM64_TARGET,
+  options: { icu?: boolean } = {},
+) {
   const root = await mkdtemp(join(tmpdir(), "scriptc-runtime-pack-unit-"));
   const packagePath = join(root, "package.json");
   await writeFile(
@@ -67,6 +70,7 @@ async function fixture(target: NativeTargetSpec = MACOS_ARM64_TARGET) {
   const staticPasswd = await artifact("artifacts/static.o", "static");
   const regex = await artifact("artifacts/regex.a", "regex");
   const zlib = await artifact("artifacts/zlib.a", "zlib");
+  const intl = options.icu === true ? await artifact("artifacts/intl.o", "intl") : null;
   await writeFile(join(root, "license.txt"), "license");
   const units = [
     {
@@ -94,6 +98,15 @@ async function fixture(target: NativeTargetSpec = MACOS_ARM64_TARGET) {
         },
       ],
     },
+    ...(intl === null
+      ? []
+      : [
+          {
+            source: "scr_intl.c",
+            predicate: true,
+            variants: [{ id: "default", when: {}, defines: [], ...intl }],
+          },
+        ]),
   ];
   const manifest: RuntimePackManifest = {
     schema: "scriptc.runtime-pack.v1",
@@ -824,6 +837,71 @@ describe("runtime pack manifests", () => {
     );
   });
 
+  test("a probe link cannot write the executable the link produces", async () => {
+    const { root, packagePath } = await fixture();
+    const programObject = join(root, "program.o");
+    const output = join(root, "program");
+    const driver = join(root, "clang.mjs");
+    const realLink = join(root, "real-link");
+    const probeOutput = join(root, "probe-output");
+    await Promise.all([
+      writeFile(programObject, "program object"),
+      writeFile(
+        driver,
+        [
+          "#!/usr/bin/env node",
+          'import { existsSync, unlinkSync, writeFileSync } from "node:fs";',
+          `const realLink = ${JSON.stringify(realLink)};`,
+          `const probeOutput = ${JSON.stringify(probeOutput)};`,
+          "const args = process.argv.slice(2);",
+          'const outputIndex = args.indexOf("-o");',
+          "const output = args[outputIndex + 1];",
+          'if (args.includes("-print-prog-name=ld")) process.exit(0);',
+          'if (args.includes("-Wl,-t")) process.exit(1);',
+          // A driver whose `-###` runs the link keeps working after a sibling
+          // probe fails, so it can still reach the output the real link wrote.
+          'if (args.includes("-###")) {',
+          "  writeFileSync(probeOutput, output);",
+          '  writeFileSync(output, "probe executable");',
+          "  while (!existsSync(realLink)) await new Promise((resolve) => setTimeout(resolve, 5));",
+          "  unlinkSync(output);",
+          "  process.exit(0);",
+          "}",
+          'writeFileSync(output, "linked executable");',
+          'writeFileSync(realLink, "linked");',
+          // Keep the real link running long enough for the probe to arrive.
+          "await new Promise((resolve) => setTimeout(resolve, 300));",
+          "",
+        ].join("\n"),
+      ),
+    ]);
+    await chmod(driver, 0o755);
+    const plan = await createNativeLinkPlan({
+      target: MACOS_ARM64_TARGET,
+      programObject,
+      outPath: output,
+      features: BASE,
+      ffi: null,
+      optimization: "release",
+      resolver: () => packagePath,
+    });
+    let published = false;
+
+    await linkNativeExecutable(plan, {
+      linker: driver,
+      onArtifactReady: async () => {
+        published = true;
+      },
+    });
+
+    expect(await readFile(output, "utf8")).toBe("linked executable");
+    expect(published).toBe(false);
+    // The probe wrote a private path with the output's own basename.
+    const probed = await readFile(probeOutput, "utf8");
+    expect(probed).not.toBe(output);
+    expect(basename(probed)).toBe(basename(output));
+  });
+
   test("a Linux link proof covers the driver, the linker it selects and the pack", async () => {
     const { root, packagePath } = await fixture(LINUX_X64_GNU_TARGET);
     const programObject = join(root, "program.o");
@@ -1087,4 +1165,19 @@ test("speed selects the pack's speed flavor and falls back to release objects wi
   expect(() => parseRuntimePackManifest({ ...f.manifest, flavors: withoutExecutable })).toThrow(
     "malformed",
   );
+});
+
+describe("runtime pack Intl capability", () => {
+  test("the pack that carries scr_intl.c links it for a program that needs Intl", async () => {
+    const { manifest } = await fixture(LINUX_X64_GNU_TARGET, { icu: true });
+    const selected = selectRuntimePackArtifacts(manifest, { ...BASE, intl: true }, "release");
+    expect(selected.runtime.map((variant) => variant.path)).toContain("artifacts/intl.o");
+  });
+
+  test("a pack without ICU refuses Intl by target and names the pack that provides it", async () => {
+    const { manifest } = await fixture(MACOS_ARM64_TARGET);
+    expect(() => selectRuntimePackArtifacts(manifest, { ...BASE, intl: true }, "release")).toThrow(
+      /the macos-arm64 runtime pack has no Intl support: it ships no ICU objects, and only the linux-x64-gnu runtime pack \(@scriptc\/runtime-linux-x64-gnu\) provides Intl/,
+    );
+  });
 });

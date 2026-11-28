@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/module-exports-replaced-then-member/main.cjs"
+ ],
+ "diags": []
+}

@@ -19,7 +19,14 @@ export const WEB_STREAM_CLASSES = [
   "ReadableByteStreamController",
   "ReadableStreamBYOBReader",
   "ReadableStreamBYOBRequest",
+  "CompressionStream",
+  "DecompressionStream",
 ] as const;
+
+/** The first class the compression streams own: their constructor and brand
+ * test live in scr_webstream_compress.c (the zlib unit), reached through the
+ * webstream.compress* entries rather than webstream.class. */
+export const COMPRESSION_STREAM_CLASSES = WEB_STREAM_CLASSES.length - 2;
 
 /** TextDecoderStream's index: its transform decodes through scr_bytes.c's
  * streaming decoder, whose non-UTF-8 half is the legacy runtime build. */

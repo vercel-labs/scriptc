@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/legacy-method-replaced-before-decoration/main.ts"
+ ],
+ "diags": []
+}

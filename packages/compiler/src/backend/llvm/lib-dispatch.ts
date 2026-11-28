@@ -342,6 +342,45 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     B.line(`${out} = call ptr @scr_promise_payload_ref(ptr ${promise.name}) ; +1`);
     return host.own({ name: out, type: e.type });
   }
+  if (e.fn === "record.sourceView") {
+    // The record's kept own-key source as a checked-dynamic object (+1), or
+    // the dyn undefined value when it kept none. A module that keeps no
+    // sources folds the read to undefined through the same gate as
+    // record.sourceHas.
+    const record = host.emitReadReceiver(e.args[0]!);
+    host.dyn.keepsRecordSources = true;
+    host.declare(`declare ptr @scr_record_source_view(ptr)`);
+    host.declare(`declare ptr @scr_dyn_undefined()`);
+    host.declare(`declare ptr @scr_dyn_retain_v(ptr)`);
+    const slot = B.slot();
+    B.entryAllocas.push(`${slot} = alloca ptr`);
+    const und = B.tmp(),
+      undOwned = B.tmp();
+    B.line(`${und} = call ptr @scr_dyn_undefined()`);
+    B.line(`${undOwned} = call ptr @scr_dyn_retain_v(ptr ${und})`);
+    B.line(`store ptr ${undOwned}, ptr ${slot}`);
+    const gate = B.tmp(),
+      join = B.newLabel("rsrcv.done"),
+      probe = B.newLabel("rsrcv.probe"),
+      keep = B.newLabel("rsrcv.keep");
+    B.line(`${gate} = load i1, ptr ${host.shapeHost.recordSourcesGate ?? RECORD_SOURCES_GATE}`);
+    B.condBr(gate, probe, join);
+    B.startBlock(probe);
+    const view = B.tmp(),
+      notNull = B.tmp();
+    B.line(`${view} = call ptr @scr_record_source_view(ptr ${record.name})`);
+    B.line(`${notNull} = icmp ne ptr ${view}, null`);
+    B.condBr(notNull, keep, join);
+    B.startBlock(keep);
+    const owned = B.tmp();
+    B.line(`${owned} = call ptr @scr_dyn_retain_v(ptr ${view})`);
+    B.line(`store ptr ${owned}, ptr ${slot}`);
+    B.br(join);
+    B.startBlock(join);
+    const out = B.tmp();
+    B.line(`${out} = load ptr, ptr ${slot}`);
+    return host.own({ name: out, type: e.type });
+  }
   if (e.fn === "record.sourceHas") {
     // A module whose conversions keep no record sources has none to find:
     // the gate constant folds the test, and the source-reading branches
@@ -1883,6 +1922,10 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
       // a program with the classes runs its event loop.
       if (e.fn === "webstream.class" || e.fn === "webstream.install") host.usesTimers = true;
       return host.emitGenericLibCall(e);
+    case "sourceMap":
+      // node:module's SourceMap construction and instanceof (scr_source_map.c):
+      // fixed-arity checked-dynamic entry points with no special emission.
+      return host.emitGenericLibCall(e);
     case "test":
       return emitTestLibCall(host, e);
     case "watchEvents":
@@ -1891,6 +1934,8 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
       return host.emitFilesystemLibCall(e);
     case "tls":
       return emitTlsLibCall(host, e);
+    case "websocket":
+      return host.emitGenericLibCall(e);
     case "http2":
       return emitHttp2LibCall(host, e);
     default: {

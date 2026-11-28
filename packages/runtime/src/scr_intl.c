@@ -38,7 +38,9 @@
 #include <unicode/udata.h>
 #include <unicode/uenum.h>
 #include <unicode/uloc.h>
+#include <unicode/ulistformatter.h>
 #include <unicode/unum.h>
+#include <unicode/ures.h>
 #include <unicode/unumberformatter.h>
 #include <unicode/unumsys.h>
 #include <unicode/ustring.h>
@@ -820,6 +822,519 @@ static bool scr_intl_is_default_tag(const ScrStr *tag) {
   return tag->len == len && memcmp(tag->data, SCR_INTL_DEFAULT_TAG, len) == 0;
 }
 
+static bool scr_intl_tag_alpha(unsigned char c) {
+  return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+}
+
+static bool scr_intl_tag_digit(unsigned char c) { return c >= '0' && c <= '9'; }
+
+static bool scr_intl_tag_alnum(unsigned char c) {
+  return scr_intl_tag_alpha(c) || scr_intl_tag_digit(c);
+}
+
+static bool scr_intl_tag_run(const char *s, size_t n, bool (*pred)(unsigned char)) {
+  for (size_t i = 0; i < n; i++)
+    if (!pred((unsigned char)s[i])) return false;
+  return true;
+}
+
+/** Two same-length subtags equal under ECMA-402's canonical casing (variants
+ * compare case-insensitively). */
+static bool scr_intl_tag_same(const char *a, const char *b, size_t n) {
+  for (size_t i = 0; i < n; i++) {
+    unsigned char x = (unsigned char)a[i];
+    unsigned char y = (unsigned char)b[i];
+    if (x >= 'A' && x <= 'Z') x = (unsigned char)(x - 'A' + 'a');
+    if (y >= 'A' && y <= 'Z') y = (unsigned char)(y - 'A' + 'a');
+    if (x != y) return false;
+  }
+  return true;
+}
+
+static void scr_intl_tag_lower(const char *s, char *out, size_t size) {
+  size_t i = 0;
+  for (; s[i] != '\0' && i + 1 < size; i++)
+    out[i] = s[i] >= 'A' && s[i] <= 'Z' ? (char)(s[i] - 'A' + 'a') : s[i];
+  out[i] = '\0';
+}
+
+/** ECMA-402's IsStructurallyValidLanguageTag: the Unicode locale identifier
+ * grammar (language (script)? (region)? (variant)* (extension)* (privateuse)?),
+ * with grandfathered and private-use-only tags invalid, a language of four
+ * letters invalid, and no singleton or variant repeated. A tag the runtime
+ * rejects is Node's RangeError, never a formatter that quietly picks another
+ * locale. */
+static bool scr_intl_language_tag_valid(const char *s, size_t n) {
+  if (n == 0 || n > 255) return false;
+  size_t i = 0;
+  size_t len = 0;
+  while (i < n && s[i] != '-') {
+    len++;
+    i++;
+  }
+  if (!((len >= 2 && len <= 3) || (len >= 5 && len <= 8))) return false;
+  if (!scr_intl_tag_run(s, len, scr_intl_tag_alpha)) return false;
+  bool script = false;
+  bool region = false;
+  bool variant = false;
+  bool extension = false;
+  bool extension_needs_subtag = false;
+  bool private_use = false;
+  bool private_use_needs_subtag = false;
+  char singletons[36];
+  size_t nsing = 0;
+  /* Variant subtags already seen, by offset into `s`: ECMA-402 rejects a
+   * tag that repeats one ("de-1901-1901"), which ICU would otherwise parse
+   * only part of and format as if it were valid. */
+  size_t variant_at[64];
+  size_t variant_len[64];
+  size_t nvariants = 0;
+  while (i < n) {
+    if (s[i] != '-') return false;
+    i++;
+    const size_t start = i;
+    while (i < n && s[i] != '-') i++;
+    len = i - start;
+    if (len == 0) return false;
+    const char *t = s + start;
+    if (private_use) {
+      if (len > 8 || !scr_intl_tag_run(t, len, scr_intl_tag_alnum)) return false;
+      private_use_needs_subtag = false;
+      continue;
+    }
+    if (len == 1) {
+      const unsigned char c = (unsigned char)t[0];
+      if (!scr_intl_tag_alnum(c)) return false;
+      if (extension_needs_subtag) return false; /* "en-a-b": a needs a subtag */
+      if (c == 'x' || c == 'X') {
+        private_use = true;
+        private_use_needs_subtag = true;
+        continue;
+      }
+      const unsigned char lower =
+          c >= 'A' && c <= 'Z' ? (unsigned char)(c - 'A' + 'a') : c;
+      for (size_t k = 0; k < nsing; k++)
+        if ((unsigned char)singletons[k] == lower) return false;
+      if (nsing < sizeof singletons) singletons[nsing++] = (char)lower;
+      extension = true;
+      extension_needs_subtag = true;
+      continue;
+    }
+    if (extension) {
+      if (len < 2 || len > 8 || !scr_intl_tag_run(t, len, scr_intl_tag_alnum)) return false;
+      extension_needs_subtag = false;
+      continue;
+    }
+    if (!script && !region && !variant && len == 4 &&
+        scr_intl_tag_run(t, len, scr_intl_tag_alpha)) {
+      script = true;
+      continue;
+    }
+    if (!region && !variant &&
+        ((len == 2 && scr_intl_tag_run(t, 2, scr_intl_tag_alpha)) ||
+         (len == 3 && scr_intl_tag_run(t, 3, scr_intl_tag_digit)))) {
+      region = true;
+      continue;
+    }
+    if (((len >= 5 && len <= 8) || (len == 4 && scr_intl_tag_digit((unsigned char)t[0]))) &&
+        scr_intl_tag_run(t, len, scr_intl_tag_alnum)) {
+      for (size_t k = 0; k < nvariants; k++)
+        if (variant_len[k] == len && scr_intl_tag_same(s + variant_at[k], t, len)) return false;
+      if (nvariants < sizeof variant_at / sizeof *variant_at) {
+        variant_at[nvariants] = start;
+        variant_len[nvariants] = len;
+        nvariants++;
+      }
+      variant = true;
+      continue;
+    }
+    return false;
+  }
+  return !extension_needs_subtag && !private_use_needs_subtag;
+}
+
+/** Node's RangeError for a tag that is not structurally valid. */
+static void scr_intl_throw_bad_locale(void) {
+  static const char message[] = "Incorrect locale information provided";
+  scr_throw_error_msg(SCR_ERR_RANGE, message, sizeof message - 1);
+}
+
+/* ── CLDR language aliases ────────────────────────────────────────────
+ * Node canonicalizes a requested tag before it negotiates it: V8's
+ * CanonicalizeLanguageTag runs ICU's Locale::canonicalize, which applies
+ * CLDR's alias data. The matcher below does not, so a deprecated or
+ * overlong language code would reach it unchanged: "cnr" falls back to the
+ * default locale where Node formats at sr-ME, and "sh-RS" matches Serbian
+ * Cyrillic where Node keeps the canonical sr-Latn-RS. Apply ICU's own
+ * language alias table (the metadata bundle's alias/language entries)
+ * first, with ICU's AliasReplacer field rules: an explicit script or region
+ * wins, the replacement fills in a field the tag leaves empty, and a region
+ * or variant the matched key names and the replacement drops is removed.
+ * Script, territory and variant aliases are not applied here. */
+
+#define SCR_INTL_ALIAS_ROUNDS 5
+
+/** The replacement of the language alias `key` in ICU's locale-id form, or
+ * false when the alias table has no such key. */
+static bool scr_intl_alias_lookup(const UResourceBundle *languages, const char *key, char *out,
+                                  size_t size) {
+  UErrorCode status = U_ZERO_ERROR;
+  UResourceBundle *entry = ures_getByKey(languages, key, NULL, &status);
+  if (U_FAILURE(status) || entry == NULL) {
+    if (entry != NULL) ures_close(entry);
+    return false;
+  }
+  UResourceBundle *replacement = ures_getByKey(entry, "replacement", NULL, &status);
+  ures_close(entry);
+  if (U_FAILURE(status) || replacement == NULL) {
+    if (replacement != NULL) ures_close(replacement);
+    return false;
+  }
+  int32_t length = (int32_t)size;
+  status = U_ZERO_ERROR;
+  ures_getUTF8String(replacement, out, &length, true, &status);
+  ures_close(replacement);
+  return U_SUCCESS(status) && (size_t)length < size;
+}
+
+/** `variants` without the subtag `drop` (case-insensitive), so a matched
+ * variant key removes the variant its replacement does not carry. */
+static void scr_intl_variants_without(const char *variants, const char *drop, char *out,
+                                      size_t size) {
+  size_t written = 0;
+  const char *at = variants;
+  while (*at != '\0') {
+    const char *end = strchr(at, '_');
+    const size_t len = end == NULL ? strlen(at) : (size_t)(end - at);
+    if (!(len == strlen(drop) && scr_intl_tag_same(at, drop, len))) {
+      if (written != 0 && written + 1 < size) out[written++] = '_';
+      if (written + len >= size) break;
+      memcpy(out + written, at, len);
+      written += len;
+    }
+    at = end == NULL ? at + len : end + 1;
+  }
+  out[written] = '\0';
+}
+
+/** Rewrites the tag's ICU locale id with the CLDR language aliases its
+ * language, region and variants name, or copies it unchanged. */
+static void scr_intl_canonicalize_language(const char *icu, char *out, size_t size) {
+  char language[ULOC_LANG_CAPACITY] = "";
+  char script[ULOC_SCRIPT_CAPACITY] = "";
+  char region[ULOC_COUNTRY_CAPACITY] = "";
+  char variant[ULOC_FULLNAME_CAPACITY] = "";
+  UErrorCode status = U_ZERO_ERROR;
+  uloc_getLanguage(icu, language, sizeof language, &status);
+  UErrorCode scriptStatus = U_ZERO_ERROR;
+  uloc_getScript(icu, script, sizeof script, &scriptStatus);
+  UErrorCode regionStatus = U_ZERO_ERROR;
+  uloc_getCountry(icu, region, sizeof region, &regionStatus);
+  UErrorCode variantStatus = U_ZERO_ERROR;
+  uloc_getVariant(icu, variant, sizeof variant, &variantStatus);
+  const char *keywords = strchr(icu, '@');
+  snprintf(out, size, "%s", icu);
+  if (U_FAILURE(status) || U_FAILURE(scriptStatus) || U_FAILURE(regionStatus) ||
+      U_FAILURE(variantStatus) || language[0] == '\0')
+    return;
+
+  status = U_ZERO_ERROR;
+  UResourceBundle *metadata = ures_openDirect(NULL, "metadata", &status);
+  UResourceBundle *alias = NULL;
+  UResourceBundle *languages = NULL;
+  if (U_SUCCESS(status) && metadata != NULL)
+    alias = ures_getByKey(metadata, "alias", NULL, &status);
+  if (U_SUCCESS(status) && alias != NULL)
+    languages = ures_getByKey(alias, "language", NULL, &status);
+  if (U_FAILURE(status) || languages == NULL) {
+    if (languages != NULL) ures_close(languages);
+    if (alias != NULL) ures_close(alias);
+    if (metadata != NULL) ures_close(metadata);
+    return;
+  }
+
+  char lower_variant[ULOC_FULLNAME_CAPACITY];
+  scr_intl_tag_lower(variant, lower_variant, sizeof lower_variant);
+
+  for (int round = 0; round < SCR_INTL_ALIAS_ROUNDS; round++) {
+    char replacement[ULOC_FULLNAME_CAPACITY];
+    char key[ULOC_FULLNAME_CAPACITY];
+    char matched[ULOC_FULLNAME_CAPACITY] = "";
+    bool named_region = false;
+    bool named_variant = false;
+    bool found = false;
+    /* AliasReplacer's key order: language_region_variant, language_region,
+     * language_variant, language. */
+    const char *at = lower_variant;
+    while (!found && region[0] != '\0' && *at != '\0') {
+      const char *end = strchr(at, '_');
+      const size_t len = end == NULL ? strlen(at) : (size_t)(end - at);
+      if (len >= 4) {
+        snprintf(key, sizeof key, "%s_%s_%.*s", language, region, (int)len, at);
+        if (scr_intl_alias_lookup(languages, key, replacement, sizeof replacement)) {
+          found = true;
+          named_region = true;
+          named_variant = true;
+          memcpy(matched, at, len);
+          matched[len] = '\0';
+        }
+      }
+      at = end == NULL ? at + len : end + 1;
+    }
+    if (!found && region[0] != '\0') {
+      snprintf(key, sizeof key, "%s_%s", language, region);
+      if (scr_intl_alias_lookup(languages, key, replacement, sizeof replacement)) {
+        found = true;
+        named_region = true;
+      }
+    }
+    at = lower_variant;
+    while (!found && *at != '\0') {
+      const char *end = strchr(at, '_');
+      const size_t len = end == NULL ? strlen(at) : (size_t)(end - at);
+      if (len >= 4) {
+        snprintf(key, sizeof key, "%s_%.*s", language, (int)len, at);
+        if (scr_intl_alias_lookup(languages, key, replacement, sizeof replacement)) {
+          found = true;
+          named_variant = true;
+          memcpy(matched, at, len);
+          matched[len] = '\0';
+        }
+      }
+      at = end == NULL ? at + len : end + 1;
+    }
+    if (!found) {
+      snprintf(key, sizeof key, "%s", language);
+      found = scr_intl_alias_lookup(languages, key, replacement, sizeof replacement);
+    }
+    if (!found) break;
+
+    char replaced_language[ULOC_LANG_CAPACITY] = "";
+    char replaced_script[ULOC_SCRIPT_CAPACITY] = "";
+    char replaced_region[ULOC_COUNTRY_CAPACITY] = "";
+    status = U_ZERO_ERROR;
+    uloc_getLanguage(replacement, replaced_language, sizeof replaced_language, &status);
+    status = U_ZERO_ERROR;
+    uloc_getScript(replacement, replaced_script, sizeof replaced_script, &status);
+    status = U_ZERO_ERROR;
+    uloc_getCountry(replacement, replaced_region, sizeof replaced_region, &status);
+    if (U_FAILURE(status)) break;
+
+    char next_language[ULOC_LANG_CAPACITY];
+    char next_script[ULOC_SCRIPT_CAPACITY];
+    char next_region[ULOC_COUNTRY_CAPACITY];
+    char next_variant[ULOC_FULLNAME_CAPACITY];
+    snprintf(next_language, sizeof next_language, "%s", language);
+    snprintf(next_script, sizeof next_script, "%s", script);
+    snprintf(next_region, sizeof next_region, "%s", region);
+    if (replaced_language[0] != '\0' && strcmp(replaced_language, "und") != 0)
+      snprintf(next_language, sizeof next_language, "%s", replaced_language);
+    if (next_script[0] == '\0' && replaced_script[0] != '\0')
+      snprintf(next_script, sizeof next_script, "%s", replaced_script);
+    if (named_region) {
+      /* The key names the tag's region; a replacement without one drops it. */
+      if (replaced_region[0] == '\0') next_region[0] = '\0';
+    } else if (next_region[0] == '\0' && replaced_region[0] != '\0') {
+      snprintf(next_region, sizeof next_region, "%s", replaced_region);
+    }
+    if (named_variant)
+      scr_intl_variants_without(variant, matched, next_variant, sizeof next_variant);
+    else
+      snprintf(next_variant, sizeof next_variant, "%s", variant);
+    /* A replacement that changes nothing ends the search, as AliasReplacer's
+     * does. */
+    if (strcmp(next_language, language) == 0 && strcmp(next_script, script) == 0 &&
+        strcmp(next_region, region) == 0 && strcmp(next_variant, variant) == 0)
+      break;
+    snprintf(language, sizeof language, "%s", next_language);
+    snprintf(script, sizeof script, "%s", next_script);
+    snprintf(region, sizeof region, "%s", next_region);
+    snprintf(variant, sizeof variant, "%s", next_variant);
+    scr_intl_tag_lower(variant, lower_variant, sizeof lower_variant);
+  }
+
+  /* CLDR's other alias tables canonicalize the subtags before matching, as
+   * Node's CanonicalizeUnicodeLocaleId does: a territory alias (UK -> GB),
+   * a script alias (Qaai -> Zinh) and a variant alias (heploc -> alalc97).
+   * Without the territory table en-UK is not an available locale and the
+   * lookup matcher drops it to en instead of selecting Node's en-GB. */
+  for (int round = 0; round < SCR_INTL_ALIAS_ROUNDS; round++) {
+    bool changed = false;
+    char replacement[ULOC_FULLNAME_CAPACITY];
+    if (script[0] != '\0') {
+      UErrorCode scriptsStatus = U_ZERO_ERROR;
+      UResourceBundle *scripts = ures_getByKey(alias, "script", NULL, &scriptsStatus);
+      if (U_SUCCESS(scriptsStatus) && scripts != NULL) {
+        if (scr_intl_alias_lookup(scripts, script, replacement, sizeof replacement) &&
+            strcmp(replacement, script) != 0) {
+          snprintf(script, sizeof script, "%s", replacement);
+          changed = true;
+        }
+        ures_close(scripts);
+      }
+    }
+    if (region[0] != '\0') {
+      UErrorCode regionStatus = U_ZERO_ERROR;
+      UResourceBundle *territories = ures_getByKey(alias, "territory", NULL, &regionStatus);
+      if (U_SUCCESS(regionStatus) && territories != NULL) {
+        if (scr_intl_alias_lookup(territories, region, replacement, sizeof replacement) &&
+            strcmp(replacement, region) != 0) {
+          snprintf(region, sizeof region, "%s", replacement);
+          changed = true;
+        }
+        ures_close(territories);
+      }
+    }
+    if (variant[0] != '\0') {
+      UErrorCode variantStatus = U_ZERO_ERROR;
+      UResourceBundle *variants = ures_getByKey(alias, "variant", NULL, &variantStatus);
+      if (U_SUCCESS(variantStatus) && variants != NULL) {
+        char rebuilt[ULOC_FULLNAME_CAPACITY];
+        size_t used = 0;
+        bool replaced_any = false;
+        const char *at = variant;
+        while (*at != '\0') {
+          const char *end = strchr(at, '_');
+          const size_t len = end == NULL ? strlen(at) : (size_t)(end - at);
+          char piece[ULOC_FULLNAME_CAPACITY];
+          char lower_piece[ULOC_FULLNAME_CAPACITY];
+          if (len >= sizeof piece) break;
+          memcpy(piece, at, len);
+          piece[len] = '\0';
+          scr_intl_tag_lower(piece, lower_piece, sizeof lower_piece);
+          char aliased[ULOC_FULLNAME_CAPACITY];
+          if (scr_intl_alias_lookup(variants, lower_piece, aliased, sizeof aliased) &&
+              strcmp(aliased, piece) != 0) {
+            snprintf(piece, sizeof piece, "%s", aliased);
+            replaced_any = true;
+          }
+          const int written =
+              snprintf(rebuilt + used, sizeof rebuilt - used, "%s%s", used > 0 ? "_" : "", piece);
+          if (written <= 0 || (size_t)written >= sizeof rebuilt - used) break;
+          used += (size_t)written;
+          at = end == NULL ? at + len : end + 1;
+        }
+        if (replaced_any) {
+          snprintf(variant, sizeof variant, "%s", rebuilt);
+          changed = true;
+        }
+        ures_close(variants);
+      }
+    }
+    if (!changed) break;
+  }
+
+  ures_close(languages);
+  ures_close(alias);
+  ures_close(metadata);
+
+  char rebuilt[ULOC_FULLNAME_CAPACITY * 2];
+  const int written = snprintf(rebuilt, sizeof rebuilt, "%s%s%s%s%s%s%s%s", language,
+                               script[0] != '\0' ? "_" : "", script,
+                               region[0] != '\0' ? "_" : "", region,
+                               variant[0] != '\0' ? "_" : "", variant,
+                               keywords != NULL ? keywords : "");
+  if (written > 0 && (size_t)written < sizeof rebuilt && (size_t)written < size)
+    snprintf(out, size, "%s", rebuilt);
+}
+
+/** Whether the available enumeration holds `id`, an ICU locale id, compared
+ * case-insensitively in Node's spelling. */
+static bool scr_intl_locale_listed(UEnumeration *available, const char *id) {
+  const size_t want = strlen(id);
+  UErrorCode status = U_ZERO_ERROR;
+  uenum_reset(available, &status);
+  if (U_FAILURE(status)) return false;
+  int32_t len = 0;
+  const char *entry;
+  while ((entry = uenum_next(available, &len, &status)) != NULL && U_SUCCESS(status)) {
+    if ((size_t)len != want) continue;
+    size_t i = 0;
+    for (; i < want; i++) {
+      char a = entry[i], b = id[i];
+      if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
+      if (b >= 'A' && b <= 'Z') b = (char)(b - 'A' + 'a');
+      if (a != b) break;
+    }
+    if (i == want) return true;
+  }
+  return false;
+}
+
+/** Replaces `tag` with the available locale its likely subtags name when one
+ * exists: sr_ME maximizes to sr_Latn_ME, so a region without its own data
+ * keeps the language's likely script instead of dropping to plain sr (which
+ * would format in Cyrillic). The variant is cut after language, script and
+ * region, since a variant-only suffix never names available data. */
+static bool scr_intl_locale_likely(UEnumeration *available, char *tag, size_t size) {
+  char maximized[ULOC_FULLNAME_CAPACITY];
+  UErrorCode status = U_ZERO_ERROR;
+  const int32_t n = uloc_addLikelySubtags(tag, maximized, (int32_t)sizeof maximized, &status);
+  if (U_FAILURE(status) || n <= 0 || (size_t)n >= sizeof maximized) return false;
+  size_t underscores = 0;
+  for (size_t i = 0; maximized[i] != '\0'; i++) {
+    if (maximized[i] == '_' && ++underscores == 3) {
+      maximized[i] = '\0';
+      break;
+    }
+  }
+  if (!scr_intl_locale_listed(available, maximized)) return false;
+  snprintf(tag, size, "%s", maximized);
+  return true;
+}
+
+/** The locale a valid tag resolves to: Node's matcher over ICU's available
+ * locales is ECMA-402's LookupMatcher, not a best-fit distance search. It
+ * tries the tag itself, then drops its last subtag in turn (variant, then
+ * region, then script) until an available locale matches, and falls back to
+ * the default locale when even the language has none. ICU's
+ * uloc_acceptLanguage instead picks the closest locale by distance, which
+ * resolves en-RU to en-GB and hak to zh-Hant where Node answers en and its
+ * default locale. The requested locale's own extension keywords ride onto
+ * the matched locale so an explicit calendar or numbering system still
+ * reaches ICU. `icu` is the tag's ICU locale id. */
+static void scr_intl_resolve_locale(const char *icu, char *out, size_t size) {
+  UErrorCode status = U_ZERO_ERROR;
+  UEnumeration *available = uloc_openAvailableByType(ULOC_AVAILABLE_DEFAULT, &status);
+  if (U_SUCCESS(status) && available != NULL) {
+    const char *keywords = strchr(icu, '@');
+    const size_t base_len = keywords != NULL ? (size_t)(keywords - icu) : strlen(icu);
+    char candidate[ULOC_FULLNAME_CAPACITY];
+    if (base_len < sizeof candidate) {
+      memcpy(candidate, icu, base_len);
+      candidate[base_len] = '\0';
+      bool matched = false;
+      while (candidate[0] != '\0') {
+        if (scr_intl_locale_listed(available, candidate) ||
+            scr_intl_locale_likely(available, candidate, sizeof candidate)) {
+          matched = true;
+          break;
+        }
+        /* en_US_POSIX -> en_US -> en; sr_Latn_RS -> sr_Latn -> sr. */
+        char *cut = strrchr(candidate, '_');
+        if (cut == NULL) break;
+        *cut = '\0';
+      }
+      uenum_close(available);
+      if (matched) {
+        if (keywords != NULL) snprintf(out, size, "%s%s", candidate, keywords);
+        else snprintf(out, size, "%s", candidate);
+        return;
+      }
+      snprintf(out, size, "%s", scr_intl_locale);
+      return;
+    }
+    uenum_close(available);
+  } else if (available != NULL) {
+    uenum_close(available);
+  }
+  snprintf(out, size, "%s", scr_intl_locale);
+}
+
+/** The ICU locale a formatter runs at: the default locale for the empty
+ * tag (an absent or undefined locales argument), else the tag's, validated
+ * and negotiated. False with the missing-data or RangeError pending. */
+
 static bool scr_intl_locale_of(const ScrStr *tag, char *out, size_t size) {
   if (!scr_intl_data()) {
     scr_intl_no_data();
@@ -861,13 +1376,21 @@ static bool scr_intl_locale_of(const ScrStr *tag, char *out, size_t size) {
     scr_intl_bad_locale();
     return false;
   }
+  char icu[ULOC_FULLNAME_CAPACITY];
   UErrorCode status = U_ZERO_ERROR;
   int32_t parsed = 0;
-  uloc_forLanguageTag(text, out, (int32_t)size, &parsed, &status);
+  uloc_forLanguageTag(text, icu, (int32_t)sizeof icu, &parsed, &status);
   if (U_FAILURE(status) || status == U_STRING_NOT_TERMINATED_WARNING || parsed != (int32_t)tag->len) {
     scr_intl_bad_locale();
     return false;
   }
+  /* Canonicalize CLDR aliases (a territory like UK becomes GB, a language
+   * like sh becomes sr) and resolve the tag against ICU's available locales
+   * the way Node's matcher does, so a program's tag names the same locale
+   * the pinned Node would format at. */
+  char canonical[ULOC_FULLNAME_CAPACITY];
+  scr_intl_canonicalize_language(icu, canonical, sizeof canonical);
+  scr_intl_resolve_locale(canonical, out, size);
   return true;
 }
 
@@ -2129,4 +2652,332 @@ ScrStr *scr_intl_date_to_locale_dyn(double ms, double kind, ScrDyn *locale, ScrD
   ScrStr *text = scr_intl_date_to_locale(ms, kind, tag, options);
   scr_str_release(tag);
   return text;
+}
+
+/* ── Intl.ListFormat ──────────────────────────────────────────────────
+ * format(list) takes an ITERABLE whose elements must already be strings
+ * (Node 24 / ECMA-402): the runtime steps the iterator and throws the
+ * TypeError "Iterable yielded <text> which is not a string" for any other
+ * element, quoting V8's side-effect-free text for the value. type and style
+ * map to ICU's list formatter. */
+
+typedef struct {
+  size_t rc;
+  UListFormatter *formatter;
+} ScrIntlListFormat;
+
+static void *scr_intl_list_format_retain(void *ptr) {
+  ScrIntlListFormat *value = ptr;
+  value->rc++;
+  return value;
+}
+
+static void scr_intl_list_format_release(void *ptr) {
+  ScrIntlListFormat *value = ptr;
+  if (--value->rc) return;
+  if (value->formatter != NULL) ulistfmt_close(value->formatter);
+  free(value);
+}
+
+static ScrIntlListFormat *scr_intl_list_format_resolve(const ScrStr *locale, ScrDyn *optionsValue,
+                                                       const char *method) {
+  char icuLocale[ULOC_FULLNAME_CAPACITY];
+  if (!scr_intl_locale_of(locale, icuLocale, sizeof icuLocale)) return NULL;
+  // Node's ListFormat takes only an object (or undefined) for its options:
+  // null and every primitive are V8's invalid_argument TypeError, unlike the
+  // sibling formatters, which read a primitive as no options.
+  if (optionsValue != NULL && optionsValue->kind != SCR_DYN_UNDEF) {
+    switch (optionsValue->kind) {
+    case SCR_DYN_NULL:
+    case SCR_DYN_BOOL:
+    case SCR_DYN_NUM:
+    case SCR_DYN_STR:
+    case SCR_DYN_BIGINT:
+    case SCR_DYN_SYMBOL: {
+      static const char message[] = "invalid_argument";
+      scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+      return NULL;
+    }
+    default: break;
+    }
+  }
+  ScrIntlOptions options;
+  if (!scr_intl_options(optionsValue, method, &options)) return NULL;
+  static const char *const MATCHERS[] = { "lookup", "best fit" };
+  if (scr_intl_choice_option(&options, "localeMatcher", MATCHERS, 2, 1) < 0) return NULL;
+  static const char *const TYPES[] = { "conjunction", "disjunction", "unit" };
+  int type = scr_intl_choice_option(&options, "type", TYPES, 3, 0);
+  if (type < 0) return NULL;
+  static const char *const STYLES[] = { "long", "short", "narrow" };
+  int style = scr_intl_choice_option(&options, "style", STYLES, 3, 0);
+  if (style < 0) return NULL;
+  UErrorCode status = U_ZERO_ERROR;
+  UListFormatter *formatter = ulistfmt_openForType(
+    icuLocale,
+    type == 1 ? ULISTFMT_TYPE_OR : type == 2 ? ULISTFMT_TYPE_UNITS : ULISTFMT_TYPE_AND,
+    style == 1 ? ULISTFMT_WIDTH_SHORT : style == 2 ? ULISTFMT_WIDTH_NARROW : ULISTFMT_WIDTH_WIDE,
+    &status);
+  if (U_FAILURE(status) || formatter == NULL) {
+    if (formatter != NULL) ulistfmt_close(formatter);
+    scr_intl_refuse("Intl.ListFormat with these options");
+    return NULL;
+  }
+  ScrIntlListFormat *result = calloc(1, sizeof *result);
+  if (result == NULL) scr_trap("scriptc: out of memory\n");
+  result->rc = 1;
+  result->formatter = formatter;
+  return result;
+}
+
+/** The TypeError Node throws for an element that is not a string, quoting
+ * V8's side-effect-free text for the value it yielded. */
+static void scr_intl_list_format_element_error(const ScrDyn *element) {
+  ScrStr *text = scr_dyn_side_effect_free_string(element);
+  if (text == NULL) return;
+  ScrJsonBuf message;
+  scr_jb_init(&message);
+  scr_jb_puts(&message, "Iterable yielded ");
+  scr_jb_put_str(&message, text);
+  scr_str_release(text);
+  scr_jb_puts(&message, " which is not a string");
+  scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&message));
+}
+
+/* IteratorStepValue over (iterator, next): true with *done and the owned
+ * value, or false with the exception pending. The native fast path serves a
+ * real native iterator; every other iterator (a program's, a generator)
+ * steps through its own next method, as the collection iterables do. */
+static bool scr_intl_list_format_step(ScrDyn *iterator, ScrDyn *next, bool *done,
+                                      ScrDyn **value) {
+  *done = false;
+  *value = NULL;
+  if (scr_dyn_iterator_can_step(iterator, next)) {
+    ScrDyn *item = scr_dyn_iterator_step(iterator);
+    if (item == NULL) return false;
+    *done = scr_dyn_iterator_step_done(iterator);
+    *value = item;
+    return true;
+  }
+  scr_dyn_this_push_dyn(iterator);
+  ScrDyn *raw = scr_dyn_call(next, NULL, 0, "next");
+  scr_dyn_this_pop();
+  if (raw == NULL) return false;
+  ScrDyn *finished = scr_dyn_iterator_result_get(raw, "done", 4);
+  if (finished == NULL) {
+    scr_dyn_release(raw);
+    return false;
+  }
+  *done = scr_dyn_truthy(finished);
+  scr_dyn_release(finished);
+  if (*done) {
+    scr_dyn_release(raw);
+    *value = scr_dyn_retain(scr_dyn_undefined());
+    return true;
+  }
+  *value = scr_dyn_iterator_result_get(raw, "value", 5);
+  scr_dyn_release(raw);
+  return *value != NULL;
+}
+
+/* IteratorClose(iterator, throw completion): the pending error stays and
+ * everything return() raises is dropped, so the element's TypeError is the
+ * one the program sees. */
+static void scr_intl_list_format_close(ScrDyn *iterator) {
+  ScrCaught *first = scr_exc_take();
+  ScrDyn *method = scr_dyn_iterator_member(iterator, "return");
+  if (method != NULL) {
+    if (method->kind != SCR_DYN_UNDEF && method->kind != SCR_DYN_NULL) {
+      scr_dyn_this_push_dyn(iterator);
+      ScrDyn *result = scr_dyn_call(method, NULL, 0, "return");
+      scr_dyn_this_pop();
+      if (result == NULL) {
+        ScrCaught *dropped = scr_exc_take();
+        scr_caught_release(dropped);
+      } else {
+        scr_dyn_release(result);
+      }
+    }
+    scr_dyn_release(method);
+  }
+  if (first != NULL) {
+    scr_rethrow(first);
+    scr_caught_release(first);
+  }
+}
+
+static ScrStr *scr_intl_list_format_run(const ScrIntlListFormat *format, ScrDyn *list) {
+  if (list == NULL || list->kind == SCR_DYN_UNDEF) return scr_str_new("", 0);
+  /* Intl.ListFormat takes a SYNCHRONOUS iterable: Symbol.iterator, never a
+   * dual-protocol object's async iterator. */
+  ScrDyn *iterator = scr_dyn_iterator(list, NULL);
+  if (iterator == NULL) {
+    if (!scr_exc_pending()) scr_dyn_throw_not_iterable(list);
+    return NULL;
+  }
+  ScrDyn *next = scr_dyn_iterator_member(iterator, "next");
+  if (next == NULL) {
+    scr_dyn_release(iterator);
+    return NULL;
+  }
+  ScrStr **parts = NULL;
+  size_t count = 0;
+  size_t cap = 0;
+  for (;;) {
+    bool done = false;
+    ScrDyn *item = NULL;
+    if (!scr_intl_list_format_step(iterator, next, &done, &item)) {
+      scr_dyn_release(next);
+      scr_dyn_release(iterator);
+      for (size_t i = 0; i < count; i++) scr_str_release(parts[i]);
+      free(parts);
+      return NULL;
+    }
+    if (done) {
+      scr_dyn_release(item);
+      break;
+    }
+    if (item->kind != SCR_DYN_STR) {
+      scr_intl_list_format_element_error(item);
+      scr_dyn_release(item);
+      scr_intl_list_format_close(iterator);
+      scr_dyn_release(next);
+      scr_dyn_release(iterator);
+      for (size_t i = 0; i < count; i++) scr_str_release(parts[i]);
+      free(parts);
+      return NULL;
+    }
+    if (count == cap) {
+      size_t grown_cap = cap != 0 ? cap * 2 : 4;
+      ScrStr **grown = realloc(parts, grown_cap * sizeof *parts);
+      if (grown == NULL) scr_trap("scriptc: out of memory\n");
+      parts = grown;
+      cap = grown_cap;
+    }
+    parts[count++] = scr_str_retain(item->v.str);
+    scr_dyn_release(item);
+  }
+  scr_dyn_release(next);
+  scr_dyn_release(iterator);
+  if (count == 0) {
+    free(parts);
+    return scr_str_new("", 0);
+  }
+  {
+    UChar **strings = calloc(count, sizeof *strings);
+    int32_t *lengths = calloc(count, sizeof *lengths);
+    if (strings == NULL || lengths == NULL) scr_trap("scriptc: out of memory\n");
+    for (size_t i = 0; i < count; i++) {
+      lengths[i] =
+        (int32_t)scr_intl_utf16_units((const unsigned char *)parts[i]->data, parts[i]->len);
+      strings[i] = malloc((size_t)(lengths[i] > 0 ? lengths[i] : 1) * sizeof(UChar));
+      if (strings[i] == NULL) scr_trap("scriptc: out of memory\n");
+      scr_intl_utf16_fill((const unsigned char *)parts[i]->data, parts[i]->len,
+                          (uint16_t *)strings[i]);
+      scr_str_release(parts[i]);
+    }
+    free(parts);
+    UErrorCode status = U_ZERO_ERROR;
+    int32_t capacity = 64;
+    UChar *text = malloc((size_t)capacity * sizeof(UChar));
+    if (text == NULL) scr_trap("scriptc: out of memory\n");
+    int32_t length = ulistfmt_format(format->formatter, (const UChar *const *)strings, lengths,
+                                     (int32_t)count, text, capacity, &status);
+    if (status == U_BUFFER_OVERFLOW_ERROR) {
+      status = U_ZERO_ERROR;
+      capacity = length + 1;
+      UChar *grown = realloc(text, (size_t)capacity * sizeof(UChar));
+      if (grown == NULL) scr_trap("scriptc: out of memory\n");
+      text = grown;
+      length = ulistfmt_format(format->formatter, (const UChar *const *)strings, lengths,
+                               (int32_t)count, text, capacity, &status);
+    }
+    for (size_t i = 0; i < count; i++) free(strings[i]);
+    free(strings);
+    free(lengths);
+    ScrStr *result = U_SUCCESS(status) ? scr_intl_from_utf16(text, length) : NULL;
+    free(text);
+    if (result == NULL) scr_intl_no_data();
+    return result;
+  }
+}
+
+static ScrIntlListFormat *scr_intl_list_format_of(ScrDyn *value) {
+  if (value != NULL && value->kind == SCR_DYN_HANDLE &&
+      value->v.handle.tag == SCR_DYNH_INTL_LIST_FORMAT)
+    return value->v.handle.ptr;
+  static const char message[] =
+    "Method Intl.ListFormat.prototype.format called on incompatible receiver";
+  scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+  return NULL;
+}
+
+static ScrDyn *scr_intl_list_format_invoke(void *ptr, ScrDyn *self, const char *method,
+                                           ScrDyn *const *args, size_t argc, const char *what) {
+  (void)self;
+  ScrIntlListFormat *format = ptr;
+  if (strcmp(method, "format") == 0) {
+    ScrStr *text = scr_intl_list_format_run(format, argc ? args[0] : NULL);
+    if (text == NULL) return NULL;
+    ScrDyn *boxed = scr_dyn_new_str(text);
+    scr_str_release(text);
+    return boxed;
+  }
+  if (strcmp(method, "formatToParts") == 0 || strcmp(method, "resolvedOptions") == 0) {
+    scr_intl_refuse(strcmp(method, "formatToParts") == 0
+                      ? "Intl.ListFormat.prototype.formatToParts"
+                      : "Intl.ListFormat.prototype.resolvedOptions");
+    return NULL;
+  }
+  ScrJsonBuf message;
+  scr_jb_init(&message);
+  scr_jb_puts(&message, what);
+  scr_jb_puts(&message, " is not a function");
+  scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&message));
+  return NULL;
+}
+
+static ScrDyn *scr_intl_list_format_get(void *ptr, const char *key, size_t len) {
+  (void)ptr;
+  static const char *const METHODS[] = { "format", "formatToParts", "resolvedOptions" };
+  for (size_t i = 0; i < sizeof METHODS / sizeof *METHODS; i++) {
+    if (strlen(METHODS[i]) == len && memcmp(key, METHODS[i], len) == 0) {
+      scr_intl_refuse("a stored Intl formatter method");
+      return NULL;
+    }
+  }
+  return NULL;
+}
+
+static bool scr_intl_list_format_set(void *ptr, const char *key, size_t len, const ScrDyn *value) {
+  (void)ptr;
+  (void)key;
+  (void)len;
+  (void)value;
+  return false;
+}
+
+static void scr_intl_list_format_ops_install(void) {
+  static const ScrDynHandleOps ops = {
+    .cls = "ListFormat",
+    .retain = scr_intl_list_format_retain,
+    .release = scr_intl_list_format_release,
+    .invoke = scr_intl_list_format_invoke,
+    .get = scr_intl_list_format_get,
+    .set = scr_intl_list_format_set,
+  };
+  scr_dyn_handle_install(SCR_DYNH_INTL_LIST_FORMAT, &ops);
+}
+
+ScrDyn *scr_intl_list_format_new(ScrStr *locale, ScrDyn *options) {
+  ScrIntlListFormat *format = scr_intl_list_format_resolve(locale, options, "Intl.ListFormat");
+  if (format == NULL) return NULL;
+  scr_intl_list_format_ops_install();
+  ScrDyn *boxed = scr_dyn_new_handle(format, SCR_DYNH_INTL_LIST_FORMAT);
+  scr_intl_list_format_release(format);
+  return boxed;
+}
+
+ScrStr *scr_intl_list_format_format(ScrDyn *format, ScrDyn *list) {
+  ScrIntlListFormat *value = scr_intl_list_format_of(format);
+  return value == NULL ? NULL : scr_intl_list_format_run(value, list);
 }

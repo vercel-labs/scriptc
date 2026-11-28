@@ -4,6 +4,7 @@ import { emitRecordShapes } from "./shapes.js";
 import { NullableRefFields } from "./nullable-fields.js";
 import type { Int32Slots } from "../../ir/int32-slots.js";
 import { alignFunctionEntries } from "./function-alignment.js";
+import type { TextPart } from "../../text-parts.js";
 
 export interface LlvmLayouts {
   records: { typeDefs: string[]; defs: string[] };
@@ -37,7 +38,11 @@ export function emitLlvmLayouts(
   // This stage's definitions are spliced into the full module by
   // self-hosting consumers, so they carry the same entry alignment the
   // emitter's whole-module pass gives every function.
-  records.defs = alignFunctionEntries(records.defs);
-  classShapes.defs = alignFunctionEntries(classShapes.defs);
-  return { records, classes: classShapes, classObjects: alignFunctionEntries(objects) };
+  records.defs = alignFunctionEntries(records.defs as TextPart[]) as string[];
+  classShapes.defs = alignFunctionEntries(classShapes.defs as TextPart[]) as string[];
+  return {
+    records,
+    classes: classShapes,
+    classObjects: alignFunctionEntries(objects as TextPart[]) as string[],
+  };
 }

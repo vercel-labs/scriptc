@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "compilerVersion": "0.4.16",
+  "compilerVersion": "0.4.17",
   "coverage": [
     "Entries are projected mechanically from the compiler's own decision tables: the diagnostics registry, the unsupported-syntax dispatch tables, the stdlib and node-builtin lowering tables, and the supported-builtin-module list. Nothing is hand-maintained; the manifest regenerates byte-identically from the source tree at this version.",
     "Absence from this manifest means 'not projected', never 'unsupported'. Surfaces lowered through dedicated code paths rather than tables are not yet projected: console, JSON, Promise/async and the timer surface, the net/http/tls/https/dgram/dns/assert/test/stream/readline module member surfaces, template literals, the regex slice, global functions (parseInt, parseFloat, isNaN, isFinite), and the process surface outside its ambient slice.",
@@ -1777,6 +1777,13 @@
       "note": "removes one listener, or every listener, from a resolved path's poller"
     },
     {
+      "id": "node-builtin.fs.utf8Stream",
+      "kind": "node-builtin",
+      "name": "fs.Utf8Stream",
+      "status": "static",
+      "note": "Node's buffered file writer: write/end/flush/flushSync/destroy/reopen, the ready/write/drop/drain/finish/close events, and its option and property surface"
+    },
+    {
       "id": "node-builtin.fs.utimesSync",
       "kind": "node-builtin",
       "name": "fs.utimesSync",
@@ -1894,6 +1901,12 @@
       "note": "the lowered call resolves a string-literal specifier against a static base (import.meta.url, __filename, or a path or file: URL literal) at build time and answers Node's nearest package.json; a runtime-computed specifier or base cannot exist in a compiled binary's fixed module graph"
     },
     {
+      "id": "node-builtin.module.findSourceMap",
+      "kind": "node-builtin",
+      "name": "module.findSourceMap",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.module.flushCompileCache",
       "kind": "node-builtin",
       "name": "module.flushCompileCache",
@@ -1906,12 +1919,24 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.module.getSourceMapsSupport",
+      "kind": "node-builtin",
+      "name": "module.getSourceMapsSupport",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.module.isBuiltin",
       "kind": "node-builtin",
       "name": "module.isBuiltin",
       "status": "unsupported",
       "code": "SC2020",
       "note": "the lowered call checks a string against the baked Node v24 list, including bare/node: aliases and prefix-only builtins"
+    },
+    {
+      "id": "node-builtin.module.setSourceMapsSupport",
+      "kind": "node-builtin",
+      "name": "module.setSourceMapsSupport",
+      "status": "static"
     },
     {
       "id": "node-builtin.module.syncBuiltinESMExports",
@@ -6241,9 +6266,8 @@
       "id": "stdlib.response.static.error",
       "kind": "stdlib",
       "name": "Response.error",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Node 24.22.1 / Undici 7.30.1; Response static constructor-object operations have no compiler lowering"
+      "status": "static",
+      "note": "Node 24.22.1 / Undici 7.30.1; facets: identity, state-machine; supported scope: the error response: type error, status 0, null body, immutable empty headers; differential evidence: fixture:static"
     },
     {
       "id": "stdlib.response.static.json",
@@ -6256,9 +6280,8 @@
       "id": "stdlib.response.static.redirect",
       "kind": "stdlib",
       "name": "Response.redirect",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Node 24.22.1 / Undici 7.30.1; Response static constructor-object operations have no compiler lowering"
+      "status": "static",
+      "note": "Node 24.22.1 / Undici 7.30.1; facets: webidl-conversion, error-shape, state-machine; supported scope: an absolute URL as the Location header and one of the redirect statuses 301, 302, 303, 307 or 308 (WebIDL truncation; any other code is Node's RangeError), immutable headers; differential evidence: fixture:static"
     },
     {
       "id": "stdlib.response.status",
@@ -6285,9 +6308,8 @@
       "id": "stdlib.response.type",
       "kind": "stdlib",
       "name": "Response.type",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Node 24.22.1 / Undici 7.30.1; the member is outside the native static handle projection"
+      "status": "static",
+      "note": "Node 24.22.1 / Undici 7.30.1; facets: property-read; differential evidence: fixture:static"
     },
     {
       "id": "stdlib.response.url",

@@ -2295,16 +2295,21 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
     f: ShapeFacts,
   ): { shape: IrRecordShape; moving: string[] } | null => {
     const shape = shapes.get(id);
-    if (!wanted.has(id) || !unresolved(id) || !inScope(shape)) return null;
+    if (!wanted.has(id) || !inScope(shape)) return null;
     const moving = movingKeys(id, f, tableOf(shape));
-    return moving === null ? null : { shape, moving };
+    if (moving === null) return null;
+    // A resolved one-table order still needs per-instance orders when a
+    // declared optional key can move: a delete and re-add, or a late write
+    // of an absent key, puts that key last in the value's own order.
+    if (!unresolved(id) && moving.length === 0) return null;
+    return { shape, moving };
   };
   const variants = new Map<string, string[][]>();
   for (const [id, f] of facts) {
     const candidate = orderable(id, f);
     // A runtime producer builds the shape's values in its fixed layout,
     // which has no KEY_ORDER_FIELD.
-    if (candidate === null || f.literals.length === 0 || f.opaque) continue;
+    if (candidate === null || f.opaque) continue;
     const table = tableOf(candidate.shape);
     const orders: string[][] = [table];
     let ok = true;

@@ -1319,7 +1319,11 @@ export function lowerPromiseStaticCall(
     // like the JavaScript lane's. The argument lowers ONCE; a typed promise
     // array keeps the typed combinator with that same value.
     const probe = entriesArgument(argNode);
-    if (probe !== null) {
+    // An array literal keeps typedPromiseEntries' element-wise lowering: the
+    // checker types a uniform literal by the combinator's tuple overload, so
+    // lowering it as one expression yields a tuple record and refuses. Only
+    // a non-literal argument is probed for the checked-dynamic path.
+    if (probe !== null && !ts.isArrayLiteralExpression(probe)) {
       const lowered = lowerer.lowerExpr(probe);
       if (lowered.type.kind === "dyn") return checkedPromiseAll(lowerer, lowered, loc, member);
       return lowerTypedSettledCombinator(lowerer, call, probe, member, lowered);

@@ -55,7 +55,13 @@ const describe = (label, stats, exactTimes = true) => {
     stats.blocks >= 0,
     stats.atimeMs === 1500,
     stats.mtimeMs === 2250,
-    stats.mtimeMs === Math.round(stats.mtime.getTime()),
+    // mtimeMs keeps sub-millisecond precision while the Date truncates, so
+    // compare within a millisecond: exact equality depended on the file's
+    // timestamp landing on a whole millisecond. The BigInt table answers a
+    // bigint, which never equals the Date's number.
+    typeof stats.mtimeMs === "bigint"
+      ? false
+      : Math.abs(stats.mtimeMs - stats.mtime.getTime()) < 1,
   );
   console.log(
     label,

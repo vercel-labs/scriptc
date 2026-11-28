@@ -398,6 +398,7 @@ void scr_http_res_write_head_object(ScrHttpRes *r, double status, ScrArr *names 
  * wire head is Node's exactly). The response arrives as a ScrHttpReq. */
 typedef struct ScrHttpClientReq ScrHttpClientReq;
 typedef void (*ScrHttpRespFn)(ScrClosure *cb, ScrHttpReq *res); /* res +1 */
+void scr_http_client_set_headers_dyn(ScrHttpClientReq *c, const ScrDyn *headers /*borrowed*/);
 ScrHttpClientReq *scr_http_client_retain(ScrHttpClientReq *c);
 void scr_http_client_release(ScrHttpClientReq *c);
 void *scr_http_client_retain_v(void *p);

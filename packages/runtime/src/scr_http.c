@@ -1835,8 +1835,8 @@ static bool scr_http_set_cookie_key(const ScrStr *key) {
  * entries go through setHeader in iteration order. Every set-cookie value
  * collects into ONE array first: a Headers object joins multiple cookies
  * with commas when its get() is used, so Node never splits them apart. */
-static void scr_http_set_headers_apply(ScrHttpRes *r, const ScrDyn *headers,
-                                       void (*set)(ScrHttpRes *, ScrStr *, ScrDyn *)) {
+static void scr_http_set_headers_apply(void *ctx, const ScrDyn *headers,
+                                       void (*set)(void *, ScrStr *, ScrDyn *)) {
   if (headers->kind != SCR_DYN_HANDLE ||
       (headers->v.handle.tag != SCR_DYNH_MAP && headers->v.handle.tag != SCR_DYNH_FETCH_HEADERS)) {
     scr_dyn_arg_type_fail("headers", "an instance of Headers or Map", headers);
@@ -1897,23 +1897,38 @@ static void scr_http_set_headers_apply(ScrHttpRes *r, const ScrDyn *headers,
       }
       scr_dyn_release(plain);
     } else {
-      set(r, key->v.str, value);
+      set(ctx, key->v.str, value);
     }
     scr_dyn_release(key);
     scr_dyn_release(value);
     if (scr_exc_pending()) break;
   }
   if (cookies != NULL) {
-    if (!scr_exc_pending()) set(r, cookie_name, cookies);
+    if (!scr_exc_pending()) set(ctx, cookie_name, cookies);
     scr_dyn_release(cookies);
   }
   scr_str_release(cookie_name);
   scr_dyn_release(entries);
 }
 
+static void scr_http_res_set_header_thunk(void *ctx, ScrStr *name, ScrDyn *value) {
+  scr_http_res_set_header_dyn((ScrHttpRes *)ctx, name, value);
+}
+
 void scr_http_res_set_headers_dyn(ScrHttpRes *r, const ScrDyn *headers /*borrowed*/) {
   if (!scr_http_res_headers_unsent(r, "set")) return;
-  scr_http_set_headers_apply(r, headers, scr_http_res_set_header_dyn);
+  scr_http_set_headers_apply(r, headers, scr_http_res_set_header_thunk);
+}
+
+static void scr_http_client_set_header_thunk(void *ctx, ScrStr *name, ScrDyn *value) {
+  scr_http_client_set_header_dyn((ScrHttpClientReq *)ctx, name, value);
+}
+
+/* ClientRequest.setHeaders(headers): Node's OutgoingMessage form — a Headers
+ * or Map of names to values, each set through setHeader (arrays keep their
+ * several lines, a request has no set-cookie join). */
+void scr_http_client_set_headers_dyn(ScrHttpClientReq *c, const ScrDyn *headers /*borrowed*/) {
+  scr_http_set_headers_apply(c, headers, scr_http_client_set_header_thunk);
 }
 
 /* ServerResponse.pipe(): a response is write-only, so Node's

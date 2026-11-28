@@ -6,6 +6,7 @@ import {
   isModuleExportsAccess,
 } from "../program.js";
 import type { Lowerer } from "./lowerer.js";
+import { positionTag } from "./structural-positions.js";
 import type { IrType } from "../../ir/ir.js";
 
 export interface ClassSymbolKey {
@@ -25,6 +26,30 @@ function constantSymbolDescription(
 ): string | null {
   while (ts.isParenthesizedExpression(expression)) expression = expression.expression;
   if (ts.isStringLiteralLike(expression)) return expression.text;
+  // A template of constants spells its own description (the AI SDK's
+  // `Symbol.for(\`vercel.ai.gateway.error.${name}\`)`): fold every part
+  // through the same rule. Each part folds with its own `seen` copy, so
+  // the same constant may appear in more than one substitution.
+  if (ts.isTemplateExpression(expression)) {
+    let out = expression.head.text;
+    for (const span of expression.templateSpans.nodes) {
+      const part = constantSymbolDescription(lowerer, span.expression, new Set(seen));
+      if (part === null) return null;
+      out += part + span.literal.text;
+    }
+    return out;
+  }
+  // A `+` of two constant strings is their concatenation. Numbers would
+  // need ToString's own spelling, so only strings fold here.
+  if (
+    ts.isBinaryExpression(expression) &&
+    expression.operatorToken.kind === ts.SyntaxKind.PlusToken
+  ) {
+    const left = constantSymbolDescription(lowerer, expression.left, new Set(seen));
+    if (left === null) return null;
+    const right = constantSymbolDescription(lowerer, expression.right, new Set(seen));
+    return right === null ? null : left + right;
+  }
   if (!ts.isIdentifier(expression) && !ts.isPropertyAccessExpression(expression)) return null;
   const name = ts.isPropertyAccessExpression(expression) ? expression.name : expression;
   if (!ts.isIdentifier(name)) return null;
@@ -44,7 +69,12 @@ function constantSymbolDescription(
 }
 
 export function symbolFieldDisplayName(field: string): string {
-  return field.slice(FIELD_PREFIX.length).replace(/^\d+:/, "");
+  // Drop the table ordinal and the identity tag: both exist to keep two
+  // slots apart, and Node prints neither.
+  return field
+    .slice(FIELD_PREFIX.length)
+    .replace(/^\d+:/, "")
+    .replace(/%[0-9a-f]+$/, "");
 }
 
 /** CopyDataProperties includes symbols, unlike the string-keyed view used
@@ -309,13 +339,25 @@ function symbolKeyOf(
   if (!identities) lowerer.symbolFieldIdentities.set(description, (identities = []));
   let ordinal = identities.indexOf(identity);
   if (ordinal < 0) ordinal = identities.push(identity) - 1;
+  // Two ordinary `Symbol()` calls may share a description and are still
+  // two symbols, so the description alone cannot name their slots: the
+  // tag of the declaring `const` keeps each identity's slot its own, which
+  // is what a subclass keyed by the other symbol reads. Registered
+  // (`Symbol.for`) symbols keep the plain description: they intern one
+  // identity per name, and a field name keyed by the description is exact
+  // for them. The tag is the identity's structural position (its file and
+  // declaration, relative to the entry), so it does not depend on lowering
+  // order or on where the checkout lives.
+  const identityDecl = identity.valueDeclaration ?? identity.declarations?.[0];
+  const identityTag =
+    registered || identityDecl === undefined ? "" : `%${positionTag(lowerer, identityDecl)}`;
   return {
     sym,
     identity,
     // Symbol slots are not string properties. The reserved prefix keeps
     // them out of the native class's string-keyed dynamic view, including
     // Object.keys/JSON serialization and string-property writeback.
-    fieldName: `${FIELD_PREFIX}${table && ordinal > 0 ? `${ordinal}:` : ""}Symbol(${description})`,
+    fieldName: `${FIELD_PREFIX}${table && ordinal > 0 ? `${ordinal}:` : ""}Symbol(${description})${identityTag}`,
   };
 }
 

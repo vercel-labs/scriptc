@@ -83,6 +83,17 @@ import {
   symbolFieldTarget,
 } from "../lower-exprs.js";
 import { hasRuntimeStatics } from "../class-runtime-statics.js";
+import {
+  classMemberNameOf,
+  classValueIsExactlyOwn,
+  findStaticOn,
+  lowerClassStaticRead,
+  staticReceiverClass,
+  staticShadowBelow,
+  type ClassInfo,
+} from "../lower-classes.js";
+import { usesStaticReceiver } from "../static-this.js";
+import { classSymbolKeyOf, symbolFieldDisplayName } from "../symbol-fields.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
 import {
   assertedMemberRead,
@@ -443,6 +454,129 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
     }
     const classInfo =
       receiver.type.kind === "classval" ? lowerer.classes.get(receiver.type.className) : undefined;
+    // A symbol-keyed STATIC member read through a class value
+    // (`C[kError]`): the nearest declaration decides where the value lives —
+    // the lowering's own module global or function, or a runtime-statics
+    // class's constructor property table — and a subclass's declaration
+    // overrides an inherited one in either storage. A class-value BINDING can
+    // hold a subclass, so a redeclaration below it is dispatched by the
+    // runtime class exactly as a named static read through a value is.
+    if (classInfo !== undefined) {
+      const keyInfo = classSymbolKeyOf(lowerer, expr.argumentExpression);
+      if (keyInfo !== null) {
+        const name = keyInfo.fieldName;
+        const exactReceiver = staticReceiverClass(lowerer, expr.expression) !== null;
+        if (!exactReceiver && staticShadowBelow(classInfo, name))
+          lowerer.unsupported(
+            "SC1090",
+            expr,
+            `reading the symbol-keyed static '${symbolFieldDisplayName(name)}' through a class value (a subclass of '${classInfo.def.name.replace(/^%|^%m\d+\./, "")}' redeclares it, so the runtime class decides which declaration answers)`,
+          );
+        let storage: "module" | "table" | "declared" | null = null;
+        let accessor = false;
+        let declarer: ClassInfo | null = null;
+        for (let owner: ClassInfo | null = classInfo; owner !== null; owner = owner.base) {
+          const ownerAccessor =
+            owner.staticMethods?.has(`get:${name}`) === true ||
+            owner.staticMethods?.has(`set:${name}`) === true;
+          if (
+            owner.staticFields.some((field) => field.name === name) ||
+            owner.staticMethods?.has(name) === true ||
+            ownerAccessor
+          ) {
+            storage = "module";
+            accessor = ownerAccessor;
+            break;
+          }
+          const inTable = (owner.runtimeStatics ?? []).some((member) => {
+            const memberName = (member as { name?: ts.PropertyName }).name;
+            return memberName !== undefined && classMemberNameOf(lowerer, memberName) === name;
+          });
+          if (inTable) {
+            storage = "table";
+            declarer = owner;
+            break;
+          }
+          // The class declares the member but nothing lowered it: Node's
+          // class object has the property, so answering `undefined` would be
+          // a silent wrong value (an authorization getter, for instance).
+          if (owner.declaredStatics?.has(name) === true) {
+            storage = "declared";
+            break;
+          }
+        }
+        if (
+          storage === "module" &&
+          accessor &&
+          !classValueIsExactlyOwn(lowerer, expr.expression, classInfo)
+        ) {
+          // Only a getter that reads the static receiver differs between a
+          // class and its subclasses; a constant getter answers the same
+          // value through every receiver, exactly as the named read does.
+          const getter = findStaticOn(lowerer, classInfo, `get:${name}`);
+          if (getter?.method && usesStaticReceiver(getter.method.member))
+            lowerer.unsupported(
+              "SC1090",
+              expr,
+              "receiver-dependent symbol-keyed static accessors through a polymorphic class value",
+            );
+        }
+        if (storage === "module") {
+          const staticRead = lowerClassStaticRead(lowerer, classInfo, name, expr.expression, expr);
+          if (staticRead !== null) return lowerer.maybeNarrow(staticRead, expr);
+        }
+        // Declared, but the lowering has no storage for it: refuse by name
+        // rather than answer a value Node does not.
+        if (storage === "declared")
+          lowerer.unsupported(
+            "SC1090",
+            expr,
+            `reading the symbol-keyed static '${symbolFieldDisplayName(name)}' the class declares but the lowering cannot represent (the read would answer a value Node does not)`,
+          );
+        // A class that keeps its statics in the constructor's property table
+        // keys the member by the SYMBOL; and a key no class DECLARES may
+        // still be installed at run time (`Object.defineProperty(A, k, …)`).
+        // Both answers come from the class value's own property table, which
+        // answers undefined for a key nobody installed — Node's answer. A
+        // class value that could carry properties set outside the
+        // declaration (a callable base) keeps its fence instead of guessing.
+        if (storage === "table") {
+          // The table answers a method as a bare function: calling it drops
+          // the class receiver a `this`-reading body needs, so refuse by name.
+          const method = (declarer?.runtimeStatics ?? []).find((member) => {
+            const memberName = (member as { name?: ts.PropertyName }).name;
+            return (
+              memberName !== undefined &&
+              ts.isMethodDeclaration(member) &&
+              classMemberNameOf(lowerer, memberName) === name &&
+              member.body !== undefined &&
+              usesStaticReceiver(member)
+            );
+          });
+          if (method !== undefined)
+            lowerer.unsupported(
+              "SC1090",
+              expr,
+              "receiver-dependent symbol-keyed static methods on a class whose statics live in its property table",
+            );
+        }
+        if (storage === "table" || (storage === null && !classInfo.callableBase)) {
+          // The RECEIVER's class object answers — the value the expression
+          // holds, which may be a subclass of the static class (a class-value
+          // binding) and carries its own run-time-installed properties.
+          return lowerer.maybeNarrow(
+            {
+              kind: "dynKeyGet",
+              value: lowerer.coerceToExpected(receiver, DYN),
+              key: lowerer.lowerExprExpecting(expr.argumentExpression, DYN),
+              type: DYN,
+              loc: locOf(expr),
+            },
+            expr,
+          );
+        }
+      }
+    }
     if (
       receiver.type.kind === "func" ||
       receiver.type.kind === "generator" ||

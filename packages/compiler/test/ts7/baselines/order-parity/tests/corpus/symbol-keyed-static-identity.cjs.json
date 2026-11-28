@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/symbol-keyed-static-identity.cjs"
+ ],
+ "diags": []
+}

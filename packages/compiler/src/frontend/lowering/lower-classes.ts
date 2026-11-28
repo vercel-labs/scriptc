@@ -3554,9 +3554,23 @@ export function collectClassShapeInner(
         // chain. Class-VALUE receivers fence for privates (a classval
         // slot can hold a descendant at runtime, and only the declaring
         // class object carries the brand in JS).
+        // A symbol-keyed static field (`static [kError] = true`) stores under
+        // the same hidden `%symbol:` name an instance field of that key uses,
+        // as a module global beside the named statics: the read through the
+        // class value (`C[kError]`) resolves the key to that name.
+        const staticSymbol =
+          (ts.isPropertyDeclaration(member) ||
+            ts.isMethodDeclaration(member) ||
+            ts.isGetAccessorDeclaration(member) ||
+            ts.isSetAccessorDeclaration(member)) &&
+          ts.isComputedPropertyName(member.name)
+            ? (classSymbolKeyOf(lowerer, member.name.expression)?.fieldName ?? null)
+            : null;
         if (
           ts.isPropertyDeclaration(member) &&
-          (ts.isIdentifier(member.name) || ts.isPrivateIdentifier(member.name)) &&
+          (ts.isIdentifier(member.name) ||
+            ts.isPrivateIdentifier(member.name) ||
+            staticSymbol !== null) &&
           member.initializer &&
           member.postfixToken?.kind !== ts.SyntaxKind.QuestionToken
         ) {
@@ -3572,14 +3586,18 @@ export function collectClassShapeInner(
             !lowerer.enumObjects.has(initializerSymbol)
           )
             continue;
-          let type = lowerer.irTypeOf(member.name);
+          const typeSite: ts.Node = staticSymbol !== null ? member : member.name;
+          let type: IrType =
+            staticSymbol !== null
+              ? (lowerer.mapTypeOf(lowerer.typeOf(member)) ?? DYN)
+              : lowerer.irTypeOf(member.name);
           // A JSDoc-typed static field the program writes values outside
           // the annotation to holds them (analyzeJsWidenedFields), like an
           // instance field of the same class.
           const widened =
             ts.isIdentifier(member.name) && lowerer.jsFieldWidened(decl, member.name.text);
           if (widened) type = DYN;
-          if (type.kind === "void") lowerer.badType(member.name, lowerer.typeOf(member.name));
+          if (type.kind === "void") lowerer.badType(typeSite, lowerer.typeOf(typeSite));
           if (
             type.kind === "dyn" &&
             !lowerer.liftDynFieldPolicy &&
@@ -3593,12 +3611,14 @@ export function collectClassShapeInner(
               `${dynFieldTypeSpelling(lowerer, member.name)}-typed static fields`,
             );
           }
+          const staticName =
+            staticSymbol !== null ? staticSymbol : (member.name as ts.Identifier).text;
           staticFields.push({
-            name: member.name.text,
+            name: staticName,
             type,
             ...(widened ? { widened: true as const } : {}),
             initializer: member.initializer,
-            globalId: `%g.s.${lowerer.classNamer(decl)}.${member.name.text}`,
+            globalId: `%g.s.${lowerer.classNamer(decl)}.${staticName}`,
             readonly: modifiers.some((m) => m.kind === ts.SyntaxKind.ReadonlyKeyword),
             declaration: member,
           });
@@ -3608,7 +3628,9 @@ export function collectClassShapeInner(
         // wrapper), no vtable in sight — statics never dispatch.
         if (
           ts.isMethodDeclaration(member) &&
-          (ts.isIdentifier(member.name) || ts.isPrivateIdentifier(member.name)) &&
+          (ts.isIdentifier(member.name) ||
+            ts.isPrivateIdentifier(member.name) ||
+            staticSymbol !== null) &&
           member.body &&
           member.typeParameters === undefined
         ) {
@@ -3616,6 +3638,8 @@ export function collectClassShapeInner(
           // like a static accessor whose type has none (below): statics
           // never live on instances, so the class stays, and each use
           // reports the method's own refusal (checkRefusedStaticUse).
+          const staticMethodName =
+            staticSymbol !== null ? staticSymbol : (member.name as ts.Identifier).text;
           const staticMark = memberRefusalMark(lowerer);
           let staticSignature: ReturnType<Lowerer["lambdaSignature"]>;
           try {
@@ -3628,14 +3652,21 @@ export function collectClassShapeInner(
             }
           } catch (e) {
             if (!(e instanceof PoisonError) || !confinesMemberRefusals) throw e;
-            const refused = takeMemberRefusal(lowerer, staticMark, memberDisplay(member.name.text));
+            const refused = takeMemberRefusal(
+              lowerer,
+              staticMark,
+              memberDisplay(
+                staticSymbol === null ? staticMethodName : symbolFieldDisplayName(staticMethodName),
+              ),
+            );
             if (refused === null) throw e;
-            refusedStatics.set(member.name.text, refused);
+            refusedStatics.set(staticMethodName, refused);
             continue;
           }
           const { shapes, funcType: ft } = staticSignature;
-          staticMethods.set(member.name.text, { params: shapes, ret: ft.ret, member });
+          staticMethods.set(staticMethodName, { params: shapes, ret: ft.ret, member });
           if (
+            ts.isIdentifier(member.name) &&
             implicitMonoFile(ts.getSourceFileOfNode(decl)) &&
             !perEvaluationClass(decl) &&
             inst === undefined &&
@@ -3662,21 +3693,25 @@ export function collectClassShapeInner(
         // accessors in the constructor's property table (checkedStatics).
         if (
           (ts.isGetAccessorDeclaration(member) || ts.isSetAccessorDeclaration(member)) &&
-          ts.isIdentifier(member.name) &&
+          (ts.isIdentifier(member.name) || staticSymbol !== null) &&
           member.body &&
           !isJsSourceFile(ts.getSourceFileOfNode(member))
         ) {
           const isGet = ts.isGetAccessorDeclaration(member);
           // A setter takes its parameter's type, which may differ from the
           // getter's (tsc 5.1+ admits unrelated annotated halves): a write
-          // converts into it and a read answers the getter's type.
+          // converts into it and a read answers the getter's type. A
+          // computed symbol name reads its type from the accessor itself
+          // (the name node's type is the key, not the member).
           const parameter = isGet ? undefined : member.parameters.nodes[0];
+          const typeSite: ts.Node =
+            staticSymbol !== null && parameter === undefined ? member : member.name;
           const type = lowerer.mapTypeOf(
-            parameter ? lowerer.typeOf(parameter.name) : lowerer.typeOf(member.name),
+            parameter ? lowerer.typeOf(parameter.name) : lowerer.typeOf(typeSite),
           );
           if (type && type.kind !== "void" && (isGet || member.parameters.nodes.length === 1)) {
             staticMethods.set(
-              `${isGet ? "get" : "set"}:${member.name.text}`,
+              `${isGet ? "get" : "set"}:${staticSymbol ?? member.name.text}`,
               isGet
                 ? { params: [], ret: type, member }
                 : { params: [{ type, mode: "required" }], ret: VOID, member },
@@ -7984,10 +8019,11 @@ export function staticAccessorRead(
   const accessor = findStaticAccessorOn(receiver, name);
   if (!accessor) return null;
   if (!accessor.get) {
+    const display = name.startsWith("%symbol:") ? symbolFieldDisplayName(name) : name;
     lowerer.unsupported(
       "SC1090",
       site,
-      `reading the static '${name}' of class '${accessor.declarer.def.jsName ?? accessor.declarer.def.name}', which declares a setter and no getter (the read is undefined in JavaScript)`,
+      `reading the static '${display}' of class '${accessor.declarer.def.jsName ?? accessor.declarer.def.name}', which declares a setter and no getter (the read is undefined in JavaScript)`,
     );
   }
   const target = staticMethodFunctionFor(lowerer, site, receiver, `get:${name}`);
@@ -9603,7 +9639,11 @@ export function lowerStaticMethodCall(
  * rebindable global). Exactly then a #private static access through
  * the value always carries the declaring class's brand — Node's
  * TypeError cannot arise. */
-function classValueIsExactlyOwn(lowerer: Lowerer, recv: ts.Expression, info: ClassInfo): boolean {
+export function classValueIsExactlyOwn(
+  lowerer: Lowerer,
+  recv: ts.Expression,
+  info: ClassInfo,
+): boolean {
   return exactClassOfReceiver(lowerer, recv) === info || info.subclasses.length === 0;
 }
 

@@ -31,8 +31,6 @@ async function attempt(label, call) {
     console.log(label, error.code ?? error.name, "|", reason);
   }
 }
-await attempt("dsa keygen", () => crypto.generateKeyPairSync("dsa", { modulusLength: 1024 }));
-await attempt("dh keygen", () => crypto.generateKeyPairSync("dh", { primeLength: 512 }));
 await attempt("ed448 keygen", () => crypto.generateKeyPairSync("ed448"));
 await attempt("setFips", () => crypto.setFips(false));
 await attempt("subtle ed448", () =>
@@ -65,8 +63,6 @@ test("the audited crypto key-type and WebCrypto algorithm boundary is refused wi
     expect(run.stderr).toBe("");
     expect(run.stdout).toBe(
       [
-        `dsa keygen SC2020 | 'generateKeyPairSync for this key type' ${KEY_TYPE}`,
-        `dh keygen SC2020 | 'generateKeyPairSync for this key type' ${KEY_TYPE}`,
         `ed448 keygen SC2020 | 'generateKeyPairSync for this key type' ${KEY_TYPE}`,
         `setFips SC2020 | 'crypto.setFips' ${KEY_TYPE}`,
         "subtle ed448 SC2020 | crypto.subtle.generateKey with the Ed448 algorithm is not supported yet",

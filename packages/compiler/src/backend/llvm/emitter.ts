@@ -8753,17 +8753,15 @@ export class LlEmitter {
     const mixed = parts.length > 1 || numberPart(parts[0]!) !== null;
     const inputs = mixed ? emitConcatInputs(this, parts) : [];
     const right = mixed ? null : this.emitExpr(suffix);
-    if (s.kind === "fieldSet") this.emitStoreGuard(obj.name, s);
-    else if (this.publishedTypes?.recordGuarded(s.shapeId) === true)
-      this.emitPublishedFieldGuard(obj.name, null, s.field);
     const { ptr } =
       s.kind === "fieldSet"
         ? this.classFieldPtr(obj.name, s.className, s.field)
         : this.recordFieldPtr(obj.name, s.shapeId, s.field);
-    // The length check runs before the field's reference goes (the unlink
-    // below is what lets the concat write in place): a result past Node's
-    // maximum string length throws its RangeError with the field unchanged.
-    // Nothing between the unlink and the store can then throw.
+    // Node evaluates the right-hand side before the assignment's write check,
+    // so the length check runs before the field's write guard: a result past
+    // the maximum string length throws its RangeError, not the write's
+    // TypeError. The unlink below is what lets the concat write in place, so
+    // it follows both. Nothing between the unlink and the store can throw.
     const owned = this.ownsSnapshot(snapshot.name);
     let slots: MixedConcatSlots | null = null;
     if (right === null) {
@@ -8772,6 +8770,9 @@ export class LlEmitter {
     } else {
       emitConcatCheck(this, snapshot.name, right.name);
     }
+    if (s.kind === "fieldSet") this.emitStoreGuard(obj.name, s);
+    else if (this.publishedTypes?.recordGuarded(s.shapeId) === true)
+      this.emitPublishedFieldGuard(obj.name, null, s.field);
     // Unlink, then release: nothing between here and the store below can
     // run user code or observe the field. Only an owned snapshot may
     // survive the field's release.
@@ -8836,10 +8837,11 @@ export class LlEmitter {
     const mixed = parts.length > 1 || numberPart(parts[0]!) !== null;
     const inputs = mixed ? emitConcatInputs(this, parts) : [];
     const right = mixed ? null : this.emitExpr(value.right);
-    this.emitPublishedArrayGuard(arr.name, s.arr.type, 0, idx.name);
-    // The length check runs before the slot's reference goes (the unlink
-    // below is what lets the concat write in place): a result past Node's
-    // maximum string length throws its RangeError with the slot unchanged.
+    // Node evaluates the right-hand side before the assignment's write check,
+    // so the length check runs before the frozen or published array guard: a
+    // result past the maximum string length throws its RangeError, not the
+    // write's TypeError. The unlink below is what lets the concat write in
+    // place, so it follows both.
     let slots: MixedConcatSlots | null = null;
     if (right === null) {
       slots = emitMixedConcatInputs(this, inputs);
@@ -8847,6 +8849,7 @@ export class LlEmitter {
     } else {
       emitConcatCheck(this, snapshot.name, right.name);
     }
+    this.emitPublishedArrayGuard(arr.name, s.arr.type, 0, idx.name);
     if (this.ownsSnapshot(snapshot.name))
       emitDenseSlotUnlink(
         this,

@@ -62,10 +62,13 @@ describe("a field keyed by a module's exported symbol", () => {
       outDir: join(dir, "out"),
       outPath: join(dir, "out/main"),
       sanitize,
-      nodeIslands: "off",
+      nodeIslands: { mode: "off" },
     });
     if (!result.ok)
       throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    // The package is compiled NATIVELY: the compile option disables Node
+    // islands, and the build reports no island for it.
+    expect((result as { islands?: { packages: string[] } }).islands?.packages ?? []).toEqual([]);
     const native = await execFileAsync(result.binaryPath, [], { encoding: "utf8", cwd: dir });
     expect(native.stdout).toBe("ok 5\n");
     rmSync(dir, { recursive: true, force: true });

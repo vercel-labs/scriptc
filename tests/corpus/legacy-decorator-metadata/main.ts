@@ -182,6 +182,7 @@ type AliasArray = Dep[];
 type AliasFn = () => void;
 type AliasLit = "x" | "y";
 type AliasCtor = new () => Dep;
+type AliasTuple = [number, string];
 
 class AliasCase {
   @meta("aliasString")
@@ -207,6 +208,9 @@ class AliasCase {
 
   @meta("aliasClass")
   cls: AliasDep = new Dep();
+
+  @meta("aliasTuple")
+  tuple: AliasTuple = [1, "s"];
 }
 
 type AliasDep = Dep;

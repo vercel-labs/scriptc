@@ -339,7 +339,8 @@ function aliasToken(lowerer: Lowerer, symbol: ts.Symbol): MetaToken {
   if ((flags & ts.TypeFlags.BooleanLike) !== 0) return { k: "global", name: "Boolean" };
   if ((flags & ts.TypeFlags.BigIntLike) !== 0) return { k: "global", name: "BigInt" };
   if ((flags & ts.TypeFlags.ESSymbolLike) !== 0) return { k: "global", name: "Symbol" };
-  if (lowerer.checker.isArrayType(type)) return { k: "global", name: "Array" };
+  if (lowerer.checker.isArrayType(type) || lowerer.checker.isTupleType(type))
+    return { k: "global", name: "Array" };
   if (lowerer.checker.getCallSignatures(type).length > 0) return { k: "global", name: "Function" };
   return OBJ;
 }

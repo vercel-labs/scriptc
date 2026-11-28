@@ -19,7 +19,8 @@ import { Normalizer } from "../canon.js";
 import { resolveEntryExportSymbol } from "../lib-exports.js";
 import { compactDeclOrigins, recordOrigin, slotOrigin, type RecordOrigin } from "./decl-origin.js";
 import { claimKey, collectTypeClaims, declaredUntypedIn } from "./type-claims.js";
-import { isDeclBoundaryTypeNode } from "../decl-projection.js";
+import { isDeclBoundaryTypeNode, isDeclIterMarkerName } from "../decl-projection.js";
+import { declIterationSource } from "./decl-iteration.js";
 import type { TypeClaimSite } from "../../diagnostics/type-claims.js";
 import { relieveHeapPressure } from "../../heap-pressure.js";
 import { timingProcessMetrics } from "../../timing.js";
@@ -18459,6 +18460,17 @@ export class Lowerer {
   }
 
   private typeOfNode(node: ts.Node): ts.Type {
+    // An iteration marker's type is its source expression's: every loop
+    // dispatch decision (protocol, element extraction) follows the value
+    // actually iterated, while the checker types the binding from the
+    // marker's declaration.
+    if (ts.isCallExpression(node)) {
+      const callee = node.expression;
+      if (ts.isIdentifier(callee) && isDeclIterMarkerName(callee.text)) {
+        const source = declIterationSource(this, node);
+        if (source !== null) return this.checker.getTypeAtLocation(source);
+      }
+    }
     // require.cache is the live cache object, not the Dict record the checker
     // types it as: every use of it is checked-dynamic.
     if (

@@ -382,6 +382,19 @@ ScrStr *scr_error_to_string(ScrError *e) {
 }
 
 ScrStr *scr_error_stack(ScrError *e) {
+  /* Node calls the program's Error.prepareStackTrace formatter here, with the
+   * error and its call sites, and the stack IS its answer. Native stacks are
+   * formatted here and no call-site objects are exposed, so a program that
+   * installed its own formatter is refused by name at the point Node would
+   * have called it. Undefined, null and non-callable values are Node's own
+   * formatter, which native formatting reproduces. */
+  if (scr_error_prepare_stack_trace_custom()) {
+    static const char msg[] =
+        "Error.prepareStackTrace as a formatter is not supported yet (native stacks are formatted "
+        "without calling the program's function)";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
+    return NULL;
+  }
   if (!e->stack) {
     ScrStr *heading = scr_error_to_string(e);
     if (!heading) return NULL;

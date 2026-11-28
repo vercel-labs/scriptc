@@ -624,6 +624,12 @@
   "code": "SC2020"
  },
  {
+  "file": "scr_error.c",
+  "function": "scr_error_stack",
+  "message": "Error.prepareStackTrace as a formatter is not supported yet (native stacks are formatted without calling the program's function)",
+  "code": "SC2020"
+ },
+ {
   "file": "scr_event_target.c",
   "function": "scr_event_ref_set",
   "message": "writing the inherited member '%.*s' through an untyped value is not supported",

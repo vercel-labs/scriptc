@@ -218,6 +218,8 @@ describe.skipIf(!zigOnPath() || !wasmPackInstalled())("wasm32-wasi differential"
     "buffer-codec-boundaries.ts",
     "text-encode-into-boundaries.ts",
     "object-key-indexes.js",
+    // Error.prepareStackTrace program state.
+    "error-prepare-stack-trace-state.js",
     // A private name never answers through a string key.
     "private-name-string-key.js",
     // The FinalizationRegistry loader shape.

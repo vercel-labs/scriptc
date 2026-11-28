@@ -92,6 +92,11 @@ void scr_stack_limit_set(double limit);
  * returns +1; set takes its own +1 (a NULL value stores undefined). */
 ScrDyn *scr_error_prepare_stack_trace_get(void);
 void scr_error_prepare_stack_trace_set(ScrDyn *value);
+/* Whether the program installed a formatter this build cannot run: a
+ * callable value other than the default formatter the getter answers. V8
+ * calls it when a stack is formatted; native stacks are formatted here, so
+ * formatting refuses by name instead of ignoring the formatter. */
+bool scr_error_prepare_stack_trace_custom(void);
 
 typedef struct ScrExcCell {
   ScrExcKind kind;

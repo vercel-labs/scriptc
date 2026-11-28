@@ -203,13 +203,16 @@ void scr_stack_limit_set(double limit) {
 }
 
 /* Error.prepareStackTrace is program state, as in Node: a program may save
- * the value, replace it (`Error.prepareStackTrace = void 0`) and restore it.
- * Node's default is V8's formatter; native code has no call-site formatter,
- * so the default here is a function that throws the named refusal if a
- * program calls it. The runtime formats its own stacks, so a program's own
- * formatter is stored and read back but is not called when a stack is
- * formatted. */
+ * the value, replace it (`Error.prepareStackTrace = void 0`, a non-callable
+ * value, which Node formats with its own formatter) and restore it. Node's
+ * default is V8's formatter; native code has no call-site formatter, so the
+ * default here is a function that throws the named refusal if a program
+ * calls it, and the default box itself stands for "format natively" when a
+ * program saved and restored it. Any other callable value is a formatter
+ * this build cannot run: formatting a stack refuses by name instead of
+ * ignoring it. */
 static SCR_TL ScrDyn *scr_prepare_stack_trace;
+static SCR_TL ScrDyn *scr_prepare_stack_trace_default;
 static SCR_TL bool scr_prepare_stack_trace_reset_registered;
 static ScrDyn *scr_prepare_stack_trace_thunk(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
   (void)clo;
@@ -223,6 +226,8 @@ static ScrDyn *scr_prepare_stack_trace_thunk(ScrClosure *clo, ScrDyn *const *arg
 static void scr_prepare_stack_trace_reset(void) {
   if (scr_prepare_stack_trace != NULL) scr_dyn_release(scr_prepare_stack_trace);
   scr_prepare_stack_trace = NULL;
+  if (scr_prepare_stack_trace_default != NULL) scr_dyn_release(scr_prepare_stack_trace_default);
+  scr_prepare_stack_trace_default = NULL;
   scr_prepare_stack_trace_reset_registered = false;
 }
 /* The stored value is released at exit like every other runtime cache, so a
@@ -239,6 +244,7 @@ ScrDyn *scr_error_prepare_stack_trace_get(void) {
     ScrClosure *clo = scr_closure_new((void *)scr_prepare_stack_trace_thunk, 0);
     scr_prepare_stack_trace = scr_dyn_new_func(clo, scr_prepare_stack_trace_thunk, 0, "",
                                                "prepareStackTrace");
+    scr_prepare_stack_trace_default = scr_dyn_retain(scr_prepare_stack_trace);
   }
   return scr_dyn_retain(scr_prepare_stack_trace);
 }
@@ -247,6 +253,14 @@ void scr_error_prepare_stack_trace_set(ScrDyn *value) {
   ScrDyn *retained = value == NULL ? scr_dyn_undefined() : scr_dyn_retain(value);
   if (scr_prepare_stack_trace != NULL) scr_dyn_release(scr_prepare_stack_trace);
   scr_prepare_stack_trace = retained;
+}
+bool scr_error_prepare_stack_trace_custom(void) {
+  ScrDyn *value = scr_prepare_stack_trace;
+  if (value == NULL || value == scr_prepare_stack_trace_default) return false;
+  /* Node formats with its own formatter when the member holds no callable
+   * value (undefined, null, a number), so only a program's function is a
+   * formatter this build cannot run. */
+  return scr_dyn_is_callable(value);
 }
 
 /* One frame's line: its positioned call/throw site when it holds one, and

@@ -1734,43 +1734,38 @@ static void scr_ee_unhandled_error(const ScrDyn *er) {
   scr_str_release(message);
 }
 
-/* emit('error', ...) through an untyped value: errorMonitor first; with no
- * 'error' listener an Error payload throws itself and anything else throws
- * ERR_UNHANDLED_ERROR, Node's contract; otherwise listeners receive the
- * arguments as given, and typed listeners the payload as an Error. `render`
- * (util.inspect, when the call site links it) quotes the payload in the
- * ERR_UNHANDLED_ERROR message; without it only primitive payloads render. */
+/* Decide what to throw only after errorMonitor has run and the listener
+ * snapshot was empty. A throwing monitor already owns the exception. */
+static void scr_ee_unheard_value(const ScrDyn *er, ScrStr *(*render)(ScrDyn *, double, double)) {
+  if (scr_dyn_err_instanceof(er, SCR_ERR_ERROR)) {
+    scr_dyn_throw(scr_dyn_retain((ScrDyn *)er));
+  } else if (render) {
+    ScrStr *shown = render((ScrDyn *)er, 0, 2);
+    if (scr_exc_pending()) {
+      /* A throwing inspect: Node quotes the payload's string conversion
+       * instead, whose own throw propagates. */
+      if (shown) scr_str_release(shown);
+      scr_exc_clear();
+      shown = scr_dyn_string_coerce_js(er);
+    }
+    if (shown) {
+      scr_ee_throw_unhandled(shown->data, shown->len, er);
+      scr_str_release(shown);
+    }
+  } else {
+    scr_ee_unhandled_error(er);
+  }
+}
+
+/* A dynamic emit passes the original arguments to checked listeners and
+ * a typed Error to listeners registered with a typed tuple. */
 static bool scr_ee_emit_error_dyn(ScrEmitter *em, ScrStr *name, ScrDyn *const *args, size_t argc,
                                   ScrStr *(*render)(ScrDyn *, double, double)) {
   const ScrDyn *er = argc ? args[0] : scr_dyn_undefined();
-  ScrError *err = scr_dyn_err_instanceof(er, SCR_ERR_ERROR) ? scr_errdyn_err_of(er) : NULL;
-  bool had = false;
-  if (!scr_ee_has(em->reg, "error")) {
-    scr_ee_emit_mixed_va(em, SCR_EE_ERROR_MONITOR, args, argc, err != NULL, err);
-    if (!scr_exc_pending()) {
-      if (err) {
-        scr_dyn_throw(scr_dyn_retain((ScrDyn *)er));
-      } else if (render) {
-        ScrStr *shown = render((ScrDyn *)er, 0, 2);
-        if (scr_exc_pending()) {
-          /* A throwing inspect: Node quotes the payload's string conversion
-           * instead, whose own throw propagates. */
-          if (shown) scr_str_release(shown);
-          scr_exc_clear();
-          shown = scr_dyn_string_coerce_js(er);
-        }
-        if (shown) {
-          scr_ee_throw_unhandled(shown->data, shown->len, er);
-          scr_str_release(shown);
-        }
-      } else {
-        scr_ee_unhandled_error(er);
-      }
-    }
-  } else {
-    had = scr_ee_emit_mixed_va(em, name, args, argc, err != NULL, err);
-  }
+  ScrError *err = scr_errdyn_err_of(er);
+  bool had = scr_ee_emit_mixed_va(em, name, args, argc, err != NULL, err);
   scr_error_release(err);
+  if (!had && !scr_exc_pending()) scr_ee_unheard_value(er, render);
   return had;
 }
 
@@ -1824,49 +1819,31 @@ bool scr_emitter_emit_any(ScrEmitter *em, ScrStr *name, ScrDyn *const *args, siz
 /* Handle event registries use checked callbacks for every tuple, including
  * errors. Keep this separate from the statically typed Error ABI above. */
 bool scr_emitter_emit_error_flex(ScrEmitter *em, ScrDyn *error) {
-  if (!scr_ee_has(em->reg, "error")) {
-    scr_ee_emit_error_monitor(em, NULL, &error, 1);
-    if (scr_exc_pending()) return false;
-    scr_dyn_throw(scr_dyn_retain(error));
-    return false;
-  }
   ScrStr *name = scr_str_new("error", 5);
   bool had = scr_ee_emit_core(em, name, NULL, &error, 1, NULL);
   scr_str_release(name);
+  if (!had && !scr_exc_pending()) scr_dyn_throw(scr_dyn_retain(error));
   return had;
 }
 
 /* emit('error', err) — Node's special event: with no 'error' listener the
  * payload THROWS (catchable; uncaught exits 1 with the error report).
  * err is borrowed; the throw takes its own +1. */
-static void scr_ee_emit_error_monitor_va(ScrEmitter *em, ...) {
-  va_list ap;
-  va_start(ap, em);
-  scr_ee_emit_error_monitor(em, &ap, NULL, 0);
-  va_end(ap);
-}
-
 bool scr_emitter_emit_error(ScrEmitter *em, ScrStr *name, ScrError *err) {
-  if (!scr_ee_has(em->reg, "error")) {
-    scr_ee_emit_error_monitor_va(em, err);
-    if (scr_exc_pending()) return false;
+  bool had = scr_ee_emit_va(em, name, err);
+  if (!had && !scr_exc_pending())
     scr_throw_obj(scr_error_retain(err), &scr_error_retain_v, &scr_error_release_v,
                   scr_error_trace_arg());
-    return false;
-  }
-  return scr_ee_emit_va(em, name, err);
+  return had;
 }
 
 bool scr_emitter_emit_error_mixed(ScrEmitter *em, ScrStr *name, ScrError *err,
                                   ScrDyn *const *args, size_t argc) {
-  if (!scr_ee_has(em->reg, "error")) {
-    scr_ee_emit_mixed_va(em, SCR_EE_ERROR_MONITOR, args, argc, 1, err);
-    if (scr_exc_pending()) return false;
+  bool had = scr_ee_emit_mixed_va(em, name, args, argc, 1, err);
+  if (!had && !scr_exc_pending())
     scr_throw_obj(scr_error_retain(err), &scr_error_retain_v, &scr_error_release_v,
                   scr_error_trace_arg());
-    return false;
-  }
-  return scr_ee_emit_mixed_va(em, name, args, argc, 1, err);
+  return had;
 }
 
 static bool scr_ee_emit_carried_va(ScrEmitter *em, ScrStr *name, ScrDyn *const *args, size_t argc, ...) {
@@ -1884,14 +1861,13 @@ static bool scr_ee_emit_carried_va(ScrEmitter *em, ScrStr *name, ScrDyn *const *
  * call (a parameter that does not admit the value fails its conversion by
  * name; no listener is handed an Error the program never made). The
  * runtime's own listeners, which have no such call, receive `err`. With no
- * 'error' listener the value is unhandled by the untyped emit itself (the
- * error monitor, then ERR_UNHANDLED_ERROR), so that path stays the one
- * function it is for programs that never reach this entry. Borrows err and
- * args. */
+ * 'error' listener after the monitor, the value follows the same unhandled
+ * policy as an untyped emit. Borrows err and args. */
 bool scr_emitter_emit_error_carried(ScrEmitter *em, ScrStr *name, ScrError *err,
                                     ScrDyn *const *args, size_t argc) {
-  if (!scr_ee_has(em->reg, "error")) return scr_ee_emit_error_dyn(em, name, args, argc, NULL);
-  return scr_ee_emit_carried_va(em, name, args, argc, err);
+  bool had = scr_ee_emit_carried_va(em, name, args, argc, err);
+  if (!had && !scr_exc_pending()) scr_ee_unheard_value(argc ? args[0] : scr_dyn_undefined(), NULL);
+  return had;
 }
 
 /* ── introspection ────────────────────────────────────────────────────── */

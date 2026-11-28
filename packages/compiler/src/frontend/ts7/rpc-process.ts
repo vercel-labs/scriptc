@@ -110,6 +110,11 @@ class Ts7NamedPipeIo implements Ts7WireIo {
     return transfer(writeSync, this.pipeFd, buffer, offset, length);
   };
 
+  endOfStreamHint = (): string | undefined => {
+    if (this.child.pid === undefined || processAlive(this.child.pid)) return undefined;
+    return `the TypeScript server process (pid ${this.child.pid}) has exited`;
+  };
+
   close = (): void => {
     if (this.closed) return;
     this.closed = true;
@@ -216,6 +221,13 @@ export class Ts7FifoIo implements Ts7WireIo {
   write = (buffer: Uint8Array, offset: number, length: number): number => {
     if (this.closed) throw new Error("TypeScript server transport is closed");
     return transfer(writeSync, this.writeFd, buffer, offset, length);
+  };
+
+  /** The server is not this process's child, so once it exits init reaps it
+   * and the probe is exact. A recycled PID only costs the hint. */
+  endOfStreamHint = (): string | undefined => {
+    if (processAlive(this.pid)) return undefined;
+    return `the TypeScript server process (pid ${this.pid}) has exited`;
   };
 
   /** Closing both FIFOs ends the session: the server reads end of file on

@@ -20,6 +20,10 @@ export interface Ts7WireIo {
   read: (buffer: Uint8Array, offset: number, length: number) => number;
   write: (buffer: Uint8Array, offset: number, length: number) => number;
   close: () => void;
+  /** Best-effort context for a zero-byte read, joined to the end-of-stream
+   * error. Transports that own a server process probe it; an inconclusive
+   * probe returns undefined and the error stays transport-agnostic. */
+  endOfStreamHint?: () => string | undefined;
 }
 
 export class Ts7ProtocolError extends Error {
@@ -90,6 +94,20 @@ export class Ts7Wire {
     if (this.closed) throw new Ts7ProtocolError("channel is closed");
   }
 
+  private endOfStream(): never {
+    let hint: string | undefined;
+    try {
+      hint = this.io.endOfStreamHint?.();
+    } catch {
+      hint = undefined;
+    }
+    this.fail(
+      hint === undefined || hint === ""
+        ? "unexpected end of stream"
+        : `unexpected end of stream: ${hint}`,
+    );
+  }
+
   private fail(message: string): never {
     // Preserve the protocol failure if cleanup also fails.
     try {
@@ -106,7 +124,7 @@ export class Ts7Wire {
       if (!Number.isSafeInteger(count) || count < 0 || count > this.input.length) {
         this.fail("invalid read count");
       }
-      if (count === 0) this.fail("unexpected end of stream");
+      if (count === 0) this.endOfStream();
       this.inputOffset = 0;
       this.inputLength = count;
     }
@@ -148,7 +166,7 @@ export class Ts7Wire {
         const count = this.io.read(result, offset, length - offset);
         if (!Number.isSafeInteger(count) || count < 0 || count > length - offset)
           this.fail("invalid read count");
-        if (count === 0) this.fail("unexpected end of stream");
+        if (count === 0) this.endOfStream();
         offset += count;
       } else {
         result[offset++] = this.readByte();

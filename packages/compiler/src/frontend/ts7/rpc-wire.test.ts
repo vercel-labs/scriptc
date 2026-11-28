@@ -45,6 +45,22 @@ describe("TypeScript MessagePack wire framing", () => {
     expect(Uint8Array.from(io.output)).toEqual(echo);
   });
 
+  test("joins a transport's end-of-stream hint to the error, and survives its failure", () => {
+    const hinted = memory();
+    hinted.io.endOfStreamHint = () => "the TypeScript server process (pid 42) has exited";
+    expect(() => new Ts7Wire(hinted.io).read()).toThrow(
+      "unexpected end of stream: the TypeScript server process (pid 42) has exited",
+    );
+    const silent = memory();
+    silent.io.endOfStreamHint = () => undefined;
+    expect(() => new Ts7Wire(silent.io).read()).toThrow("unexpected end of stream");
+    const broken = memory();
+    broken.io.endOfStreamHint = () => {
+      throw new Error("probe failed");
+    };
+    expect(() => new Ts7Wire(broken.io).read()).toThrow("unexpected end of stream");
+  });
+
   test("retains read-ahead bytes for the next message", () => {
     const both = new Uint8Array(echo.length * 2);
     both.set(echo);

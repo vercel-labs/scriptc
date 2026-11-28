@@ -2059,18 +2059,32 @@ static bool scr_sa_keep_remove(ScrSaKeep *k, const void *p) {
   return false;
 }
 
+/* Whether the keep registry holds a record of p. */
+static bool scr_sa_keep_has(const ScrSaKeep *k, const void *p) {
+  if (!k->live) return false;
+  for (size_t j = scr_sa_sys_slot(p, k->cap); k->sys[j]; j = (j + 1) & (k->cap - 1)) {
+    if (k->sys[j] == p) return true;
+  }
+  return false;
+}
+
 #ifdef SCR_SA_TEST
 /* The allocator checks: whether the calling thread's keep registry records a
  * block. A grow that leaves a run at a new address must have moved its
  * record. Always false where the registry is not compiled (non-worker
  * builds). */
-bool scr_sa_test_keep_has(const void *p) {
+bool scr_sa_test_keep_has(const void *p) { return scr_sa_keep != NULL && scr_sa_keep_has(scr_sa_keep, p); }
+
+/* How many records of p the calling thread's keep registry holds: a block
+ * registered twice is freed twice when the worker's memory goes back. */
+size_t scr_sa_test_keep_count(const void *p) {
   ScrSaKeep *k = scr_sa_keep;
-  if (!k || !k->live) return false;
+  if (!k || !k->live) return 0;
+  size_t n = 0;
   for (size_t j = scr_sa_sys_slot(p, k->cap); k->sys[j]; j = (j + 1) & (k->cap - 1)) {
-    if (k->sys[j] == p) return true;
+    if (k->sys[j] == p) n++;
   }
-  return false;
+  return n;
 }
 #endif
 
@@ -2245,11 +2259,16 @@ static void scr_sa_keep_note_system(void *p) {
 }
 
 /* A block that leaves p for q keeps the worker's record with it: a record
- * left at the old address names a range the block no longer occupies. Every
- * path of a grow that returns a block at a new address moves it. */
+ * left at the old address names a range the block no longer occupies, so it
+ * goes, and the destination is recorded exactly once. A grow's allocation
+ * path may already have recorded the destination, and a promoted small-class
+ * block had no record at all; both end with one record at q. Every path of a
+ * grow that returns a block at a new address moves the record. */
 static void scr_sa_keep_move(void *from, void *to) {
-  if (from != to && scr_sa_keep && scr_sa_keep_remove(scr_sa_keep, from))
-    scr_sa_keep_add(scr_sa_keep, to);
+  ScrSaKeep *k = scr_sa_keep;
+  if (!k || from == to) return;
+  (void)scr_sa_keep_remove(k, from);
+  if (!scr_sa_keep_has(k, to)) scr_sa_keep_add(k, to);
 }
 
 void scr_sa_thread_shares(void) {

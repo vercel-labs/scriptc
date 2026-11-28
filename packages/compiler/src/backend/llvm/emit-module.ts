@@ -2394,11 +2394,20 @@ export function helperDefs(emitter: LlEmitter): string[] {
     `}`,
     ``,
   ];
+  // The hash-carrying runtime probes are referenced by the helpers below, and
+  // the helpers are emitted for keyed reads and for iteration steps alike, so
+  // their declarations belong here rather than with the keyed-read decl.
   if (emitter.decls.has(STRING_MAP_ENTRY_DECL))
-    defs.push(...stringMapEntry("sc_map_entry_str", "scr_map_entry_str", "scr_map_entry_str_h"));
+    defs.push(
+      `declare ptr @scr_map_entry_str_h(ptr, ptr, i32)`,
+      ``,
+      ...stringMapEntry("sc_map_entry_str", "scr_map_entry_str", "scr_map_entry_str_h"),
+    );
   if (emitter.decls.has(STRING_MAP_ENTRY_C_DECL)) {
     const sz = emitter.sizeType;
     defs.push(
+      `declare ptr @scr_map_entry_str_c_h(ptr, ptr, i32)`,
+      ``,
       ...stringMapEntry("sc_map_entry_str_c", "scr_map_entry_str_c", "scr_map_entry_str_c_h"),
       `define internal ptr @sc_map_iter_entry_c(ptr %m, double %i) ${FN_ATTRS} {`,
       `entry:`,

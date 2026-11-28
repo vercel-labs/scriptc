@@ -88,16 +88,9 @@ export function emitNumberMapSlot(host: LlvmEmitterContext, entry: string, type:
 }
 
 export const STRING_MAP_ENTRY_DECL = "declare ptr @scr_map_entry_str(ptr, ptr)";
-/** The hash-carrying flavor: generated code tests the absent-key filter
- * inline and passes the key's cached 32-bit hash, so the runtime probe skips
- * the second hash load and the second filter test (scr_map.c
- * scr_map_entry_str_h). */
-export const STRING_MAP_ENTRY_H_DECL = "declare ptr @scr_map_entry_str_h(ptr, ptr, i32)";
 /** Declared by reads of a compact-value map; its presence makes the emitter
  * define sc_map_entry_str_c and sc_map_iter_entry_c (emit-module.ts). */
 export const STRING_MAP_ENTRY_C_DECL = "declare ptr @scr_map_entry_str_c(ptr, ptr)";
-/** STRING_MAP_ENTRY_H_DECL for a compact-value map. */
-export const STRING_MAP_ENTRY_C_H_DECL = "declare ptr @scr_map_entry_str_c_h(ptr, ptr, i32)";
 
 /** Whether a Map with key type `key` and value type `value` keeps compact
  * values (SCR_MAP_VAL_CREF): string keys and a value type whose instances
@@ -116,7 +109,6 @@ export function emitStringMapEntry(
   compact = false,
 ): string {
   host.declare(compact ? STRING_MAP_ENTRY_C_DECL : STRING_MAP_ENTRY_DECL);
-  host.declare(compact ? STRING_MAP_ENTRY_C_H_DECL : STRING_MAP_ENTRY_H_DECL);
   const entry = host.B.tmp();
   host.B.line(
     `${entry} = call ptr @${compact ? "sc_map_entry_str_c" : "sc_map_entry_str"}(ptr ${map}, ptr ${key})`,

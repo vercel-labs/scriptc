@@ -1630,6 +1630,21 @@ static ScrError *scr_h2_stream_error(ScrStr *msg) {
   return error;
 }
 
+/* Node's iterator-close error for the other readers of a stream whose loop
+ * left early: the iterator's return() destroys the stream with an
+ * AbortError, and every sibling read rejects with it. +1. */
+static ScrError *scr_h2_iter_abort_error(void) {
+  static const char message[] = "The operation was aborted";
+  ScrStr *text = scr_str_new(message, sizeof message - 1);
+  ScrError *error = scr_error_new(0 /* Error */, text);
+  scr_str_release(text);
+  scr_str_release(error->name);
+  error->name = scr_str_new("AbortError", 10);
+  error->name_present = true;
+  scr_error_set_code(error, "ABORT_ERR");
+  return error;
+}
+
 /* Node's read-after-abort error: a stream the peer tore down before its
  * body ended rejects its reader with ERR_STREAM_PREMATURE_CLOSE instead of
  * pretending the body finished. +1. */
@@ -1760,11 +1775,14 @@ static void scr_h2_iter_error(ScrH2Stream *st, ScrStr *msg) {
   scr_error_release(err);
 }
 
-/* The stream closed under the loop. A stream the peer tore down before its
- * body ended (aborted without END_STREAM) rejects its readers with Node's
- * ERR_STREAM_PREMATURE_CLOSE — the body did not end, it went away. Any
- * other close ends the iteration; a buffered stream error still wins over
- * that end (the next read rejects with it). */
+/* The stream closed under the loop. A stream the peer ABORTED before its
+ * body ended (the server-side writable was still open when the connection
+ * went away — the reset is CANCEL, which no error listener sees, so relying
+ * on the stream's error path would report a truncated body as a clean end)
+ * rejects its readers with Node's ERR_STREAM_PREMATURE_CLOSE. Measured: a
+ * server stream whose response had already ended, and every client stream
+ * whose peer goes away, END the loop in Node instead — those closes carry
+ * the aborted flag unset. A buffered stream error still wins over any end. */
 static void scr_h2_iter_close(ScrH2Stream *st) {
   ScrH2Iter *it = st->iter;
   if (it == NULL || it->done) return;
@@ -1837,8 +1855,13 @@ static ScrDyn *scr_h2_iter_return(ScrClosure *clo, ScrDyn *const *args, size_t a
   ScrH2Iter *it = obj->it;
   ScrH2Stream *st = it->st;
   it->done = true;
-  /* the destroy ends the iteration for every reader parked on it */
-  scr_h2_iter_drain_done(it);
+  /* The loop that leaves early ends; the stream is destroyed under every
+   * other reader, which Node rejects with the AbortError the destroy
+   * carries. */
+  ScrError *abort = scr_h2_iter_abort_error();
+  scr_h2_iter_drain_reject(it, abort);
+  if (it->error == NULL) it->error = scr_error_retain(abort);
+  scr_error_release(abort);
   if (!st->destroyed && !st->close_queued && !st->close_emitted) {
     st->api_destroyed = true;
     scr_http2_stream_close(st, 8.0 /* NGHTTP2_CANCEL */, NULL);
@@ -1993,6 +2016,7 @@ static void scr_h2_stream_want_trailers(ScrH2Stream *st);
 #define SCR_H2_FILE_RETRY_MS 1.0
 
 static void scr_h2_stream_flush(ScrH2Stream *st);
+static void scr_h2_stream_reset(ScrH2Stream *st, uint32_t code);
 
 static void scr_h2_file_retry_tick(ScrClosure *cb) {
   ScrH2Stream *st = (ScrH2Stream *)scr_box_get_ref(cb->caps[0]); /* +1 */
@@ -3451,7 +3475,7 @@ static void scr_h2_stream_fail_file(ScrH2Stream *st, int err, const char *action
   scr_error_release(e);
   scr_str_release(m);
   st->suppress_rst_error = true;
-  scr_http2_stream_close(st, 2 /* NGHTTP2_INTERNAL_ERROR */, NULL);
+  scr_h2_stream_reset(st, 2 /* NGHTTP2_INTERNAL_ERROR */);
 }
 
 static void scr_h2_respond_with_content(ScrH2Stream *st, ScrArr *pairs, const char *data,
@@ -3518,7 +3542,7 @@ static bool scr_h2_file_pump(ScrH2Stream *st) {
       /* A descriptor read failure resets the stream mid-body, Node's
        * stream.close(NGHTTP2_INTERNAL_ERROR) after the headers. */
       scr_h2_file_close(st);
-      scr_http2_stream_close(st, 2 /* NGHTTP2_INTERNAL_ERROR */, NULL);
+      scr_h2_stream_reset(st, 2 /* NGHTTP2_INTERNAL_ERROR */);
       return false;
     }
     if (n == 0) {
@@ -3890,11 +3914,52 @@ void scr_http2_stream_respond_with_fd(ScrH2Stream *st, double fd, ScrArr *pairs 
   scr_h2_file_call_defer(c);
 }
 
+/* An internal failure (a file source's open or read error): the stream is
+ * reset with its code, as Node's destroy(err, code) does — the public
+ * close()'s clean-end rule does not apply. */
+static void scr_h2_stream_reset(ScrH2Stream *st, uint32_t code) {
+  if (st->destroyed || st->close_queued || st->close_emitted) return;
+  st->rst_code = code;
+  st->rst_sent = true;
+  st->destroyed = true;
+  if (st->state != SCR_H2_S_CLOSED && scr_h2_sock_alive(st->sess)) {
+    scr_h2_send_rst(st->sess, st->id, code);
+  }
+  scr_h2_stream_begin_close(st);
+  scr_h2_stream_settle(st);
+}
+
 void scr_http2_stream_close(ScrH2Stream *st, double code, ScrClosure *cb /*moves, nullable*/) {
   if (cb) scr_net_ls_add(&st->close_ls, cb, NULL, true);
   if (st->destroyed || st->close_queued || st->close_emitted) return;
   uint32_t c = code >= 0 && code <= 0xffffffff ? (uint32_t)code : 0;
   st->rst_code = c;
+  /* Node's closeStream ends the writable side first — when a HEADERS block
+   * already went out, that END_STREAM closes the stream before the RST it
+   * also submits can reach the peer, so the peer reports a clean end of
+   * body (no error). Without headers on the wire there is nothing to end
+   * with, and the RST carries the code (a client sees
+   * ERR_HTTP2_STREAM_ERROR). A stream whose writable side already ended is
+   * reset with the code as well. */
+  bool headers_out = st->sess->client ? true : st->respond_sent;
+  /* The RST the close submits is moot only when the stream closes with the
+   * END_STREAM this close sends — i.e. the peer's half already ended
+   * (END_STREAM received). While the peer's half is still open the reset
+   * travels, as Node's does. */
+  if (headers_out && st->end_recv && !st->want_end && !scr_h2_stream_local_closed(st) &&
+      scr_h2_sock_alive(st->sess)) {
+    if (!st->aborted) {
+      st->aborted = true;
+      if (st->compat_req != NULL) scr_http_h2_req_aborted(st->compat_req);
+      if (!scr_exc_pending()) scr_net_fire0_this(&st->aborted_ls, st, SCR_DYNH_H2_STREAM);
+      if (scr_exc_pending()) return;
+    }
+    st->want_end = true;
+    scr_h2_stream_flush(st);
+    scr_h2_stream_begin_close(st);
+    scr_h2_stream_settle(st);
+    return;
+  }
   st->rst_sent = true;
   st->destroyed = true;
   if (st->state != SCR_H2_S_CLOSED && scr_h2_sock_alive(st->sess)) {

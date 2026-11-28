@@ -30,6 +30,7 @@ import { promisify } from "node:util";
 import { afterAll, describe, expect, test } from "vitest";
 import { compile } from "@scriptc/compiler";
 import { shardSelect } from "./shard.js";
+import { tscOracleEntry, wantsTscOracle } from "./jsx-oracle.js";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = join(import.meta.dirname, "../..");
@@ -93,15 +94,20 @@ interface Run {
 }
 
 async function runNode(program: Program): Promise<Run> {
-  const transform = programUsesTransform(program);
+  const head = directiveHead(program);
+  // Node cannot run .tsx/.jsx modules. A directory program that opts into
+  // the tsc oracle (as the differential harness does) runs TypeScript's own
+  // emit instead.
+  const oracle = wantsTscOracle(head)
+    ? tscOracleEntry(program.entry, join(cacheRoot, "oracle"))
+    : null;
+  const transform = oracle === null && programUsesTransform(program);
   const args = [
     ...(transform
       ? ["--experimental-transform-types", "--disable-warning=ExperimentalWarning"]
       : []),
-    ...(directiveHead(program).some((line) => /^\/\/ @no-deprecation\s*$/.test(line))
-      ? ["--no-deprecation"]
-      : []),
-    program.entry,
+    ...(head.some((line) => /^\/\/ @no-deprecation\s*$/.test(line)) ? ["--no-deprecation"] : []),
+    oracle ?? program.entry,
   ];
   try {
     const { stdout, stderr } = await execFileAsync(process.execPath, args, {

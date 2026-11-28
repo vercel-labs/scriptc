@@ -3927,7 +3927,10 @@ function validateFunction(
             (t.kind === "dyn" ||
               t.kind === "undefinedT" ||
               t.kind === "nullT" ||
-              (t.kind === "union" && (unions.get(t.unionId)?.arms ?? []).every((a) => a.kind === "undefinedT" || a.kind === "nullT")))) ||
+              (t.kind === "union" &&
+                (unions.get(t.unionId)?.arms ?? []).every(
+                  (a) => a.kind === "undefinedT" || a.kind === "nullT",
+                )))) ||
           !!resultUnion?.arms.some((a) => typeEquals(a, t)) ||
           (t.kind === "union" &&
             !!resultUnion &&

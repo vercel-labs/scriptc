@@ -557,9 +557,25 @@ export function emitDynamicExpr(
         B.line(`${r} = call ptr @scr_dyn_retain_v(ptr ${un})`);
         B.line(`store ptr ${r}, ptr ${slot}`);
       };
-      const storeDynOf = (ft: IrType, value: string): void => {
+      const storeDynOf = (ft: IrType, value: string, optional?: boolean): void => {
         if (ft.kind === "dyn") {
           host.declare(`declare ptr @scr_dyn_retain_v(ptr)`);
+          // An optional checked-dynamic field's ABSENT marker says the
+          // source has no such property. A read of it answers undefined
+          // (Node's property read), so the value a caller keeps is
+          // present-with-undefined, never absent: leaking the marker would
+          // leave the destination's optional property absent.
+          if (optional === true) {
+            const absent = B.tmp();
+            B.line(`${absent} = icmp eq ptr ${value}, ${host.dynAbsentRef()}`);
+            const lAbsent = B.newLabel("ukg.absent");
+            const lPresent = B.newLabel("ukg.present");
+            B.condBr(absent, lAbsent, lPresent);
+            B.startBlock(lAbsent);
+            storeDynUnit();
+            B.br(join);
+            B.startBlock(lPresent);
+          }
           const r = B.tmp();
           B.line(`${r} = call ptr @scr_dyn_retain_v(ptr ${value})`);
           B.line(`store ptr ${r}, ptr ${slot}`);
@@ -676,7 +692,7 @@ export function emitDynamicExpr(
           } = host.recordFieldPtr(payload, arm.shapeId, declared.name);
           const v = host.loadRecordField(ptr, ft, inline);
           if (e.type.kind === "dyn") {
-            storeDynOf(ft, v);
+            storeDynOf(ft, v, declared.optional);
             B.br(join);
             return;
           }

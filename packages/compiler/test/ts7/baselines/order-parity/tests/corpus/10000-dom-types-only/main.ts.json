@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/10000-dom-types-only/main.ts"
+ ],
+ "diags": []
+}

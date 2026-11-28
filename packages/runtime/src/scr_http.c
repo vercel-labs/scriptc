@@ -2170,8 +2170,12 @@ void scr_http_res_write_early_hints_cb(ScrHttpRes *r, ScrArr *pairs /*borrowed*/
   }
   bool wrote = scr_http_res_write_early_hints_head(r, link, pairs);
   scr_str_release(link);
+  /* the head writer's answer is backpressure, not failure: the callback
+   * belongs to the write and must fire once it completes, however much the
+   * socket already has buffered (Node fires it from afterWrite) */
+  (void)wrote;
   if (cb) {
-    if (wrote && !scr_exc_pending()) scr_http_res_on_write_flush(r, cb);
+    if (!scr_exc_pending()) scr_http_res_on_write_flush(r, cb);
     else scr_closure_release(cb);
   }
 }
@@ -2233,6 +2237,8 @@ static bool scr_http_res_write_early_hints_head(ScrHttpRes *r, ScrStr *link /*bo
  * integer in 100..199 and never 101, and the reason comes from the status
  * table ('unknown' for an unassigned code). Answers write()'s
  * backpressure boolean, as Node's _writeRaw does. */
+void scr_http_res_on_write_flush(ScrHttpRes *r, ScrClosure *cb /*moves*/);
+
 bool scr_http_res_write_information(ScrHttpRes *r, double status, ScrArr *pairs /*borrowed, nullable*/) {
   if (!scr_http_res_informational_h1(r, "writeInformation")) return false;
   if (!scr_http_headers_unsent(r->head_sent, "write")) return false;
@@ -2298,6 +2304,22 @@ bool scr_http_res_write_information(ScrHttpRes *r, double status, ScrArr *pairs 
   }
   free(b.data);
   return accepted;
+}
+
+/* writeInformation(status[, headers][, callback]): the same head, with a
+ * callback that fires once the informational response is written (Node's
+ * flushEndCallbacks position, the same place the sibling forms use). */
+bool scr_http_res_write_information_cb(ScrHttpRes *r, double status,
+                                       ScrArr *pairs /*borrowed, nullable*/,
+                                       ScrClosure *cb /*moves, nullable*/) {
+  bool wrote = scr_http_res_write_information(r, status, pairs);
+  if (cb) {
+    /* backpressure is not failure: the callback fires once the write
+     * completes, as Node's afterWrite does */
+    if (!scr_exc_pending()) scr_http_res_on_write_flush(r, cb);
+    else scr_closure_release(cb);
+  }
+  return wrote;
 }
 
 /* response.writeInformation(statusCode[, headers][, callback]): Node's

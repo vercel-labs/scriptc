@@ -182,7 +182,11 @@ declare module "http" {
     writeProcessing(callback?: () => void): void;
     /* Node's generic informational response: any 1xx status but 101,
      * answered with write()'s backpressure boolean. */
-    writeInformation(statusCode: number, headers?: OutgoingHttpHeaders): boolean;
+    writeInformation(
+      statusCode: number,
+      headers?: OutgoingHttpHeaders,
+      callback?: () => void,
+    ): boolean;
     writeEarlyHints(hints: Record<string, string | string[]>, callback?: () => void): void;
     /* Answers whether the buffer is still below its 64 KiB high-water
      * mark; a false answer fires 'drain' once the bytes are out. An

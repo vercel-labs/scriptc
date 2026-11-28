@@ -972,7 +972,8 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
   if (
     e.fn === "http.resWriteContinueCb" ||
     e.fn === "http.resWriteProcessingCb" ||
-    e.fn === "http.resWriteEarlyHintsCb"
+    e.fn === "http.resWriteEarlyHintsCb" ||
+    e.fn === "http.resWriteInformationCb"
   ) {
     // The informational writers move the callback into the response's
     // write-flush list; the caller must not release it after the call.
@@ -983,7 +984,19 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
         ? "scr_http_res_write_continue_cb"
         : e.fn === "http.resWriteProcessingCb"
           ? "scr_http_res_write_processing_cb"
-          : "scr_http_res_write_early_hints_cb";
+          : e.fn === "http.resWriteInformationCb"
+            ? "scr_http_res_write_information_cb"
+            : "scr_http_res_write_early_hints_cb";
+    if (e.fn === "http.resWriteInformationCb") {
+      /* answers write()'s backpressure boolean */
+      host.declare(`declare i1 @${entry}(ptr, double, ptr, ptr)`);
+      const raw = B.tmp();
+      B.line(
+        `${raw} = call i1 @${entry}(ptr ${args[0]!.name}, double ${args[1]!.name}, ptr ${args[2]!.name}, ptr ${args[3]!.name})`,
+      );
+      host.emitPendingCheck();
+      return { name: raw, type: e.type };
+    }
     if (e.fn === "http.resWriteEarlyHintsCb") {
       host.declare(`declare void @${entry}(ptr, ptr, ptr)`);
       B.line(

@@ -352,7 +352,9 @@ function earlyHeritageReferences(
  * name, unwrapped from parentheses, assertions and non-null marks, or the
  * member of a namespace access (`ns.Base`). Null when the expression does
  * any work of its own first. */
-function bareHeritageReference(expression: ts.Expression): ts.Identifier | null {
+function bareHeritageReference(
+  expression: ts.Expression,
+): ts.Identifier | ts.StringLiteralLike | null {
   let e: ts.Expression = expression;
   for (;;) {
     if (
@@ -368,6 +370,10 @@ function bareHeritageReference(expression: ts.Expression): ts.Identifier | null 
   }
   if (ts.isIdentifier(e)) return e;
   if (ts.isPropertyAccessExpression(e) && ts.isIdentifier(e.name)) return e.name;
+  // `dep["Base"]`: the member name is a string literal, and the value read
+  // is the same namespace member the dotted form names.
+  if (ts.isElementAccessExpression(e) && ts.isStringLiteralLike(e.argumentExpression))
+    return e.argumentExpression;
   return null;
 }
 
@@ -413,11 +419,28 @@ function within(node: ts.Node, ancestor: ts.Node | undefined): boolean {
 /** Whether `node` names `symbol`, through import aliases when `aliases`. */
 function resolvesTo(
   lowerer: Lowerer,
-  node: ts.Identifier,
+  node: ts.Identifier | ts.StringLiteralLike,
   symbol: ts.Symbol,
   aliases: boolean,
 ): boolean {
   let referenced = lowerer.checker.getSymbolAtLocation(node);
+  // A bracketed member's literal names the property of the receiver: ask the
+  // element access and, failing that, the receiver's export table.
+  const access = ts.isStringLiteralLike(node) ? node.parent : undefined;
+  if (
+    referenced === undefined &&
+    access !== undefined &&
+    ts.isElementAccessExpression(access) &&
+    access.argumentExpression === node
+  ) {
+    referenced = lowerer.checker.getSymbolAtLocation(access);
+    if (referenced === undefined) {
+      let receiver = lowerer.checker.getSymbolAtLocation(access.expression);
+      if (receiver !== undefined && receiver.flags & ts.SymbolFlags.Alias)
+        receiver = lowerer.checker.getAliasedSymbol(receiver);
+      referenced = receiver?.getExports().get(ts.escapedSymbolName(node.text));
+    }
+  }
   if (aliases && referenced !== undefined && referenced.flags & ts.SymbolFlags.Alias)
     referenced = lowerer.checker.getAliasedSymbol(referenced);
   return referenced === symbol;

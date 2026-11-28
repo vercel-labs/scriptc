@@ -2432,6 +2432,52 @@ function sideEffectFreeHeritageMember(expr: ts.Expression): boolean {
   }
 }
 
+/** The root binding of a member heritage expression (`dep.a.B` ->
+ * `dep`), or null when the chain does not start at an identifier. */
+function heritageRootIdentifier(expr: ts.Expression): ts.Identifier | null {
+  let current: ts.Expression = expr;
+  for (;;) {
+    if (ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current)) {
+      current = current.expression;
+      continue;
+    }
+    return ts.isIdentifier(current) ? current : null;
+  }
+}
+
+/** Whether the binding `root` holds a value before the class `decl`
+ * evaluates. An import declaration's alias is initialized by the module's
+ * imports; an `import x = require(...)` alias is initialized where its
+ * statement runs, so it must precede the class like a variable; a
+ * same-module variable must be declared with an initializer in a statement
+ * that precedes the class. A binding declared in another module is
+ * initialized by that module's evaluation. */
+function heritageBindingInitializedBefore(
+  lowerer: Lowerer,
+  root: ts.Identifier,
+  decl: ts.ClassLikeDeclaration,
+): boolean {
+  const symbol = lowerer.checker.getSymbolAtLocation(root);
+  if (symbol === undefined) return true;
+  const declaration = symbol.valueDeclaration;
+  if (declaration === undefined) return true;
+  const declarationNode = declaration as unknown as ts.Node;
+  const declarationFile = ts.getSourceFileOfNode(declarationNode);
+  if (declarationFile !== ts.getSourceFileOfNode(decl)) return true;
+  if ((symbol.flags & ts.SymbolFlags.Alias) !== 0) {
+    // `import dep = require("./x")` runs where its statement runs; a plain
+    // import declaration is hoisted and initialized before any statement.
+    if (!ts.isImportEqualsDeclaration(declarationNode)) return true;
+    return ts.tokenStartOfNode(declarationNode) < ts.tokenStartOfNode(decl);
+  }
+  if (!ts.isVariableDeclaration(declarationNode)) return true;
+  const statement = declarationNode.parent?.parent;
+  if (statement === undefined || !ts.isVariableStatement(statement)) return true;
+  if (statement.parent !== ts.getSourceFileOfNode(decl)) return true;
+  if (declarationNode.initializer === undefined) return false;
+  return ts.tokenStartOfNode(statement) < ts.tokenStartOfNode(decl);
+}
+
 export function collectClassShapeInner(
   lowerer: Lowerer,
   decl: ts.ClassLikeDeclaration,
@@ -3127,6 +3173,13 @@ export function collectClassShapeInner(
               "SC1090",
               t,
               `extending the generic class '${info.def.jsName ?? info.def.name}' through '${ts.getTextOfNode(t.expression)}' (its instantiation is not modeled here — extend a non-generic class, or name the base by its instantiated class)`,
+            );
+          const root = heritageRootIdentifier(t.expression);
+          if (root !== null && !heritageBindingInitializedBefore(lowerer, root, decl))
+            lowerer.unsupported(
+              "SC1090",
+              t,
+              `extending '${ts.getTextOfNode(t.expression)}' above the statement that initializes its binding (the value is still undefined when this class evaluates — Node throws here; initialize it first)`,
             );
           base = info;
           continue;

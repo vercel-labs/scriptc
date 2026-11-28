@@ -129,3 +129,61 @@ test("modules without optional tables and registered class types retain their st
   expect(module).toEqual(before);
   expect(module.functions[0]!.returnType).toBe(type);
 });
+
+test("equal arms left by erasing unregistered classes collapse, and the tags that survive move with them", () => {
+  const loc = { file: "classes.js", start: 0, end: 1 };
+  const first: IrType = { kind: "object", className: "GatewayAuthError" };
+  const second: IrType = { kind: "object", className: "GatewayRateLimitError" };
+  const record: IrType = { kind: "record", shapeId: "r" };
+  const unionRef: IrType = { kind: "union", unionId: "u" };
+  const narrow: IrExpr = {
+    kind: "unionNarrow",
+    unionId: "u",
+    tag: 2,
+    value: { kind: "varRef", localId: "x", type: unionRef, loc },
+    type: record,
+    loc,
+  };
+  const module: IrModule = {
+    irVersion: 17,
+    sourceFile: loc.file,
+    entry: "main",
+    unions: [{ id: "u", arms: [first, second, record] }],
+    functions: [
+      {
+        name: "main",
+        returnType: unionRef,
+        params: [],
+        locals: [{ id: "x", name: "x", type: unionRef, mutable: false }],
+        body: [{ kind: "exprStmt", expr: narrow, loc }],
+        loc,
+      },
+    ],
+  };
+  sanitizeUnregisteredClassTypes(module, () => false);
+  // Both class arms are f64 now, so the second one is the first: the
+  // record arm that was tag 2 is tag 1.
+  expect(module.unions![0]!.arms.map((arm) => arm.kind)).toEqual(["f64", "record"]);
+  expect(narrow.kind === "unionNarrow" && narrow.tag).toBe(1);
+});
+
+test("a union of nothing but unregistered classes keeps a definition every reference can use", () => {
+  const loc = { file: "classes.js", start: 0, end: 1 };
+  const arms: IrType[] = [
+    { kind: "object", className: "GatewayAuthError" },
+    { kind: "object", className: "GatewayRateLimitError" },
+  ];
+  const unionRef: IrType = { kind: "union", unionId: "u" };
+  const module: IrModule = {
+    irVersion: 17,
+    sourceFile: loc.file,
+    entry: "main",
+    unions: [{ id: "u", arms }],
+    functions: [{ name: "main", returnType: unionRef, params: [], locals: [], body: [], loc }],
+  };
+  sanitizeUnregisteredClassTypes(module, () => false);
+  // No value of such a union can exist, so its single type plus an
+  // undefined arm is the whole domain; the reference stays intact.
+  expect(module.unions![0]!.arms).toEqual([F64, { kind: "undefinedT" }]);
+  expect(module.functions[0]!.returnType).toBe(unionRef);
+});

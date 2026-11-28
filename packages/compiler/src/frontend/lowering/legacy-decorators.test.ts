@@ -284,66 +284,6 @@ test("legacy method decorators on a base with a generic subclass are refused", a
   }
 });
 
-test("a dynamic legacy class decorator on a base with subclasses is refused", async () => {
-  const source = [
-    "type LegacyClassDecorator = <T>(target: T) => T | void;",
-    "function injectable(): LegacyClassDecorator {",
-    "  return <T>(target: T): T | void => { return undefined; };",
-    "}",
-    "@injectable()",
-    "class Base {}",
-    "class Sub extends Base {}",
-    "console.log(new Sub() instanceof Base);",
-    "",
-  ].join("\n");
-  const dir = await mkdtemp(join(tmpdir(), "scriptc-legacy-decorators-dynamic-sub-"));
-  try {
-    const entry = join(dir, "main.ts");
-    await writeFile(entry, source);
-    await writeFile(join(dir, "tsconfig.json"), JSON.stringify(legacyTsconfig));
-    const result = await compile(entry, {
-      outDir: dir,
-      outPath: join(dir, "main.ir.json"),
-      outputKind: "ir",
-    });
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("expected a refusal");
-    expect(result.diagnostics.map((d) => d.code)).toContain("SC1090");
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("legacy accessor decorators on a built-in error subclass are refused", async () => {
-  const source = [
-    "function guard(t: object, k: string, d: PropertyDescriptor): void {",
-    '  d.get = function (this: unknown): string { return "guarded"; };',
-    "}",
-    "class E extends Error {",
-    "  @guard",
-    '  get info(): string { return "orig"; }',
-    "}",
-    "console.log(new E().info);",
-    "",
-  ].join("\n");
-  const dir = await mkdtemp(join(tmpdir(), "scriptc-legacy-decorators-error-"));
-  try {
-    const entry = join(dir, "main.ts");
-    await writeFile(entry, source);
-    await writeFile(join(dir, "tsconfig.json"), JSON.stringify(legacyTsconfig));
-    const result = await compile(entry, {
-      outDir: dir,
-      outPath: join(dir, "main.ir.json"),
-      outputKind: "ir",
-    });
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("expected a refusal");
-    expect(result.diagnostics.map((d) => d.code)).toContain("SC1090");
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
 async function refusalCodes(source: string, tsconfig: object): Promise<string[]> {
   const dir = await mkdtemp(join(tmpdir(), "scriptc-legacy-decorators-refusal-"));
   try {
@@ -390,6 +330,80 @@ test("a constructor parameter decorator on a parameter property is refused with 
     compilerOptions: { ...legacyTsconfig.compilerOptions, target: "ES2021" },
   };
   expect(await refusalCodes(source, assignTsconfig)).toContain("SC1090");
+});
+
+test("a dynamic legacy class decorator on a base with subclasses is refused", async () => {
+  const source = [
+    "type LegacyClassDecorator = <T>(target: T) => T | void;",
+    "function injectable(): LegacyClassDecorator {",
+    "  return <T>(target: T): T | void => { return undefined; };",
+    "}",
+    "@injectable()",
+    "class Base {}",
+    "class Sub extends Base {}",
+    "console.log(new Sub() instanceof Base);",
+    "",
+  ].join("\n");
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-legacy-decorators-dynamic-sub-"));
+  try {
+    const entry = join(dir, "main.ts");
+    await writeFile(entry, source);
+    await writeFile(join(dir, "tsconfig.json"), JSON.stringify(legacyTsconfig));
+    const result = await compile(entry, {
+      outDir: dir,
+      outPath: join(dir, "main.ir.json"),
+      outputKind: "ir",
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected a refusal");
+    expect(result.diagnostics.map((d) => d.code)).toContain("SC1090");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("class decorators on a factory-base class with static members are refused", async () => {
+  const source = [
+    'function makeBase() { return class { static base(): string { return "b"; } }; }',
+    "function patch(target: any): void { (target as any).m = function (): number { return 2; }; }",
+    "@patch",
+    "class C extends makeBase() {",
+    "  static m(): number { return 1; }",
+    "}",
+    "console.log(C.m());",
+    "",
+  ].join("\n");
+  expect(await refusalCodes(source, legacyTsconfig)).toContain("SC1090");
+});
+
+test("legacy accessor decorators on a built-in error subclass are refused", async () => {
+  const source = [
+    "function guard(t: object, k: string, d: PropertyDescriptor): void {",
+    '  d.get = function (this: unknown): string { return "guarded"; };',
+    "}",
+    "class E extends Error {",
+    "  @guard",
+    '  get info(): string { return "orig"; }',
+    "}",
+    "console.log(new E().info);",
+    "",
+  ].join("\n");
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-legacy-decorators-error-"));
+  try {
+    const entry = join(dir, "main.ts");
+    await writeFile(entry, source);
+    await writeFile(join(dir, "tsconfig.json"), JSON.stringify(legacyTsconfig));
+    const result = await compile(entry, {
+      outDir: dir,
+      outPath: join(dir, "main.ir.json"),
+      outputKind: "ir",
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected a refusal");
+    expect(result.diagnostics.map((d) => d.code)).toContain("SC1090");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("setter parameter decorators without a member decorator emit no decoration", async () => {

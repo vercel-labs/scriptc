@@ -487,6 +487,7 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "http.resOnWriteFlush",
   "http.resWriteProcessingCb",
   "http.resWriteEarlyHintsCb",
+  "http.resWriteInformationCb",
   "http.validateHeaderName",
   "http.validateHeaderValue",
   "http.setMaxIdleParsers",

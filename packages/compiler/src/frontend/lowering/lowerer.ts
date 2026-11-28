@@ -118,6 +118,7 @@ import {
   collectWidthCopies,
   refuseObservedCopies,
   traceWidthCopies,
+  viewObservedRecordCopies,
   widthCopyDivergences,
   type WidthCopyFact,
 } from "./width-copies.js";
@@ -752,7 +753,13 @@ import {
   lowerProcessEnvGet,
   refuseHeldEnvWrite,
 } from "./builtins/environment.js";
-import { jsonResultTextOnly, lowerJsonMethodCall, lowerJsonProperty } from "./builtins/json.js";
+import {
+  jsonResultTextOnly,
+  jsonStringifyRootMaybeUndefined,
+  jsonTypeMaybeUndefined,
+  lowerJsonMethodCall,
+  lowerJsonProperty,
+} from "./builtins/json.js";
 import { lowerCryptoComposedCall, lowerCryptoModuleCall } from "./builtins/crypto.js";
 import {
   legacyUrlClassValue,
@@ -4870,6 +4877,17 @@ export class Lowerer {
     while (ts.isParenthesizedExpression(origin)) origin = origin.expression;
     if (ts.isElementAccessExpression(origin) || ts.isPropertyAccessExpression(origin)) return true;
     if (ts.isCallExpression(origin)) {
+      // JSON.stringify of a root whose value may be undefined answers
+      // undefined, which the lib type's string cannot admit.
+      if (
+        origin.arguments.nodes.length > 0 &&
+        ts.isPropertyAccessExpression(origin.expression) &&
+        origin.expression.name.text === "stringify" &&
+        this.isStdlibGlobal(origin.expression.expression, "JSON") &&
+        !ts.isSpreadElement(origin.arguments.nodes[0]!) &&
+        jsonStringifyRootMaybeUndefined(this, origin.arguments.nodes[0]!)
+      )
+        return true;
       const name = ts.isPropertyAccessExpression(origin.expression)
         ? origin.expression.name
         : origin.expression;
@@ -12389,20 +12407,19 @@ export class Lowerer {
         ts.isPropertyAccessExpression(e.expression) &&
         e.expression.name.text === "stringify" &&
         this.isStdlibGlobal(e.expression.expression, "JSON") &&
-        !ts.isSpreadElement(e.arguments.nodes[0]!) &&
-        !jsonResultTextOnly(this, e)
+        !ts.isSpreadElement(e.arguments.nodes[0]!)
       ) {
+        const rootNode = e.arguments.nodes[0]!;
+        // A root whose value may be undefined answers undefined from
+        // JSON.stringify, whatever the use: the lib type says string, but
+        // the result keeps the missing arm.
+        const mapped = this.mapTypeOf(this.typeOf(rootNode));
+        if (mapped !== null && jsonTypeMaybeUndefined(this, mapped)) return true;
         // A JavaScript parameter has no mapping yet: its checker type says.
         // An instance of a class with a toJSON method serializes what the
-        // method returns, which can be undefined too.
-        const root = this.typeOf(e.arguments.nodes[0]!);
-        const mapped = this.mapTypeOf(root);
-        if (
-          mapped?.kind === "dyn" ||
-          (mapped === null && (root.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) ||
-          (mapped?.kind === "object" &&
-            this.findMethodOn(this.classes.get(mapped.className) ?? null, "toJSON") !== null)
-        )
+        // method returns, which can be undefined too — unless every use
+        // reads the result as text (jsonResultTextOnly).
+        if (!jsonResultTextOnly(this, e) && jsonStringifyRootMaybeUndefined(this, rootNode))
           return true;
       }
       if (
@@ -15705,6 +15722,14 @@ export class Lowerer {
     );
     this.timedPass("guardPartialReads", () => guardPartialReads(this, functions));
     this.timedPass("guardFrozenWrites", () => guardFrozenWrites(this, functions, census));
+    // A record copied into a narrower layout that the program can observe
+    // becomes a VIEW of the original instead (record-views.ts), so identity
+    // and writes through either name survive the conversion as in Node.js.
+    // The pairs come from the same scan that reports SC6001; unobserved
+    // copies stay native. After guardFrozenWrites, which decides which
+    // shapes may be frozen: a freezable type keeps its copies, and the
+    // backend declines to view it.
+    this.timedPass("viewObservedRecordCopies", () => viewObservedRecordCopies(this, functions));
     this.timedPass("applyHandleProperties", () => applyHandleProperties(this, functions, census));
     this.timedPass("adoptIslandThenables", () => adoptIslandThenables(this, functions, census));
     this.timedPass("shareIslandProcessState", () =>
@@ -18989,14 +19014,12 @@ export class Lowerer {
     );
   }
 
-  /** True when a type is a BARE undefined-armed union — the one JSON-unsafe
-   * shape whose rejections deserve their own wording: Node's stringify of
-   * bare undefined is not a string at all and JSON text never matches the
-   * arm, so exactness is unreachable and the fixes (narrow first / null arm
-   * / make it an optional record FIELD, where drop-and-absent semantics ARE
-   * Node's) are specific. Record fields don't count: an undefined-armed
-   * union in field position is JSON-safe (isJsonSafeType), so a record that
-   * still fails the fence does so for some other reason. */
+  /** True when a type is a BARE undefined-armed union, as a parameter or
+   * local spells it, rather than an optional property (`?:`): a call site
+   * may omit such an argument and the slot carries the undefined arm.
+   * Record fields don't count: an undefined-armed union in field position
+   * drops from JSON like Node's, and JSON.stringify of such a value keeps
+   * the undefined result (json.ts). */
   bareUndefinedArmedUnion(t: IrType): boolean {
     return isUndefinedArmedUnion(t, (id) => this.unions.get(id));
   }

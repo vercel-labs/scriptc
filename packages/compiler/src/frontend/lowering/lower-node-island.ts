@@ -2818,6 +2818,14 @@ export function lowerIslandExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr |
     if (!isForeignExpr(lowerer, callee)) return null;
     lowerer.usesNodeIsland = true;
     const fn = lowerer.lowerExpr(callee);
+    // A callee the program compiles (a function of a package that is BOTH
+    // statically compiled and named by an island's declarations, such as
+    // the `ai` package's gateway() in ai-cli) lowers to a native function
+    // value. The island bridge would hand Node a native closure it cannot
+    // call, and the IR validator refuses the call outright ("arg 0:
+    // expected dyn, got func"); it is a native call, so decline here and
+    // let the generic call lowering take it.
+    if ((fn.type.kind as string) === "func") return null;
     return fromIsland(
       lowerer,
       {

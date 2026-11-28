@@ -245,6 +245,13 @@ export function lowerArrayLiteral(
   expr: ts.ArrayLiteralExpression,
   expected?: (IrType & { kind: "array" }) | (IrType & { kind: "record" }),
 ): IrExpr {
+  // A prefix property the distributed conditional spread already evaluated
+  // once (spreadOnceBindings, lowerDistributedUnionSpread): the arm builds
+  // read the bound value instead of building the array again. The check
+  // sits here as well as in lowerExpr and lowerObjectLiteral because an arm
+  // build enters this function directly for an array-valued property.
+  const spreadOnce = lowerer.spreadOnceBindings.get(expr);
+  if (spreadOnce !== undefined) return spreadOnce;
   const loc = locOf(expr);
   const ctxType = lowerer.checker.getContextualType(expr);
   // `as const satisfies readonly T[]` checks against an array but keeps

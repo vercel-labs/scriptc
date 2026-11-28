@@ -1,4 +1,5 @@
 import type { NativeOptimization } from "../backend/optimization.js";
+import { SANITIZER_FLAG } from "../backend/sanitizer-checks.js";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
@@ -42,7 +43,7 @@ export function sanitizerFlags(
     toolchain.target.llvmTriple,
     optimization === "dev" ? "-O0" : "-O1",
     "-g",
-    "-fsanitize=address",
+    SANITIZER_FLAG,
   ];
 }
 

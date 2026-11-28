@@ -1015,6 +1015,13 @@ export function lowerObjectLiteral(
    * whole union, so its contextual type cannot choose the layout. */
   exact = false,
 ): IrExpr {
+  // A prefix property the distributed conditional spread already evaluated
+  // once (spreadOnceBindings, lowerDistributedUnionSpread): the arm builds
+  // read the bound value instead of building the literal again. The check
+  // sits here as well as in lowerExpr because an arm build can enter this
+  // function directly.
+  const spreadOnce = lowerer.spreadOnceBindings.get(expr);
+  if (spreadOnce !== undefined) return spreadOnce;
   // `__proto__: v` sets the literal's [[Prototype]] as the literal is built.
   // A record is a native struct with no dynamic prototype slot, so a
   // JavaScript literal that carries one builds as a checked-dynamic object,
@@ -3421,15 +3428,22 @@ function lowerDistributedUnionSpread(
     // bound value (spreadOnceBindings) instead of re-lowering it.
     const boundStmts: IrStmt[] = [];
     const boundNodes: ts.Expression[] = [];
+    // EVERY earlier property evaluates once, in source order, before the
+    // condition. Binding only the effectful ones would reorder the rest:
+    // an identifier or field read would run after a later property's
+    // effects, where JavaScript reads it before them.
     for (const prop of props.slice(0, spreadIndex)) {
-      if (!ts.isPropertyAssignment(prop)) continue;
-      const initializer = prop.initializer;
-      if (pureKeyExpr(lowerer, initializer) || constantInitializer(lowerer, initializer)) continue;
-      const value = lowerer.lowerExpr(initializer);
+      const node: ts.Expression | null = ts.isPropertyAssignment(prop)
+        ? prop.initializer
+        : ts.isShorthandPropertyAssignment(prop)
+          ? (prop.name as ts.Expression)
+          : null;
+      if (node === null) continue;
+      const value = lowerer.lowerExpr(node);
       const held = lowerer.declareHiddenLocal("%spreadOnce", value.type);
       boundStmts.push({ kind: "varDecl", localId: held.id, init: value, loc: value.loc });
-      lowerer.spreadOnceBindings.set(initializer, varRef(held.id, value.type, value.loc));
-      boundNodes.push(initializer);
+      lowerer.spreadOnceBindings.set(node, varRef(held.id, value.type, value.loc));
+      boundNodes.push(node);
     }
     try {
       const cond = lowerer.lowerCondition(conditional.node.condition);

@@ -1313,6 +1313,17 @@ export function lowerPromiseStaticCall(
       const settled = lowerTupleAllSettled(lowerer, call, entriesArgument(argNode));
       if (settled) return settled;
     }
+    // A TypeScript source whose argument lowers to a checked-dynamic value
+    // (an `.map` over a dynamic collection, an untyped array): Node builds
+    // the input at run time, so the checked combinator serves it, exactly
+    // like the JavaScript lane's. The argument lowers ONCE; a typed promise
+    // array keeps the typed combinator with that same value.
+    const probe = entriesArgument(argNode);
+    if (probe !== null) {
+      const lowered = lowerer.lowerExpr(probe);
+      if (lowered.type.kind === "dyn") return checkedPromiseAll(lowerer, lowered, loc, member);
+      return lowerTypedSettledCombinator(lowerer, call, probe, member, lowered);
+    }
     return lowerTypedSettledCombinator(lowerer, call, argNode, member);
   }
   // Promise.withResolvers<T>(): the executor pieces without an

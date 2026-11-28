@@ -1530,6 +1530,23 @@ export function lowerObjectLiteral(
     // copy — and let the union's checked conversion validate it.
     if (mapped?.kind === "union") {
       if (!exact && unionCtx?.kind === "union") {
+        // An `any` spread is typed as the object the source holds at run
+        // time, which can be any one arm: build the checked-dynamic object
+        // Node builds and let the union's checked conversion validate it.
+        // A source whose mapped type is the checked-dynamic one (`dyn`) is
+        // in the same position: the mapper stores no field table for it
+        // (an AI SDK tool-result union whose arms differ in an `any`-typed
+        // field), so its own keys are known only at run time. The literal
+        // copies them in source order, writes its own fields, and the
+        // conversion checks the object against the arms.
+        const dynSourceSpread = expr.properties.nodes.some(
+          (p) =>
+            ts.isSpreadAssignment(p) &&
+            ((lowerer.typeOf(p.expression).flags & ts.TypeFlags.Any) !== 0 ||
+              lowerer.mapTypeOf(lowerer.typeOf(p.expression))?.kind === "dyn"),
+        );
+        if (dynSourceSpread)
+          return lowerer.coerceToExpected(lowerDynObjectLiteral(lowerer, expr), unionCtx);
         const merged = lowerUnionSpreadMergeDyn(lowerer, expr, unionCtx);
         if (merged) return merged;
       }

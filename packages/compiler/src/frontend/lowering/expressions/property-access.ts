@@ -5935,6 +5935,10 @@ export function lowerUnionKeyedRead(
     push(t);
     return true;
   };
+  // A record arm that answers the key with the checked-dynamic type: the
+  // IR stores no field table for that value (a `dyn` field), so the read
+  // hands the caller the stored box itself.
+  let dynAnswer = false;
   for (const arm of def.arms) {
     if (isUnitType(arm)) {
       push(UNDEFINED_T);
@@ -5956,6 +5960,10 @@ export function lowerUnionKeyedRead(
     const declared =
       literalField !== null ? shape.fields.find((f) => f.name === literalField)?.type : undefined;
     if (declared) {
+      if (declared.kind === "dyn") {
+        dynAnswer = true;
+        continue;
+      }
       if (!pushAnswer(declared)) return null;
       continue;
     }
@@ -5978,10 +5986,22 @@ export function lowerUnionKeyedRead(
     }
     if (!pushAnswer(shape.indexValue)) return null;
   }
-  if (joinArms.length === 0) return null;
+  if (joinArms.length === 0 && !dynAnswer) return null;
+  // A checked-dynamic answer absorbs the unit answers: `dyn` represents
+  // undefined and null directly, so the read keeps the field's own box
+  // (no conversion, no copy) and a missing key or a unit arm answers the
+  // dyn unit value. Any OTHER static answer would have to convert a
+  // record into a fresh dynamic tree, which would split the object from
+  // the one Node returns, so it keeps the fence.
+  const unitsOnly = (t: IrType): boolean =>
+    isUnitType(t) ||
+    (t.kind === "union" && (lowerer.unions.get(t.unionId)?.arms ?? []).every(isUnitType));
+  const dynJoin = dynAnswer && joinArms.every(unitsOnly);
+  if (dynAnswer && !dynJoin) return null;
   // The join must satisfy native union invariants. The caller owns the
   // diagnostic when a container or opaque arm prevents that join.
   if (
+    !dynJoin &&
     joinArms.length > 1 &&
     (!unionContainerArmsOk(joinArms) ||
       joinArms.some((a) => a.kind === "dyn" || a.kind === "generator" || a.kind === "caught"))
@@ -5989,8 +6009,9 @@ export function lowerUnionKeyedRead(
     return null;
   }
   sortArms(joinArms);
-  const type: IrType =
-    joinArms.length === 1
+  const type: IrType = dynJoin
+    ? DYN
+    : joinArms.length === 1
       ? joinArms[0]!
       : { kind: "union", unionId: lowerer.unions.intern(joinArms) };
   // Pass 2: every arm's answer must SURFACE as the join, and index arms
@@ -6002,7 +6023,8 @@ export function lowerUnionKeyedRead(
     exactUnionWidening(lowerer, t, type);
   for (const arm of def.arms) {
     if (isUnitType(arm)) {
-      if (!(type.kind === "union" && lowerer.armTag(type.unionId, UNDEFINED_T) >= 0)) return null;
+      if (!dynJoin && !(type.kind === "union" && lowerer.armTag(type.unionId, UNDEFINED_T) >= 0))
+        return null;
       continue;
     }
     if (key.type.kind === "f64") {
@@ -6012,8 +6034,10 @@ export function lowerUnionKeyedRead(
     if (arm.kind !== "record") {
       if (primitiveArmAnswers(arm)) {
         // The primitive's answer above must surface as the join's
-        // undefined arm (the backend's missing-key path stores it).
-        if (!(type.kind === "union" && lowerer.armTag(type.unionId, UNDEFINED_T) >= 0)) return null;
+        // undefined arm (the backend's missing-key path stores it), or as
+        // the dyn unit value of a dyn join.
+        if (!dynJoin && !(type.kind === "union" && lowerer.armTag(type.unionId, UNDEFINED_T) >= 0))
+          return null;
         continue;
       }
       return null;
@@ -6023,13 +6047,19 @@ export function lowerUnionKeyedRead(
     const declared =
       literalField !== null ? shape.fields.find((f) => f.name === literalField)?.type : undefined;
     if (declared) {
+      // A dyn join keeps the dyn answer itself and converts a units-only
+      // answer into the dyn unit value (both are the value the field
+      // holds, in the checked-dynamic representation).
+      if (dynJoin && (declared.kind === "dyn" || unitsOnly(declared))) continue;
       if (!surfaces(declared)) return null;
       continue;
     }
     if (literalField !== null && !shape.indexValue && missingFieldAsUndefined) {
       // The missing-field answer above must surface as the join's
-      // undefined arm (the backend's keyed-read miss path stores it).
-      if (!(type.kind === "union" && lowerer.armTag(type.unionId, UNDEFINED_T) >= 0)) return null;
+      // undefined arm (the backend's keyed-read miss path stores it), or
+      // as the dyn unit value of a dyn join.
+      if (!dynJoin && !(type.kind === "union" && lowerer.armTag(type.unionId, UNDEFINED_T) >= 0))
+        return null;
       continue;
     }
     const ovfShape: IrRecordShape =

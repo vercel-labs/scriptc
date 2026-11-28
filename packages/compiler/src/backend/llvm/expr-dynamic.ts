@@ -508,6 +508,31 @@ export function emitDynamicExpr(
                 ? host.loadInt32Field(ptr, e.type).name
                 : host.loadField(ptr, type, false)
               : host.loadRecordField(ptr, type, false);
+          // An optional checked-dynamic field whose value is the ABSENT
+          // marker has no own property: the read answers undefined, the
+          // value Node's property read gives, so the marker never reaches
+          // the caller (which would make a destination property absent).
+          if (
+            arm.kind === "record" &&
+            type.kind === "dyn" &&
+            host.recordShape(arm.shapeId).fields.find((f) => f.name === e.field)?.optional === true
+          ) {
+            host.declare(`declare ptr @scr_dyn_undefined()`);
+            host.declare(`declare ptr @scr_dyn_retain_v(ptr)`);
+            const absent = B.tmp();
+            B.line(`${absent} = icmp eq ptr ${v}, ${host.dynAbsentRef()}`);
+            const lAbsent = B.newLabel("ud.absent");
+            const lPresent = B.newLabel("ud.present");
+            B.condBr(absent, lAbsent, lPresent);
+            B.startBlock(lAbsent);
+            const un = B.tmp();
+            const r = B.tmp();
+            B.line(`${un} = call ptr @scr_dyn_undefined()`);
+            B.line(`${r} = call ptr @scr_dyn_retain_v(ptr ${un})`);
+            B.line(`store ptr ${r}, ptr ${slot}`);
+            B.br(join);
+            B.startBlock(lPresent);
+          }
           const value = nullable
             ? host.nullableToOwnedUnion(v, nullable)
             : isRefCounted(e.type)
@@ -543,6 +568,52 @@ export function emitDynamicExpr(
       const slot = B.slot();
       B.entryAllocas.push(`${slot} = alloca ${ty}`);
       const join = B.newLabel("ukg.j");
+      // A dyn-typed join: unit and missing-key answers are the dyn unit
+      // values, and every static answer keeps the field's own box or
+      // converts into a fresh one. The frontend admits only answers that
+      // need no copy (a dyn field, a units-only value), so a record answer
+      // here is a lowering bug.
+      const storeDynUnit = (): void => {
+        host.declare(`declare ptr @scr_dyn_undefined()`);
+        host.declare(`declare ptr @scr_dyn_retain_v(ptr)`);
+        const un = B.tmp();
+        const r = B.tmp();
+        B.line(`${un} = call ptr @scr_dyn_undefined()`);
+        B.line(`${r} = call ptr @scr_dyn_retain_v(ptr ${un})`);
+        B.line(`store ptr ${r}, ptr ${slot}`);
+      };
+      const storeDynOf = (ft: IrType, value: string, optional?: boolean): void => {
+        if (ft.kind === "dyn") {
+          host.declare(`declare ptr @scr_dyn_retain_v(ptr)`);
+          // An optional checked-dynamic field's ABSENT marker says the
+          // source has no such property. A read of it answers undefined
+          // (Node's property read), so the value a caller keeps is
+          // present-with-undefined, never absent: leaking the marker would
+          // leave the destination's optional property absent.
+          if (optional === true) {
+            const absent = B.tmp();
+            B.line(`${absent} = icmp eq ptr ${value}, ${host.dynAbsentRef()}`);
+            const lAbsent = B.newLabel("ukg.absent");
+            const lPresent = B.newLabel("ukg.present");
+            B.condBr(absent, lAbsent, lPresent);
+            B.startBlock(lAbsent);
+            storeDynUnit();
+            B.br(join);
+            B.startBlock(lPresent);
+          }
+          const r = B.tmp();
+          B.line(`${r} = call ptr @scr_dyn_retain_v(ptr ${value})`);
+          B.line(`store ptr ${r}, ptr ${slot}`);
+          return;
+        }
+        if (ft.kind === "void") {
+          storeDynUnit();
+          return;
+        }
+        const conv = B.tmp();
+        B.line(`${conv} = call ptr @${host.dyn.toDynHelper(ft)}(${host.llType(ft)} ${value})`);
+        B.line(`store ptr ${conv}, ptr ${slot}`);
+      };
       host.unionTagSwitch(u.name, def, (arm) => {
         if (isUnitType(arm)) {
           if (e.type.kind === "dyn") {
@@ -618,6 +689,11 @@ export function emitDynamicExpr(
             arm.kind === "bool" ||
             arm.kind === "bigint")
         ) {
+          if (e.type.kind === "dyn") {
+            storeDynUnit();
+            B.br(join);
+            return;
+          }
           const tag = resultDef?.arms.findIndex((a) => a.kind === "undefinedT") ?? -1;
           if (tag < 0 || e.type.kind !== "union") {
             throw new InternalCompilerError(
@@ -640,6 +716,11 @@ export function emitDynamicExpr(
             inline,
           } = host.recordFieldPtr(payload, arm.shapeId, declared.name);
           const v = host.loadRecordField(ptr, ft, inline);
+          if (e.type.kind === "dyn") {
+            storeDynOf(ft, v, declared.optional);
+            B.br(join);
+            return;
+          }
           if (typeEquals(ft, e.type)) {
             // An inline union field's stack box is copied into a heap box.
             const owned = inline
@@ -677,6 +758,11 @@ export function emitDynamicExpr(
         // A declared-only arm without the literal key: the object has no
         // such own property, so the read answers undefined.
         if (literal !== null && !shape.indexValue) {
+          if (e.type.kind === "dyn") {
+            storeDynUnit();
+            B.br(join);
+            return;
+          }
           const tag = resultDef?.arms.findIndex((a) => a.kind === "undefinedT") ?? -1;
           if (tag < 0 || e.type.kind !== "union") {
             throw new InternalCompilerError(

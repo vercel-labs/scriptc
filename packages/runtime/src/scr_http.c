@@ -494,6 +494,7 @@ void scr_http_req_set_headers(ScrHttpReq *r, ScrDyn *value /*borrowed*/) {
 }
 
 static ScrDyn *scr_http_req_headers_view_build(ScrHttpReq *r);
+static bool scr_http_req_headers_assigned(ScrHttpReq *r);
 
 /* `req.headers[name] = value`: Node mutates the headers object itself, so
  * the write lands in the object every later read answers (a new name
@@ -501,47 +502,41 @@ static ScrDyn *scr_http_req_headers_view_build(ScrHttpReq *r);
  * the parsed view is promoted to be that object. */
 bool scr_http_req_set_header_name(ScrHttpReq *r, ScrStr *name /*borrowed*/,
                                   ScrDyn *value /*borrowed*/) {
+  /* Node writes through to the headers object itself: a later read of the
+   * object (and every alias of it) answers the written member. With no
+   * assigned object the parsed headers become that object first. */
   ScrDyn *obj;
-  if (r->headers_override != NULL) {
-    /* A record the program assigned crosses as a compiler-owned typed
-     * reference; a per-name write needs the ordinary object, so its
-     * property view is copied into one once (the contents every read
-     * answers are the same). */
+  if (scr_http_req_headers_assigned(r)) {
     obj = r->headers_override;
-    if (obj->kind != SCR_DYN_OBJ) {
-      /* The capsule caches its view; the writable object is a standalone
-       * copy of that view's properties. */
-      ScrDyn *view = scr_dyn_typed_ref_materialize(obj); /* +1 */
-      if (view == NULL || view->kind != SCR_DYN_OBJ) {
-        if (view != NULL) scr_dyn_release(view);
-        return false;
-      }
-      ScrDyn *copy = scr_dyn_new_obj();
-      size_t count = scr_dyn_obj_count(view);
-      for (size_t i = 0; i < count; i++) {
-        ScrDynProp e = scr_dyn_obj_prop_at(view, i);
-        scr_dyn_obj_set(copy, e.key, e.key_len, scr_dyn_retain(e.value));
-      }
-      scr_dyn_release(view);
-      scr_dyn_release(r->headers_override);
-      r->headers_override = copy;
-      obj = copy;
-    }
   } else {
     ScrDyn *view = scr_http_req_headers_view_build(r); /* +1 */
     r->headers_override = scr_dyn_retain(view);
     scr_dyn_release(view);
     obj = r->headers_override;
   }
-  scr_dyn_obj_set(obj, name->data, name->len, scr_dyn_retain((ScrDyn *)value));
+  /* A checked-dynamic object is mutated in place, and a record's capsule
+   * stores a declared field in place (its checked view commits any other
+   * member back into the record), so the assigned object never detaches.
+   * Every other kind is Node's strict-mode TypeError. */
+  scr_dyn_key_set(obj, name, value);
   return true;
 }
 
-bool scr_http_req_has_headers_override(ScrHttpReq *r) { return r->headers_override != NULL; }
+/* Node 24's req.headers is a prototype ACCESSOR: its getter answers the
+ * parsed headers again when the stored value is null or undefined, and the
+ * stored value otherwise (a number or string sticks, as Node keeps it). */
+static bool scr_http_req_headers_assigned(ScrHttpReq *r) {
+  return r->headers_override != NULL && r->headers_override->kind != SCR_DYN_NULL &&
+         r->headers_override->kind != SCR_DYN_UNDEF;
+}
+
+bool scr_http_req_has_headers_override(ScrHttpReq *r) {
+  return scr_http_req_headers_assigned(r);
+}
 
 ScrDyn *scr_http_req_headers_override(ScrHttpReq *r) {
-  return r->headers_override != NULL ? scr_dyn_retain(r->headers_override)
-                                     : scr_dyn_undefined();
+  return scr_http_req_headers_assigned(r) ? scr_dyn_retain(r->headers_override)
+                                          : scr_dyn_undefined();
 }
 
 /* Case-insensitive equality of HTTP field names. Incoming names happen to
@@ -11668,6 +11663,24 @@ static ScrDyn *scr_http_req_headers_view_build(ScrHttpReq *r) {
     scr_str_release(value);
   }
   scr_arr_release(pairs);
+  {
+    /* Node's req.headers answers set-cookie as an array of every line
+     * (the loop above keeps the first line for every other name). */
+    ScrStr *cookie = scr_str_new("set-cookie", sizeof "set-cookie" - 1);
+    ScrArr *lines = scr_http_req_header_list(r, cookie); /* +1 */
+    scr_str_release(cookie);
+    size_t count = (size_t)scr_arr_len(lines);
+    if (count > 0) {
+      ScrDyn *list = scr_dyn_new_arr();
+      for (size_t i = 0; i < count; i++) {
+        ScrStr *line = (ScrStr *)scr_arr_get_ref(lines, (double)i);
+        scr_dyn_arr_push(list, scr_dyn_new_str(line));
+        scr_str_release(line);
+      }
+      scr_dyn_obj_set(obj, "set-cookie", sizeof "set-cookie" - 1, list);
+    }
+    scr_arr_release(lines);
+  }
   r->headers_view = scr_dyn_retain(obj);
   return obj;
 }
@@ -11702,9 +11715,9 @@ static ScrDyn *scr_http_dynh_req_get(void *h, const char *key, size_t key_len) {
     return d;
   }
   if (strcmp(key, "headers") == 0) {
-    /* An assigned (or per-name written) headers object is what Node's
-     * getter answers; otherwise the parsed view is. */
-    if (r->headers_override != NULL) return scr_dyn_retain(r->headers_override);
+    /* The accessor's answer: the assigned value, or the parsed headers
+     * when it was never assigned or was assigned null/undefined. */
+    if (scr_http_req_headers_assigned(r)) return scr_dyn_retain(r->headers_override);
     return scr_http_req_headers_view_build(r);
   }
   if (strcmp(key, "rawHeaders") == 0) {

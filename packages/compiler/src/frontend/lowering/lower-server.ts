@@ -1872,11 +1872,17 @@ export function lowerHttpReqPropertyAssignment(
   loc: SrcLoc,
 ): IrStmt | null {
   if (!ts.isPropertyAccessExpression(left) || left.questionDotToken) return null;
+  // A JavaScript source's request value is checked-dynamic: its writes keep
+  // the dynamic path (which stores the same three properties at run time).
+  if (isJsSourceFile(ts.getSourceFileOfNode(left))) return null;
   const name = left.name.text;
   if (name !== "method" && name !== "url" && name !== "headers") return null;
   if (lowerer.mapTypeOf(lowerer.typeOf(left.expression))?.kind !== "httpReq") return null;
   if (!lowerer.isStdlibMember(left)) return null;
   const receiver = coerceToHandle(lowerer, left.expression, HTTPREQ_T);
+  // A JavaScript receiver may lower to a checked-dynamic value even where
+  // the checker names IncomingMessage: that write keeps the dynamic path.
+  if (receiver.type.kind !== "httpReq") return null;
   if (name === "headers") {
     const value = lowerer.lowerExprExpecting(right, DYN);
     return {
@@ -1912,9 +1918,11 @@ export function lowerHttpReqHeaderWrite(
 ): IrStmt | null {
   const collection = httpReqFieldCollection(lowerer, left.expression);
   if (collection !== "headers") return null;
+  if (isJsSourceFile(ts.getSourceFileOfNode(left))) return null;
   const recv = (left.expression as ts.PropertyAccessExpression).expression;
   if (lowerer.mapTypeOf(lowerer.typeOf(recv))?.kind !== "httpReq") return null;
   const receiver = coerceToHandle(lowerer, recv, HTTPREQ_T);
+  if (receiver.type.kind !== "httpReq") return null;
   const key = lowerer.lowerExprExpecting(left.argumentExpression as ts.Expression, STRING);
   const value = lowerer.lowerExprExpecting(right, DYN);
   return {
@@ -6178,6 +6186,9 @@ export function lowerServerProperty(
       name === "headersDistinct" ||
       name === "trailersDistinct"
     ) {
+      // A JavaScript source reads these through the checked-dynamic view its
+      // untyped value takes.
+      if (isJsSourceFile(ts.getSourceFileOfNode(expr))) return null;
       // Whole-object reads materialize a typed snapshot record. Per-name
       // reads retain their direct lowerings.
       const mapped = lowerer.mapTypeOf(lowerer.typeOf(expr));
@@ -6517,6 +6528,13 @@ export function lowerServerProperty(
         ? lowerer.withUndefinedArm(arrayOf(STRING))
         : lowerer.envValueType();
     if (collection === "headers") {
+      if (isJsSourceFile(ts.getSourceFileOfNode(expr))) return null;
+      if (receiver.type.kind !== "httpReq")
+        lowerer.unsupported(
+          "SC1090",
+          expr,
+          "reading req.headers through a value the lowering cannot type as an IncomingMessage",
+        );
       // An assigned headers object replaces the one a per-name read goes
       // through too: Node's property read sees what was assigned.
       const recvLocal = lowerer.declareHiddenLocal("%req", HTTPREQ_T);
@@ -11462,6 +11480,13 @@ export function lowerHttpHeadersElement(
       ? lowerer.withUndefinedArm(arrayOf(STRING))
       : lowerer.envValueType();
   if (collection === "headers") {
+    if (isJsSourceFile(ts.getSourceFileOfNode(expr))) return null;
+    if (receiver.type.kind !== "httpReq")
+      lowerer.unsupported(
+        "SC1090",
+        expr,
+        "reading req.headers through a value the lowering cannot type as an IncomingMessage",
+      );
     // An assigned headers object replaces the one a per-name read goes
     // through too, as Node's property read answers what was assigned.
     const loc = locOf(expr);

@@ -13,8 +13,10 @@ const diag = (code: string, start = 0, severity?: "error" | "warning"): ScrDiagn
 
 test("strict promotes the performance and copy findings, not key order", () => {
   expect(isStrictCode("SC6001")).toBe(true);
+  expect(isStrictCode("SC6007")).toBe(true);
   expect(isStrictCode("SC6101")).toBe(true);
   expect(isStrictCode("SC6104")).toBe(true);
+  expect(isStrictCode("SC6107")).toBe(true);
   expect(isStrictCode("SC6014")).toBe(false);
   expect(isStrictCode("SC8004")).toBe(false);
 });
@@ -70,4 +72,67 @@ test("an island error is allowed only on its own import line", () => {
   // On the import line it does.
   const onLine = `${importLine} // scriptc-allow SC8001`;
   expect(strictErrors([islandAt(onLine)], new Map([["main.ts", onLine]]))).toEqual([]);
+});
+
+test("an SC6107 aggregate asks each function's own line, across files", () => {
+  const one = "function one(v: any) { return v.n; }";
+  const two = "function two(v: any) { return v.n; } // scriptc-allow SC6107";
+  const texts = new Map([
+    ["one.ts", one],
+    ["two.ts", two],
+  ]);
+  const aggregate: ScrDiagnostic = {
+    code: "SC6107",
+    message: "2 functions compile to the dynamic tier",
+    loc: { file: "one.ts", start: 0, end: 1 },
+    dynamicTier: {
+      entries: [
+        {
+          name: "one",
+          where: "one.ts:1",
+          loc: { file: "one.ts", start: 0, end: 1 },
+          cause: null,
+          hot: null,
+        },
+        {
+          name: "two",
+          where: "two.ts:1",
+          loc: { file: "two.ts", start: 0, end: 1 },
+          cause: null,
+          hot: null,
+        },
+      ],
+      packages: [],
+    },
+  };
+  const errors = strictErrors([aggregate], texts);
+  expect(errors).toHaveLength(1);
+  expect(errors[0]?.code).toBe("SC6107");
+  expect(errors[0]?.message).toContain("  one (");
+  expect(errors[0]?.message).not.toContain("  two (");
+});
+
+test("an SC6107 aggregate still fails on npm package code no line can allow", () => {
+  const text = "function one(v: any) { return v.n; } // scriptc-allow SC6107";
+  const aggregate: ScrDiagnostic = {
+    code: "SC6107",
+    message: "1 function compiles to the dynamic tier",
+    loc: { file: "one.ts", start: 0, end: 1 },
+    dynamicTier: {
+      entries: [
+        {
+          name: "one",
+          where: "one.ts:1",
+          loc: { file: "one.ts", start: 0, end: 1 },
+          cause: null,
+          hot: null,
+        },
+      ],
+      packages: [{ name: "untyped-kit", functions: 1 }],
+    },
+  };
+  const errors = strictErrors([aggregate], new Map([["one.ts", text]]));
+  expect(errors).toHaveLength(1);
+  expect(errors[0]?.message).toContain("untyped-kit");
+  expect(errors[0]?.message).not.toContain("  one (");
 });

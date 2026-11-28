@@ -59,8 +59,10 @@ export interface DynamicTierEntry {
   where: string;
   /** The function's declaration, for strict mode's per-line allow. */
   loc: SrcLoc;
-  cause: UntypedCause;
-  hot: HotReason;
+  cause: UntypedCause | null;
+  /** Why the function likely runs often; null for a cold function or one
+   * found only for strict mode. */
+  hot: HotReason | null;
 }
 
 export interface DynamicTierPackageCount {
@@ -80,7 +82,10 @@ export function dynamicTierDiag(
   const shown = entries.slice(0, DYNAMIC_TIER_SHOWN);
   const lines = [
     `${n} function${n === 1 ? "" : "s"} that likely run${n === 1 ? "s" : ""} often use${n === 1 ? "s" : ""} untyped values, which runs slower than typed code:`,
-    ...shown.map((e) => `  ${e.name} (${e.where}): ${causePhrase(e.cause)}, ${HOT_PHRASE[e.hot]}`),
+    ...shown.map(
+      (e) =>
+        `  ${e.name} (${e.where}): ${e.cause === null ? "compiles to the dynamic tier" : causePhrase(e.cause)}${e.hot === null ? "" : `, ${HOT_PHRASE[e.hot]}`}`,
+    ),
     ...(n > shown.length ? [`  and ${n - shown.length} more`] : []),
     ...(packages.length === 0
       ? []
@@ -99,6 +104,46 @@ export function dynamicTierDiag(
   };
 }
 
+/** SC6107, strict mode's dynamic-tier finding: EVERY function the program
+ * compiles to the dynamic tier, not only the ones likely to run often, plus
+ * every untyped npm package function. Strict mode fails on it; an ordinary
+ * build reports only SC6101. */
+export const STRICT_DYNAMIC_TIER_CODE = "SC6107";
+
+export function strictDynamicTierDiag(
+  entries: readonly DynamicTierEntry[],
+  packages: readonly DynamicTierPackageCount[],
+  loc: SrcLoc,
+): ScrDiagnostic | null {
+  const n = entries.length;
+  if (n === 0 && packages.length === 0) return null;
+  const shown = entries.slice(0, DYNAMIC_TIER_SHOWN);
+  const lines = [
+    n === 0
+      ? "untyped code in npm packages compiles to the dynamic tier, which runs slower than typed code:"
+      : `${n} function${n === 1 ? "" : "s"} compile${n === 1 ? "s" : ""} to the dynamic tier because ${n === 1 ? "its" : "their"} values are untyped, which runs slower than typed code:`,
+    ...shown.map(
+      (e) =>
+        `  ${e.name} (${e.where}): ${e.cause === null ? "compiles to the dynamic tier" : causePhrase(e.cause)}`,
+    ),
+    ...(n > shown.length ? [`  and ${n - shown.length} more`] : []),
+    ...(packages.length === 0
+      ? []
+      : [
+          `  untyped code in npm packages: ${packages
+            .map((p) => `${p.name} (${p.functions} function${p.functions === 1 ? "" : "s"})`)
+            .join(", ")}`,
+        ]),
+  ];
+  return {
+    code: STRICT_DYNAMIC_TIER_CODE,
+    message: lines.join("\n"),
+    loc,
+    hint: "add types so these functions compile statically; a // scriptc-allow SC6107 comment on a function's line opts that function out (untyped npm package code needs the package compiled or marked native)",
+    dynamicTier: { entries: [...entries], packages: [...packages] },
+  };
+}
+
 export function isPerformanceCode(code: string): boolean {
   return /^SC61\d{2}$/.test(code);
 }
@@ -110,7 +155,8 @@ export function isPerformanceCode(code: string): boolean {
  * A performance hint names work that runs slower, not a difference in
  * behavior, so it earns one line beside the program's real warnings. */
 export function performanceSummary(diag: ScrDiagnostic): string {
-  if (diag.code !== DYNAMIC_TIER_CODE) return diag.message;
+  if (diag.code !== DYNAMIC_TIER_CODE && diag.code !== STRICT_DYNAMIC_TIER_CODE)
+    return diag.message;
   const [head = diag.message] = diag.message.split("\n");
   return head.endsWith(":") ? `${head.slice(0, -1)}.` : head;
 }
@@ -128,6 +174,8 @@ export function renderPerformanceWarnings(diags: readonly ScrDiagnostic[]): stri
       ? "The program compiled. These fields keep their elements in ordinary arrays."
       : diags.every((d) => d.code === "SC6106")
         ? "The program compiled. These calls run their chunks one after another."
-        : "The program compiled. Adding types to these functions lets scriptc compile them to faster code.";
+        : diags.every((d) => d.code === STRICT_DYNAMIC_TIER_CODE)
+          ? "The program compiled. Strict mode asks for these functions to be typed so they compile statically."
+          : "The program compiled. Adding types to these functions lets scriptc compile them to faster code.";
   return `${blocks.join("\n\n")}\n\n${closing}`;
 }

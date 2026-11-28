@@ -639,7 +639,12 @@ async function main(args: string[], host: CliHost): Promise<number> {
         ),
       ];
       const promoted = strictErrors(
-        [...(coverage.divergences ?? []), ...(coverage.performance ?? []), ...islandDiags],
+        [
+          ...(coverage.divergences ?? []),
+          ...(coverage.performance ?? []),
+          ...(coverage.strictDynamic === undefined ? [] : [coverage.strictDynamic]),
+          ...islandDiags,
+        ],
         sourceTexts,
       );
       if (promoted.length > 0) {
@@ -780,6 +785,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
       dynamicTier: dynamicTierWarning,
       copy: copyWarning,
       keyOrder: keyOrderWarning,
+      ...(strict ? { strict: true } : {}),
     });
     if (strict) {
       const texts = result.sourceTexts ?? new Map<string, string>();

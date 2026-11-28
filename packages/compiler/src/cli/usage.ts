@@ -622,8 +622,9 @@ export const CLI_OPTION_DOCS: Readonly<Record<string, CliOptionDoc>> = {
         term: "--strict",
         help: [
           "build, run and coverage: fail on the findings that measure",
-          "distance from optimal code (SC6001 conversions that copy,",
-          "the SC61xx performance hints) and on any Node island use.",
+          "distance from optimal code (SC6001/SC6007 conversions that copy,",
+          "every SC61xx performance hint including SC6107 dynamic-tier",
+          "functions, cold code included) and on any Node island use.",
           "A // scriptc-allow <code> comment on the finding's line",
           'opts that line out. "scriptc": { "strict": true } in',
           "package.json turns it on too",

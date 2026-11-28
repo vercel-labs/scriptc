@@ -63,7 +63,7 @@ test("coverage --strict turns a performance hint into an error, and an allow com
     await writeFile(
       allowed,
       'const events = JSON.parse(process.argv[2] ?? "[]");\n' +
-        "function total(items) { // scriptc-allow SC6101\n" +
+        "function total(items) { // scriptc-allow SC6101 SC6107\n" +
         "  let sum = 0;\n" +
         "  for (let i = 0; i < items.length; i++) sum += items[i].n;\n" +
         "  return sum;\n" +
@@ -123,7 +123,121 @@ test("coverage --strict refuses the flags that hide what it checks, and a clean 
     expect(dynamic.stderr).toContain(
       "--strict checks the warning --no-dynamic-tier-warning leaves out",
     );
-    expect((await cli(["coverage", quietFixture, "--strict"], cache)).code).toBe(0);
+    // A cold dynamic function is a strict error too (SC6107): this fixture
+    // reads untyped values once, which the ordinary build does not name.
+    const cold = await cli(["coverage", quietFixture, "--strict"], cache);
+    expect(cold.code).toBe(1);
+    expect(cold.stdout).toContain("SC6107");
+    const clean = join(dir, "clean.ts");
+    await writeFile(clean, "const total: number = 2;\nconsole.log(total);\n");
+    expect((await cli(["coverage", clean, "--strict"], cache)).code).toBe(0);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 300_000);
+
+test("strict mode names every dynamic-tier function, cold code included, and one function can opt out", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-strict-cold-"));
+  try {
+    const cold = `function read(value: any): number { return value.count; }
+console.log(read({ count: 1 }));
+`;
+    const entry = join(dir, "cold.ts");
+    await writeFile(entry, cold);
+    const cache = join(dir, "cache");
+    const strict = await cli(["coverage", entry, "--strict"], cache);
+    expect(strict.code).toBe(1);
+    expect(strict.stdout).toContain("SC6107");
+    expect(strict.stdout).toContain("read");
+    // The allow comment on the function's own line exempts that function.
+    const allowed = join(dir, "allowed.ts");
+    await writeFile(
+      allowed,
+      cold.replace(
+        "function read(value: any): number { return value.count; }",
+        "function read(value: any): number { return value.count; } // scriptc-allow SC6107",
+      ),
+    );
+    const ok = await cli(["coverage", allowed, "--strict"], join(dir, "allowed-cache"));
+    expect(ok.code).toBe(0);
+    // An ordinary build neither reports the finding nor names its code.
+    const build = await cli(
+      ["build", entry, "-o", join(dir, "cold-program")],
+      join(dir, "build-cache"),
+    );
+    expect(build.code).toBe(0);
+    expect(build.stderr).not.toContain("SC6107");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 300_000);
+
+test("a cached strict build honours an opt-out in a file other than the finding's first", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-strict-cold-cached-"));
+  try {
+    await writeFile(
+      join(dir, "one.ts"),
+      `export function one(values: any[]): number {
+  let total = 0;
+  for (const v of values) total += v;
+  return total;
+}
+`,
+    );
+    await writeFile(
+      join(dir, "two.ts"),
+      `export function two(values: any[]): number { // scriptc-allow SC6101 SC6107
+  let total = 0;
+  for (const v of values) total += v;
+  return total;
+}
+`,
+    );
+    await writeFile(
+      join(dir, "main.ts"),
+      'import { one } from "./one.js";\nimport { two } from "./two.js";\nconsole.log(one([1, 2]), two([3, 4]));\n',
+    );
+    const cache = join(dir, "cache");
+    const entry = join(dir, "main.ts");
+    const outPath = join(dir, "app");
+    const first = await cli(["build", entry, "-o", outPath, "--strict"], cache);
+    expect(first.code).toBe(1);
+    expect(first.stderr).toContain("  one (");
+    expect(first.stderr).not.toContain("  two (");
+    const replay = await run([launcher, "build", entry, "-o", outPath, "--strict"], cache);
+    expect(replay.code).toBe(1);
+    expect(replay.stderr).toContain("  one (");
+    expect(replay.stderr).not.toContain("  two (");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 300_000);
+
+test("strict mode applies to untyped package code the program compiles", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-strict-package-"));
+  try {
+    const pkg = join(dir, "node_modules", "untyped-kit");
+    await mkdir(pkg, { recursive: true });
+    await writeFile(
+      join(pkg, "package.json"),
+      '{"name":"untyped-kit","version":"1.0.0","type":"module","main":"index.js"}',
+    );
+    await writeFile(join(pkg, "index.js"), "export function wrap(value) { return { value }; }\n");
+    // The declarations let the program typecheck; the package's own code
+    // stays untyped JavaScript, which strict mode names.
+    await writeFile(
+      join(pkg, "index.d.ts"),
+      "export declare function wrap(value: any): { value: any };\n",
+    );
+    await writeFile(
+      join(dir, "main.ts"),
+      'import { wrap } from "untyped-kit";\nconsole.log(wrap(1).value);\n',
+    );
+    const cache = join(dir, "cache");
+    const strict = await launcherCli(["coverage", "main.ts", "--strict"], cache, dir);
+    expect(strict.code).toBe(1);
+    expect(strict.stdout).toContain("SC6107");
+    expect(strict.stdout).toContain("untyped-kit");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -267,12 +381,15 @@ test("an allow comment on one hot function leaves the others strict errors", asy
   const dir = await mkdtemp(join(tmpdir(), "scriptc-strict-per-function-"));
   try {
     const original = await readFile(hotFixture, "utf8");
+    // The fixture is untyped JavaScript, so its own top level is a strict
+    // finding too: the comment on line 1 opts the top level out.
     const withAllows = (names: readonly string[]): string =>
+      "// scriptc-allow SC6101 SC6107\n" +
       original
         .split("\n")
         .map((line) =>
           names.some((name) => line.includes(`function ${name}(`))
-            ? `${line} // scriptc-allow SC6101`
+            ? `${line} // scriptc-allow SC6101 SC6107`
             : line,
         )
         .join("\n");
@@ -284,7 +401,7 @@ test("an allow comment on one hot function leaves the others strict errors", asy
     expect(partial.stdout).toContain("spread (");
     expect(partial.stdout).not.toContain("centroid (");
 
-    await writeFile(entry, withAllows(["centroid", "spread", "distance"]));
+    await writeFile(entry, withAllows(["scale", "centroid", "spread", "distance"]));
     const all = await launcherCli(["coverage", "hot.js", "--strict"], join(dir, "all-cache"), dir);
     expect(all.code).toBe(0);
     expect(all.stdout).toContain("untyped and likely hot");

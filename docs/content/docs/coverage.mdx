@@ -114,9 +114,13 @@ no Node islands. `--strict` on `build`, `run` or `coverage`, or `"strict": true`
 in the project's `scriptc` configuration in `package.json`, turns the findings
 that measure distance from it into errors:
 
-- `SC6001`, a conversion that copies a record the program could keep;
-- the `SC61xx` performance hints, including `SC6101` untyped likely-hot
-  functions and the dynamic-slot notes;
+- `SC6001` and `SC6007`, every conversion that copies a record or an island
+  value the program could keep;
+- every `SC61xx` performance hint: `SC6101` likely-hot untyped functions, the
+  dynamic-slot notes, and `SC6107`, which names EVERY function the program
+  compiles to the dynamic tier, cold code and untyped npm package code
+  included, not only functions likely to run often, plus a module's top level
+  when its own values are untyped;
 - `SC8001`, any Node island use. There is no islands sub-flag: an island fails
   strict mode.
 
@@ -136,6 +140,11 @@ The comment names one or more four-digit codes, separated by commas or spaces.
 It covers the line the finding points at, silences only the codes it names, and
 has no effect outside strict mode. A finding allowed this way is still printed
 as a warning, so the cost stays visible without failing the run.
+`SC6101` and `SC6107` name several functions in one finding: the comment goes on
+a function's own declaration line and exempts that function, leaving the others
+as errors. A top-level entry in `SC6107` takes the comment on the file's first
+line. Untyped npm package functions in `SC6107` cannot be exempted line by line;
+compile the package natively or mark it native.
 
 ## Dynamic slots
 

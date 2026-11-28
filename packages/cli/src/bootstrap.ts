@@ -222,6 +222,7 @@ async function tryFastPath(): Promise<number | null> {
   if (strict) {
     const warnings = startup.buildWarnings(cachedWarnings, {
       dynamicTier: values["dynamic-tier-warning"] !== false,
+      strict: true,
     });
     const islands = hit.islands;
     // A stored SC8001 note carries the import site, so its allow comment
@@ -352,7 +353,12 @@ async function coverageFastPath(
       ),
     ];
     const promoted = startup.strictErrors(
-      [...(coverage.divergences ?? []), ...(coverage.performance ?? []), ...islandDiags],
+      [
+        ...(coverage.divergences ?? []),
+        ...(coverage.performance ?? []),
+        ...(coverage.strictDynamic === undefined ? [] : [coverage.strictDynamic]),
+        ...islandDiags,
+      ],
       sourceTexts,
     );
     if (promoted.length > 0) {

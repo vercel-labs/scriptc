@@ -14,11 +14,25 @@
  */
 import type { ScrDiagnostic } from "./diagnostic.js";
 import type { SrcLoc } from "../ir/ir.js";
-import { dynamicTierDiag, isPerformanceCode } from "./dynamic-tier.js";
+import {
+  dynamicTierDiag,
+  isPerformanceCode,
+  STRICT_DYNAMIC_TIER_CODE,
+  strictDynamicTierDiag,
+} from "./dynamic-tier.js";
 
 /** Whether strict mode promotes `code` to an error. */
 export function isStrictCode(code: string): boolean {
-  return code === "SC6001" || isPerformanceCode(code) || code === "SC8001";
+  // Every conversion that copies (SC6001 record copies, SC6007 island
+  // copies), every performance hint (the SC61xx family, SC6107 included),
+  // and any Node island use. Strict mode is strict: nothing else qualifies.
+  return code === "SC6001" || code === "SC6007" || isPerformanceCode(code) || code === "SC8001";
+}
+
+/** The codes whose diagnostic aggregates per-function entries (each with its
+ * own location, so a per-line allow comment can exempt one function). */
+function isAggregatePerformanceCode(code: string): boolean {
+  return code === "SC6101" || code === "SC6107";
 }
 
 /** The text of the line `offset` is on. */
@@ -95,21 +109,26 @@ export function strictErrors(
   const errors: ScrDiagnostic[] = [];
   for (const diag of diagnostics) {
     if (!isStrictCode(diag.code) && diag.severity !== "error") continue;
-    const aggregate = diag.code === "SC6101" ? diag.dynamicTier : undefined;
+    const aggregate = isAggregatePerformanceCode(diag.code) ? diag.dynamicTier : undefined;
     if (aggregate !== undefined) {
       const kept = aggregate.entries.filter((entry) => !allows(diag.code, entry.loc, sourceTexts));
       if (kept.length < aggregate.entries.length) {
-        if (kept.length === 0) {
-          // No line can allow the untyped npm package code an aggregate may
-          // also name: keep the finding then.
-          if (aggregate.packages.length === 0) continue;
-        } else {
-          const rebuilt = dynamicTierDiag(kept, aggregate.packages, kept[0]!.loc);
-          if (rebuilt !== null) {
-            errors.push({ ...rebuilt, severity: "error" });
-            continue;
-          }
+        // The finding is rebuilt without the functions a line allows. Untyped
+        // npm package code cannot be allowed line by line, so a finding that
+        // still names a package stays when every function is allowed.
+        const first = kept[0]?.loc ?? diag.loc;
+        const rebuilt =
+          diag.code === STRICT_DYNAMIC_TIER_CODE
+            ? strictDynamicTierDiag(kept, aggregate.packages, first)
+            : dynamicTierDiag(kept, aggregate.packages, first);
+        if (rebuilt !== null) {
+          errors.push({ ...rebuilt, severity: "error" });
+          continue;
         }
+        if (aggregate.packages.length === 0) continue;
+        // SC6101 names a package only beside a function; keep its own message.
+        errors.push({ ...diag, severity: "error" });
+        continue;
       }
     }
     if (allows(diag.code, diag.loc, sourceTexts)) continue;

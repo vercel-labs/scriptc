@@ -11,11 +11,17 @@
  * the source at its dynamic operations. A function is named only when the
  * source says why (an `any`, an untyped `JSON.parse` result, an untyped
  * JavaScript file): functions dynamic for operations without a static
- * lowering would stay dynamic with more types. */
+ * lowering would stay dynamic with more types.
+ *
+ * Strict mode's SC6107 (dynamicTierWarnings) names every dynamic-tier
+ * function the program compiles, cold ones included, and each module's top
+ * level when it operates on dynamic values: there, the source's silence is
+ * the point, so a function without a named cause is reported too. */
 import { relative } from "node:path";
 import type { ScrDiagnostic } from "../../diagnostics/diagnostic.js";
 import {
   dynamicTierDiag,
+  strictDynamicTierDiag,
   type DynamicTierPackageCount,
   type HotReason,
   type UntypedCause,
@@ -42,10 +48,24 @@ export interface HotDynamicFunction {
   cause: UntypedCause;
 }
 
+export interface DynamicFunctionFact {
+  name: string;
+  loc: SrcLoc;
+  /** Why the function likely runs often; null for a cold function. */
+  hot: HotReason | null;
+  /** Why its values are untyped; null when the source does not say. */
+  cause: UntypedCause | null;
+}
+
 export interface DynamicTierReport {
   /** Likely-hot dynamic functions in the program's own files, most likely
    * hot first. */
   hot: HotDynamicFunction[];
+  /** EVERY non-generated dynamic-tier function in the program's own files,
+   * hot or cold, and each module's top level when it operates on dynamic
+   * values, with the cause when the source names one (strict mode's
+   * SC6107). */
+  all: DynamicFunctionFact[];
   /** Dynamic-tier functions in npm packages, by package. */
   packages: DynamicTierPackageCount[];
 }
@@ -299,6 +319,10 @@ function causeOf(lowerer: Lowerer, sites: readonly { loc: SrcLoc }[]): UntypedCa
 /** Generated functions (see scanDynamicTier), after any module prefix. */
 const GENERATED = /^%*(?:m\d+\.)?%*(?:dyn|caught|init)\./;
 
+/** A module's top level (`%init.*`). Strict mode names it when it operates
+ * on dynamic values; the hot ranking never does. */
+const TOP_LEVEL = /^%*(?:m\d+\.)?%*init\./;
+
 /** Generated helpers that repeat their callers' locations: `%dyn.*` and
  * `%caught.*`, but not a module's top level (`%init.*`). */
 const HELPERS = /^%*(?:m\d+\.)?%*(?:dyn|caught)\./;
@@ -314,12 +338,15 @@ export function scanDynamicTier(lowerer: Lowerer, module: IrModule): DynamicTier
     for (const call of f.calls) if (call.inLoop) calledInLoop.add(call.callee);
   }
   const hot: HotDynamicFunction[] = [];
+  const all: DynamicFunctionFact[] = [];
   const packages = new Map<string, number>();
   for (const fn of module.functions) {
-    // Generated `%dyn.*` helpers are dynamic operations lowered out of line,
-    // `%caught.*` helpers test caught values, and `%init.*` is a module's top
-    // level: none is a function to name.
-    if (fn.tier !== "dynamic" || GENERATED.test(fn.name)) continue;
+    // Generated `%dyn.*` helpers are dynamic operations lowered out of line
+    // and `%caught.*` helpers test caught values: neither is a function to
+    // name. A module's top level (`%init.*`) is named by strict mode only,
+    // never ranked as hot.
+    const topLevel = TOP_LEVEL.test(fn.name);
+    if (fn.tier !== "dynamic" || (GENERATED.test(fn.name) && !topLevel)) continue;
     if (isInstalledPackagePath(fn.loc.file)) {
       const name = packageOf(fn.loc.file);
       packages.set(name, (packages.get(name) ?? 0) + 1);
@@ -329,21 +356,29 @@ export function scanDynamicTier(lowerer: Lowerer, module: IrModule): DynamicTier
     const sites = dynamicOperationSites(fn);
     const inLoops = f.loopSites;
     const recursive = f.calls.some((c) => c.callee === fn.name);
-    const reason: HotReason | null =
-      inLoops.length > 0
+    const reason: HotReason | null = topLevel
+      ? null
+      : inLoops.length > 0
         ? "loop"
         : calledInLoop.has(fn.name)
           ? "called-in-loop"
           : recursive
             ? "recursive"
             : null;
-    if (reason === null) continue;
     // Only functions the source makes dynamic are named: ones dynamic for
     // operations without a static lowering would stay dynamic with more types.
     const looped = new Set(inLoops.map((s) => `${s.loc.file}:${s.loc.start}:${s.loc.end}`));
     const rest = sites.filter((s) => !looped.has(`${s.loc.file}:${s.loc.start}:${s.loc.end}`));
     const cause = causeOf(lowerer, [...inLoops, ...rest]);
-    if (cause === null) continue;
+    // A top level that is dynamic only because the code it runs calls a
+    // dynamic function would stay dynamic until that function is fixed; strict
+    // mode already fails on the function, so the top level is named only when
+    // its own values are untyped.
+    if (topLevel && cause === null) continue;
+    // Strict mode names every dynamic function, cold ones included, with the
+    // cause when the source gives one.
+    all.push({ name: fn.name, loc: fn.loc, hot: reason, cause });
+    if (reason === null || cause === null) continue;
     hot.push({
       name: fn.name,
       loc: fn.loc,
@@ -365,8 +400,18 @@ export function scanDynamicTier(lowerer: Lowerer, module: IrModule): DynamicTier
       (a.loc.file < b.loc.file ? -1 : a.loc.file > b.loc.file ? 1 : 0) ||
       a.loc.start - b.loc.start,
   );
+  // The strict list keeps the hot order first, then the cold functions in
+  // source order.
+  all.sort(
+    (a, b) =>
+      (a.hot === null ? 3 : rank[a.hot]) - (b.hot === null ? 3 : rank[b.hot]) ||
+      fileRank(a.loc.file) - fileRank(b.loc.file) ||
+      (a.loc.file < b.loc.file ? -1 : a.loc.file > b.loc.file ? 1 : 0) ||
+      a.loc.start - b.loc.start,
+  );
   return {
     hot,
+    all,
     packages: [...packages]
       .map(([name, functions]) => ({ name, functions }))
       .sort((a, b) => b.functions - a.functions || (a.name < b.name ? -1 : 1)),
@@ -395,42 +440,62 @@ function boundName(lowerer: Lowerer, loc: SrcLoc): string | null {
  * function expression (`%fn.<hash>`, with `_<name>` when the expression is
  * named) takes its own name, else the name it is bound to, else
  * `anonymous function`. */
-function displayName(lowerer: Lowerer, f: HotDynamicFunction): string {
+function displayName(lowerer: Lowerer, f: { name: string; loc: SrcLoc }): string {
   const plain = f.name
     .replace(/^%+/, "")
     .replace(/^m\d+\./, "")
     .replace(/^%+/, "");
+  if (plain.startsWith("init.")) return "<top level>";
   const lambda = /^fn\.[0-9a-f]+(?:_(.+))?$/.exec(plain);
   if (lambda === null) return plain;
   return lambda[1] ?? boundName(lowerer, f.loc) ?? "anonymous function";
 }
 
-/** SC6101 for the program lowering produced, or null (see the header).
- * Paths are relative to `root`, the entry's directory. */
-export function dynamicTierWarning(
+/** Both dynamic-tier findings of the program lowering produced, from one
+ * scan: `hot` is SC6101 for the likely-hot functions with untyped values
+ * (null when there are none), and `strict` is SC6107, strict mode's finding
+ * for EVERY dynamic-tier function in the program's own files (cold ones
+ * too), a module top level with untyped values, and the untyped npm package
+ * functions (null when there are none). Paths are relative to `root`, the
+ * entry's directory. */
+export function dynamicTierWarnings(
   lowerer: Lowerer,
   module: IrModule,
   root: string,
-): ScrDiagnostic | null {
+): { hot: ScrDiagnostic | null; strict: ScrDiagnostic | null } {
   const report = scanDynamicTier(lowerer, module);
-  const first = report.hot[0];
-  if (first === undefined) return null;
   const where = (loc: SrcLoc): string => {
     const sf = lowerer.program.getSourceFile(loc.file);
     const line = sf === undefined ? 0 : ts.getLineAndCharacterOfPosition(sf, loc.start).line + 1;
     return `${relative(root, loc.file) || loc.file}:${line}`;
   };
-  return dynamicTierDiag(
-    report.hot.map((f) => ({
-      name: displayName(lowerer, f),
-      where: where(f.loc),
-      loc: f.loc,
-      cause: f.cause,
-      hot: f.hot,
-    })),
-    report.packages,
-    first.loc,
-  );
+  const entry = (f: DynamicFunctionFact) => ({
+    name: displayName(lowerer, f),
+    where: where(f.loc),
+    loc: f.loc,
+    cause: f.cause,
+    hot: f.hot,
+  });
+  const first = report.hot[0];
+  const top = report.all[0];
+  return {
+    hot:
+      first === undefined
+        ? null
+        : dynamicTierDiag(report.hot.map(entry), report.packages, first.loc),
+    strict:
+      top === undefined && report.packages.length === 0
+        ? null
+        : strictDynamicTierDiag(
+            report.all.map(entry),
+            report.packages,
+            top?.loc ?? {
+              file: lowerer.moduleOrder[0]?.fileName ?? module.sourceFile,
+              start: 0,
+              end: 0,
+            },
+          ),
+  };
 }
 
 /** Localized failure: dynamic operations attributed to each dynamic slot

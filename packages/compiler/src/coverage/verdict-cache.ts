@@ -25,7 +25,7 @@ import {
   type FrontendInputSnapshot,
 } from "../frontend/input-tracker.js";
 
-const SCHEMA = "scriptc.coverage-verdict.v4";
+const SCHEMA = "scriptc.coverage-verdict.v5";
 
 /** Key-value storage for verdict entries (best effort: failures miss). */
 export interface VerdictStore {
@@ -44,6 +44,7 @@ export interface CachedCoverage {
   reachedOnly?: boolean;
   divergences?: ScrDiagnostic[];
   performance?: ScrDiagnostic[];
+  strictDynamic?: ScrDiagnostic;
   dynamicSlots?: DynamicSlotEntry[];
   typeClaims?: TypeClaimSite[];
   npmStatic?: NpmStaticStatus[];
@@ -168,6 +169,7 @@ function cacheable(coverage: AnalyzeResult["coverage"]): CachedCoverage | null {
   if (coverage.reachedOnly === true) out.reachedOnly = true;
   if (coverage.divergences !== undefined) out.divergences = coverage.divergences;
   if (coverage.performance !== undefined) out.performance = coverage.performance;
+  if (coverage.strictDynamic !== undefined) out.strictDynamic = coverage.strictDynamic;
   if (coverage.dynamicSlots !== undefined) out.dynamicSlots = coverage.dynamicSlots;
   if (coverage.typeClaims !== undefined) out.typeClaims = coverage.typeClaims;
   if (coverage.npmStatic !== undefined) out.npmStatic = coverage.npmStatic;
@@ -190,6 +192,7 @@ function restore(cached: CachedCoverage, sources: CachedSource[]): AnalyzeResult
   if (cached.reachedOnly === true) coverage.reachedOnly = true;
   if (cached.divergences !== undefined) coverage.divergences = cached.divergences;
   if (cached.performance !== undefined) coverage.performance = cached.performance;
+  if (cached.strictDynamic !== undefined) coverage.strictDynamic = cached.strictDynamic;
   if (cached.dynamicSlots !== undefined) coverage.dynamicSlots = cached.dynamicSlots;
   if (cached.typeClaims !== undefined) coverage.typeClaims = cached.typeClaims;
   if (cached.npmStatic !== undefined) coverage.npmStatic = cached.npmStatic;

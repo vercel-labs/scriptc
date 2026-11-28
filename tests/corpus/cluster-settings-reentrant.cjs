@@ -57,3 +57,31 @@ try {
   console.log("threw", error.message);
 }
 console.log("done");
+
+// An accessor installed on the settings object runs when a later merge reads
+// that object, and its getter can call setupPrimary again; the merge keeps
+// reading the same object after that call returns.
+cluster.on("setup", (settings) => console.log("merge setup", settings.silent));
+let mergeFired = false;
+Object.defineProperty(cluster.settings, "gate", {
+  get() {
+    if (!mergeFired) {
+      mergeFired = true;
+      cluster.setupPrimary({ silent: false });
+    }
+    return "gate-value";
+  },
+  enumerable: true,
+  configurable: true,
+});
+Object.defineProperty(cluster.settings, "after", {
+  get() {
+    return "after-value";
+  },
+  enumerable: true,
+  configurable: true,
+});
+setTimeout(() => {
+  cluster.setupPrimary({ silent: true });
+  console.log("merge done", mergeFired, cluster.settings.gate, cluster.settings.after);
+}, 0);

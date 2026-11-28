@@ -464,9 +464,13 @@ static void scr_cl_schedule_setup(ScrDyn *settings) {
  * assigns a fresh object and schedules a 'setup' emission per call, each
  * carrying that call's object. `options` is borrowed; NULL is the bare
  * call. A settings getter can call setupPrimary or setupMaster again while
- * the merge runs, so every value is read before the object is swapped in. */
+ * the merge runs, so every value is read before the object is swapped in,
+ * and the object the merge reads from stays alive until the read is done. */
 static void scr_cl_setup_impl(const ScrDyn *options) {
-  ScrDyn *previous = scr_cl_settings;
+  /* A reentrant call releases the settings object it found, which can be the
+   * object this merge reads from; keep a reference of our own while the
+   * merge reads it. */
+  ScrDyn *previous = scr_cl_settings != NULL ? scr_dyn_retain(scr_cl_settings) : NULL;
   ScrDyn *settings = scr_cl_default_settings();
   if (previous != NULL) scr_cl_object_assign(settings, previous);
   if (options != NULL) scr_cl_object_assign(settings, options);
@@ -474,16 +478,17 @@ static void scr_cl_setup_impl(const ScrDyn *options) {
    * before the settings object replaces the previous one or is emitted. */
   if (scr_exc_pending()) {
     scr_dyn_release(settings);
+    scr_dyn_release(previous);
     return;
   }
   /* A reentrant call has already swapped its settings in and released the
    * object installed at that point. Release whatever the global holds now,
-   * so each settings object is released once; the object the merge read
-   * from is only borrowed. */
+   * so each settings object is released once. */
   ScrDyn *replaced = scr_cl_settings;
   scr_cl_settings = settings;
   if (replaced != NULL) scr_dyn_release(replaced);
   scr_cl_schedule_setup(settings);
+  scr_dyn_release(previous);
 }
 
 void scr_cluster_setup(const ScrDyn *options) {

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/legacy-super-accessor-decorator/main.ts"
+ ],
+ "diags": []
+}

@@ -336,6 +336,10 @@ void scr_process_ipc_disconnect(void);
 void scr_process_ipc_on_message(ScrClosure *cb /*moves*/,
                                 ScrIpcMessageFn fn, bool once);
 void scr_process_ipc_on_disconnect(ScrClosure *cb /*moves*/, bool once);
+/* process.off / removeListener on the channel's listeners: the closure is
+ * borrowed, and a missing channel is a no-op. */
+void scr_process_ipc_off_message(ScrClosure *cb /*borrowed*/);
+void scr_process_ipc_off_disconnect(ScrClosure *cb /*borrowed*/);
 /* process.channel (Node's Control): undefined without a channel, null once
  * it is gone, else the cached object with ref()/unref(). +1. */
 ScrDyn *scr_process_channel_value(void);

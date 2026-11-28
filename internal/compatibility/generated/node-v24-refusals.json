@@ -196,7 +196,7 @@
         "access": "import"
       },
       "code": "SC1010",
-      "message": "the 'node:vm' module (it compiles and runs JavaScript source at runtime, and a compiled binary embeds no JavaScript engine to run it) is not supported yet",
+      "message": "the 'node:vm' module (it compiles and runs JavaScript source at runtime, and a compiled binary embeds no JavaScript engine to run it; a program that needs it runs that code in a Node island, named with --node-island=<package>) is not supported yet",
       "layer": "load"
     },
     {

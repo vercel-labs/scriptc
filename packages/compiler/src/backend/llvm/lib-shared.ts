@@ -75,6 +75,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "icu.dateLocaleString": "scr_intl_date_locale_string",
   "icu.dateLocaleTimeString": "scr_intl_date_locale_time_string",
   "icu.numberFormatNew": "scr_intl_number_format_new",
+  "icu.listFormatNew": "scr_intl_list_format_new",
+  "icu.listFormatFormat": "scr_intl_list_format_format",
   "icu.numberFormatFormat": "scr_intl_number_format_format",
   "icu.numberFormatFormatDyn": "scr_intl_number_format_format_dyn",
   "icu.dateTimeFormatFormatDyn": "scr_intl_date_time_format_format_dyn",
@@ -1202,6 +1204,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   // Process event removals (borrowed callbacks: removal is by pointer
   // identity); registration is special-cased above (ownership moves).
   "process.offSignal": "scr_signal_off",
+  "process.offMessage": "scr_process_ipc_off_message",
+  "process.offDisconnect": "scr_process_ipc_off_disconnect",
   "process.offExit": "scr_process_off_exit",
   "process.offBeforeExit": "scr_process_off_before_exit",
   // Front-of-list registrations (process.prependListener): the signal and
@@ -1245,6 +1249,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "stream.stdioWritable": "scr_stream_stdio_writable",
   "stream.unboxDyn": "scr_stream_unbox_dyn",
   "stream.dynIterableSource": "scr_stream_dyn_iterable_source",
+  "stream.dynHandsValue": "scr_stream_dyn_hands_value",
   "stream.dynSourceValue": "scr_stream_dyn_source_value",
   "stream.unboxDynStage": "scr_stream_unbox_dyn_stage",
   "stream.dynTransformResult": "scr_stream_dyn_transform_result",
@@ -2177,6 +2182,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "http.clientRemoveHeader": "scr_http_client_remove_header",
   "http.clientGetHeaderNames": "scr_http_client_get_header_names",
   "http.clientGetRawHeaderNames": "scr_http_client_get_raw_header_names",
+  "http.clientGetHeaderDyn": "scr_http_client_get_header_dyn",
   "http.clientGetHeaders": "scr_http_client_get_headers",
   "http.clientWriteBytes": "scr_http_client_write_bytes",
   "http.clientEnd": "scr_http_client_end",

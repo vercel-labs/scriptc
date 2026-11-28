@@ -486,13 +486,18 @@ function buildClone(
     const loc = call.loc;
     const fallback = (): IrExpr => genericCall(call, op, receiver);
     // Only a number read is rewritten: the view the caller reads through is
-    // the `js.toF64` conversion around this call.
+    // the `js.toF64` conversion around this call (or `js.toNumberOrNaN`,
+    // its missing-key-answered-as-NaN sibling).
     const wrapped =
       parent !== null &&
       parent.kind === "libCall" &&
-      parent.fn === "js.toF64" &&
+      (parent.fn === "js.toF64" || parent.fn === "js.toNumberOrNaN") &&
       parent.args.length === 1 &&
       parent.args[0] === call;
+    const wrapperFn: "js.toF64" | "js.toNumberOrNaN" =
+      parent !== null && parent.kind === "libCall" && parent.fn === "js.toNumberOrNaN"
+        ? "js.toNumberOrNaN"
+        : "js.toF64";
     if (!wrapped || op.key === null) return fallback();
     const keyArg = typeof op.key === "number" ? call.args[op.key] : undefined;
     const literal =
@@ -509,7 +514,7 @@ function buildClone(
     rewritten += arms.length;
     let result: IrExpr = {
       kind: "libCall",
-      fn: "js.toF64",
+      fn: wrapperFn,
       args: [fallback()],
       type: F64,
       loc,
@@ -576,7 +581,11 @@ function buildClone(
   function rewriteExpr(expr: IrExpr, parent: IrExpr | IrStmt | null): IrExpr {
     if (expr.kind === "varRef" && members!.has(expr.localId))
       return memberUse(expr as VarRef, parent);
-    if (expr.kind === "libCall" && expr.fn === "js.toF64" && expr.args.length === 1) {
+    if (
+      expr.kind === "libCall" &&
+      (expr.fn === "js.toF64" || expr.fn === "js.toNumberOrNaN") &&
+      expr.args.length === 1
+    ) {
       // A number read the rewrite turned into a typed field read is f64
       // already: the conversion that wrapped the dynamic read is elided.
       const inner = rewriteExpr(expr.args[0]!, expr);

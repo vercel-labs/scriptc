@@ -197,7 +197,7 @@ import {
 import { type IrModule, type SrcLoc } from "./ir/ir.js";
 import { jsObjectModelFact, moduleRuntimeFeatures } from "./ir/runtime-features.js";
 import { serializeModuleParts } from "./ir/serialize.js";
-import { readTextParts, writeTextParts } from "./text-parts.js";
+import { readTextParts, type TextPart, writeTextParts } from "./text-parts.js";
 import { validateModule } from "./ir/validate.js";
 import { compilerOwnedFileRoots } from "./frontend/dts-paths.js";
 import { loadProgramWithServices } from "./frontend/program-node.js";
@@ -1359,7 +1359,7 @@ async function prepareExecutableInput(
   }
 
   if (outputKind === "llvm" || outputKind === "asm" || outputKind === "obj") {
-    let llvm: string | readonly string[];
+    let llvm: string | readonly TextPart[];
     try {
       llvm = emitLlvmModuleSource(mod, {
         targetTriple: process.env["SCRIPTC_TARGET"] ?? "",

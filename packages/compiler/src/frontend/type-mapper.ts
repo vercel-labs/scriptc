@@ -5771,8 +5771,10 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   if (
     isStdlibInterface("NumberFormat") ||
     isStdlibInterface("DateTimeFormat") ||
+    isStdlibInterface("ListFormat") ||
     isStdlibInterface("NumberFormatOptions") ||
-    isStdlibInterface("DateTimeFormatOptions")
+    isStdlibInterface("DateTimeFormatOptions") ||
+    isStdlibInterface("ListFormatOptions")
   )
     return DYN;
   // Typed arrays: references to the lib's Uint8Array/Uint32Array/

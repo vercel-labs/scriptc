@@ -133,6 +133,7 @@ bool scr_net_sock_writable(ScrNetSocket *s);  /* socket.writable */
 bool scr_net_sock_established(ScrNetSocket *s); /* connected, including TLS handshake */
 void scr_net_sock_set_native_events(ScrNetSocket *s, ScrNetNativeEventFn timeout, ScrNetNativeErrFn err);
 void scr_net_sock_set_native_http_timeout(ScrNetSocket *s, ScrNetNativeTimeoutHandledFn fn);
+void scr_net_sock_set_native_write_progress(ScrNetSocket *s, ScrNetNativeEventFn fn);
 void scr_net_sock_write_native(ScrNetSocket *s, const char *buf, size_t n);
 /* Several protocol-layer slices in order as one write: a single vectored
  * syscall when the bytes can go out immediately, else the same buffering
@@ -389,6 +390,7 @@ void scr_net_sock_destroy_soon(ScrNetSocket *s);
 void scr_net_sock_on_finish(ScrNetSocket *s, ScrClosure *cb /*moves*/);
 void scr_net_sock_on_write_flush(ScrNetSocket *s, ScrClosure *cb /*moves*/);
 double scr_net_sock_bytes_written(ScrNetSocket *s);
+double scr_net_sock_bytes_flushed(ScrNetSocket *s);
 bool scr_net_sock_readable(ScrNetSocket *s);
 /* The deferred dial (the http agent's maxSockets queue): the socket
  * registers "connecting" and buffers writes; dial_start runs the dial. */

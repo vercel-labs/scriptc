@@ -490,3 +490,31 @@ test("an answer of an earlier load is asked again by the next, and dropped when 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("a project package-imports target with a declaration twin answers the runtime sibling", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-resolve-imports-runtime-"));
+  try {
+    const lib = join(dir, "lib");
+    await mkdir(lib);
+    await Promise.all([
+      writeFile(
+        join(dir, "package.json"),
+        '{"type":"module","imports":{"#meta":"./lib/meta.mjs"}}\n',
+      ),
+      writeFile(join(lib, "meta.mjs"), 'export const version = "1.2.3";\n'),
+      writeFile(join(lib, "meta.d.mts"), "export declare const version: string;\n"),
+      writeFile(join(dir, "main.ts"), 'import { version } from "#meta";\nconsole.log(version);\n'),
+    ]);
+    clearResolveCaches();
+    setProjectRealm(join(dir, "main.ts"));
+    expect(resolveProjectModule(join(dir, "main.ts"), "#meta")).toBe(join(lib, "meta.mjs"));
+    // The declaration alone stays a types-only answer.
+    await rm(join(lib, "meta.mjs"));
+    clearResolveCaches();
+    setProjectRealm(join(dir, "main.ts"));
+    expect(resolveProjectModule(join(dir, "main.ts"), "#meta")).toBe(join(lib, "meta.d.mts"));
+  } finally {
+    clearResolveCaches();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

@@ -69,6 +69,12 @@ ScrNetServer *scr_http2_create_secure_server_dyn(const struct ScrDyn *opts /*bor
 bool scr_tls_srv_opts_walk(const struct ScrDyn *opts, const char *api, ScrBytes **cert_out, ScrBytes **key_out);
 void scr_http2_server_on_stream(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrH2StreamFn fn, bool once);
 void scr_http2_server_on_session(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrH2SessionFn fn, bool once);
+/* server.setTimeout(msecs[, callback]) / server.on('timeout'): the value
+ * lives in the net server, the listeners in the h2 server context. */
+void scr_http2_server_on_timeout(ScrNetServer *srv, ScrClosure *cb /*moves*/, ScrH2SessionFn fn,
+                                 bool once);
+void scr_http2_server_set_timeout_cb(ScrNetServer *srv, double ms, ScrClosure *cb /*moves*/,
+                                     ScrH2SessionFn fn);
 
 /* http2.performServerHandshake(socket): a server session over an existing
  * connected socket (the peer's prior-knowledge preface is expected), +1. */

@@ -57,6 +57,10 @@ test(`every corpus program is 100% static (corpus and coverage agree${shardSuffi
     // corpus program that has one does not reach it (`new` through a held
     // constructor, or a member read on a held loader, on a path the corpus
     // does not take).
+    // SC6016 names a double assertion (`value as unknown as T`) whose
+    // target layout the source's static type cannot have. A corpus program
+    // that has one passes a value the cast accepts where the corpus runs,
+    // and Node erases the assertion, so the outputs match.
     expect
       .soft(
         (coverage.divergences ?? []).filter(
@@ -65,7 +69,8 @@ test(`every corpus program is 100% static (corpus and coverage agree${shardSuffi
             d.code !== "SC6012" &&
             d.code !== "SC6013" &&
             d.code !== "SC6014" &&
-            d.code !== "SC6015",
+            d.code !== "SC6015" &&
+            d.code !== "SC6016",
         ),
         file,
       )

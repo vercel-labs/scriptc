@@ -24,7 +24,6 @@ import { collectRebindableRequireDecls, isRebindableRequireDecl } from "./rebind
 import { bindingSource } from "../binding-source.js";
 import type { Lowerer } from "./lowerer.js";
 import {
-  sharedInitFlagStores,
   sharedModulePlans,
   sharedModuleRegistrations,
 } from "./lower-shared-modules.js";
@@ -5260,7 +5259,6 @@ export function lowerFileInit(
         stmt,
         deferred ? [deferred] : lowerer.lowerStmts([stmt]),
       );
-      if (lowerer.sharedInitFlags.size > 0) stmtIr.push(...sharedInitFlagStores(lowerer, stmt));
       // Mixin instantiations created while THIS statement lowered (a class
       // expression's heritage is such a call) evaluate at this statement,
       // so their declaration-time code lands here, before the statement's

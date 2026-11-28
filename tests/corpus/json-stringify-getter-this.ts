@@ -60,3 +60,22 @@ out("plain delete", () => JSON.stringify(plain));
 const plainAssign: { secret?: string } | undefined = { secret: "hunter2" };
 plainAssign!.secret = "changed";
 out("plain assign", () => JSON.stringify(plainAssign));
+
+// A declared non-enumerable member stays hidden after it crosses the
+// boundary, as an accessor and as a data property.
+type Declared = { shown: string; hidden: string };
+function hiddenMember(getter: boolean): unknown {
+  const value: unknown = JSON.parse('{"shown":"a"}');
+  Object.defineProperty(value, "hidden", getter
+    ? { get() { return "secret"; }, enumerable: false, configurable: true }
+    : { value: "secret", enumerable: false, configurable: true });
+  return value;
+}
+const hiddenGetter = hiddenMember(true) as Declared;
+out("hidden getter json", () => JSON.stringify(hiddenGetter));
+out("hidden getter keys", () => Object.keys(hiddenGetter).join(","));
+out("hidden getter read", () => hiddenGetter.hidden);
+const hiddenData = hiddenMember(false) as Declared;
+out("hidden data json", () => JSON.stringify(hiddenData));
+out("hidden data keys", () => Object.keys(hiddenData).join(","));
+out("hidden data read", () => hiddenData.hidden);

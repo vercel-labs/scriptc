@@ -288,6 +288,12 @@ function spreadAppender(lowerer: Lowerer, shapeId: string, loc: SrcLoc): string 
     params.push({ localId: `has.${index}`, name: `has${index}`, type: BOOL });
     locals.push({ id: `has.${index}`, name: `has${index}`, type: BOOL, mutable: false });
   });
+  const keysType = arrayOf(STRING);
+  params.push({ localId: "src.0", name: "src", type: BOOL });
+  locals.push({ id: "src.0", name: "src", type: BOOL, mutable: false });
+  params.push({ localId: "keys.0", name: "keys", type: keysType });
+  locals.push({ id: "keys.0", name: "keys", type: keysType, mutable: false });
+  locals.push({ id: "i.0", name: "i", type: F64, mutable: true });
   const fn: IrFunction = { name, params, returnType: SEARCH_PARAMS_T, locals, body: [], loc };
   const finalize = (): void => {
     const current = lowerer.shapes.get(shapeId);
@@ -322,10 +328,87 @@ function spreadAppender(lowerer: Lowerer, shapeId: string, loc: SrcLoc): string 
       }
       return steps;
     });
-    fn.body = [
-      ...perKeyOrder(current, varRef("rec.0", recordType, loc), walks, loc),
-      { kind: "return", value: varRef("acc.0", SEARCH_PARAMS_T, loc), loc },
-    ];
+    // The value's own order, one rule: per-instance orders first
+    // (KEY_ORDER_FIELD), else the kept source's own-key order, else the
+    // shape's declared order.
+    let order: IrStmt;
+    if (shapeKeyOrders(current).length > 1) {
+      order = {
+        kind: "block",
+        body: perKeyOrder(current, varRef("rec.0", recordType, loc), walks, loc),
+        loc,
+      };
+    } else {
+      // A kept source lists the record's own keys in the order it created
+      // them; append each declared key where the source lists it. Index
+      // keys have already been appended, ascending, by the caller.
+      let chain: IrStmt | null = null;
+      for (let index = fields.length - 1; index >= 0; index--) {
+        const field = fields[index]!;
+        if (isIndexKey(field.name)) continue;
+        chain = {
+          kind: "if",
+          cond: {
+            kind: "strEq",
+            negated: false,
+            left: {
+              kind: "arrayGet",
+              arr: varRef("keys.0", keysType, loc),
+              index: varRef("i.0", F64, loc),
+              type: STRING,
+              loc,
+            },
+            right: { kind: "strLit", value: field.name, type: STRING, loc },
+            type: BOOL,
+            loc,
+          },
+          then: [
+            {
+              kind: "if",
+              cond: varRef(`has.${index}`, BOOL, loc),
+              then: [
+                {
+                  kind: "assign",
+                  localId: "acc.0",
+                  value: urlspEntry(
+                    varRef("acc.0", SEARCH_PARAMS_T, loc),
+                    field.name,
+                    loc,
+                    spreadEntryValue(field.type, varRef(`v.${index}`, field.type, loc)),
+                    loc,
+                  ),
+                  loc,
+                },
+              ],
+              else_: null,
+              loc,
+            },
+          ],
+          else_: chain === null ? null : [chain],
+          loc,
+        };
+      }
+      const fromSource = countedFor(
+        loc,
+        {
+          kind: "arrIntrinsic",
+          method: "length",
+          receiver: varRef("keys.0", keysType, loc),
+          args: [],
+          type: F64,
+          loc,
+        },
+        () => (chain === null ? [] : [chain]),
+      );
+      order = {
+        kind: "if",
+        cond: varRef("src.0", BOOL, loc),
+        then: [fromSource],
+        else_: walks[0] ?? [],
+        loc,
+      };
+    }
+    fn.body = [order, { kind: "return", value: varRef("acc.0", SEARCH_PARAMS_T, loc), loc }];
   };
   finalize();
   lowerer.shapeOrderHelperFinalizers.push(finalize);
@@ -397,6 +480,10 @@ function lowerSearchParamsInit(lowerer: Lowerer, arg: ts.Expression, loc: SrcLoc
       fields: { name: string; type: IrType }[];
       appender: string;
     };
+    /** One spread group's captured own-key order: whether the value kept a
+     * source, and that source's key strings in the order it created them
+     * (empty when it kept none). */
+    type SourceOrder = { hasSource: IrExpr; keys: IrExpr };
     type Part = { pair: LiteralPair } | { group: SpreadGroup };
     const pairs: LiteralPair[] = [];
     // The literal's parts in SOURCE order: Node evaluates them in this
@@ -541,7 +628,10 @@ function lowerSearchParamsInit(lowerer: Lowerer, arg: ts.Expression, loc: SrcLoc
       // contributed, and an omitted optional property contributes no entry.
       const stmts: IrStmt[] = [];
       const captured = new Map<LiteralPair, IrExpr>();
-      const copied = new Map<SpreadGroup, { values: IrExpr[]; presence: IrExpr[] }>();
+      const copied = new Map<
+        SpreadGroup,
+        { values: IrExpr[]; presence: IrExpr[]; order: SourceOrder }
+      >();
       for (const part of parts) {
         if ("pair" in part) {
           const pair = part.pair;
@@ -600,7 +690,64 @@ function lowerSearchParamsInit(lowerer: Lowerer, arg: ts.Expression, loc: SrcLoc
           stmts.push({ kind: "varDecl", localId: local.id, init: read, loc: read.loc });
           values.push(varRef(local.id, field.type, loc));
         }
-        copied.set(group, { values, presence });
+        // A record converted from dynamic data keeps the source object's
+        // own-key order; capture whether it kept one and that order here,
+        // with the values, so a later write cannot change either.
+        const hasSource = lowerer.declareHiddenLocal("%spHasSource", BOOL);
+        stmts.push({
+          kind: "varDecl",
+          localId: hasSource.id,
+          init: {
+            kind: "libCall",
+            fn: "record.sourceHas",
+            args: [sourceRef],
+            type: BOOL,
+            loc: group.decl.loc,
+          },
+          loc: group.decl.loc,
+        });
+        const view = lowerer.declareHiddenLocal("%spSourceView", DYN);
+        stmts.push({
+          kind: "varDecl",
+          localId: view.id,
+          init: {
+            kind: "libCall",
+            fn: "record.sourceView",
+            args: [sourceRef],
+            type: DYN,
+            loc: group.decl.loc,
+          },
+          loc: group.decl.loc,
+        });
+        const keysType = arrayOf(STRING);
+        const keys = lowerer.declareHiddenLocal("%spKeys", keysType);
+        stmts.push({
+          kind: "varDecl",
+          localId: keys.id,
+          init: {
+            kind: "ternary",
+            cond: varRef(hasSource.id, BOOL, loc),
+            then: {
+              kind: "libCall",
+              fn: "dyn.objKeyStrings",
+              args: [varRef(view.id, DYN, loc)],
+              type: keysType,
+              loc,
+            },
+            else_: { kind: "arrayLit", elems: [], type: keysType, loc },
+            type: keysType,
+            loc,
+          },
+          loc,
+        });
+        copied.set(group, {
+          values,
+          presence,
+          order: {
+            hasSource: varRef(hasSource.id, BOOL, loc),
+            keys: varRef(keys.id, keysType, loc),
+          },
+        });
       }
       const indexEntries: { key: string; append: (acc: IrExpr) => IrExpr }[] = [];
       const orderedEntries: { append: (acc: IrExpr) => IrExpr }[] = [];
@@ -617,7 +764,7 @@ function lowerSearchParamsInit(lowerer: Lowerer, arg: ts.Expression, loc: SrcLoc
           continue;
         }
         const group = part.group;
-        const { values, presence } = copied.get(group)!;
+        const { values, presence, order } = copied.get(group)!;
         // Index keys sort first, ascending, whichever entry they came from.
         group.fields.forEach((field, index) => {
           if (!isIndexKey(field.name)) return;
@@ -646,6 +793,8 @@ function lowerSearchParamsInit(lowerer: Lowerer, arg: ts.Expression, loc: SrcLoc
               varRef(group.source.id, group.source.type, group.decl.loc),
               ...values,
               ...presence,
+              order.hasSource,
+              order.keys,
             ],
             type: SEARCH_PARAMS_T,
             loc,

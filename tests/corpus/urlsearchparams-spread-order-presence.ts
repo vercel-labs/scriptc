@@ -70,6 +70,16 @@ console.log(new URLSearchParams({ z: "0", ...declared }).toString());
 // A spread of a fresh literal copies the literal's properties in place.
 console.log(new URLSearchParams({ a: "1", ...{ d: "4", c: "3" } }).toString());
 
+// A record converted from dynamic data keeps the source object's own-key
+// order; the spread appends in that order, not the shape's table order.
+interface Parsed {
+  a: string;
+  b: string;
+}
+const parsed = JSON.parse('{"b":"2","a":"1"}') as Parsed;
+console.log(Object.keys(parsed).join(","));
+console.log(new URLSearchParams({ x: "0", ...parsed }).toString());
+
 // The Vercel CLI's device-token literal: its own keys first, then the
 // spread's.
 function token(body: Token): string {

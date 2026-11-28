@@ -583,6 +583,17 @@ typedef struct ScrNetTransportOps {
   /* nullable: the established socket's fd is writable; the transport
    * writes what it holds back (TLS holds its final handshake flight) */
   void (*drain)(void *tctx);
+  /* nullable: start a renegotiation; a positive answer means it is under
+   * way (the pump keeps running while t_renegotiating, and an established
+   * socket's reads go through the transport, which may advance it) */
+  int (*renegotiate)(void *tctx);
+  /* nullable: a renegotiation completed; the transport re-fires 'secure'
+   * (idempotent when the read path already reported the same handshake) */
+  void (*on_renegotiated)(void *tctx);
+  /* nullable: the renegotiation has completed and its events are out; the
+   * net layer answers the caller's callback even when a read, not the
+   * handshake driver, saw it complete */
+  bool (*renegotiation_ready)(void *tctx);
 } ScrNetTransportOps;
 void scr_net_sock_set_transport(ScrNetSocket *s, const ScrNetTransportOps *ops, void *tctx);
 /* new tls.TLSSocket(socket) and tls.connect({ socket }): a fresh socket
@@ -593,6 +604,10 @@ void scr_net_sock_set_transport(ScrNetSocket *s, const ScrNetTransportOps *ops, 
  * call scr_net_sock_adopt_start. */
 ScrNetSocket *scr_net_sock_adopt(ScrNetSocket *raw);
 void scr_net_sock_adopt_start(ScrNetSocket *t);
+/* Starts a transport renegotiation on an established socket, keeping `cb`
+ * (moves, nullable) for the completion (called with null) or the failure.
+ * False when the transport cannot start one (the caller reports). */
+bool scr_net_sock_renegotiate(ScrNetSocket *s, ScrDyn *cb);
 /* Routes a client socket through an HTTP CONNECT proxy. Call it right
  * after the dial (scr_net_connect to the proxy) and before any transport
  * is set: once TCP is up, `request` (the CONNECT head, copied) is sent
@@ -643,6 +658,9 @@ void scr_net_sock_transport_error(ScrNetSocket *s, const char *msg);
  * `code` (static storage), and the socket ends when the peer closes, as
  * Node's TLS socket reports a fatal alert after its handshake. */
 void scr_net_sock_transport_report(ScrNetSocket *s, const char *msg, const char *code);
+/* A non-fatal 'error' event with its own code: the listeners run and the
+ * socket stays open (the TLS session-attack report). */
+void scr_net_sock_emit_error_code(ScrNetSocket *s, const char *text, const char *code);
 /* The same with the error's code given (static storage), for messages
  * whose text does not name it. */
 void scr_net_sock_transport_error_code(ScrNetSocket *s, const char *msg, const char *code);

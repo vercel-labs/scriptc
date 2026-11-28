@@ -97,6 +97,17 @@ declare module "tls" {
     getTLSTicket(): Buffer | undefined;
     /* Renegotiation is off by default: the call is a no-op. */
     disableRenegotiation(): void;
+    /* renegotiate(options, callback): starts a renegotiation on a TLS 1.2
+     * connection and answers true; a TLS 1.3 connection answers false and
+     * the callback carries ERR_SSL_WRONG_SSL_VERSION. The callback is
+     * optional and a non-object options value throws Node's type error. */
+    renegotiate(
+      options: { rejectUnauthorized?: boolean; requestCert?: boolean },
+      callback?: (err: Error | null) => void,
+    ): boolean;
+    /* setKeyCert(context): sets the socket's certificate and key from a
+     * secure context; it applies to a handshake that has not started yet. */
+    setKeyCert(context: object): void;
   }
   /* A certificate as getPeerCertificate() and X509Certificate's
    * toLegacyObject() answer it: subject and issuer map attribute short

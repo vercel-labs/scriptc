@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/tls-renegotiate-and-key-cert.ts"
+ ],
+ "diags": []
+}

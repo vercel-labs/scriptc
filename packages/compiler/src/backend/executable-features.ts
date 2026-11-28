@@ -174,7 +174,8 @@ export function executableLinkFeatures(
     mlkem: features.mlkem,
     pki: features.pki,
     ed25519: features.ed25519,
-    x509: features.x509,
+    // the TLS socket builds peer-certificate objects for the verifier
+    x509: features.x509 || features.tls,
     webcrypto: features.webcrypto,
     perfLoop: features.perfLoop,
     ...(features.webSocket ? { webSocket: true } : {}),

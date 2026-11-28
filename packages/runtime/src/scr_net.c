@@ -886,6 +886,10 @@ struct ScrNetSocket {
   void *tctx;
   bool t_est;
   bool t_want_write; /* a handshake send hit EAGAIN: arm the write filter */
+  /* a transport renegotiation (TLS 1.2) is in flight, with its completion
+   * callback (+1, called with null) */
+  bool t_renegotiating;
+  ScrDyn *t_reneg_cb;
   bool in_registry;
   struct ScrNetSocket *prev, *next;
   /* the registry position (registration order) and the sweep work queue
@@ -1033,6 +1037,7 @@ void scr_net_sock_release(ScrNetSocket *s) {
     scr_als_ctx_release(s->als);
     scr_als_ctx_release(s->end_ctx);
     scr_str_release(s->pending_err);
+    scr_dyn_release(s->t_reneg_cb);
     scr_str_release(s->encoding);
     scr_str_release(s->remote_cache);
     for (size_t i = 0; i < s->dial_n; i++) scr_str_release(s->dial_ips[i]);
@@ -2336,6 +2341,24 @@ static void scr_net_sock_tunnel_pump(ScrNetSocket *s) {
   }
 }
 
+/* A renegotiation finished: the transport re-fires 'secure' (its own
+ * completion may already have run; the transport makes that idempotent),
+ * then the caller's callback answers null. Read by both detectors: the
+ * handshake driver, and the read path a peer's hello advances. */
+static void scr_net_sock_renegotiation_done(ScrNetSocket *s) {
+  s->t_renegotiating = false;
+  if (s->tops->on_renegotiated) s->tops->on_renegotiated(s->tctx);
+  ScrDyn *cb = s->t_reneg_cb;
+  s->t_reneg_cb = NULL;
+  if (cb != NULL) {
+    ScrDyn *arg = scr_dyn_new_null();
+    ScrDyn *answer = scr_dyn_call(cb, &arg, 1, "renegotiate callback");
+    scr_dyn_release(arg);
+    scr_dyn_release(cb);
+    scr_dyn_release(answer);
+  }
+}
+
 /* Drive the transport handshake off readiness until it settles. On
  * establishment: the protocol layer attaches (https' parser), a
  * deferred server 'connection' fires ('secureConnection' timing), the
@@ -2344,14 +2367,29 @@ static void scr_net_sock_tunnel_pump(ScrNetSocket *s) {
  * handshake flight delivers. Failure already tore the socket down via
  * scr_net_sock_transport_error. */
 static void scr_net_sock_transport_pump(ScrNetSocket *s) {
-  if (!s->tops || s->t_est || s->fd < 0 || s->connecting || s->tunnel != NULL) return;
+  if (!s->tops || (s->t_est && !s->t_renegotiating) || s->fd < 0 || s->connecting ||
+      s->tunnel != NULL)
+    return;
   int r = s->tops->handshake(s->tctx);
   if (r == 0) {
     scr_net_sock_update_read(s);
     scr_net_sock_update_write(s);
     return;
   }
-  if (r < 0) return; /* the transport reported the failure */
+  if (r < 0) {
+    /* the transport reported the failure; a renegotiation's callback is not
+     * answered (the socket's error path carries it) */
+    if (s->t_renegotiating) {
+      s->t_renegotiating = false;
+      scr_dyn_release(s->t_reneg_cb);
+      s->t_reneg_cb = NULL;
+    }
+    return;
+  }
+  if (s->t_renegotiating) {
+    scr_net_sock_renegotiation_done(s);
+    return;
+  }
   s->t_est = true;
   scr_net_sock_touch(s);
   if (s->tops->on_established) {
@@ -9511,6 +9549,29 @@ void *scr_net_sock_transport_ctx_for(ScrNetSocket *s, const ScrNetTransportOps *
  * fd readiness is coming — the client is waiting for the ServerHello). */
 void scr_net_sock_transport_resume(ScrNetSocket *s) { scr_net_sock_transport_pump(s); }
 
+/* Starts a transport renegotiation on an established socket, keeping `cb`
+ * (moves, nullable) for the completion. False when the transport cannot
+ * start one (an idle socket, a byte stream without renegotiation, or a
+ * transport that refuses the start). */
+bool scr_net_sock_renegotiate(ScrNetSocket *s, ScrDyn *cb) {
+  if (s == NULL || s->tops == NULL || s->tops->renegotiate == NULL || !s->t_est) {
+    scr_dyn_release(cb);
+    return false;
+  }
+  int r = s->tops->renegotiate(s->tctx);
+  if (r < 0) {
+    scr_dyn_release(cb);
+    return false;
+  }
+  s->t_renegotiating = true;
+  scr_dyn_release(s->t_reneg_cb);
+  s->t_reneg_cb = cb;
+  scr_net_sock_update_read(s);
+  scr_net_sock_update_write(s);
+  if (r == 0) scr_net_work_add(s); /* parked on I/O: readiness drives it */
+  return true;
+}
+
 /* Replay raw bytes at the FRONT of the receive buffer (the SNI
  * pre-parse handing the consumed ClientHello back to the TLS bio) —
  * unshift's shape over a raw span. */
@@ -9559,6 +9620,20 @@ void scr_net_sock_on_established(ScrNetSocket *s, ScrClosure *cb /*moves*/, bool
 void scr_net_sock_transport_error_code(ScrNetSocket *s, const char *msg, const char *code) {
   if (!s->pending_err) s->pending_code = code;
   scr_net_sock_transport_error(s, msg);
+}
+
+/* A non-fatal 'error' event carrying its own code (the TLS session-attack
+ * report): the listeners run now and the socket stays open. */
+void scr_net_sock_emit_error_code(ScrNetSocket *s, const char *text, const char *code) {
+  ScrStr *msg = scr_str_new(text, strlen(text));
+  ScrError *e = scr_error_new(SCR_ERR_ERROR, msg);
+  scr_error_set_code(e, code);
+  ScrError *saved = scr_event_error_payload;
+  scr_event_error_payload = e;
+  scr_net_fire_err_this(&s->err_ls, msg, s, SCR_DYNH_NET_SOCKET);
+  scr_event_error_payload = saved;
+  scr_error_release(e);
+  scr_str_release(msg);
 }
 
 void scr_net_sock_transport_report(ScrNetSocket *s, const char *msg, const char *code) {
@@ -10124,9 +10199,14 @@ static bool scr_net_sock_event(ScrNetSocket *s, unsigned events) {
   if (events & SCRP_WRITABLE) {
     if (s->connecting) scr_net_sock_connect_done(s);
     else if (s->tunnel != NULL) scr_net_sock_tunnel_pump(s);
-    else if (s->tops && !s->t_est) {
+    else if (s->tops && (!s->t_est || s->t_renegotiating)) {
       s->t_want_write = false;
       scr_net_sock_transport_pump(s);
+      if (!scr_exc_pending() && s->fd >= 0 && s->t_est) {
+        /* app data keeps flowing across a renegotiation */
+        if (s->tops->drain) s->tops->drain(s->tctx);
+        scr_net_sock_flush(s);
+      }
       if (!scr_exc_pending() && s->fd >= 0) scr_net_sock_update_write(s);
     } else {
       s->t_want_write = false;
@@ -10136,8 +10216,19 @@ static bool scr_net_sock_event(ScrNetSocket *s, unsigned events) {
   }
   if ((events & SCRP_READABLE) && !scr_exc_pending() && s->fd >= 0) {
     if (s->tunnel != NULL) scr_net_sock_tunnel_pump(s);
+    /* An established transport reads through its own read path, which is
+     * also what drives a renegotiation the peer's hello starts (a server's
+     * pending renegotiation advances nowhere in the handshake driver: it
+     * has already acknowledged its HelloRequest). */
     else if (s->tops && !s->t_est) scr_net_sock_transport_pump(s);
-    else scr_net_sock_read(s);
+    else {
+      scr_net_sock_read(s);
+      /* the read may have completed the renegotiation the peer's hello
+       * drives (a server's handshake driver cannot see it) */
+      if (!scr_exc_pending() && s->t_renegotiating && s->tops &&
+          s->tops->renegotiation_ready && s->tops->renegotiation_ready(s->tctx))
+        scr_net_sock_renegotiation_done(s);
+    }
   }
   return true;
 }

@@ -487,6 +487,9 @@ export const LINK_FEATURE_REQUIREMENTS: readonly LinkFeatureRequirement[] = [
   // matcher (createSocket's checks and the send/connect filters), so the
   // block-list unit comes with the dgram unit.
   { feature: "dgram", requires: ["net"] },
+  // scr_tls.c builds its peer-certificate objects through scr_tls_x509.c and
+  // scr_x509.c: the certificate units come with the TLS unit.
+  { feature: "tls", requires: ["x509"] },
   // scr_dns_resolve.c encodes query names with scr_idna.c's ToASCII (the
   // unit that rides the regex engine), and its queries ride the dgram
   // unit's poller.

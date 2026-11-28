@@ -1,5 +1,6 @@
-// disableRenegotiation() has no effect, but the receiver expression is still
-// evaluated: its side effects run and its exception propagates.
+// disableRenegotiation() refuses a peer's later handshake; the receiver
+// expression is still evaluated: its side effects run and its exception
+// propagates.
 import * as tls from "node:tls";
 import { readFileSync } from "node:fs";
 

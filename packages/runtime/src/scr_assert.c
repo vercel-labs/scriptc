@@ -701,6 +701,8 @@ static bool scr_assert_dyn_same_value(const ScrDyn *a, const ScrDyn *b) {
  * JSON-origin dyn values are trees; a keyed-write cycle (h.self = h) has no
  * memo here where Node carries one (documented divergence). */
 static const ScrDyn *scr_assert_loose_error_prop(const ScrDyn *d, const char *key, size_t len);
+/* Node's error arm under the strict walk (defined with the loose helpers). */
+static bool scr_assert_dyn_error(const ScrDyn *a, const ScrDyn *b);
 
 /* The value a deep comparison reads for own property `ent` of `owner`. Node
  * reads `owner[key]`, so an accessor answers what its getter returns
@@ -803,18 +805,18 @@ static bool scr_assert_dyn_deep_eq(const ScrDyn *a, const ScrDyn *b) {
       return true;
     }
     case SCR_DYN_OBJ: {
-      if (scr_assert_skip_prototype()) {
-        /* Node's error arm runs without the prototype check: both sides
-         * are errors with the same name and message. */
-        bool ea = scr_dyn_obj_get(a, "%error", 6) != NULL;
-        bool eb = scr_dyn_obj_get(b, "%error", 6) != NULL;
-        if (ea != eb) return false;
-        if (ea && (!scr_assert_dyn_deep_eq(scr_assert_loose_error_prop(a, "name", 4),
-                                           scr_assert_loose_error_prop(b, "name", 4)) ||
-                   !scr_assert_dyn_deep_eq(scr_assert_loose_error_prop(a, "message", 7),
-                                           scr_assert_loose_error_prop(b, "message", 7))))
-          return false;
-      } else if (a->null_proto != b->null_proto || a->prototype != b->prototype) {
+      const bool error_a = scr_dyn_obj_get(a, "%error", 6) != NULL;
+      const bool error_b = scr_dyn_obj_get(b, "%error", 6) != NULL;
+      if (error_a || error_b) {
+        if (error_a != error_b) return false;
+        /* Node's error arm: name, message, cause and `errors` are compared
+         * whatever their enumerability and the stack never is. The
+         * runtime's error view carries a synthesized per-error prototype
+         * for a default name or message, which is not Node's shared
+         * Error.prototype, so no prototype check applies. */
+        if (!scr_assert_dyn_error(a, b)) return false;
+      } else if (!scr_assert_skip_prototype() &&
+                 (a->null_proto != b->null_proto || a->prototype != b->prototype)) {
         return false;
       }
       /* Node compares the enumerable own properties: a non-enumerable one
@@ -928,6 +930,24 @@ static bool scr_assert_loose_error(const ScrDyn *a, const ScrDyn *b) {
       return false;
   }
   if ((scr_dyn_obj_get(a, "cause", 5) != NULL) != (scr_dyn_obj_get(b, "cause", 5) != NULL)) return false;
+  return true;
+}
+
+/* Node's error arm under the strict walk (comparisons.js): name, message,
+ * cause and `errors` are compared whatever their enumerability, and the
+ * stack never is. A property that is an own ENUMERABLE member of the
+ * expected side is left to the caller's own-property walk. */
+static bool scr_assert_dyn_error(const ScrDyn *a, const ScrDyn *b) {
+  static const char *const props[] = {"message", "name", "cause", "errors"};
+  for (size_t i = 0; i < 4; i++) {
+    size_t len = strlen(props[i]);
+    if (scr_assert_loose_entry(b, props[i], len)) continue;
+    if (!scr_assert_dyn_deep_eq(scr_assert_loose_error_prop(a, props[i], len),
+                                scr_assert_loose_error_prop(b, props[i], len)))
+      return false;
+  }
+  if ((scr_dyn_obj_get(a, "cause", 5) != NULL) != (scr_dyn_obj_get(b, "cause", 5) != NULL))
+    return false;
   return true;
 }
 
@@ -1554,6 +1574,19 @@ static bool scr_assert_cf_error_extra(ScrDynProp ent) {
            (ent.key_len == 5 && memcmp(ent.key, "stack", 5) == 0));
 }
 
+/* The error property Node's formatError prints whatever its enumerability:
+ * an own `cause`. A non-enumerable one renders as the bracketed meta key,
+ * `[cause]: value` (an assigned enumerable one as an ordinary
+ * `cause: value`). An AggregateError's own `errors` is NOT printed: the
+ * assert diff inspects with showHidden off, which hides it. */
+static bool scr_assert_cf_error_meta(ScrDynProp ent) {
+  return ent.key_len == 5 && memcmp(ent.key, "cause", 5) == 0;
+}
+
+static bool scr_assert_cf_error_shown(ScrDynProp ent) {
+  return scr_assert_cf_error_extra(ent) || scr_assert_cf_error_meta(ent);
+}
+
 /* An encoded Error: Node's stackless `[Name: message]` (assertion_error.js
  * drops the stacks when both sides are errors), then any other
  * enumerable own properties in a `{ ... }` block. */
@@ -1571,7 +1604,7 @@ static void scr_assert_cf_error(ScrAssertBuf *b, const ScrDyn *d, size_t indent,
   size_t extra = 0;
   for (size_t i = 0; i < scr_dyn_obj_count(d); i++) {
     ScrDynProp ent = scr_dyn_obj_prop_at(d, i);
-    if (scr_assert_cf_error_extra(ent)) extra++;
+    if (scr_assert_cf_error_shown(ent)) extra++;
   }
   if (extra == 0) return;
   if (depth == 0) return;
@@ -1579,9 +1612,15 @@ static void scr_assert_cf_error(ScrAssertBuf *b, const ScrDyn *d, size_t indent,
   size_t n = 0;
   for (size_t i = 0; i < scr_dyn_obj_count(d); i++) {
     ScrDynProp ent = scr_dyn_obj_prop_at(d, i);
-    if (!scr_assert_cf_error_extra(ent)) continue;
+    if (!scr_assert_cf_error_shown(ent)) continue;
     ScrAssertBuf eb = {0};
-    scr_assert_cf_key(&eb, ent.key, ent.key_len);
+    if (!ent.enumerable && scr_assert_cf_error_meta(ent)) {
+      ab_char(&eb, '[');
+      ab_bytes(&eb, ent.key, ent.key_len);
+      ab_char(&eb, ']');
+    } else {
+      scr_assert_cf_key(&eb, ent.key, ent.key_len);
+    }
     ab_cstr(&eb, ": ");
     scr_assert_cf_entry(&eb, d, ent, indent + 2, depth - 1);
     scr_assert_cf_entries_push(&ents, eb.data ? eb.data : scr_assert_cf_entry_copy("", 0), eb.len);

@@ -1377,6 +1377,14 @@ function lowerAssertEqual(
   // too (assert.strictEqual(e, e.setMaxListeners(1))).
   const instanceType = (t: IrType): boolean =>
     isDynTypedRefType(t) && !lowerer.isSubclassOf(t.className, "%Error");
+  // Two error values (any Error subclass) cross into the checked-dynamic
+  // tree's error encoding under the deep pair: Node compares errors by
+  // name, message, cause and errors, which the runtime's error arm answers,
+  // while a class instance has no static per-type deep comparison.
+  const errorType = (t: IrType): boolean =>
+    t.kind === "object" &&
+    (t.className === "%Error" || lowerer.isSubclassOf(t.className, "%Error"));
+  const errorPair = deep && errorType(a.type) && errorType(b.type);
   const instance = (e: IrExpr): boolean =>
     !deep &&
     (instanceType(e.type) ||
@@ -1431,6 +1439,7 @@ function lowerAssertEqual(
     a.type.kind === "moduleNs" ||
     b.type.kind === "moduleNs" ||
     (instance(a) && instance(b)) ||
+    errorPair ||
     unionAgainstPrimitive ||
     strictNullable
   ) {
@@ -1462,7 +1471,7 @@ function lowerAssertEqual(
         // own boxing are the same node exactly when Node's objects are the
         // same). The deep walk compares the retained error data without
         // re-encoding and losing identity (SEMANTICS.md).
-        (k === "object" && e.type.kind === "object" && e.type.className === "%Error") ||
+        (k === "object" && e.type.kind === "object" && errorType(e.type)) ||
         instance(e) ||
         strictOperand(e) ||
         // A symbol crosses as itself, so strict compares are identity.

@@ -1,0 +1,70 @@
+// assert.deepStrictEqual over two Error values: Node compares errors by
+// name, message, cause and an AggregateError's errors whatever their
+// enumerability, and never by stack. A statically typed Error pair used to
+// fence; it now compares through the runtime's error arm, and a failing
+// comparison renders the non-enumerable [cause] the way Node's diff does.
+// The loose pair and the negation share the rules.
+"use strict";
+const assert = require("node:assert");
+
+const show = (label, f) => {
+  try {
+    f();
+    console.log(label, "ok");
+  } catch (e) {
+    console.log(label, "differ");
+    console.log(e.message);
+  }
+};
+
+// Equal values, different creation sites (the stacks differ).
+const siteA = () => new Error("x");
+show("strict-equal", () => assert.deepStrictEqual(siteA(), siteA()));
+show("strict-causes-equal", () =>
+  assert.deepStrictEqual(new Error("x", { cause: 1 }), new Error("x", { cause: 1 })),
+);
+show("strict-extra-equal", () =>
+  assert.deepStrictEqual(
+    Object.assign(new Error("x"), { code: "A" }),
+    Object.assign(new Error("x"), { code: "A" }),
+  ),
+);
+show("strict-aggregate-equal", () =>
+  assert.deepStrictEqual(
+    new AggregateError([new Error("a")], "m"),
+    new AggregateError([new Error("a")], "m"),
+  ),
+);
+show("loose-equal", () => assert.deepEqual(siteA(), siteA()));
+show("not-deep-strict", () => assert.notDeepStrictEqual(new Error("x"), new Error("y")));
+
+show("strict-cause-diff", () =>
+  assert.deepStrictEqual(new Error("x", { cause: 1 }), new Error("x", { cause: 2 })),
+);
+show("strict-extra-diff", () =>
+  assert.deepStrictEqual(
+    Object.assign(new Error("x"), { code: "A" }),
+    Object.assign(new Error("x"), { code: "B" }),
+  ),
+);
+show("strict-name-diff", () => assert.deepStrictEqual(new Error("x"), new TypeError("x")));
+show("strict-message-diff", () => assert.deepStrictEqual(new Error("x"), new Error("y")));
+show("strict-aggregate-diff", () =>
+  assert.deepStrictEqual(
+    new AggregateError([new Error("a")], "m"),
+    new AggregateError([new Error("b")], "m"),
+  ),
+);
+show("strict-nested-cause-diff", () =>
+  assert.deepStrictEqual(
+    new Error("x", { cause: new Error("k", { cause: 1 }) }),
+    new Error("x", { cause: new Error("k", { cause: 2 }) }),
+  ),
+);
+show("loose-cause-diff", () =>
+  assert.deepEqual(new Error("x", { cause: 1 }), new Error("x", { cause: 2 })),
+);
+show("partial-cause-diff", () =>
+  assert.partialDeepStrictEqual(new Error("x", { cause: 1 }), new Error("x", { cause: 2 })),
+);
+show("not-deep-strict-same", () => assert.notDeepStrictEqual(siteA(), siteA()));

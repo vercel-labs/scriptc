@@ -838,6 +838,9 @@ export function lowerFileHandleMethodCall(
     };
   }
   if (name === "close" || name === "stat") {
+    if (name === "stat" && call.arguments.nodes.length === 1) {
+      return lowerFileHandleStatOptions(lowerer, call, loc, receiver);
+    }
     if (call.arguments.nodes.length !== 0)
       lowerer.noLowering(`FileHandle.${name} with arguments`, call);
     return {
@@ -2917,6 +2920,67 @@ export function lowerFspStatOptionsCall(
     fn: noFollow ? "fsp.lstatOpts" : "fsp.statOpts",
     args: [path, options],
     type: callType,
+    loc,
+  };
+}
+
+/** FileHandle.stat(options). Node reads only `bigint` here: a descriptor
+ * cannot miss, so throwIfNoEntry is not part of StatOptions. An inline
+ * literal is pinned against the call's own result type (Stats or
+ * BigIntStats); the runtime reads the member for its effects, exactly the
+ * synchronous fstat ladder's split. */
+function lowerFileHandleStatOptions(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  loc: SrcLoc,
+  receiver: () => IrExpr,
+): IrExpr {
+  const optsNode = call.arguments.nodes[0]!;
+  const callType = lowerer.mapTypeOf(lowerer.typeOf(call));
+  const inner = callType?.kind === "promise" ? callType.inner : undefined;
+  if (inner === undefined || (inner.kind !== "stats" && inner.kind !== "bigintStats")) {
+    lowerer.noLowering(
+      "FileHandle.stat at this result type",
+      call,
+      "the promise answers Stats or BigIntStats: annotate the call or its binding",
+    );
+  }
+  const representation = inner.kind === "stats" ? "number" : "bigint";
+  const options = lowerer.lowerExprExpecting(optsNode, DYN);
+  if (ts.isObjectLiteralExpression(optsNode)) {
+    for (const property of optsNode.properties.nodes) {
+      const member = optionMember(property);
+      if (!member || member.name !== "bigint") {
+        lowerer.noLowering(
+          "FileHandle.stat with this options shape",
+          property,
+          "bigint is the supported option",
+        );
+      }
+      const literal = statBoolLiteral(lowerer, member.value);
+      if (literal === null) {
+        lowerer.noLowering(
+          "FileHandle.stat with a bigint option only the runtime knows",
+          member.value,
+          "pass the literal true or false: it selects the member table the result type names",
+        );
+      }
+      const pinned = literal === "true" ? "bigint" : "number";
+      if (pinned !== representation) {
+        lowerer.noLowering(
+          `FileHandle.stat with bigint: ${literal} where the result is not ${literal === "true" ? "BigIntStats" : "Stats"}`,
+          member.value,
+          "pass bigint: true to receive BigIntStats, or omit it to receive Stats",
+        );
+      }
+    }
+  }
+  return {
+    kind: "libCall",
+    fn: "fileHandle.statOpts",
+    args: [receiver(), options],
+    type: { kind: "promise", inner },
+
     loc,
   };
 }

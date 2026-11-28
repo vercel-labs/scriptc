@@ -963,6 +963,7 @@ ScrPromise *scr_file_handle_write_file_bytes_promise(ScrFileHandle *h, ScrBytes 
 ScrPromise *scr_file_handle_write_file_data_promise(ScrFileHandle *h, const ScrDyn *data,
                                                     ScrStr *encoding);
 ScrPromise *scr_file_handle_stat_promise(ScrFileHandle *h);
+ScrPromise *scr_file_handle_stat_opts_promise(ScrFileHandle *h, const ScrDyn *options);
 
 /* Raw fd operations for worker-pool steps (scr_lib.c): no runtime state
  * and no exceptions; each answers its result or -errno. A negative

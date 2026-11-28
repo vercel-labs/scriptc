@@ -130,7 +130,8 @@ declare module "fs/promises" {
         | { encoding?: BufferEncoding | null; mode?: number | string; flag?: string | number }
         | null,
     ): Promise<void>;
-    stat(): Promise<import("node:fs").Stats>;
+    stat(options?: { bigint?: false }): Promise<import("node:fs").Stats>;
+    stat(options: { bigint: true }): Promise<import("node:fs").BigIntStats>;
     [Symbol.asyncDispose](): Promise<void>;
   }
   export function open(path: string | URL, flags?: string, mode?: number): Promise<FileHandle>;

@@ -111,6 +111,13 @@ export function strictErrors(
     if (!isStrictCode(diag.code) && diag.severity !== "error") continue;
     const aggregate = isAggregatePerformanceCode(diag.code) ? diag.dynamicTier : undefined;
     if (aggregate !== undefined) {
+      // Untyped npm package code cannot be allowed line by line, and a
+      // package-only aggregate has no line of its own: the fallback location
+      // would let one allow comment exempt the whole finding.
+      if (aggregate.entries.length === 0 && aggregate.packages.length > 0) {
+        errors.push({ ...diag, severity: "error" });
+        continue;
+      }
       const kept = aggregate.entries.filter((entry) => !allows(diag.code, entry.loc, sourceTexts));
       if (kept.length < aggregate.entries.length) {
         // The finding is rebuilt without the functions a line allows. Untyped

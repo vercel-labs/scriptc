@@ -658,6 +658,13 @@ async function main(args: string[], host: CliHost): Promise<number> {
         );
         coverage.diagnostics = [...coverage.diagnostics, ...promoted];
       }
+      // A finding every function of which is allowed stays visible as a
+      // warning: strict mode keeps the finding, only the failure goes.
+      if (coverage.strictDynamic !== undefined && !promoted.some((d) => d.code === "SC6107"))
+        coverage.diagnostics = [
+          ...coverage.diagnostics,
+          { ...coverage.strictDynamic, severity: "warning" },
+        ];
     }
     if (printDiagnostics) {
       // Keep stdout pure JSON for tooling.

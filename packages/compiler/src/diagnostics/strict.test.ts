@@ -136,3 +136,15 @@ test("an SC6107 aggregate still fails on npm package code no line can allow", ()
   expect(errors[0]?.message).toContain("untyped-kit");
   expect(errors[0]?.message).not.toContain("  one (");
 });
+
+test("a package-only aggregate is not exempted by a fallback line", () => {
+  const aggregate: ScrDiagnostic = {
+    code: "SC6107",
+    message: "untyped code in npm packages compiles to the dynamic tier",
+    loc: { file: "one.ts", start: 0, end: 1 },
+    dynamicTier: { entries: [], packages: [{ name: "untyped-kit", functions: 1 }] },
+  };
+  const errors = strictErrors([aggregate], new Map([["one.ts", "// scriptc-allow SC6107\n"]]));
+  expect(errors).toHaveLength(1);
+  expect(errors[0]?.code).toBe("SC6107");
+});

@@ -8,5 +8,14 @@ class Sub extends dep.Base {
   }
 }
 
+// A string-literal member of the namespace is the same base, side-effect
+// free: the heritage path admits it.
+class Sub2 extends dep["Base"] {
+  extra(): string {
+    return this.greet() + "-sub2";
+  }
+}
+
 const sub = new Sub();
 console.log("ok", sub instanceof dep.Base, sub.extra());
+console.log("ok2", new Sub2() instanceof dep.Base, new Sub2().extra());

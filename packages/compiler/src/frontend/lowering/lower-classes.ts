@@ -2407,6 +2407,31 @@ function widenJsFieldsForUndefinedWrites(
   }
 }
 
+/** Whether `expr` names a member of a namespace binding without evaluating
+ * anything: a dotted chain of identifiers (`a.B`, `a.b.C`) or string-literal
+ * element accesses (`a["B"]`), never a computed key, call, or `this`. The
+ * heritage path resolves such a member statically, so the expression is not
+ * evaluated at the class statement; anything with a possible effect keeps
+ * the computed-expression fence. */
+function sideEffectFreeHeritageMember(expr: ts.Expression): boolean {
+  let current: ts.Expression = expr;
+  for (;;) {
+    if (ts.isPropertyAccessExpression(current)) {
+      if (current.questionDotToken !== undefined) return false;
+      current = current.expression;
+      continue;
+    }
+    if (ts.isElementAccessExpression(current)) {
+      if (current.questionDotToken !== undefined) return false;
+      const key = current.argumentExpression;
+      if (!ts.isStringLiteralLike(key)) return false;
+      current = current.expression;
+      continue;
+    }
+    return ts.isIdentifier(current);
+  }
+}
+
 export function collectClassShapeInner(
   lowerer: Lowerer,
   decl: ts.ClassLikeDeclaration,
@@ -3064,13 +3089,37 @@ export function collectClassShapeInner(
       // `class X extends ns.Base` (a class named through a module
       // namespace, the form compiled CommonJS packages write): the property
       // resolves to the class itself, so the base is that class — the same
-      // chain an identifier base takes.
+      // chain an identifier base takes. Only a SIDE-EFFECT-FREE member of
+      // the namespace is admitted: the static base is resolved at compile
+      // time and the heritage expression is not evaluated at the class
+      // statement, so a computed key (`ns[f()]`) or any other evaluation in
+      // the expression would silently lose its effects. Those keep the
+      // computed-expression fence.
       if (
         t &&
         !t.typeArguments?.nodes &&
-        (ts.isPropertyAccessExpression(t.expression) || ts.isElementAccessExpression(t.expression))
+        (ts.isPropertyAccessExpression(t.expression) ||
+          ts.isElementAccessExpression(t.expression)) &&
+        sideEffectFreeHeritageMember(t.expression)
       ) {
-        const symbol = lowerer.checker.getSymbolAtLocation(t.expression);
+        let symbol = lowerer.checker.getSymbolAtLocation(t.expression);
+        // `ns["Base"]`: the checker may not resolve an element access, so the
+        // member is looked up in the receiver's export table by its
+        // (string-literal) name.
+        if (
+          symbol === undefined &&
+          ts.isElementAccessExpression(t.expression) &&
+          ts.isStringLiteralLike(t.expression.argumentExpression)
+        ) {
+          let receiver = lowerer.checker.getSymbolAtLocation(t.expression.expression);
+          if (receiver !== undefined && (receiver.flags & ts.SymbolFlags.Alias) !== 0)
+            receiver = lowerer.checker.getAliasedSymbol(receiver);
+          symbol = receiver
+            ?.getExports()
+            .get(ts.escapedSymbolName(t.expression.argumentExpression.text));
+        }
+        if (symbol !== undefined && (symbol.flags & ts.SymbolFlags.Alias) !== 0)
+          symbol = lowerer.checker.getAliasedSymbol(symbol);
         const info = symbol === undefined ? undefined : lowerer.classBySymbol.get(symbol);
         if (info !== undefined && info.decl !== null) {
           base = info;

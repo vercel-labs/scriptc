@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/class-extends-effectful-heritage.ts"
+ ],
+ "diags": []
+}

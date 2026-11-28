@@ -1397,15 +1397,26 @@ static void scr_stdio_close_emit(ScrStdio *stream) {
   size_t n = stream->ncloses;
   if (n == 0) return;
   ScrDyn **snap = malloc(n * sizeof *snap);
-  if (!snap) scr_events_oom();
-  for (size_t i = 0; i < n; i++) snap[i] = scr_dyn_retain(stream->closes[i]);
-  for (size_t i = 0; i < n; i++) scr_dyn_release(stream->closes[i]);
-  free(stream->closes);
-  free(stream->close_once);
-  stream->closes = NULL;
-  stream->close_once = NULL;
-  stream->ncloses = 0;
+  bool *once = malloc(n * sizeof *once);
+  if (!snap || !once) scr_events_oom();
   for (size_t i = 0; i < n; i++) {
+    snap[i] = scr_dyn_retain(stream->closes[i]);
+    once[i] = stream->close_once[i];
+  }
+  for (size_t i = 0; i < n; i++) {
+    if (once[i]) {
+      /* A once-listener leaves after it runs; on-listeners stay, so a
+       * second destroy() emits again exactly as Node does. */
+      for (size_t j = 0; j < stream->ncloses; j++) {
+        if (stream->closes[j] == snap[i]) {
+          scr_dyn_release(stream->closes[j]);
+          memmove(stream->closes + j, stream->closes + j + 1, (stream->ncloses - j - 1) * sizeof *stream->closes);
+          memmove(stream->close_once + j, stream->close_once + j + 1, (stream->ncloses - j - 1) * sizeof *stream->close_once);
+          stream->ncloses--;
+          break;
+        }
+      }
+    }
     if (!scr_exc_pending()) {
       scr_dyn_this_push(stream, SCR_DYNH_STDIO);
       ScrDyn *r = scr_dyn_call(snap[i], NULL, 0, "listener");
@@ -1415,6 +1426,7 @@ static void scr_stdio_close_emit(ScrStdio *stream) {
     scr_dyn_release(snap[i]);
   }
   free(snap);
+  free(once);
 }
 
 static void scr_stdio_close_tick(ScrClosure *cb) {
@@ -1423,9 +1435,10 @@ static void scr_stdio_close_tick(ScrClosure *cb) {
 }
 
 static void scr_stdio_schedule_close(ScrStdio *stream) {
-  if (stream->destroyed) return;
+  /* Every destroy() emits 'close' on a later tick, like Node: the listeners
+   * are read when the tick runs, so a registration that happens after
+   * destroy still sees the event, and a second destroy() emits again. */
   stream->destroyed = true;
-  if (stream->ncloses == 0) return;
   ScrClosure *cb = scr_closure_new((void *)scr_stdio_close_tick, 1);
   cb->caps[0] = scr_box_new(SCR_BOX_F64);
   scr_box_set_f64(cb->caps[0], (double)stream->fd);
@@ -1810,6 +1823,10 @@ static void scr_stdio_cleanup(void) {
     for (size_t j = 0; j < stream->nresizes; j++) scr_dyn_release(stream->resizes[j]);
     free(stream->resizes); free(stream->resize_once);
     stream->resizes = NULL; stream->resize_once = NULL; stream->nresizes = 0;
+    for (size_t j = 0; j < stream->ncloses; j++) scr_dyn_release(stream->closes[j]);
+    free(stream->closes); free(stream->close_once);
+    stream->closes = NULL; stream->close_once = NULL; stream->ncloses = 0;
+    stream->destroyed = false;
   }
   scr_dyn_release(scr_stdio_winch);
   scr_stdio_winch = NULL;

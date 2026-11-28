@@ -3076,7 +3076,7 @@ ScrChildWriter *scr_child_stdin(ScrChild *c) {
 /* ── spawn ───────────────────────────────────────────────────────────── */
 
 ScrChild *scr_spawn(ScrStr *cmd, ScrArr *args) {
-  return scr_spawn_opts(cmd, args, 0, 0, 0, 0, 0, false, false, false, NULL, NULL);
+  return scr_spawn_opts(cmd, args, 0, 0, 0, 0, 0, false, false, false, NULL, NULL, -1);
 }
 
 /* PER-SLOT stdio modes (the POSIX arm's numbering): in 0 = ignore (NUL),
@@ -3170,7 +3170,7 @@ static void scr_child_record_spawn(ScrChild *c, ScrStr *cmd, ScrArr *args, bool 
 ScrChild *scr_spawn_opts(ScrStr *cmd, ScrArr *args, double in_mode,
                          double out_mode, double err_mode, double out_fd,
                          double err_fd, bool detached, bool shell, bool has_env,
-                         ScrArr *env_pairs, ScrStr *cwd) {
+                         ScrArr *env_pairs, ScrStr *cwd, double ipc_fd) {
   if ((int)out_mode == 1 || (int)err_mode == 1 || (int)out_mode == 2 || (int)err_mode == 2) {
     scr_stdout_settle();
     fflush(stdout);
@@ -3181,6 +3181,13 @@ ScrChild *scr_spawn_opts(ScrStr *cmd, ScrArr *args, double in_mode,
   c->rc = 1;
   c->als = scr_als_capture();
   scr_child_record_spawn(c, cmd, args, shell);
+  /* An "ipc" stdio slot on Windows: the channel handle would have to reach
+   * the child as a CRT fd through its inherited handle list, which this
+   * spawn path does not build. The slot is reported (child.stdio's length)
+   * but no channel opens, so child.send answers false and the message and
+   * disconnect events never fire. POSIX opens the channel (socketpair plus
+   * NODE_CHANNEL_FD). */
+  if ((int)ipc_fd >= 0) c->ipc_slot = true;
 
   /* Piped slots: the pipe NOW; a pipe failure degrades the slot to NUL
    * and the stream husk answers eof (fd exhaustion — nothing real). */
@@ -3252,6 +3259,10 @@ ScrChild *scr_spawn_opts(ScrStr *cmd, ScrArr *args, double in_mode,
     c->reffed = true;
     scr_child_liveness_apply(c, before);
   }
+  /* The IPC channel stays referenced, as Node's does and fork's does here:
+   * unref() drops the process handle, not the channel. Set after the
+   * reference above so the loop's counter sees the child exactly once. */
+  if (c->ipc != NULL) c->channel_reffed = true;
   c->next = scr_children;
   scr_children = scr_child_retain(c);
   scr_child_loop_install();
@@ -3276,7 +3287,7 @@ ScrChild *scr_fork(double target, ScrArr *args, double in_mode,
   ScrStr *command = scr_process_exec_path();
   ScrChild *child = scr_spawn_opts(
       command, spawn_args, in_mode, out_mode, err_mode, 0, 0, false,
-      false, has_env, env_pairs, cwd);
+      false, has_env, env_pairs, cwd, -1);
   scr_str_release(command);
   scr_arr_release(spawn_args);
   CloseHandle(child_read);
@@ -3347,7 +3358,7 @@ ScrChild *scr_exec_file(ScrStr *cmd, ScrArr *args, ScrClosure *cb,
   double max_buffer = scr_child_max_take();
   ScrStr *empty = scr_str_new("", 0);
   ScrChild *c = scr_spawn_opts(cmd, args, 3, 3, 3, 0, 0, false, false, false,
-                               NULL, empty);
+                               NULL, empty, -1);
   scr_str_release(empty);
   c->exec_cb = cb;
   c->exec_fn = fn;
@@ -4068,7 +4079,7 @@ ScrSpawnRes *scr_spawn_sync_ext(ScrStr *cmd, ScrArr *args, double timeout_ms,
 ScrChild *scr_exec_file_cwd(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/,
                              ScrExecFileFn fn, bool shell, ScrStr *cwd) {
   double max_buffer = scr_child_max_take();
-  ScrChild *c = scr_spawn_opts(cmd, args, 3, 3, 3, 0, 0, false, false, false, NULL, cwd);
+  ScrChild *c = scr_spawn_opts(cmd, args, 3, 3, 3, 0, 0, false, false, false, NULL, cwd, -1);
   c->exec_cb = cb;
   c->exec_fn = fn;
   c->exec_file = scr_str_retain(cmd);
@@ -4124,7 +4135,7 @@ ScrChild *scr_exec_file_opts(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/
     return NULL;
   }
   ScrChild *c = scr_spawn_opts(cmd, args, 3, 3, 3, 0, 0, false, false, has_env,
-                               env_pairs, cwd);
+                               env_pairs, cwd, -1);
   /* The signal an abort sends: killSignal, resolved above (Node kills with
    * the same one on timeout and abort). */
   c->kill_signo = signo;
@@ -4162,6 +4173,7 @@ ScrChild *scr_exec_file_opts(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -7189,7 +7201,7 @@ ScrChildWriter *scr_child_stdin(ScrChild *c) {
 }
 
 ScrChild *scr_spawn(ScrStr *cmd, ScrArr *args) {
-  return scr_spawn_opts(cmd, args, 0, 0, 0, 0, 0, false, false, false, NULL, NULL);
+  return scr_spawn_opts(cmd, args, 0, 0, 0, 0, 0, false, false, false, NULL, NULL, -1);
 }
 
 /* Node's normalizeSpawnArguments result, kept for ChildProcess.spawnfile
@@ -7235,10 +7247,37 @@ static void scr_child_record_spawn(ScrChild *c, ScrStr *cmd, ScrArr *args, bool 
  * child environment ([k,v,...] like the exec core's); cwd (NULL/"" =
  * inherit) chdirs the child. Spawn failure stays an event, never a
  * throw. */
+/* A copy of the child environment with Node's channel variables appended:
+ * the base is the caller's replacement environment (freed by the caller) or
+ * this process's own. Every entry is malloc'd, so scr_exec_envp_free frees
+ * the result like a built one. */
+static char *scr_env_strdup(const char *text) {
+  size_t len = strlen(text);
+  char *copy = malloc(len + 1);
+  if (!copy) scr_child_oom();
+  memcpy(copy, text, len + 1);
+  return copy;
+}
+
+static char **scr_env_with_ipc(char *const *base, int ipc_fd) {
+  char *const *source = base != NULL ? base : environ;
+  size_t n = 0;
+  while (source[n] != NULL) n++;
+  char **envp = malloc((n + 3) * sizeof(char *));
+  if (!envp) scr_child_oom();
+  for (size_t i = 0; i < n; i++) envp[i] = scr_env_strdup(source[i]);
+  char fd_text[32];
+  snprintf(fd_text, sizeof fd_text, "NODE_CHANNEL_FD=%d", ipc_fd);
+  envp[n] = scr_env_strdup(fd_text);
+  envp[n + 1] = scr_env_strdup("NODE_CHANNEL_SERIALIZATION_MODE=json");
+  envp[n + 2] = NULL;
+  return envp;
+}
+
 ScrChild *scr_spawn_opts(ScrStr *cmd, ScrArr *args, double in_mode,
                           double out_mode, double err_mode, double out_fd,
                           double err_fd, bool detached, bool shell, bool has_env,
-                          ScrArr *env_pairs, ScrStr *cwd) {
+                          ScrArr *env_pairs, ScrStr *cwd, double ipc_fd) {
   if ((int)out_mode == 1 || (int)err_mode == 1 || (int)out_mode == 2 || (int)err_mode == 2) {
     /* Inherited or fd-redirected stdio: flush the parent's buffered
      * output first so everything logged BEFORE the spawn lands before
@@ -7278,6 +7317,20 @@ ScrChild *scr_spawn_opts(ScrStr *cmd, ScrArr *args, double in_mode,
     if (out_pipe[i] >= 0) fcntl(out_pipe[i], F_SETFD, FD_CLOEXEC);
     if (err_pipe[i] >= 0) fcntl(err_pipe[i], F_SETFD, FD_CLOEXEC);
   }
+  /* An "ipc" stdio slot: one socketpair carries the channel in both
+   * directions (Node's IPC handle). Both ends are cloexec; only the
+   * dup2'd child end reaches the child, which learns it through
+   * NODE_CHANNEL_FD below. */
+  int ipc_pair[2] = {-1, -1};
+  bool has_ipc = (int)ipc_fd >= 0;
+  if (has_ipc && socketpair(AF_UNIX, SOCK_STREAM, 0, ipc_pair) != 0) {
+    ipc_pair[0] = ipc_pair[1] = -1;
+    has_ipc = false;
+  }
+  if (has_ipc) {
+    fcntl(ipc_pair[0], F_SETFD, FD_CLOEXEC);
+    fcntl(ipc_pair[1], F_SETFD, FD_CLOEXEC);
+  }
 
   posix_spawn_file_actions_t fa;
   posix_spawn_file_actions_init(&fa);
@@ -7300,6 +7353,7 @@ ScrChild *scr_spawn_opts(ScrStr *cmd, ScrArr *args, double in_mode,
   } else if ((int)err_mode == 3) {
     posix_spawn_file_actions_adddup2(&fa, err_pipe[1], 2);
   }
+  if (has_ipc) posix_spawn_file_actions_adddup2(&fa, ipc_pair[1], (int)ipc_fd);
 #if defined(__APPLE__) || defined(__GLIBC__) || defined(SCR_MUSL)
   if (cwd != NULL && cwd->len > 0) {
     posix_spawn_file_actions_addchdir_np(&fa, cwd->data);
@@ -7323,15 +7377,35 @@ ScrChild *scr_spawn_opts(ScrStr *cmd, ScrArr *args, double in_mode,
                         shell_line != NULL ? shell_line->data : cmd->data, NULL};
   char **argv = shell ? shell_argv : scr_child_argv(cmd, args);
   char **envp = has_env && env_pairs != NULL ? scr_exec_envp(env_pairs) : NULL;
+  char **ipc_envp = has_ipc ? scr_env_with_ipc(envp, (int)ipc_fd) : NULL;
   pid_t pid = -1;
   const char *file = shell ? "/bin/sh" : cmd->data;
-  int spawn_err = scr_spawn_command(&pid, file, &fa, &at, argv, envp,
+  int spawn_err = scr_spawn_command(&pid, file, &fa, &at, argv,
+                                    ipc_envp != NULL ? ipc_envp : envp,
                                     cwd != NULL && cwd->len > 0 ? cwd->data : NULL);
   posix_spawnattr_destroy(&at);
   posix_spawn_file_actions_destroy(&fa);
   if (!shell) free(argv);
   scr_str_release(shell_line);
+  scr_exec_envp_free(ipc_envp);
   scr_exec_envp_free(envp);
+  if ((int)ipc_fd >= 0) c->ipc_slot = true;
+  if (has_ipc) close(ipc_pair[1]);
+  if (has_ipc) {
+    /* Node's channel exists as soon as the stdio slot is configured, so a
+     * FAILED launch still answers connected === true (its child end is
+     * closed, so the first send reports the closed channel). Two
+     * descriptors over the one socket: the reader takes one, the writer
+     * the other, so each end closes independently. */
+    int read_fd = dup(ipc_pair[0]);
+    int write_fd = dup(ipc_pair[0]);
+    close(ipc_pair[0]);
+    c->ipc = scr_ipc_new(scr_child_stream_new(read_fd), scr_child_writer_new(write_fd));
+  } else if ((int)ipc_fd >= 0) {
+    /* The socketpair failed (fd exhaustion): the slot exists, the channel
+     * does not, like Node's degraded stdio under the same pressure. */
+    close(ipc_pair[0]);
+  }
 
   /* Parent keeps only its side of each pipe. A failed spawn still exposes
    * the stream husks until the deferred child error settles them. */
@@ -7378,6 +7452,10 @@ ScrChild *scr_spawn_opts(ScrStr *cmd, ScrArr *args, double in_mode,
     c->reffed = true;
     scr_child_liveness_apply(c, before);
   }
+  /* The IPC channel stays referenced, as Node's does and fork's does here:
+   * unref() drops the process handle, not the channel. Set after the
+   * reference above so the loop's counter sees the child exactly once. */
+  if (c->ipc != NULL) c->channel_reffed = true;
   ScrChild **tail = &scr_children;
   while (*tail) tail = &(*tail)->next;
   *tail = scr_child_retain(c);
@@ -7408,7 +7486,7 @@ ScrChild *scr_fork(double target, ScrArr *args, double in_mode,
   ScrStr *command = scr_process_exec_path();
   ScrChild *child = scr_spawn_opts(
       command, spawn_args, in_mode, out_mode, err_mode, 0, 0, false,
-      false, has_env, env_pairs, cwd);
+      false, has_env, env_pairs, cwd, -1);
   scr_str_release(command);
   scr_arr_release(spawn_args);
   close(parent_to_child[0]);
@@ -7487,7 +7565,7 @@ ScrChild *scr_exec_file(ScrStr *cmd, ScrArr *args, ScrClosure *cb,
   double max_buffer = scr_child_max_take();
   ScrStr *empty = scr_str_new("", 0);
   ScrChild *c = scr_spawn_opts(cmd, args, 3, 3, 3, 0, 0, false, false, false,
-                               NULL, empty);
+                               NULL, empty, -1);
   scr_str_release(empty);
   c->exec_cb = cb;
   c->exec_fn = fn;
@@ -8506,7 +8584,7 @@ ScrSpawnRes *scr_spawn_sync_ext(ScrStr *cmd, ScrArr *args, double timeout_ms,
 ScrChild *scr_exec_file_cwd(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/,
                              ScrExecFileFn fn, bool shell, ScrStr *cwd) {
   double max_buffer = scr_child_max_take();
-  ScrChild *c = scr_spawn_opts(cmd, args, 3, 3, 3, 0, 0, false, false, false, NULL, cwd);
+  ScrChild *c = scr_spawn_opts(cmd, args, 3, 3, 3, 0, 0, false, false, false, NULL, cwd, -1);
   c->exec_cb = cb;
   c->exec_fn = fn;
   c->exec_file = scr_str_retain(cmd);
@@ -8562,7 +8640,7 @@ ScrChild *scr_exec_file_opts(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/
     return NULL;
   }
   ScrChild *c = scr_spawn_opts(cmd, args, 3, 3, 3, 0, 0, false, false, has_env,
-                               env_pairs, cwd);
+                               env_pairs, cwd, -1);
   /* The signal an abort sends: killSignal, resolved above (Node kills with
    * the same one on timeout and abort). */
   c->kill_signo = signo;
@@ -8872,7 +8950,7 @@ ScrChild *scr_spawn_armed(ScrStr *cmd, ScrArr *args, double in_mode, double out_
                           double err_mode, double out_fd, double err_fd, bool detached,
                           bool shell, bool has_env, ScrArr *env_pairs, ScrStr *cwd,
                           double timeout_ms, const ScrDyn *kill_signal, ScrDyn *signal,
-                          ScrAbortAddFn add) {
+                          double ipc_fd, ScrAbortAddFn add) {
   if (!scr_exec_timeout_ok(timeout_ms)) {
     scr_exec_timeout_throw(timeout_ms);
     return NULL;
@@ -8886,7 +8964,7 @@ ScrChild *scr_spawn_armed(ScrStr *cmd, ScrArr *args, double in_mode, double out_
   int signo = SIGTERM;
   if (!scr_spawn_kill_signal(kill_signal, &signo)) return NULL;
   ScrChild *c = scr_spawn_opts(cmd, args, in_mode, out_mode, err_mode, out_fd, err_fd,
-                               detached, shell, has_env, env_pairs, cwd);
+                               detached, shell, has_env, env_pairs, cwd, ipc_fd);
   c->kill_signo = signo;
   double delay = scr_exec_timeout_delay(timeout_ms);
   if (delay > 0) {
@@ -9500,7 +9578,7 @@ ScrChild *scr_spawn_dynamic(ScrStr *cmd, ScrArr *args, const ScrDyn *options) {
   if (!scr_spawn_kill_signal(value, &kill_signo)) { scr_dyn_release(value); value = NULL; goto done; }
   scr_dyn_release(value); value = NULL;
   child = scr_spawn_opts(cmd, args, modes[0], modes[1], modes[2],
-    fds[1], fds[2], detached, shell, has_env, pairs, cwd);
+    fds[1], fds[2], detached, shell, has_env, pairs, cwd, -1);
   if (child != NULL) {
     child->kill_signo = kill_signo;
     double delay = scr_exec_timeout_delay(timeout_ms);
@@ -9794,6 +9872,11 @@ typedef struct {
   ScrIpcSendFn fn;
   ScrError *error; /* +1, the callback takes it */
   ScrAlsCtx *ctx;
+  /* Set when fn is NULL: the completion is Node's asynchronous 'error'
+   * event, delivered to the listeners the child had when the send ran
+   * (the child drops its terminal listeners once 'exit' has fired). */
+  ScrChildErrEntry *errs;
+  size_t n_errs;
 } ScrIpcClosedSend;
 
 static SCR_TL ScrIpcClosedSend *scr_ipc_closed_sends = NULL;
@@ -9811,10 +9894,18 @@ static void scr_ipc_closed_send_tick(void) {
   scr_ipc_closed_n--;
   if (!scr_exc_pending()) {
     ScrAlsCtx *prev = scr_als_dispatch_enter(entry.ctx);
-    entry.fn(entry.cb, entry.error); /* takes the error */
+    if (entry.fn != NULL) {
+      entry.fn(entry.cb, entry.error); /* takes the error */
+    } else if (entry.n_errs != 0) {
+      scr_child_emit_error_snapshot(entry.errs, entry.n_errs, entry.error);
+      scr_error_release(entry.error);
+    } else {
+      /* No 'error' listener: Node's uncaught 'error' event. */
+      scr_throw_obj(scr_error_retain(entry.error), &scr_error_retain_v,
+                    &scr_error_release_v, scr_error_trace_arg());
+      scr_error_release(entry.error);
+    }
     scr_als_dispatch_leave(prev);
-  } else {
-    scr_error_release(entry.error);
   }
   scr_closure_release(entry.cb);
   scr_als_ctx_release(entry.ctx);
@@ -9827,7 +9918,7 @@ static void scr_ipc_closed_send_tick(void) {
 static void scr_ipc_closed_sends_teardown(void);
 
 static void scr_ipc_queue_closed_send(ScrStr *send_error, ScrClosure *cb,
-                                      ScrIpcSendFn fn) {
+                                      ScrIpcSendFn fn, ScrChild *child) {
   ScrIpcClosedSend *items =
       realloc(scr_ipc_closed_sends, (scr_ipc_closed_n + 1) * sizeof *items);
   if (!items) scr_trap("out of memory");
@@ -9838,7 +9929,11 @@ static void scr_ipc_queue_closed_send(ScrStr *send_error, ScrClosure *cb,
   ScrError *error = scr_error_new(0, message);
   scr_str_release(message);
   scr_error_set_code(error, "ERR_IPC_CHANNEL_CLOSED");
-  items[scr_ipc_closed_n++] = (ScrIpcClosedSend){cb, fn, error, scr_als_capture()};
+  ScrChildErrEntry *errs = NULL;
+  size_t n_errs = 0;
+  if (fn == NULL && child != NULL) errs = scr_child_error_snapshot(child, &n_errs);
+  items[scr_ipc_closed_n++] =
+      (ScrIpcClosedSend){cb, fn, error, scr_als_capture(), errs, n_errs};
   /* The teardown hook registers on first use rather than from a unit
    * constructor: a constructor is a link root, and it would keep this
    * unit's closed-send queue reachable in every program that links the
@@ -9859,6 +9954,9 @@ static void scr_ipc_closed_sends_teardown(void) {
     scr_closure_release(scr_ipc_closed_sends[i].cb);
     scr_error_release(scr_ipc_closed_sends[i].error);
     scr_als_ctx_release(scr_ipc_closed_sends[i].ctx);
+    for (size_t j = 0; j < scr_ipc_closed_sends[i].n_errs; j++)
+      scr_closure_release(scr_ipc_closed_sends[i].errs[j].cb);
+    free(scr_ipc_closed_sends[i].errs);
   }
   scr_ipc_closed_n = 0;
   free(scr_ipc_closed_sends);
@@ -9873,7 +9971,7 @@ static bool scr_ipc_send(ScrIpc *ipc, ScrStr *json, ScrClosure *cb,
   if (!ipc || !ipc->connected) {
     if (cb) {
       if (ipc) {
-        scr_ipc_queue_closed_send(ipc->send_error, cb, fn);
+        scr_ipc_queue_closed_send(ipc->send_error, cb, fn, NULL);
       } else {
         ScrStr *message = scr_str_new("Channel closed", sizeof("Channel closed") - 1);
         ScrError *error = scr_error_new(0, message);
@@ -10335,6 +10433,13 @@ void scr_child_stdio_store(ScrChild *c, ScrArr *array) {
 }
 bool scr_child_ipc_send(ScrChild *c, ScrStr *json) {
   SCR_IF_ISLAND(c, return scr_child_island_ops->send(c->island, json, NULL, NULL));
+  if (c->ipc == NULL || !c->ipc->connected) {
+    /* Node: send answers false, and the error arrives as an asynchronous
+     * 'error' event (ERR_IPC_CHANNEL_CLOSED on an existing closed channel)
+     * delivered to the listeners registered when the send ran. */
+    scr_ipc_queue_closed_send(c->ipc != NULL ? c->ipc->send_error : NULL, NULL, NULL, c);
+    return false;
+  }
   return scr_ipc_send(c->ipc, json, NULL, NULL);
 }
 bool scr_child_ipc_send_cb(ScrChild *c, ScrStr *json, ScrClosure *cb,

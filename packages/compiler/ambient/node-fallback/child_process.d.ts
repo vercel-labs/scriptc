@@ -261,13 +261,15 @@ declare module "child_process" {
      * openSync results dup2'd into the child (the daemon-log idiom
      * ["ignore", logFd, logFd]) — and "pipe" there too (child.stdout/
      * child.stderr streams); "pipe" in the stdin slot exposes
-     * child.stdin. */
+     * child.stdin. A fourth "ipc" slot opens a channel: the child gets
+     * process.send through it, and the ChildProcess exposes send,
+     * disconnect, connected, and the message and disconnect events. */
     stdio?:
       | "ignore"
       | "inherit"
       | "pipe"
       | null
-      | ("ignore" | "inherit" | "pipe" | number | null | undefined)[];
+      | ("ignore" | "inherit" | "pipe" | "ipc" | number | null | undefined)[];
     /* detached gives the child its own session and process group
      * (POSIX_SPAWN_SETSID); env REPLACES the child environment; cwd
      * sets its working directory; windowsHide is a POSIX no-op; shell

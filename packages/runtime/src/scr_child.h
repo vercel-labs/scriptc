@@ -220,7 +220,7 @@ ScrChild *scr_fork(double target, ScrArr *args, double in_mode,
 ScrChild *scr_spawn_opts(ScrStr *cmd, ScrArr *args, double in_mode,
                           double out_mode, double err_mode, double out_fd,
                           double err_fd, bool detached, bool shell, bool has_env,
-                         ScrArr *env_pairs, ScrStr *cwd);
+                         ScrArr *env_pairs, ScrStr *cwd, double ipc_fd);
 /* Runtime options use the same spawn core; validation and explicit
  * unsupported-option refusals throw before starting a child. Borrows. */
 ScrChild *scr_spawn_dynamic(ScrStr *cmd, ScrArr *args, const ScrDyn *options);
@@ -239,7 +239,7 @@ ScrChild *scr_spawn_armed(ScrStr *cmd, ScrArr *args, double in_mode, double out_
                           double err_mode, double out_fd, double err_fd, bool detached,
                           bool shell, bool has_env, ScrArr *env_pairs, ScrStr *cwd,
                           double timeout_ms, const ScrDyn *kill_signal, ScrDyn *signal,
-                          ScrAbortAddFn add);
+                          double ipc_fd, ScrAbortAddFn add);
 /* cp.checkArgs: Node's argument checks for the launch that follows it
  * (normalizeSpawnArguments, normalizeExecArgs). A NUL in the file or
  * command, an argument, cwd ("" = absent) or an environment key or value

@@ -3846,6 +3846,15 @@ function unboxDynStage(lowerer: Lowerer, v: IrExpr, node: ts.Expression): IrExpr
   };
 }
 
+/** Whether the class declares (or inherits) a zero-parameter
+ * `[Symbol.asyncIterator]`, which makes its instances async iterables a
+ * pipeline source may be. */
+function classDeclaresAsyncIterator(lowerer: Lowerer, className: string): boolean {
+  const info = lowerer.classes.get(className);
+  const open = info === undefined ? null : lowerer.findMethodOn(info, "sym:asyncIterator");
+  return open !== null && open.sig.abstract !== true && open.sig.params.length === 0;
+}
+
 /** A pipeline whose first stage is checked-dynamic, lowered with that
  * stage already evaluated: `expr` is the stream it unboxes to, or, when
  * `iterable` is set, the value to pump as an iterable source. */
@@ -3870,6 +3879,30 @@ function lowerDynSourcePipeline(
   if (pipelineStageFunction(lowerer, node) !== null) return null;
   if (iterableSourceType(lowerer, node) !== null || isValueStream(lowerer, node)) return null;
   let value = lowerer.lowerExpr(node);
+  // A class instance whose class declares its own [Symbol.asyncIterator]
+  // is an async iterable, and Node's pipeline pumps it like any other
+  // iterable source. It takes the same checked-dynamic iterable path an
+  // untyped source takes (`stream.dynIterableSource` steps it), because
+  // the pump is the one already lowered for untyped iterables.
+  if (value.type.kind === "object" && classDeclaresAsyncIterator(lowerer, value.type.className)) {
+    const held = lowerer.declareHiddenLocal("%pipelineSource", DYN);
+    const ref = varRef(held.id, DYN, loc);
+    const iterable = build({ expr: ref, iterable: true });
+    return {
+      kind: "seqExpr",
+      stmts: [
+        {
+          kind: "varDecl",
+          localId: held.id,
+          init: { kind: "dynFrom", value, type: DYN, loc },
+          loc,
+        },
+      ],
+      result: iterable,
+      type: iterable.type,
+      loc,
+    };
+  }
   // A Set, a Map or a generator object is iterated through its
   // checked-dynamic value.
   if (BOXED_SOURCE_KINDS.has(value.type.kind) && lowerer.dynConvertible(value.type)) {

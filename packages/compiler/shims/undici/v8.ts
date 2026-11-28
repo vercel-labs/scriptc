@@ -3,8 +3,8 @@
 // Programs whose installed undici is 8.x compile this module in its place
 // (see packages/compiler/src/frontend/package-shims.ts). It implements the
 // HTTP/1.1 client subset over node:net / node:tls: Dispatcher, Client, Pool,
-// Agent, request(), buildConnector, errors, the global dispatcher, fetch and
-// the diagnostics_channel publications. Anything else undici exports is not
+// Agent, ProxyAgent, EnvHttpProxyAgent, request(), buildConnector, errors, the
+// global dispatcher, fetch and the diagnostics_channel publications. Anything else undici exports is not
 // declared here, so using it is a compile-time error.
 import { Agent as CoreAgent } from "./core/agent.ts";
 import {
@@ -19,7 +19,11 @@ import { Dispatcher } from "./core/dispatcher.ts";
 import type { ResponseData } from "./core/dispatcher.ts";
 import { installGlobalFetchDispatcher, undiciFetch } from "./core/fetch.ts";
 import type { UndiciFetchInit } from "./core/fetch.ts";
+import { EnvHttpProxyAgent as CoreEnvHttpProxyAgent } from "./core/env-http-proxy-agent.ts";
+import type { EnvHttpProxyAgentOptions } from "./core/env-http-proxy-agent.ts";
 import { Pool as CorePool, PoolStats as CorePoolStats } from "./core/pool.ts";
+import { ProxyAgent as CoreProxyAgent } from "./core/proxy-agent.ts";
+import type { ProxyAgentOptions } from "./core/proxy-agent.ts";
 import type {
   AgentOptions,
   ClientOptions,
@@ -82,6 +86,26 @@ export class Agent extends CoreAgent {
 export declare namespace Agent {
   type Options = AgentOptions;
   type DispatchOptions = import("./core/types.ts").DispatchOptions;
+}
+
+export class ProxyAgent extends CoreProxyAgent {
+  constructor(options: ProxyAgent.Options | string) {
+    super(options, profile, (agentOptions: AgentOptions) => new Agent(agentOptions));
+  }
+}
+
+export declare namespace ProxyAgent {
+  type Options = ProxyAgentOptions;
+}
+
+export class EnvHttpProxyAgent extends CoreEnvHttpProxyAgent {
+  constructor(options?: EnvHttpProxyAgent.Options) {
+    super(options ?? {}, profile);
+  }
+}
+
+export declare namespace EnvHttpProxyAgent {
+  type Options = EnvHttpProxyAgentOptions;
 }
 
 export function buildConnector(options?: buildConnector.BuildOptions): buildConnector.connector {

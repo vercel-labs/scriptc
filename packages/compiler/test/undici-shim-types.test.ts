@@ -455,6 +455,45 @@ describe.each([5, 7])("undici %i.x shim types", (major) => {
     }
   });
 
+  // 7.x's streaming and proxy surface: an async-iterable request body, a
+  // response body consumed by for-await and by stream/promises pipeline,
+  // and the two proxy dispatchers.
+  test.runIf(major === 7)("the streaming and proxy surface type-checks", () => {
+    const program = `
+import { createWriteStream } from "node:fs";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import { EnvHttpProxyAgent, ProxyAgent, request } from "UNDICI";
+
+const dispatcher = new EnvHttpProxyAgent({
+  httpProxy: process.env["HTTP_PROXY"],
+  httpsProxy: process.env["HTTPS_PROXY"],
+  noProxy: process.env["NO_PROXY"],
+  requestTls: { rejectUnauthorized: true, timeout: 10000 },
+});
+const proxy = new ProxyAgent("http://127.0.0.1:9");
+
+async function* upload(): AsyncIterable<Uint8Array> {
+  yield new Uint8Array([1, 2, 3, 4]);
+}
+
+async function run(): Promise<void> {
+  const res = await request("https://example.com/upload", {
+    method: "POST",
+    body: Readable.from(upload()),
+    dispatcher,
+  });
+  for await (const chunk of res.body) console.log(chunk.byteLength);
+  await pipeline(res.body, createWriteStream("/tmp/undici-shim-out"));
+  await proxy.close();
+  await dispatcher.close();
+}
+run();
+`;
+    expect(check("streaming-real.ts", program.replace(/UNDICI/g, real))).toEqual([]);
+    expect(check("streaming-shim.ts", program.replace(/UNDICI/g, shim))).toEqual([]);
+  });
+
   // The call a project on @types/node 20 makes: the global RequestInit
   // (there, undici-types 5's) spread whole into a wrapper's init that
   // names this package's dispatch(), and into the package's fetch. Both

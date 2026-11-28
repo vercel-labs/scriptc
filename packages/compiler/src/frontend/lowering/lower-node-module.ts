@@ -763,6 +763,20 @@ export function lowerNodeModuleProperty(
   }
   if (!moduleRef || moduleRef.type.kind !== "f64") return null;
   const loc = locOf(expr);
+  // `exports` read off ANOTHER module's handle is that module's own exports
+  // object — what Node's Module view answers — so it lowers to the
+  // checked-dynamic value the registry holds, not to a static exports table.
+  // `require.cache[file].exports` and the module's own `module.exports`
+  // therefore name one object.
+  if (!direct && member === "exports") {
+    return {
+      kind: "dynKeyGet",
+      value: { kind: "libCall", fn: "module.dynObject", args: [moduleRef], type: DYN, loc },
+      key: strLit("exports", loc),
+      type: DYN,
+      loc,
+    };
+  }
   const call = (
     fn:
       | "module.filename"
@@ -815,6 +829,19 @@ export function lowerNodeModuleProperty(
   }
 }
 
+/** `require.extensions`: Node's loader table (node:module's
+ * Module._extensions), one shared null-prototype object whose three
+ * handlers are function values that refuse when called — a compiled
+ * program loads no module at run time. */
+export function lowerRequireExtensionsProperty(
+  lowerer: Lowerer,
+  expr: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (expr.questionDotToken || expr.name.text !== "extensions") return null;
+  if (!isCjsRequireGlobal(lowerer, expr.expression)) return null;
+  return { kind: "libCall", fn: "module.extensions", args: [], type: DYN, loc: locOf(expr) };
+}
+
 /** `typeof module.parent`: null (the CommonJS entry) and a module (a module
  * required by CommonJS) both answer "object"; a module loaded by an ES-module
  * entry has no CommonJS parent and answers "undefined". The registry's
@@ -838,6 +865,79 @@ export function lowerModuleParentTypeof(lowerer: Lowerer, node: ts.Expression): 
     then: { kind: "strLit", value: "undefined", type: STRING, loc },
     else_: { kind: "strLit", value: "object", type: STRING, loc },
     type: STRING,
+    loc,
+  };
+}
+
+/** The module handle a require.cache read names: `module.cacheGet` answers
+ * the record's id, or -1 for a filename the cache does not hold. */
+function cacheViewHandleOf(lowerer: Lowerer, read: ts.ElementAccessExpression): IrExpr {
+  const key = lowerer.coerceInto(
+    read.argumentExpression,
+    lowerer.lowerExpr(read.argumentExpression),
+    STRING,
+  );
+  return { kind: "libCall", fn: "module.cacheGet", args: [key], type: F64, loc: locOf(read) };
+}
+
+/** The require.cache read `receiver` stands for: the read itself, or the
+ * initializer of a binding that holds one. */
+function cacheReadReceiverOf(
+  lowerer: Lowerer,
+  receiver: ts.Expression,
+): ts.ElementAccessExpression | null {
+  const direct = withoutParenthesesTypeWrappers(receiver);
+  const isCacheRead = (e: ts.Expression): e is ts.ElementAccessExpression =>
+    ts.isElementAccessExpression(e) &&
+    !e.questionDotToken &&
+    isRequireCacheExpr(lowerer, e.expression);
+  if (isCacheRead(direct)) return direct;
+  if (!ts.isIdentifier(direct)) return null;
+  let symbol = lowerer.checker.getSymbolAtLocation(direct);
+  if (symbol !== undefined && (symbol.flags & ts.SymbolFlags.Alias) !== 0)
+    symbol = lowerer.checker.getAliasedSymbol(symbol);
+  const decl = symbol ? symbol.declarations[0] : undefined;
+  if (decl === undefined || !ts.isVariableDeclaration(decl) || decl.initializer === undefined)
+    return null;
+  const init = withoutParenthesesTypeWrappers(decl.initializer);
+  return isCacheRead(init) ? init : null;
+}
+
+/** `require.cache[file].member` — and the same read through a binding that
+ * holds it: the Module view's live member, read from the registry, because
+ * Node's view IS the module's own object. `exports` is therefore the module's
+ * own exports object, the one its `module.exports` reads, so identity holds
+ * across the two. Null off the shape. */
+export function lowerModuleViewMember(
+  lowerer: Lowerer,
+  expr: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (expr.questionDotToken) return null;
+  // A private name is never a plain member read: it runs the declaring
+  // class's brand check, which throws Node's TypeError for a value that is
+  // not one of its instances.
+  if (ts.isPrivateIdentifier(expr.name)) return null;
+  const read = cacheReadReceiverOf(lowerer, expr.expression);
+  if (read === null) return null;
+  const loc = locOf(expr);
+  // A binding already holds the module the cache key picked: read it, and do
+  // not run the key expression again (its side effects happen once, and the
+  // module it picked then is the one this read answers).
+  const receiver = withoutParenthesesTypeWrappers(expr.expression);
+  const handle = ts.isIdentifier(receiver)
+    ? lowerer.coerceInto(receiver, lowerer.lowerExpr(receiver), F64)
+    : cacheViewHandleOf(lowerer, read);
+  return {
+    kind: "dynKeyGet",
+    value: {
+      kind: "libCall",
+      fn: "module.dynObjectOrAbsent",
+      args: [handle],
+      type: DYN,
+      loc,
+    },
+    key: strLit(expr.name.text, loc),
+    type: DYN,
     loc,
   };
 }
@@ -897,6 +997,21 @@ export function lowerRequireCacheKeys(
 
 function modulePropertyReceiver(lowerer: Lowerer, node: ts.Expression): boolean {
   return isNodeModuleValue(lowerer, node);
+}
+
+/** `require.cache` read as a VALUE — typeof, identity with Module._cache,
+ * storing it, `for..in` over it: the live cache object the runtime keeps (the
+ * same records the lookup, `in` and Object.keys lowerings walk). A program
+ * cannot change it (every write through require.cache is refused where it
+ * stands), so the object a program holds and the one the lookups read stay
+ * the same. `typeOfNode` answers `any` for the read, so its uses lower as
+ * checked-dynamic values. */
+export function lowerRequireCacheValue(
+  lowerer: Lowerer,
+  expr: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (expr.questionDotToken || !isRequireCacheExpr(lowerer, expr)) return null;
+  return { kind: "libCall", fn: "module.cacheObject", args: [], type: DYN, loc: locOf(expr) };
 }
 
 export function fenceNodeModuleMutation(

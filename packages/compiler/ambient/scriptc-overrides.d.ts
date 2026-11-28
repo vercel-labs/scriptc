@@ -184,3 +184,30 @@ declare namespace __scriptcInferredCollections {
 interface BufferConstructor {
   copyBytesFrom(view: NodeJS.TypedArray, offset?: number, length?: number): Buffer;
 }
+
+/* The worker's heap sample carries a boolean where @types/node types v8's
+ * numeric DoesZapCodeSpaceFlag, and an interface merge cannot change a
+ * field's type: this overload returns a shape with the value the runtime
+ * carries. Overloads resolve later-declaration-first, so it wins at call
+ * sites in both type worlds. */
+declare module "worker_threads" {
+  interface WorkerHeapInfo {
+    total_heap_size: number;
+    total_heap_size_executable: number;
+    total_physical_size: number;
+    total_available_size: number;
+    used_heap_size: number;
+    heap_size_limit: number;
+    malloced_memory: number;
+    peak_malloced_memory: number;
+    does_zap_garbage: boolean;
+    number_of_native_contexts: number;
+    number_of_detached_contexts: number;
+    total_global_handles_size: number;
+    used_global_handles_size: number;
+    external_memory: number;
+  }
+  interface Worker {
+    getHeapStatistics(): Promise<WorkerHeapInfo>;
+  }
+}

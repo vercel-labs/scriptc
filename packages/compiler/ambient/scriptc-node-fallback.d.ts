@@ -1456,6 +1456,36 @@ declare var CloseEvent: {
   ): CloseEvent;
   readonly prototype: CloseEvent;
 };
+
+/* The global WebSocket client (scr_websocket.c). The instance is a native
+ * handle: the lowering supports construction, the readyState constants and
+ * instanceof, and the members below dispatch at run time. */
+interface WebSocket extends EventTarget {
+  readonly CONNECTING: 0;
+  readonly OPEN: 1;
+  readonly CLOSING: 2;
+  readonly CLOSED: 3;
+  readonly url: string;
+  readonly readyState: number;
+  readonly protocol: string;
+  readonly extensions: string;
+  readonly bufferedAmount: number;
+  binaryType: string;
+  onopen: ((this: WebSocket, ev: Event) => unknown) | null;
+  onmessage: ((this: WebSocket, ev: MessageEvent) => unknown) | null;
+  onerror: ((this: WebSocket, ev: Event) => unknown) | null;
+  onclose: ((this: WebSocket, ev: CloseEvent) => unknown) | null;
+  send(data: string | ArrayBufferLike | Blob | ArrayBufferView): void;
+  close(code?: number, reason?: string): void;
+}
+declare var WebSocket: {
+  new (url: string | URL, protocols?: string | string[]): WebSocket;
+  readonly prototype: WebSocket;
+  readonly CONNECTING: 0;
+  readonly OPEN: 1;
+  readonly CLOSING: 2;
+  readonly CLOSED: 3;
+};
 interface AddEventListenerOptions {
   capture?: boolean;
   once?: boolean;
@@ -1701,6 +1731,25 @@ declare var TransformStream: {
   ): TransformStream<I, O>;
   readonly prototype: TransformStream<unknown, unknown>;
 };
+/* The web compression streams: a TransformStream's readable and writable
+ * over one of Node's zlib formats (scr_webstream_compress.c). */
+type CompressionFormat = "deflate" | "deflate-raw" | "gzip" | "brotli";
+interface CompressionStream {
+  readonly readable: ReadableStream<Uint8Array>;
+  readonly writable: WritableStream<Uint8Array>;
+}
+declare var CompressionStream: {
+  new (format: CompressionFormat): CompressionStream;
+  readonly prototype: CompressionStream;
+};
+interface DecompressionStream {
+  readonly readable: ReadableStream<Uint8Array>;
+  readonly writable: WritableStream<Uint8Array>;
+}
+declare var DecompressionStream: {
+  new (format: CompressionFormat): DecompressionStream;
+  readonly prototype: DecompressionStream;
+};
 /* The other web stream interfaces. JavaScript sources construct and read
  * them as checked-dynamic values (scr_webstreams.c); TypeScript sources
  * have no static lowering for them. */
@@ -1828,6 +1877,9 @@ interface Response {
    * direct use and points at bytes(). */
   arrayBuffer(): Promise<ArrayBuffer>;
   bytes(): Promise<Uint8Array>;
+  /* The body collected into a Blob whose type is the response's content
+   * type ("" when it carries none). */
+  blob(): Promise<Blob>;
   /* A copy whose body is one branch of the body's tee; the original keeps
    * the other. */
   clone(): Response;

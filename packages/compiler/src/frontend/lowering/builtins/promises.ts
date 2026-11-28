@@ -1119,7 +1119,21 @@ export function lowerPromiseStaticCall(
         "an entry is a promise, a value whose type shows no `then` (it fulfils as itself), or `cond ? promise : value` — a thenable, a value that may hold a `then` its type does not show, and a spread have no lowering",
       );
     }
-    const entries = lowerer.lowerExpr(argNode);
+    let entries = lowerer.lowerExpr(argNode);
+    // `Promise.all(set)` — Node takes any iterable. A same-element Set
+    // drains (setIntrinsic toArray) into the array form below; its elements
+    // are the values iteration reads, and the countdown combinator treats
+    // them as the array's entries.
+    if (entries.type.kind === "set") {
+      entries = {
+        kind: "setIntrinsic",
+        method: "toArray",
+        receiver: entries,
+        args: [],
+        type: arrayOf(entries.type.elem),
+        loc,
+      };
+    }
     if (entries.type.kind === "dyn") return checkedPromiseAll(lowerer, entries, loc);
     // An 'any'-typed argument that holds a typed value (`const xs: any =
     // []`): the combinator reads it as the runtime value it is.

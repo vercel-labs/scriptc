@@ -303,6 +303,18 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
     case "http2.streamSetTimeoutCb":
       host.toHeap(args[2]!);
       return finishRuntimeCall(host, e, "scr_http2_stream_set_timeout_cb", [a[0]!, a[1]!, a[2]!]);
+    case "http2.serverSetTimeoutCb": {
+      const cbValue = args[2]!;
+      const thunk =
+        callbackType(cbValue).params.length === 0
+          ? "scr_http2_session_thunk0"
+          : "scr_http2_session_thunk";
+      return finishRuntimeCall(host, e, "scr_http2_server_set_timeout_cb", [
+        a[0]!,
+        a[1]!,
+        ...callbackAdapter(host, cbValue, thunk, ["ptr", "ptr"]),
+      ]);
+    }
     case "http2.sessionSettings0":
     case "http2.sessionSettings":
     case "http2.sessionSettingsCb0": {
@@ -337,6 +349,10 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
       break;
     case "http2.serverOnSession":
       runtime = "scr_http2_server_on_session";
+      thunk = arity === 0 ? "scr_http2_session_thunk0" : "scr_http2_session_thunk";
+      break;
+    case "http2.serverOnTimeout":
+      runtime = "scr_http2_server_on_timeout";
       thunk = arity === 0 ? "scr_http2_session_thunk0" : "scr_http2_session_thunk";
       break;
     case "http2.serverOnSessionError":

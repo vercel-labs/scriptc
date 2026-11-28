@@ -777,7 +777,15 @@ export function isIdentityCollectionKey(t: IrType): boolean {
     // (scr_bytes_retain/release_v, no trace).
     t.kind === "map" ||
     t.kind === "set" ||
-    t.kind === "bytes"
+    t.kind === "bytes" ||
+    // A spawned child handle is one object for its whole life (a Set of
+    // live children, a Map keyed by child): pointer identity is JS
+    // identity, and the runtime's scr_child_retain/release_v adapters
+    // serve the ref slot. The child drops its listener closures at its
+    // terminal event, so a held child cannot cycle through the
+    // collection for longer than the child lives (the same stance as a
+    // Map value).
+    t.kind === "child"
   );
 }
 
@@ -4991,6 +4999,7 @@ function isJsonSafeAt(
 export const DYN_HANDLE_KINDS: ReadonlyMap<string, { tag: string; cls: string }> = new Map([
   ["child", { tag: "SCR_DYNH_CHILD", cls: "ChildProcess" }],
   ["fileHandle", { tag: "SCR_DYNH_FILE_HANDLE", cls: "FileHandle" }],
+  ["utf8Stream", { tag: "SCR_DYNH_UTF8_STREAM", cls: "Utf8Stream" }],
   ["httpReq", { tag: "SCR_DYNH_HTTP_REQ", cls: "IncomingMessage" }],
   ["httpRes", { tag: "SCR_DYNH_HTTP_RES", cls: "ServerResponse" }],
   ["netSocket", { tag: "SCR_DYNH_NET_SOCKET", cls: "Socket" }],

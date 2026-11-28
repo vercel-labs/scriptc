@@ -433,6 +433,28 @@ export function strandedInstanceArmDiag(
   };
 }
 
+/** SC6016 — a double assertion (`value as unknown as T`) whose target is a
+ * layout type the source's static type cannot have: the checker relates the
+ * two only through `unknown`, Node erases both assertions and the value
+ * flows on as it is, and the compiled program checks it when the cast runs,
+ * throwing the TypeError of a value that does not fit. The build names the
+ * cast before run time; the check itself stays (erasing it is not
+ * representable at a typed slot). */
+export function castThroughUnknownDiag(
+  cast: string,
+  source: string,
+  from: string,
+  to: string,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  return {
+    code: "SC6016",
+    message: `'${cast}' asserts '${source}' (of type '${from}') to '${to}' through 'unknown': Node erases both assertions and the value flows on as it is, while the compiled program still has to produce a '${to}' from it and throws a TypeError when the value has another layout`,
+    loc,
+    hint: `narrow '${source}' to a value that can be checked against '${to}' (a type guard or a schema check), or convert it explicitly; an assertion through 'unknown' is still checked at run time`,
+  };
+}
+
 /** SC6013 — a statement writes a member that the program added to the
  * library Promise type (`Promise<T> & { status?: ... }`, an interface that
  * extends Promise). Node adds the member to the promise object. A compiled

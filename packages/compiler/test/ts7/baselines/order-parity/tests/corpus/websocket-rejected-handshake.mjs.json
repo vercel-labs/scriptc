@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/websocket-rejected-handshake.mjs"
+ ],
+ "diags": []
+}

@@ -861,6 +861,39 @@ function arrayOverrideCandidates(lowerer: Lowerer, name: string): ClassInfo[] {
   return candidates.sort((a, b) => (a.def.name < b.def.name ? -1 : 1));
 }
 
+/** Why a direct call of `name` on `info` would bypass a prototype value the
+ * program may have put there: a legacy decorator wraps it, or the program
+ * reads, replaces or defines it on a class prototype. Null when the compiled
+ * method is the only answer. */
+function prototypeBypass(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  name: string,
+): "decorated" | "replaced" | null {
+  if (
+    info.legacyMemberDecorations?.some((d) => !d.static && d.kind === "method" && d.name === name)
+  )
+    return "decorated";
+  return lowerer.prototypeMethodAccesses.has(name) ? "replaced" : null;
+}
+
+/** Throws the named refusal for a prototype value a direct call would
+ * bypass. */
+function refusePrototypeBypass(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression,
+  name: string,
+  why: "decorated" | "replaced",
+): never {
+  return lowerer.unsupported(
+    "SC1090",
+    access,
+    why === "decorated"
+      ? `calling '${name}' on an array where a class that extends Array has a decorated '${name}' (Node calls the prototype's wrapped method; a compiled direct call would bypass the decorator)`
+      : `calling '${name}' on an array where a class that extends Array's '${name}' is read, replaced or defined through its prototype (bind the receiver to the class's own type first)`,
+  );
+}
+
 /** The call `name` on the class `info`'s own method, over the array `ref`
  * viewed as the class's instance. */
 function arrayOverrideCall(
@@ -917,17 +950,10 @@ function arrayOverrideCall(
     // program that reads or replaces the method's prototype value may run
     // another function there. The direct call would bypass both, so the
     // base-typed call refuses instead of answering with the compiled body.
-    const decorated = info.legacyMemberDecorations?.some(
-      (d) => !d.static && d.kind === "method" && d.name === name,
-    );
-    if (decorated || isClassCallback(lowerer, info, name))
-      lowerer.unsupported(
-        "SC1090",
-        access,
-        decorated
-          ? `calling '${name}' on an array where a class that extends Array has a decorated '${name}' (Node calls the prototype's wrapped method; a compiled direct call would bypass the decorator)`
-          : `calling '${name}' on an array where a class that extends Array's '${name}' is read or replaced through its prototype (bind the receiver to the class's own type first)`,
-      );
+    const bypass =
+      prototypeBypass(lowerer, info, name) ??
+      (isClassCallback(lowerer, info, name) ? ("replaced" as const) : null);
+    if (bypass !== null) refusePrototypeBypass(lowerer, access, name, bypass);
     const args = completeArgs(lowerer, call.arguments.nodes, found.sig.params, loc, call);
     lowerer.noteEdge(`%${found.declarer.def.name}.${name}`);
     direct = {
@@ -943,6 +969,12 @@ function arrayOverrideCall(
     // every generic method.
     const generic = findGenericMethodOn(lowerer, info, name);
     if (generic === null) return null;
+    // The same prototype rule as a non-generic override: a program that
+    // reads, replaces or defines the method's prototype value may run
+    // another function there, which a direct call would bypass. A generic
+    // method is no entry in `methods`, so isClassCallback cannot see it.
+    const bypass = prototypeBypass(lowerer, info, name);
+    if (bypass !== null) refusePrototypeBypass(lowerer, access, name, bypass);
     direct = lowerClassGenericMethodCall(lowerer, call, access, info, generic, view, true);
   }
   return typeEquals(direct.type, want)

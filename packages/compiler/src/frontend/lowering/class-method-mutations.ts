@@ -105,6 +105,23 @@ export function collectClassMethodMutations(
     if (isJsSourceFile(file) && !lowerer.checkedJsFile(file)) continue;
     ts.walkPreorder(file, (node) => {
       if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) typedClasses.push(node);
+      // A LEGACY accessor decorator gets the property's get/set descriptor
+      // and may replace either half; the accessor's reads and writes must be
+      // able to observe a replaced prototype accessor, so its name becomes an
+      // observed property name.
+      if (
+        (ts.isGetAccessorDeclaration(node) || ts.isSetAccessorDeclaration(node)) &&
+        (ts.isClassDeclaration(node.parent) || ts.isClassExpression(node.parent)) &&
+        (ts.isIdentifier(node.name) ||
+          ts.isStringLiteralLike(node.name) ||
+          ts.isNumericLiteral(node.name)) &&
+        ((node as { modifiers?: ts.NodeArray<ts.Node> }).modifiers?.nodes ?? []).some(
+          (m) => m.kind === ts.SyntaxKind.Decorator,
+        ) &&
+        lowerer.legacyDecoratorFiles !== null &&
+        lowerer.legacyDecoratorFiles.has(ts.getSourceFileOfNode(node).fileName)
+      )
+        lowerer.noteMethodAccess(node.name.text, node);
       if (
         !ts.isMethodDeclaration(node) ||
         (!ts.isClassDeclaration(node.parent) && !ts.isClassExpression(node.parent))
@@ -114,9 +131,23 @@ export function collectClassMethodMutations(
         ts.isIdentifier(node.name) ||
         ts.isStringLiteralLike(node.name) ||
         ts.isNumericLiteral(node.name)
-      )
+      ) {
         methods.add(node.name.text);
-      else if (ts.isComputedPropertyName(node.name)) computedMethods.push(node.name.expression);
+        // A LEGACY method decorator runs at the class statement with the
+        // member's descriptor and may replace its value (`descriptor.value =
+        // wrapper`), so every call of the name must be able to observe a
+        // replaced prototype slot. The class lowering emits the definition;
+        // this census only widens dispatch.
+        const decorated = (
+          (node as { modifiers?: ts.NodeArray<ts.Node> }).modifiers?.nodes ?? []
+        ).some((m) => m.kind === ts.SyntaxKind.Decorator);
+        if (
+          decorated &&
+          lowerer.legacyDecoratorFiles !== null &&
+          lowerer.legacyDecoratorFiles.has(ts.getSourceFileOfNode(node).fileName)
+        )
+          lowerer.noteMethodAccess(node.name.text, node);
+      } else if (ts.isComputedPropertyName(node.name)) computedMethods.push(node.name.expression);
     });
   }
   lowerer.checker.prefetchClassCollection(computedMethods, []);

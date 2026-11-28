@@ -373,7 +373,7 @@ ScrStr *scr_wc_algorithm_name(ScrDyn *identifier, const char *dict) {
  * process-warning unit is linked, and otherwise to the default report. It
  * does not go through scr_emit_warning, which would make every WebCrypto
  * program link that unit. */
-static SCR_TL bool scr_wc_experimental_warned[17];
+static SCR_TL bool scr_wc_experimental_warned[20];
 
 static void scr_wc_warning_tick(ScrClosure *self) {
   ScrStr *type = (ScrStr *)scr_box_get_ref(self->caps[0]);
@@ -396,11 +396,12 @@ static void scr_wc_warning_tick(ScrClosure *self) {
   scr_str_release(message);
 }
 
-static void scr_wc_warn_experimental_algorithm(const char *canonical) {
+void scr_wc_warn_experimental_algorithm(const char *canonical) {
   static const char *const names[] = {"SHA3-256", "SHA3-384",      "SHA3-512", "AES-OCB",
                                       "ChaCha20-Poly1305", "KMAC128", "KMAC256", "Argon2d",
                                       "Argon2i", "Argon2id", "cSHAKE128", "cSHAKE256",
-                                      "TurboSHAKE128", "TurboSHAKE256", "KT128", "KT256", "X448"};
+                                      "TurboSHAKE128", "TurboSHAKE256", "KT128", "KT256", "X448",
+                                      "ML-KEM-512", "ML-KEM-768", "ML-KEM-1024"};
   for (size_t i = 0; i < SCR_WC_COUNT(names); i++) {
     if (strcmp(canonical, names[i]) != 0) continue;
     if (scr_wc_experimental_warned[i]) return;
@@ -1076,7 +1077,9 @@ static ScrBytes *scr_wc_jwk_secret(const ScrWcJwk *jwk, bool extractable, long u
 const ScrWcAsymmetric *scr_wc_asymmetric = NULL;
 
 static const char *const scr_wc_asymmetric_names[] = {
-    "ECDSA", "Ed25519", "RSA-PSS", "RSASSA-PKCS1-v1_5", "ECDH", "RSA-OAEP", "X25519", "X448",
+    "ECDSA",     "Ed25519",      "RSA-PSS", "RSASSA-PKCS1-v1_5", "ECDH",
+    "RSA-OAEP",  "X25519",       "X448",    "ML-KEM-512",        "ML-KEM-768",
+    "ML-KEM-1024",
 };
 
 /* Whether an asymmetric algorithm name is one of the key-agreement ones
@@ -2838,6 +2841,153 @@ done:
   scr_wc_cipher_params_drop(&params);
   for (size_t i = 0; i < 7; i++) scr_dyn_release(v[i]);
   return result ? result : scr_wc_rejected();
+}
+
+/* ── ML-KEM encapsulateBits/encapsulateKey/décapsulate ────────────────
+ * Node 24's experimental key-encapsulation methods. encapsulateBits and
+ * decapsulateBits answer the shared secret as an ArrayBuffer; the *Key
+ * forms import it with the requested algorithm, extractability and usages
+ * and answer a CryptoKey. The key checks (usage, algorithm-versus-key) and
+ * the FIPS 203 operation live in scr_webcrypto_pki.c. */
+static const char *const scr_wc_kem_names[] = {"ML-KEM-512", "ML-KEM-768", "ML-KEM-1024"};
+
+/* Node reports each method as experimental once per process, before its
+ * arguments are checked, through the same warning tick the algorithms use. */
+static void scr_wc_warn_experimental_method(const char *method) {
+  static SCR_TL bool warned[4];
+  static const char *const methods[] = {"encapsulateBits", "encapsulateKey", "decapsulateBits",
+                                        "decapsulateKey"};
+  size_t index = SCR_WC_COUNT(methods);
+  for (size_t i = 0; i < SCR_WC_COUNT(methods); i++)
+    if (strcmp(method, methods[i]) == 0) index = i;
+  if (index == SCR_WC_COUNT(methods) || warned[index]) return;
+  warned[index] = true;
+  char text[128];
+  snprintf(text, sizeof text,
+           "The %s Web Crypto API method is an experimental feature and might change at any time",
+           method);
+  scr_wc_warn_experimental(text);
+}
+
+/* (algorithm, encapsulationKey[, keyAlgorithm, extractable, keyUsages]) or
+ * (algorithm, decapsulationKey, ciphertext[, keyAlgorithm, extractable,
+ * keyUsages]). */
+static ScrPromise *scr_wc_kem_call(ScrDyn *args, bool decrypt, bool key_form) {
+  const char *method = decrypt ? (key_form ? "decapsulateKey" : "decapsulateBits")
+                               : (key_form ? "encapsulateKey" : "encapsulateBits");
+  char prefix[64];
+  snprintf(prefix, sizeof prefix, "Failed to execute '%s' on 'SubtleCrypto'", method);
+  size_t count = decrypt ? (key_form ? 6u : 3u) : (key_form ? 5u : 2u);
+  if (!scr_wc_required(prefix, args, count)) return scr_wc_rejected();
+  scr_wc_warn_experimental_method(method);
+  ScrDyn *v[6];
+  for (size_t i = 0; i < count; i++) v[i] = scr_dyn_arr_at(args, (double)i);
+  ScrPromise *result = NULL;
+  ScrBytes *ciphertext = NULL;
+  ScrBytes *shared = NULL;
+  ScrBytes *input = NULL;
+  ScrDyn *box = NULL;
+  ScrWcJwk jwk;
+  memset(&jwk, 0, sizeof jwk);
+  ScrWcAlgorithm imported;
+  memset(&imported, 0, sizeof imported);
+  size_t key_algorithm = decrypt ? 3u : 2u;
+  long usages = 0;
+  if (!scr_wc_algorithm_identifier(v[0])) goto done;
+  {
+    ScrStr *name = scr_wc_algorithm_name(v[0], "Algorithm");
+    if (!name) goto done;
+    const char *canonical = scr_wc_lookup(scr_wc_kem_names, SCR_WC_COUNT(scr_wc_kem_names), name);
+    scr_str_release(name);
+    if (!canonical) {
+      scr_throw_domex("NotSupportedError", "Unrecognized algorithm name");
+      goto done;
+    }
+    scr_wc_warn_experimental_algorithm(canonical);
+  }
+  if (key_form) {
+    /* Node converts the keyUsages sequence before the key algorithm. */
+    usages = scr_wc_key_usages(prefix, key_algorithm + 2, v[key_algorithm + 2]);
+    if (usages < 0) goto done;
+  }
+  if (!scr_wc_is_asymmetric_key(v[1])) {
+    scr_wc_type_error("ERR_INVALID_ARG_TYPE", "%s: 2nd argument is not of type CryptoKey.", prefix);
+    goto done;
+  }
+  if (decrypt) {
+    input = scr_wc_buffer_source(prefix, 2, v[2]);
+    if (!input) goto done;
+  }
+  if (key_form) {
+    if (!scr_wc_algorithm_identifier(v[key_algorithm])) goto done;
+    if (!scr_wc_normalize(v[key_algorithm], scr_wc_import_names, SCR_WC_COUNT(scr_wc_import_names),
+                          SCR_WC_OP_IMPORT, &imported))
+      goto done;
+  }
+  if (!scr_wc_asymmetric || !scr_wc_asymmetric->kem_encapsulate ||
+      !scr_wc_asymmetric->kem_decapsulate) {
+    scr_wc_unsupported(method, "the ML-KEM algorithms");
+    goto done;
+  }
+  if (decrypt) {
+    shared = scr_wc_asymmetric->kem_decapsulate(v[0], v[1], method, input);
+  }
+  else
+    shared = scr_wc_asymmetric->kem_encapsulate(v[0], v[1], method, &ciphertext);
+  if (!shared) goto done;
+  if (decrypt) {
+    /* decapsulateBits answers the shared secret as an ArrayBuffer, and
+     * decapsulateKey the CryptoKey it imports as the requested type. */
+    ScrDyn *value;
+    if (key_form) {
+      bool extractable = scr_dyn_truthy(v[key_algorithm + 1]);
+      value = scr_wc_import_key_sync("raw-secret", shared, &jwk, &imported, extractable, usages);
+    } else {
+      value = scr_array_buffer_from_bytes(shared);
+    }
+    if (value) result = scr_wc_deferred(value);
+    goto done;
+  }
+  box = scr_dyn_new_obj();
+  if (key_form) {
+    bool extractable = scr_dyn_truthy(v[key_algorithm + 1]);
+    ScrDyn *secret =
+        scr_wc_import_key_sync("raw-secret", shared, &jwk, &imported, extractable, usages);
+    if (!secret) {
+      scr_dyn_release(box);
+      box = NULL;
+      goto done;
+    }
+    scr_dyn_obj_set(box, "sharedKey", 9, secret);
+  } else {
+    scr_dyn_obj_set(box, "sharedKey", 9, scr_array_buffer_from_bytes(shared));
+  }
+  scr_dyn_obj_set(box, "ciphertext", 10, scr_array_buffer_from_bytes(ciphertext));
+  result = scr_wc_deferred(box);
+  box = NULL;
+done:
+  if (shared) scr_bytes_release(shared);
+  if (ciphertext) scr_bytes_release(ciphertext);
+  if (input) scr_bytes_release(input);
+  if (box) scr_dyn_release(box);
+  for (size_t i = 0; i < count; i++) scr_dyn_release(v[i]);
+  return result ? result : scr_wc_rejected();
+}
+
+ScrPromise *scr_webcrypto_encapsulate_bits(ScrDyn *args) {
+  return scr_wc_kem_call(args, false, false);
+}
+
+ScrPromise *scr_webcrypto_encapsulate_key(ScrDyn *args) {
+  return scr_wc_kem_call(args, false, true);
+}
+
+ScrPromise *scr_webcrypto_decapsulate_bits(ScrDyn *args) {
+  return scr_wc_kem_call(args, true, false);
+}
+
+ScrPromise *scr_webcrypto_decapsulate_key(ScrDyn *args) {
+  return scr_wc_kem_call(args, true, true);
 }
 
 /* ── deriveBits and deriveKey ─────────────────────────────────────────

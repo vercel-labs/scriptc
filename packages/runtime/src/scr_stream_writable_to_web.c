@@ -18,6 +18,9 @@ struct Stw3Ctx {
   ScrDyn *controller;       /* +1 once the sink's start() ran */
   ScrPromise *backpressure; /* +1 while a backpressured write waits */
   ScrPromise *closed;       /* +1 while the writer's close waits */
+  /* +1: the reason the adapter retired with, so a write or close that races
+   * the retire answers Node's error instead of resolving. */
+  ScrError *error;
   ScrClosure *eos;          /* +1: the finished() registration */
   /* +1: the close-step watcher that lets go when a stream closes without
    * emitting 'close' (a clean destroy of an emitClose:false stream, which
@@ -101,6 +104,7 @@ static void stw3_unref(Stw3Ctx *c) {
   if (c->controller) scr_dyn_release(c->controller);
   if (c->backpressure) scr_promise_release(c->backpressure);
   if (c->closed) scr_promise_release(c->closed);
+  if (c->error) scr_error_release(c->error);
   free(c);
 }
 
@@ -165,6 +169,7 @@ static void stw3_controller_error(Stw3Ctx *c, ScrError *err) {
 /* Fail what the adapter has pending with the writable's error: the undrained
  * write, the close, and the web stream itself (Node's eos error handler). */
 static void stw3_fail(Stw3Ctx *c, ScrError *reason) {
+  if (reason && !c->error) c->error = scr_error_retain(reason);
   if (c->backpressure) {
     ScrPromise *p = c->backpressure;
     c->backpressure = NULL;
@@ -285,12 +290,29 @@ static ScrDyn *stw3_write(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
   Stw3Ctx *c = stw3_of(cl);
   ScrDyn *chunk = argc > 0 ? args[0] : scr_dyn_undefined();
   if (!c->writable) {
-    /* Retired (the wrapped stream is gone): the web stream is closed or
-     * errored, so a write here only releases the call. */
+    /* Retired (the wrapped stream is gone): an error that retired it is the
+     * write's error, as the sink's failure would have answered; a clean
+     * retire releases the call. */
     ScrPromise *done = scr_promise_new();
-    scr_promise_fulfill_void(done);
+    if (c->error) stw3_reject(done, c->error);
+    else scr_promise_fulfill_void(done);
     ScrDyn *out = scr_dyn_new_promise(done);
     scr_promise_release(done);
+    stw3_unref(c);
+    return out;
+  }
+  /* A write that reaches a writable which already failed rejects with its
+   * error, as Node's sink does; the branches below only resolve a write whose
+   * own failure emptied the queue. The writable keeps its own lifecycle: one
+   * that auto-destroys has already done so, and one with autoDestroy: false
+   * stays open, as Node leaves it. */
+  ScrError *failed = scr_stream_errored(c->writable);
+  if (failed != NULL) {
+    ScrPromise *rejected = scr_promise_new();
+    stw3_reject(rejected, failed);
+    scr_error_release(failed);
+    ScrDyn *out = scr_dyn_new_promise(rejected);
+    scr_promise_release(rejected);
     stw3_unref(c);
     return out;
   }
@@ -349,7 +371,9 @@ static ScrDyn *stw3_close(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
   ScrPromise *p = scr_promise_new();
   if (!c->writable) {
     /* Retired after a destroy that never reported its end: Node leaves a
-     * close on such a stream pending. */
+     * close on such a stream pending. An error that retired it is the
+     * close's error. */
+    if (c->error) stw3_reject(p, c->error);
   } else if (c->closed || scr_stream_prop(c->writable, "writableEnded") != 0) {
     scr_promise_fulfill_void(p);
   } else {

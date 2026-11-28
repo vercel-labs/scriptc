@@ -14,6 +14,7 @@
  *       "zod": { "shapes": false }       // no shape-inference overlay
  *     },
  *     "nodeIslands": { "auto": true, "modules": ["src/plugins/*.ts"] },
+ *     "strict": true,                    // performance findings fail a build
  *     "wasm": ["build/module.wasm"],
  *     "source": true,                    // installed elsewhere: program source
  *     "typePatches": {                   // frontend/type-patches/layer.ts
@@ -108,6 +109,9 @@ export interface ProjectConfig {
   manifestText: string | null;
   packages: Map<string, PackageSetting>;
   nodeIslands: NodeIslandsSetting;
+  /** `scriptc.strict`: turn performance diagnostics and Node island use
+   * into build errors, as `--strict` does. */
+  strict: boolean;
   /** `scriptc.wasm`: module paths, resolved against the manifest. */
   wasm: string[];
   /** `scriptc.typePatches`, in manifest order. */
@@ -172,6 +176,7 @@ export function emptyProjectConfig(): ProjectConfig {
     manifestText: null,
     packages: new Map<string, PackageSetting>(),
     nodeIslands: defaultNodeIslands(),
+    strict: false,
     wasm: [],
     typePatches: [],
     localFiles: [],
@@ -390,6 +395,13 @@ export function parseProjectConfig(manifest: string, text: string): ProjectConfi
         else setting.nodeVersion = v;
       }
     }
+  }
+
+  const strict = root["strict"];
+  if (strict !== undefined) {
+    if (typeof strict !== "boolean")
+      problem(["strict"], `must be true or false, not ${shown(strict)}`, `write "strict": true`);
+    else config.strict = strict;
   }
 
   const patches = root["typePatches"];

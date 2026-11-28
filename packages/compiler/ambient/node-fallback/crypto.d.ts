@@ -102,6 +102,18 @@ declare module "crypto" {
   export function createPublicKey(
     key: PublicKeyInput | string | Buffer | KeyObject | JsonWebKeyInput,
   ): KeyObject;
+  export interface ParsePKCS12Options {
+    passphrase?: string | ArrayBuffer | ArrayBufferView | undefined;
+  }
+  export interface ParsedPKCS12 {
+    privateKey: KeyObject | null;
+    certificate: X509Certificate | null;
+    additionalCertificates: X509Certificate[];
+  }
+  export function parsePKCS12(
+    bundle: ArrayBuffer | ArrayBufferView,
+    options?: ParsePKCS12Options,
+  ): ParsedPKCS12;
   export interface KeyPairKeyObjectResult {
     publicKey: KeyObject;
     privateKey: KeyObject;
@@ -255,6 +267,16 @@ declare module "crypto" {
     type: "ml-kem-512" | "ml-kem-768" | "ml-kem-1024",
     options?: {},
   ): KeyPairKeyObjectResult;
+  export interface DhKeyPairKeyObjectOptions {
+    group?: string | undefined;
+    prime?: Buffer | undefined;
+    primeLength?: number | undefined;
+    generator?: number | undefined;
+  }
+  export function generateKeyPairSync(
+    type: "dh",
+    options: DhKeyPairKeyObjectOptions,
+  ): KeyPairKeyObjectResult;
   export function generateKeyPair(
     type: "x25519",
     options: {} | undefined,
@@ -273,6 +295,11 @@ declare module "crypto" {
   export function generateKeyPair(
     type: "ml-kem-512" | "ml-kem-768" | "ml-kem-1024",
     options: {} | undefined,
+    callback: (err: Error | null, publicKey: KeyObject, privateKey: KeyObject) => void,
+  ): void;
+  export function generateKeyPair(
+    type: "dh",
+    options: DhKeyPairKeyObjectOptions,
     callback: (err: Error | null, publicKey: KeyObject, privateKey: KeyObject) => void,
   ): void;
   /* crypto.encapsulate/decapsulate: the KEM wrappers over ML-KEM, raw RSA

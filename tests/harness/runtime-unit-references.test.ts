@@ -23,7 +23,8 @@
  * a line in the list with the reason the reference is unreachable without
  * the other unit. */
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import { executableLinkFeatures } from "../../packages/compiler/src/backend/executable-features.js";
@@ -112,7 +113,7 @@ const KNOWN_REFERENCES: Readonly<Record<string, readonly string[]>> = {
     "scr_tls_server_wrap_h2",
     "scr_tls_srv_opts_walk",
   ],
-  "scr_js_wrapper.c -> scr_dyn_invoke.c": ["scr_dyn_invoke", "scr_dyn_object_tag_of"],
+  "scr_js_wrapper.c -> scr_dyn_invoke.c": ["scr_dyn_object_tag_of"],
   "scr_json.c -> scr_dyn_invoke.c": ["scr_dyn_inherited_read"],
   // crypto.fipsGet reports DEP0093 through scr_emit_warning; every call
   // that reaches it (the deprecated crypto.fips read) selects the
@@ -299,5 +300,81 @@ test.runIf(available)(
         );
     }
     expect(problems).toEqual([]);
+  },
+);
+
+/* A program that never imports node:stream links the web-streams unit
+ * without the stream unit, and that object's references to the stream unit's
+ * pair hook are weak. ELF reads an unresolved weak reference as 0; Mach-O
+ * refuses the executable link, which a macOS build of such a program hit.
+ * Compiling the unit for Mach-O is the cheapest way to see the symbols that
+ * link reads: both must be defined in the object (as weak definitions the
+ * stream unit's strong ones replace). */
+const zigAvailable = (() => {
+  try {
+    execFileSync("zig", ["version"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
+/* A Mach-O object needs an nm that reads more than the host's own format:
+ * GNU nm answers "file format not recognized", so the check below reads the
+ * object with an LLVM nm (`llvm-nm`, or the `nm` that is one) and skips when
+ * neither is installed. */
+const machONm = (() => {
+  for (const candidate of ["llvm-nm", "nm"]) {
+    try {
+      const version = execFileSync(candidate, ["--version"], { encoding: "utf8" });
+      if (version.includes("LLVM")) return candidate;
+    } catch {
+      /* try the next candidate */
+    }
+  }
+  return null;
+})();
+
+/** symbolsOf over another format, read with the given nm. */
+function symbolsWith(nm: string, path: string): Symbols {
+  const symbols: Symbols = { defined: new Set(), undefined: new Set(), weak: new Set() };
+  const out = execFileSync(nm, ["-g", path], { encoding: "utf8", maxBuffer: 1 << 28 });
+  for (const line of out.split("\n")) {
+    const fields = line.trim().split(/\s+/);
+    if (fields.length === 2 && (fields[0] === "U" || fields[0] === "w"))
+      symbols.undefined.add(fields[1]!);
+    else if (fields.length === 3) symbols.defined.add(fields[2]!);
+  }
+  return symbols;
+}
+
+test.runIf(zigAvailable && machONm !== null)(
+  "a unit a web-streams-only program links defines its stream references for Mach-O",
+  () => {
+    const object = join(mkdtempSync(join(tmpdir(), "scr-macho-")), "scr_webstreams.o");
+    execFileSync(
+      "zig",
+      [
+        "cc",
+        "-target",
+        "aarch64-macos",
+        "-c",
+        "-I",
+        join(root, "packages/runtime/src"),
+        "-o",
+        object,
+        join(root, "packages/runtime/src/scr_webstreams.c"),
+      ],
+      { stdio: "ignore" },
+    );
+    /* Mach-O names carry a leading underscore. */
+    const symbols = symbolsWith(machONm!, object);
+    for (const name of ["scr_stream_web_pair_hook", "scr_stream_duplex_from_web"]) {
+      expect(
+        symbols.undefined.has(`_${name}`),
+        `${name} is an undefined reference in the Mach-O object a web-streams-only program links`,
+      ).toBe(false);
+      expect(symbols.defined.has(`_${name}`), `${name} must be defined there`).toBe(true);
+    }
   },
 );

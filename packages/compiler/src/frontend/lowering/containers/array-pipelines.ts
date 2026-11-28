@@ -2167,6 +2167,14 @@ function scalarizeRecordTemporaries(lowerer: Lowerer, fn: Omit<IrFunction, "name
     e.type.shapeId === shapeId &&
     e.fields.every((f) => !f.overflow);
   const expr = (e: IrExpr): boolean => {
+    // A record temporary DEFINED inside an expression (a `seqExpr` a
+    // record literal or an argument carries) is not a statement
+    // rewriteStmt reaches: its definition would stay while the local left
+    // the locals list. Keep such a local as it is.
+    if (e.kind === "seqExpr")
+      for (const st of e.stmts)
+        if ((st.kind === "varDecl" || st.kind === "assign") && candidates.has(st.localId))
+          bad.add(st.localId);
     if (e.kind === "recordGet" && e.obj.kind === "varRef" && candidates.has(e.obj.localId))
       return true;
     if (

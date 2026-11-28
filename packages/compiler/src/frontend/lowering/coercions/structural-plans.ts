@@ -10,6 +10,7 @@ import {
 } from "../../../ir/ir.js";
 import { type ClassInfo, findMethodOn, findGenericMethodOn } from "../lower-classes.js";
 import { recordKeyResultOk } from "../lower-exprs.js";
+import { canProjectBuiltinMembers } from "./builtin-member-records.js";
 import type { Lowerer } from "../lowerer.js";
 
 /** Whether a record pair relates ONLY through the index-signature rule: the
@@ -67,6 +68,10 @@ function overflowReadsAt(lowerer: Lowerer, from: IrRecordShape, to: IrType): boo
  * and conversions that can only throw are not structural conversions. */
 export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): WidthLift | null {
   if (typeEquals(src, dst)) return { how: "copy" };
+  // A builtin handle's members into a record the handle has them for (the
+  // process streams into `{ write }` / `{ isTTY }`): the member projection.
+  if (dst.kind === "record" && canProjectBuiltinMembers(lowerer, src, dst.shapeId))
+    return { how: "builtinMembers" };
   // A promise whose payload widens (`Promise<void>` into `Promise<unknown>`,
   // a settlement type gaining optional members): the checked payload
   // widening coerceToExpected applies at a promise slot. The promise keeps
@@ -166,7 +171,10 @@ export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): Width
           lowerer.shapes.get(src.shapeId)?.tuple === true &&
           arm.kind === "array") ||
         (src.kind === "object" && arm.kind === "record") ||
-        (src.kind === "record" && arm.kind === "object");
+        (src.kind === "record" && arm.kind === "object") ||
+        // A builtin handle into a record of its members (`process.stderr`
+        // into `{ isTTY } | undefined`): the member projection above.
+        (arm.kind === "record" && canProjectBuiltinMembers(lowerer, src, arm.shapeId));
       const armLift = sameFamily ? lowerer.widthLiftPlan(src, arm) : null;
       if (armLift !== null) {
         // A layout the source reaches only inside the assertion's checked

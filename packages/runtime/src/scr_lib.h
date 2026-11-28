@@ -42,6 +42,9 @@ ScrArr *scr_module_paths(double module_id);
 ScrArr *scr_module_children(double module_id);
 /* The checked-dynamic Module object for a record, one per record (+1), and
  * its children as a fresh checked-dynamic array (+1). */
+/** require.extensions / Module._extensions, one shared table per thread
+ * (+1): the three handlers as function values, the object null-prototype. */
+ScrDyn *scr_module_extensions(void);
 ScrDyn *scr_module_dyn_object(double module_id);
 ScrDyn *scr_module_dyn_children(double module_id);
 /* module.parent as a checked-dynamic value (+1): null, undefined or the
@@ -58,6 +61,8 @@ bool scr_module_loaded(double module_id);
 double scr_module_cache_get(ScrStr *filename);
 bool scr_module_cache_has(ScrStr *filename);
 ScrArr *scr_module_cache_keys(void);
+/* require.cache as a value: the one cache object, shared with Module._cache. */
+ScrDyn *scr_module_cache_object(void);
 
 int scr_lib_arg_count(void);
 const char *scr_lib_arg(int i);
@@ -89,6 +94,9 @@ ScrStr *scr_process_platform(void); /* +1 interned ("darwin", "linux", ...) */
 /* Whether OpenSSL, as Node 24 links it, names a digest `name` (its names,
  * aliases and object identifiers, case-insensitively). */
 bool scr_digest_known(const char *name, size_t len);
+/* SHA-1 over `data` (the RFC 6455 Sec-WebSocket-Accept hash): writes the
+ * digest into `out` and answers its length, 20. */
+size_t scr_sha1_digest(const unsigned char *data, size_t len, unsigned char out[32]);
 ScrStr *scr_process_cwd(void);      /* +1 fresh (getcwd) */
 
 /* Adds (or removes) a 'resize' listener on the process output stream of
@@ -178,6 +186,8 @@ ScrStr *scr_process_exec_path(void);
 /* process.arch: the binary's OWN architecture ("arm64", "x64") — Node's
  * answer for its own build on the same machine. +1 interned. */
 ScrStr *scr_process_arch(void);
+/* process.config (frozen, one per process; +1). */
+ScrDyn *scr_process_config(void);
 /* process.versions.node: the runtime's Node COMPATIBILITY TARGET — no
  * Node exists under a compiled binary, so this reports the version whose
  * semantics the runtime implements (SEMANTICS.md divergence 60). +1
@@ -506,6 +516,13 @@ void scr_process_set_debug_port(ScrDyn *port);
  * ERR_INVALID_ARG_TYPE). */
 bool scr_process_source_maps_enabled(void);
 void scr_process_set_source_maps_enabled(ScrDyn *enabled);
+/* node:module's source-map support (getSourceMapsSupport, setSourceMapsSupport,
+ * findSourceMap): the thread's frozen { enabled, nodeModules, generatedCode }
+ * record (+1), the setter it shares with process.setSourceMapsEnabled, and
+ * findSourceMap's undefined answer. */
+ScrDyn *scr_module_source_maps_support(void);
+void scr_module_set_source_maps_support(ScrDyn *enabled, ScrDyn *options);
+ScrDyn *scr_module_find_source_map(const ScrDyn *path);
 ScrArr *scr_active_resources(void);
 /* chdir(2) — throws Node's fs-shaped error on failure (syscall "chdir"). */
 void scr_process_chdir(ScrStr *dir);
@@ -766,6 +783,7 @@ ScrStats *scr_fs_lstat(ScrStr *path); /* +1, or throws; NO follow (lstat) */
 /* { throwIfNoEntry }: +1, or throws; with false, NULL when the entry is
  * missing (ENOENT/ENOTDIR) */
 ScrStats *scr_fs_stat_probe(ScrStr *path, bool no_follow, bool throw_if_no_entry);
+ScrStats *scr_fs_stat_opts(ScrStr *path, const ScrDyn *options, bool no_follow);
 ScrStats *scr_fs_fstat(double fd); /* +1, or throws */
 void scr_fs_fchmod(double fd, double mode);
 void scr_fs_fsync(double fd);
@@ -929,6 +947,8 @@ ScrPromise *scr_fsp_rm_opts_retry(ScrStr *path, bool recursive, bool force, doub
 ScrPromise *scr_fsp_stat(ScrStr *path);
 ScrPromise *scr_fsp_realpath(ScrStr *path);
 ScrPromise *scr_fsp_lstat(ScrStr *path);
+ScrPromise *scr_fsp_stat_opts(ScrStr *path, const ScrDyn *options);
+ScrPromise *scr_fsp_lstat_opts(ScrStr *path, const ScrDyn *options);
 typedef struct ScrDir ScrDir; /* fs.Dir, declared with its operations in scr_os.h */
 ScrPromise *scr_fsp_opendir(ScrStr *path, double buffer_size);
 ScrPromise *scr_dir_close_promise(ScrDir *d);

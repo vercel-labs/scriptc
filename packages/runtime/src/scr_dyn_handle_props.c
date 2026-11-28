@@ -906,8 +906,17 @@ static bool hp_integrity(ScrDyn *handle, int op, ScrDyn **out_value, bool *out_b
   return true;
 }
 
+/* The class's member read for `handle`, skipping its own-property table:
+ * the original ops the table wrapper forwards to. */
+static ScrDyn *hp_class_get(const ScrDyn *handle, const char *key, size_t key_len) {
+  ScrDynHandleTag tag = handle->v.handle.tag;
+  const ScrDynHandleOps *orig = hp_wrapped[tag] ? hp_orig[tag] : hp_current_ops(tag);
+  return orig->get ? orig->get(handle->v.handle.ptr, key, key_len) : NULL;
+}
+
 static const ScrDynHandlePropsHooks hp_hooks = {
-  .table = hp_table_of, .install = hp_install, .write_table = hp_write_table,
+  .table = hp_table_of, .install = hp_install, .class_get = hp_class_get,
+  .write_table = hp_write_table,
   .in = hp_in, .has_own = hp_has_own, .delete_key = hp_delete_key,
   .own_descriptor = hp_own_descriptor, .define = hp_define, .own_names = hp_own_names,
   .objwalk = hp_objwalk, .for_in_keys = hp_for_in_keys, .integrity = hp_integrity,

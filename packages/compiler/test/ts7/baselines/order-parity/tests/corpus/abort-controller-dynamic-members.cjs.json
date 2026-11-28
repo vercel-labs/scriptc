@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/abort-controller-dynamic-members.cjs"
+ ],
+ "diags": []
+}

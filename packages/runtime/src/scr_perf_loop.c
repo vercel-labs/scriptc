@@ -1713,6 +1713,26 @@ double scr_histo_linear_view(ScrDyn *handle, ScrDyn *step_arg) {
           next += step;
         }
         next_lowest = scr_histo_lowest_equivalent(h, next);
+        /* Every reporting level that stays inside this bucket records the
+         * same key with a zero count, and the last of them wins: jump to the
+         * bucket's last level instead of walking each step, so a large
+         * observation with a small step costs one pass over the buckets, not
+         * one iteration per reporting level. */
+        if (next_lowest == it.value) {
+          int64_t bound;
+          if (it.index + 1 < (int64_t)h->counts_len) {
+            bound = scr_histo_value_at_index(h, it.index + 1);
+          } else {
+            int64_t width = scr_histo_range_size(h, it.value);
+            bound = it.value > INT64_MAX - width ? INT64_MAX : it.value + width;
+          }
+          int64_t top = bound == INT64_MAX ? INT64_MAX : bound - 1;
+          int64_t last = top - top % step;
+          if (last > next) {
+            next = last;
+            next_lowest = scr_histo_lowest_equivalent(h, next);
+          }
+        }
         break;
       }
       if (!scr_histo_iter_move(&it)) {

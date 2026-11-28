@@ -81,6 +81,18 @@ size_t nameLength(StringRef Text, size_t Start) {
   return End - Start;
 }
 
+// The partitions, after the source partitions, that hold the functions of no
+// group: an eighth, a quarter or half of `Count` by the share of the
+// function bytes they hold, so an edit that moves the share a little keeps
+// the split.
+unsigned generatedPartitions(unsigned Count, uint64_t Generated,
+                             uint64_t Total) {
+  unsigned Divisor = Generated * 5 < Total       ? 8
+                     : Generated * 5 < Total * 2 ? 4
+                                                 : 2;
+  return std::max(1u, Count / Divisor);
+}
+
 uint32_t stableHash(StringRef Name) {
   uint32_t Hash = 0x811c9dc5u;
   for (char C : Name) {
@@ -90,20 +102,26 @@ uint32_t stableHash(StringRef Name) {
   return Hash;
 }
 
-constexpr unsigned MinGroupedPartitions = 32;
+constexpr unsigned MinGroupedPartitions = 16;
 
 // Places the functions whose root carries a source-module group by group: a
 // module's functions call each other most, so keeping them together leaves
 // fewer calls for the thin link to import across partitions. A group larger
 // than the mean partition, or than MaxChunkBytes, is divided into a power of
 // two of chunks by the hash of each root's name, so the division changes only
-// when the group's size doubles. Chunks are placed largest first, each in the
-// lighter of two partitions chosen by hashes of its key, after the functions
-// placed by name. The placement depends only on the module text and the
-// partition count. Modules with fewer than MinGroupedPartitions partitions
-// keep the placement by name, which balanceRoots evens out: with few
-// partitions per core, the balance of the largest partitions decides the
-// build time more than the imports.
+// when the group's size doubles. Each chunk goes to a source partition by the
+// hash of its key alone, and the functions of no group (the helpers the
+// emitter generates for the whole program) go by their names to the
+// partitions after the source partitions: an eighth, a quarter or half of all
+// partitions, by the share of function bytes they hold. A chunk's partition
+// so depends only on its key and the split, not on the size of other chunks
+// or of the generated helpers: an edit that changes the generated helpers,
+// as most edits of an untyped program do, leaves every source partition
+// whose own functions are unchanged as it was, and the helper cache reuses
+// its objects. Modules with fewer than MinGroupedPartitions partitions keep
+// the placement by name, which balanceRoots evens out: with few partitions
+// per core, the balance of the largest partitions decides the build time
+// more than the imports.
 void placeGroups(std::vector<Symbol> &Symbols, ArrayRef<unsigned> Roots,
                  unsigned Count) {
   if (Count < MinGroupedPartitions)
@@ -134,7 +152,6 @@ void placeGroups(std::vector<Symbol> &Symbols, ArrayRef<unsigned> Roots,
   uint64_t Chunk =
       std::min(MaxChunkBytes, std::max<uint64_t>(1, Total / Count));
   std::vector<std::string> Keys(Symbols.size());
-  StringMap<uint64_t> KeyBytes;
   for (unsigned I = 0; I < Symbols.size(); ++I) {
     const Symbol &S = Symbols[I];
     if (S.Kind != SymbolKind::Function || S.Partition == NoPartition)
@@ -150,25 +167,20 @@ void placeGroups(std::vector<Symbol> &Symbols, ArrayRef<unsigned> Roots,
                   : (Group + "#" +
                      Twine(stableHash(Symbols[Roots[I]].Name) % Chunks))
                         .str();
-    KeyBytes[Keys[I]] += Bytes(S);
   }
-  std::vector<std::pair<StringRef, uint64_t>> Order;
-  for (const auto &Entry : KeyBytes)
-    Order.push_back({Entry.getKey(), Entry.getValue()});
-  llvm::sort(Order, [](const auto &A, const auto &B) {
-    return A.second != B.second ? A.second > B.second : A.first < B.first;
-  });
-  StringMap<unsigned> Where;
-  for (const auto &[Key, Size] : Order) {
-    unsigned First = stableHash(Key) % Count;
-    unsigned Second = stableHash((Key + "/2").str()) % Count;
-    unsigned Chosen = Load[Second] < Load[First] ? Second : First;
-    Load[Chosen] += Size;
-    Where[Key] = Chosen;
+  uint64_t Generated = 0;
+  for (uint64_t Bytes : Load)
+    Generated += Bytes;
+  unsigned Sources = Count - generatedPartitions(Count, Generated, Total);
+  for (unsigned I = 0; I < Symbols.size(); ++I) {
+    Symbol &S = Symbols[I];
+    if (S.Kind != SymbolKind::Function || S.Partition == NoPartition)
+      continue;
+    S.Partition =
+        Keys[I].empty()
+            ? Sources + stableHash(Symbols[Roots[I]].Name) % (Count - Sources)
+            : stableHash(Keys[I]) % Sources;
   }
-  for (unsigned I = 0; I < Symbols.size(); ++I)
-    if (!Keys[I].empty())
-      Symbols[I].Partition = Where[Keys[I]];
 }
 
 // In modules of fewer than MinGroupedPartitions partitions, which
@@ -693,6 +705,20 @@ std::optional<ProgramPartitions> partitionProgramText(StringRef Text,
     Pos = Next;
   }
 
+  // The name of each type definition. A partition keeps only the types its
+  // own text names: the emitter's struct table covers the whole program, and
+  // every partition that parsed all of it paid to parse and check types it
+  // cannot use. A type name the grammar does not cover falls back to LLVM's
+  // splitter rather than guess.
+  StringMap<unsigned> TypeIndex;
+  for (unsigned I = 0; I < Types.size(); ++I) {
+    StringRef Line = Types[I];
+    size_t Length = nameLength(Line, 1);
+    if (Length == 0)
+      return std::nullopt;
+    TypeIndex[Line.substr(1, Length)] = I;
+  }
+
   for (Symbol &S : Symbols) {
     if (S.Kind == SymbolKind::Declaration)
       continue;
@@ -958,6 +984,62 @@ std::optional<ProgramPartitions> partitionProgramText(StringRef Text,
         Needed[Ref] = 1;
     }
 
+    // Declarations follow name order rather than the emitter's first-use
+    // order, which an edit elsewhere in the program can change.
+    std::vector<unsigned> Declared;
+    for (unsigned I = 0; I < Symbols.size(); ++I)
+      if (Needed[I] && (Symbols[I].Kind == SymbolKind::Declaration ||
+                        Symbols[I].Partition != P))
+        Declared.push_back(I);
+    llvm::sort(Declared, [&](unsigned A, unsigned B) {
+      return Symbols[A].Name < Symbols[B].Name;
+    });
+
+    // The types this partition's text names, and the types those definitions
+    // name. The emitter's table covers the whole program, so every partition
+    // would otherwise parse and check every app type.
+    DenseSet<unsigned> UsedTypes;
+    std::vector<unsigned> PendingTypes;
+    auto UseTypes = [&](StringRef Text) {
+      bool InQuotes = false;
+      for (size_t I = 0; I < Text.size(); ++I) {
+        char C = Text[I];
+        if (C == '\n')
+          InQuotes = false;
+        else if (C == '"')
+          InQuotes = !InQuotes;
+        else if (!InQuotes && C == '%') {
+          size_t Length = nameLength(Text, I + 1);
+          if (Length == 0)
+            continue;
+          auto It = TypeIndex.find(Text.substr(I + 1, Length));
+          if (It != TypeIndex.end() && UsedTypes.insert(It->second).second)
+            PendingTypes.push_back(It->second);
+          I += Length;
+        }
+      }
+    };
+    for (StringRef Text : NamedMetadata)
+      UseTypes(Text);
+    for (unsigned I : Nodes)
+      UseTypes(Metadata.find(I)->second.Line);
+    for (unsigned I : Declared) {
+      const Symbol &S = Symbols[I];
+      UseTypes(S.Kind == SymbolKind::Declaration ? StringRef(S.Header)
+                                                 : StringRef(S.Declaration));
+    }
+    for (SymbolKind Kind : {SymbolKind::Variable, SymbolKind::Function})
+      for (unsigned I : Owned[P]) {
+        const Symbol &S = Symbols[I];
+        if (S.Kind != Kind)
+          continue;
+        UseTypes(S.Local && Exported[I] ? StringRef(S.PromotedHeader)
+                                        : StringRef(S.Header));
+        UseTypes(S.Body);
+      }
+    for (size_t K = 0; K < PendingTypes.size(); ++K)
+      UseTypes(Types[PendingTypes[K]]);
+
     std::string &Out = Result.Sources[P];
     Out.reserve(Bytes + (Bytes >> 3));
     auto Line = [&](StringRef Text) {
@@ -969,18 +1051,9 @@ std::optional<ProgramPartitions> partitionProgramText(StringRef Text,
     };
     for (StringRef Text : Header)
       Line(Text);
-    for (StringRef Text : Types)
-      Line(Text);
-    // Declarations follow name order rather than the emitter's first-use
-    // order, which an edit elsewhere in the program can change.
-    std::vector<unsigned> Declared;
-    for (unsigned I = 0; I < Symbols.size(); ++I)
-      if (Needed[I] && (Symbols[I].Kind == SymbolKind::Declaration ||
-                        Symbols[I].Partition != P))
-        Declared.push_back(I);
-    llvm::sort(Declared, [&](unsigned A, unsigned B) {
-      return Symbols[A].Name < Symbols[B].Name;
-    });
+    for (unsigned I = 0; I < Types.size(); ++I)
+      if (UsedTypes.contains(I))
+        Line(Types[I]);
     for (unsigned I : Declared) {
       const Symbol &S = Symbols[I];
       Line(S.Kind == SymbolKind::Declaration ? S.Header

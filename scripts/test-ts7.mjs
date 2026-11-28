@@ -5,6 +5,7 @@ import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { allOrderEntries, orderBaselinePath } from "./ts7-order-fixtures.mjs";
+import { parseShard } from "./ts7-shard.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -78,6 +79,9 @@ if (cliPackage.scripts?.build !== "node node_modules/tsc-ts/bin/tsc-ts.js -p tsc
 }
 
 const vitest = resolve(repoRoot, "node_modules/vitest/vitest.mjs");
+const shardIndex = process.argv.indexOf("--shard");
+const shard = shardIndex === -1 ? undefined : process.argv[shardIndex + 1];
+parseShard(shard);
 const schema = spawnSync(
   process.execPath,
   [resolve(repoRoot, "scripts/generate-ts7-ast-schema.mjs"), "--check"],
@@ -87,7 +91,11 @@ if (schema.error || schema.status !== 0) process.exit(1);
 const result = spawnSync(process.execPath, [vitest, "run", "packages/compiler/test/ts7"], {
   cwd: repoRoot,
   stdio: "inherit",
-  env: { ...process.env, SCRIPTC_TS7_ALL: "1" },
+  env: {
+    ...process.env,
+    SCRIPTC_TS7_ALL: "1",
+    ...(shard === undefined ? {} : { SCRIPTC_TS7_SHARD: shard }),
+  },
 });
 
 if (result.error !== undefined) {

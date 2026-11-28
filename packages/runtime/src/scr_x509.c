@@ -784,6 +784,23 @@ ScrBytes *scr_crypto_x509_raw_str(ScrStr *pem) {
   return scr_x509_raw((const uint8_t *)pem->data, pem->len);
 }
 
+/* The constructor's input when the compiler cannot tell its type: Node
+ * checks the argument first (a string, Buffer, TypedArray or DataView;
+ * anything else throws ERR_INVALID_ARG_TYPE naming "buffer"), then parses
+ * it as the static forms do. */
+ScrBytes *scr_crypto_x509_raw_dyn(ScrDyn *data) {
+  if (data->kind == SCR_DYN_STR)
+    return scr_x509_raw((const uint8_t *)data->v.str->data, data->v.str->len);
+  if (data->kind == SCR_DYN_BYTES) {
+    ScrBytes *bytes = data->v.bytes;
+    SCR_BYTES_SNAPSHOT(bytes);
+    return scr_x509_raw(SCR_X509_DER(bytes));
+  }
+  scr_dyn_arg_type_fail("buffer",
+                        "of type string or an instance of Buffer, TypedArray, or DataView", data);
+  return NULL;
+}
+
 ScrStr *scr_crypto_x509_subject(ScrBytes *der) { return scr_x509_name_field(der, true); }
 
 ScrStr *scr_crypto_x509_issuer(ScrBytes *der) { return scr_x509_name_field(der, false); }

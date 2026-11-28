@@ -21,6 +21,11 @@ import { runStep, type Track, STEP_TIMEOUT_MS } from "./step-timeout.js";
 import { createNodeOracleCache } from "./oracle-cache.js";
 import { libnodePack, requiresLibnode } from "./libnode.js";
 import { tscOracleEntry, wantsTscOracle } from "./jsx-oracle.js";
+import {
+  legacyDecoratorOracleEntry,
+  wantsDecoratorMetadata,
+  wantsLegacyDecorators,
+} from "./tsc-legacy-decorators.js";
 import { programDefines } from "./define-directive.js";
 
 type TargetCpu = NonNullable<NonNullable<Parameters<typeof compile>[1]>["targetCpu"]>;
@@ -207,6 +212,10 @@ function wantsTscDecorators(file: string): boolean {
 
 function nodeOracleFile(file: string): string {
   if (wantsTscOracle(directiveHead(file))) return tscOracleEntry(file, cacheDir);
+  if (wantsLegacyDecorators(directiveHead(file)))
+    return legacyDecoratorOracleEntry(file, cacheDir, {
+      metadata: wantsDecoratorMetadata(directiveHead(file)),
+    });
   if (!wantsTscDecorators(file)) return file;
   const src = readFileSync(file, "utf8");
   const out = ts5.transpileModule(src, {

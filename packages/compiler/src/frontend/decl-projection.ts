@@ -92,6 +92,16 @@ function castOrigin(checker: ts.TypeChecker, node: ts.Node, type: ts.Type): stri
  * recognizes boundary casts and parameters by it. */
 export const DECL_BOUNDARY_PREFIX = "__scriptc_decl_";
 
+/** Names of the iteration markers the projection emits. A marker wraps a
+ * package-produced iterable (`for await (const x of __scriptc_iter_0(src))`);
+ * its generated declaration gives the loop binding the declaration world's
+ * element type, and the lowering consumes the marker as its source. */
+export const DECL_ITER_PREFIX = "__scriptc_iter_";
+
+export function isDeclIterMarkerName(name: string): boolean {
+  return name.startsWith(DECL_ITER_PREFIX);
+}
+
 /** The generated declaration file's base name. */
 export const DECL_BOUNDARY_FILE = "__scriptc_decl_boundary__.d.ts";
 
@@ -658,6 +668,10 @@ export function planDeclProjection(input: DeclProjectionInput): DeclProjection |
   const printer = new TypePrinter(declChecker);
   const plan: string[] = [];
   const edits = new Map<string, Edit[]>();
+  /** The marker declarations, one per iteration site (a `declare
+   * function` whose result names the projected element type). */
+  const iterDeclarations: string[] = [];
+  let iterSites = 0;
 
   const typeAt = (checker: ts.TypeChecker, node: ts.Node): ts.Type | null => {
     try {
@@ -820,8 +834,76 @@ export function planDeclProjection(input: DeclProjectionInput): DeclProjection |
       return true;
     };
 
+    /** Iterable expressions the projection wraps in a marker; considerExpr
+     * leaves them to that wrapper. */
+    const handledByIteration = new Set<ts.Node>();
+    /** Whether the declaration-world expression is produced by a package:
+     * a call or construction of a package function or class, a member read
+     * on a package value, or a binding imported from the package. */
+    const producedByPackage = (d: ts.Expression): boolean => {
+      if (ts.isCallExpression(d) || ts.isNewExpression(d)) {
+        const callee = d.expression;
+        const target = ts.isPropertyAccessExpression(callee) ? callee.name : callee;
+        return declaredInPackage(declSymbol(target));
+      }
+      if (ts.isPropertyAccessExpression(d)) return declaredInPackage(declSymbol(d.name));
+      // An index of a package value (`pkg.list[0]`): the package produces
+      // the container; the element type comes from the declaration world.
+      if (ts.isElementAccessExpression(d)) return declaredInPackage(declSymbol(d.expression));
+      if (ts.isIdentifier(d)) {
+        const raw = (() => {
+          try {
+            return declChecker.getSymbolAtLocation(d);
+          } catch {
+            return undefined;
+          }
+        })();
+        return (
+          raw !== undefined &&
+          (raw.flags & ts.SymbolFlags.Alias) !== 0 &&
+          declaredInPackage(resolveAlias(raw))
+        );
+      }
+      return false;
+    };
+    /** `for (const x of expr)` / `for await (const x of expr)` whose
+     * iterable a package produces: the declaration world types the loop
+     * BINDING as the element type, for every iterable shape. When that type
+     * projects, the iterable is wrapped in a generated marker whose
+     * declaration answers that element type, so the loop body narrows as
+     * tsc does. The lowering consumes the marker and iterates the wrapped
+     * expression unchanged. */
+    const considerLoop = (jsNode: ts.Node, declNode: ts.Node): void => {
+      if (!ts.isForOfStatement(jsNode) || !ts.isForOfStatement(declNode)) return;
+      if (handledByIteration.has(jsNode.expression)) return;
+      if (!producedByPackage(declNode.expression as ts.Expression)) return;
+      const list = declNode.initializer;
+      if (!ts.isVariableDeclarationList(list)) return;
+      const binding = list.declarations.nodes[0];
+      if (binding === undefined) return;
+      const elementType = typeAt(declChecker, binding.name);
+      if (elementType === null || isAnyish(elementType)) return;
+      if (!printer.projectable(elementType)) return;
+      const alias = printer.project(elementType);
+      if (alias === null) return;
+      const name = `${DECL_ITER_PREFIX}${iterSites++}`;
+      iterDeclarations.push(
+        jsNode.awaitModifier !== undefined
+          ? `declare function ${name}(source: AsyncIterable<unknown> | Iterable<unknown>): AsyncIterable<${alias}>;`
+          : `declare function ${name}(source: Iterable<unknown>): Iterable<${alias}>;`,
+      );
+      handledByIteration.add(jsNode.expression);
+      const start = ts.tokenStartOfNode(jsNode.expression);
+      fileEdits.push({ start, end: start, text: `${name}(` });
+      fileEdits.push({ start: jsNode.expression.end, end: jsNode.expression.end, text: ")" });
+      plan.push(
+        `${file}:${start}: iterate ${jsSf.text.slice(start, Math.min(jsNode.expression.end, start + 60)).replace(/\s+/g, " ")} as ${alias}`,
+      );
+    };
+
     const considerExpr = (jsNode: ts.Node, declNode: ts.Node): void => {
       if (!readsExpressionType(jsNode)) return;
+      if (handledByIteration.has(jsNode)) return;
       const isCall =
         ts.isCallExpression(jsNode) ||
         ts.isNewExpression(jsNode) ||
@@ -995,6 +1077,7 @@ export function planDeclProjection(input: DeclProjectionInput): DeclProjection |
       if (ts.isTypeNode(jsNode) || ts.isExpressionWithTypeArguments(jsNode)) {
         if (considerType(jsNode, declNode)) return;
       } else {
+        considerLoop(jsNode, declNode);
         considerParam(jsNode, declNode);
         considerExpr(jsNode, declNode);
       }
@@ -1197,7 +1280,7 @@ export function planDeclProjection(input: DeclProjectionInput): DeclProjection |
   const declFile = `${input.outDir.split("\\").join("/")}/${DECL_BOUNDARY_FILE}`;
   const declText =
     "// Generated by scriptc: types projected from npm package declarations.\n" +
-    printer.declarations.join("\n") +
+    [...printer.declarations, ...iterDeclarations].join("\n") +
     "\n";
   return { files, declFile, declText, plan };
 }

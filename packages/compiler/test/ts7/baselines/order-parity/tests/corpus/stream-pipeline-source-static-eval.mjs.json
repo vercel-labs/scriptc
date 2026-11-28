@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/stream-pipeline-source-static-eval.mjs"
+ ],
+ "diags": []
+}

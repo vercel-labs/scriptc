@@ -27,4 +27,8 @@ export const jsSignatures = defineLibFnSignatures({
   "js.increment": { argTypes: [JSVAL, BOOL], result: JSVAL },
   "js.negate": { argTypes: [JSVAL], result: JSVAL },
   "js.toNumberCoerce": { argTypes: [JSVAL], result: F64 },
+  /** ToNumber whose undefined value is NaN inline (a missing dictionary
+   * key) and whose present number takes js.toF64's inline unbox; every
+   * other value keeps js.toF64's checked TypeError. */
+  "js.toNumberOrNaN": { argTypes: [JSVAL], result: F64 },
 });

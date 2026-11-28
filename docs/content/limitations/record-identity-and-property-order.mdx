@@ -1,10 +1,12 @@
-A record converted to a record type with a different set of properties, such as a narrower shape or one that adds optional properties, is copied.
-Mutations through the converted reference do not affect the original, and the copy is not `===` to it.
+A record converted to a narrower record type whose fields the original stores keeps one object when the program can tell the conversion: it writes a field through either type, compares values of the converted type by identity, or passes either to code scriptc cannot follow.
+The narrower name is a view of the original record, so a field written through either name is seen through the other and an identity comparison agrees, as in Node.js.
+A conversion to a record type that adds properties still copies.
+So does a conversion stored in an array element, a `Map` or `Set` entry, or a dictionary table, and a conversion in a program that starts workers or publishes values, where one object cannot be shared.
 Empty record layouts are also snapshots because they have no property storage.
-`scriptc coverage` and `scriptc build` report `SC6001` at each conversion that copies a value something else can still reach, in any position: an argument, a return value, a field, an array element, a collection value, a callback parameter.
+`scriptc coverage` and `scriptc build` report `SC6001` at each conversion that still copies a value something else can still reach, in any position: an argument, a return value, a field, an array element, a collection value, a callback parameter.
 The report is made when the program writes a field or element of either type, compares values of the converted type by identity (including `includes`, `indexOf`, and Set or Map keys), or passes either type to code scriptc cannot follow.
 It is made from the compiled program, so a program that builds without it does not lose such a write or comparison.
-It judges types rather than the path one value takes, so it can name a conversion whose copy the program never tells from the original.
+It judges types rather than the path one value takes, so every conversion of an observed pair of record types keeps one object or is reported.
 A conversion of a new value, such as an object literal, a spread, or the result of a function that returns one, is not reported, because nothing else can reach that value.
 The same holds for an array converted to an array of another element type and for a tuple converted to an array.
 A record that something else can still reach is refused with `SC1090` where it is converted to a class instance and the program writes either type, because the conversion constructs a new instance where Node.js has the one plain object.

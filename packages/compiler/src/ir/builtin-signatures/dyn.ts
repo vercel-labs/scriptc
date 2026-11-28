@@ -108,7 +108,7 @@ export const dynSignatures = defineLibFnSignatures({
   "dyn.iteratorCanStep": { argTypes: [DYN, DYN], result: BOOL },
   "dyn.iteratorStep": { argTypes: [DYN], result: DYN },
   "dyn.iteratorStepDone": { argTypes: [DYN], result: BOOL },
-  "dyn.setGeneratorMembers": { argTypes: [DYN, DYN], result: VOID },
+  "dyn.setGeneratorMembers": { argTypes: [DYN, DYN, DYN], result: VOID },
   "dyn.iteratorHelperMethod": { argTypes: [STRING], result: DYN },
   "dyn.collectionIteratorIndex": { argTypes: [DYN], result: F64 },
   "dyn.mapSeedEntries": { argTypes: [DYN], result: DYN },
@@ -249,6 +249,10 @@ export const dynSignatures = defineLibFnSignatures({
   "dyn.numberConstructor": { argTypes: [DYN], result: F64 },
   "dyn.bigintConstructor": { argTypes: [DYN], result: BIGINT_T },
   "dyn.toNumberCoerce": { argTypes: [DYN], result: F64 },
+  /** ToNumber where the undefined value is NaN and a present number takes
+   * the inline jsval unbox (js.toNumberOrNaN): a non-null asserted
+   * dictionary read consumed numerically. Borrowed dyn; f64 result. */
+  "dyn.toNumberOrNaN": { argTypes: [DYN], result: F64 },
   "dyn.add": { argTypes: [DYN, DYN], result: DYN },
   "dyn.arithmetic": { argTypes: [DYN, DYN, STRING], result: DYN },
   "dyn.compare": { argTypes: [DYN, DYN, STRING], result: BOOL },
@@ -460,6 +464,7 @@ export const dynSignatures = defineLibFnSignatures({
    * call: always throws Node's TypeError [ERR_MISSING_ARGS] with Node's
    * own (verbatim, doubly-wrapped) message. */
   "dyn.structuredClone": { argTypes: [DYN, DYN], result: DYN },
+  "dyn.truthy": { argTypes: [DYN], result: BOOL },
   /** The declaration-typed boundary's adoption (decl-projection.ts):
    * `source` is the dynamic value a boundary cast just converted, and
    * `capsule` a live capsule of the native value built from it. Every
@@ -489,4 +494,5 @@ export const dynSignatures = defineLibFnSignatures({
   /** The same refusal given the transfer list's first member, an
    * ArrayBuffer: a Buffer pool slab gets Node's untransferable message. */
   "dyn.cloneTransferFailWith": { argTypes: [DYN], result: DYN },
+  "dyn.isPlainObject": { argTypes: [DYN], result: BOOL },
 });

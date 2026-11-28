@@ -573,7 +573,7 @@ test("pull requests run the full suite on Linux and the darwin suite on macOS", 
   expect(linux.steps.some((step) => step.uses === "./.github/actions/llvm-linux")).toBe(true);
   expect(
     linux.steps.find((step) => step.uses?.startsWith("actions/download-artifact"))!.with!.name,
-  ).toBe("native-linux-x64-gnu");
+  ).toBe("ci-native-linux-x64-gnu");
   expect(macos["runs-on"]).toBe("macos-15");
   expect(macos.needs).toContain("native_macos");
   // Pull requests and manual runs with macos_suite set to darwin run the darwin

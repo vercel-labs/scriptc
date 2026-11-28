@@ -1,4 +1,5 @@
 import type { NativeOptimization } from "../backend/optimization.js";
+import { SANITIZER_FLAG } from "../backend/sanitizer-checks.js";
 import { compilationTiming } from "../timing.js";
 import {
   existsSync,
@@ -46,6 +47,7 @@ import {
   NativeCodegenError,
   nativePartitionPaths,
   nativeProgramPartitions,
+  GENERATED_DISPATCH_OPT,
 } from "../backend/native-codegen-core.js";
 import { llvmRefusalDiags } from "../backend/target-diagnostics.js";
 import { nativeCodegenDiag, type ScrDiagnostic } from "../diagnostics/diagnostic.js";
@@ -421,6 +423,7 @@ export class NativeCompiler {
       outputKind,
       partitions,
       ...(partitionCache === null ? {} : { partitionCache }),
+      ...(optimization === "release" ? { dispatchOpt: GENERATED_DISPATCH_OPT } : {}),
       ...(profile === undefined ? {} : { profile }),
     });
     if (this.cache !== null && key !== null) {
@@ -795,7 +798,7 @@ export class NativeCompiler {
         const linkMap = join(stage, "link.map");
         const mapArgs = staticLinkMapArgs(target, options.staticLink === true, linkMap);
         const linkArgsWith = (withLld: boolean): string[] => [
-          ...(options.sanitize ? ["-fsanitize=address"] : toolchain.linkerArgs),
+          ...(options.sanitize ? [SANITIZER_FLAG] : toolchain.linkerArgs),
           ...(withLld ? lld : []),
           ...hugeTextLinkerArgs(hugeText, (withLld && lld.length !== 0) || zig),
           ...plan.driverFlags,

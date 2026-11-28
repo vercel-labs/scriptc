@@ -1,3 +1,4 @@
+import { textOfPart } from "../../text-parts.js";
 import { expect, test } from "vitest";
 import {
   BOOL,
@@ -104,10 +105,14 @@ test("separate LLVM parts preserve complete module bytes in native, WASI, and de
     {},
     { wasi: true, pointerBits: 32 as const },
     { debugSources: new Map([[loc.file, "function main() {}"]]) },
+    // Every function's text as bytes, off the V8 heap.
+    { offHeapTextChars: 0 },
   ]) {
     const expected = emitLlvmModule(module, options);
-    expect(new LlEmitter(module, options).emitParts().join("\n")).toBe(expected);
-    expect(emitLlvmModuleSource(module, options)).toBe(expected);
+    expect(new LlEmitter(module, options).emitParts().map(textOfPart).join("\n")).toBe(expected);
+    const source = emitLlvmModuleSource(module, options);
+    // A parts array carries its own separators (the writer concatenates).
+    expect(typeof source === "string" ? source : source.map(textOfPart).join("")).toBe(expected);
   }
 });
 

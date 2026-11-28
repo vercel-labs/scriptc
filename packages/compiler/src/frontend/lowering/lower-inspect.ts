@@ -35,6 +35,7 @@ import {
   arrayOf,
   CLASS_FIELD_ATTRIBUTES_PREFIX,
   classDynViewSupported,
+  classJsName,
   DYN_CLASS_PROPERTIES,
   isClassOwnEnumerableFieldName,
   isDirentShape,
@@ -3849,12 +3850,13 @@ export function lowerConsoleInspectArg(
     return { kind: "libCall", fn: "insp.buffer", args: [value], type: STRING, loc };
   }
   if (t.kind === "void") {
-    // Node prints "undefined" for a void call's result; a void expression
-    // is not a value here, so the composition fences with the rewrite.
+    // A void signature is not evidence of undefined: a callee that returns
+    // a value still answers it in Node, and this lowering carries no value
+    // here. Logging undefined instead would change the output.
     lowerer.unsupported(
       "SC1090",
       node,
-      `${surface} of a void call result (call it as its own statement, then ${surface}(undefined))`,
+      `${surface} of a void call result (TypeScript types the result void; when the callee returns a value Node prints it, so logging undefined instead would change the output — return the value from the callee)`,
     );
   }
   // A read that always throws (an ambient name, a binding whose
@@ -4360,8 +4362,11 @@ function directCallableInspect(lowerer: Lowerer, node: ts.Expression, loc: SrcLo
       // Node's Error constructors are native functions, not classes.
       return strLit(`[Function: ${cls.def.name.replace(/^%/, "")}]`, loc);
     }
-    const base = cls.base ? ` extends ${cls.base.def.name.replace(/^%/, "")}` : "";
-    return strLit(`[class ${cls.def.name}${base}]`, loc);
+    // The printed name is the class object's JavaScript name, not the
+    // internal one: a class declared inside a function has a scoped
+    // internal name (`%cx…Point`) that Node never prints.
+    const base = cls.base ? ` extends ${classJsName(cls.base.def)}` : "";
+    return strLit(`[class ${classJsName(cls.def)}${base}]`, loc);
   }
   const decl = sym.declarations[0];
   if (!decl) return null;
@@ -5785,7 +5790,7 @@ export function heldFormatArgs(
       lowerer.unsupported(
         "SC1090",
         node,
-        "util.format of a void call result (call it as its own statement, then pass undefined)",
+        "util.format of a void call result (TypeScript types the result void; when the callee returns a value Node prints it, so passing undefined instead would change the output — return the value from the callee)",
       );
     }
     // The space-joined branch prints these values as before; only a string

@@ -36,6 +36,13 @@ export const icuSignatures = defineLibFnSignatures({
   /** `new Intl.DateTimeFormat(locales, options)` (and the call without
    * `new`): as icu.numberFormatNew; a DateTimeFormat handle (+1). */
   "icu.dateTimeFormatNew": { argTypes: [STRING, DYN], result: DYN },
+  /** `new Intl.ListFormat(locales, options)` (and the call without
+   * `new`): as icu.numberFormatNew; a ListFormat handle (+1). */
+  "icu.listFormatNew": { argTypes: [STRING, DYN], result: DYN },
+  /** `lf.format(list)`: the formatted text (+1). The list is read at run
+   * time as an iterable whose elements must be strings (Node's TypeError
+   * otherwise); undefined formats the empty list. */
+  "icu.listFormatFormat": { argTypes: [DYN, DYN], result: STRING },
   /** `dtf.format(date)` over a time value: the text (+1); a RangeError
    * outside the time value range. */
   "icu.dateTimeFormatFormat": { argTypes: [DYN, F64], result: STRING },
@@ -48,6 +55,19 @@ export const icuSignatures = defineLibFnSignatures({
    * for one call. "Invalid Date" for an invalid date, before any option
    * is read. */
   "icu.dateToLocale": { argTypes: [F64, F64, STRING, DYN], result: STRING },
+  /** The same with a computed locales argument: the runtime checks the time
+   * value first, so an invalid Date answers "Invalid Date" without
+   * canonicalizing the locale (or reading the options), as Node does.
+   * Result +1. */
+  "icu.dateToLocaleDyn": { argTypes: [F64, F64, DYN, DYN], result: STRING },
+  /** A locales argument the program computed (a checked-dynamic value): the
+   * tag the formatter builds at, by ECMA-402's CanonicalizeLocaleList as
+   * far as the runtime models it. Undefined and a value without a locale
+   * list length (a number, a boolean, a plain object) name the empty list,
+   * which selects the default locale; a string is its own tag, validated
+   * by the formatter; null is Node's TypeError; a non-empty list is locale
+   * negotiation and is refused by name. Result +1. */
+  "icu.localeValue": { argTypes: [DYN], result: STRING },
   /** `new Intl.Segmenter(locale?, { granularity: "word" })`: ICU's UAX
    * #29 word iterator (scr_intl.c over ICU), which the
    * table-driven grapheme segmenter above cannot express. The argument is

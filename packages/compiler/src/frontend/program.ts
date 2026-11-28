@@ -135,6 +135,7 @@ import {
   overridesDtsPath,
   packageShimRoot,
   tsgoPath,
+  webStreamsDtsPath,
 } from "./dts-paths.js";
 import {
   builtinDefaultImportModule,
@@ -718,9 +719,10 @@ export interface TypeWorldDifferences {
    * (normalized paths), or null when the project has no tsconfig. A
    * JavaScript file outside this set is a dependency's shipped code. */
   projectSources: ReadonlySet<string> | null;
-  /** The files with decorators the project compiles under
-   * `experimentalDecorators`: refused by name (SC0016), which stands in for
-   * the checker's errors about those decorators' signatures. */
+  /** Every file whose tsconfig sets `experimentalDecorators`: its classes
+   * and their decorators take the legacy calling convention, evaluation
+   * order and descriptor rules (lowering reads the set through LowerOptions).
+   * A file compiled with `emitDecoratorMetadata` is still refused (SC0016). */
   legacyDecoratorFiles: ReadonlySet<string>;
   /** The project's `module` setting, or null. */
   projectModule: string | null;
@@ -1142,16 +1144,61 @@ function erasedSpecifier(specifier: ts.Node): boolean {
  * (an aborted undici fetch rejects with one). The declaration joins the
  * program exactly then: a program file belongs to a package implementation
  * and no file of the adopted Node types declares the global. Decided from the
- * program's files, like the fallback module roots. */
+ * program's files, like the fallback module roots.
+ *
+ * The web stream globals are the other shape: Node's runtime provides them
+ * whatever the project's @types/node says, and a project standing on
+ * @types/node 20.11 and earlier can name them from its own code (its tsc
+ * accepts the names when any dependency's declarations carry them, memfs'
+ * empty interface for one). The declaration joins when a program source
+ * names one of the globals and no declaration file of the program declares
+ * them. */
 function nodeTypesSupplementRoots7(program: ts.Program, host: ts.Ts7Host): string[] {
   const names = program.getSourceFileNames();
+  const roots: string[] = [];
   const shims = tsgoPath(packageShimRoot()) + "/";
-  if (!names.some((name) => tsgoPath(name).startsWith(shims))) return [];
-  for (const name of names) {
-    if (isNodeTypesPath(name) && /\bvar\s+DOMException\b/.test(host.sourceText(name) ?? ""))
-      return [];
+  if (names.some((name) => tsgoPath(name).startsWith(shims))) {
+    let declared = false;
+    for (const name of names) {
+      if (isNodeTypesPath(name) && /\bvar\s+DOMException\b/.test(host.sourceText(name) ?? "")) {
+        declared = true;
+        break;
+      }
+    }
+    if (!declared) roots.push(domExceptionDtsPath());
   }
-  return [domExceptionDtsPath()];
+  if (programNamesWebStreams7(program) && !programDeclaresWebStreamGlobals7(program, host))
+    roots.push(webStreamsDtsPath());
+  return roots;
+}
+
+/** True when a declaration file of the program already declares the global
+ * (the adopted @types/node of 22 and later, a DOM lib, or any dependency's
+ * own declaration): the supplement would collide, and the global resolves
+ * without it. Only declaration files can declare a global, and only a value
+ * binding matters — an interface alone does not carry the name in a value
+ * position. */
+function programDeclaresWebStreamGlobals7(program: ts.Program, host: ts.Ts7Host): boolean {
+  for (const name of program.getSourceFileNames())
+    if (name.includes(".d.") && /\bvar\s+ReadableStream\b/.test(host.sourceText(name) ?? ""))
+      return true;
+  return false;
+}
+
+/** The web stream globals' names, each matched as a whole word: an ASCII
+ * letter, digit, `$` or `_`, or any code unit outside ASCII, on neither
+ * side. */
+const WEB_STREAM_GLOBAL_WORD =
+  /(?<![0-9A-Za-z$_\u0080-\uffff])(?:ReadableStream|ReadableStreamDefaultReader|ReadableStreamBYOBReader|ReadableStreamBYOBRequest|ReadableStreamDefaultController|ReadableByteStreamController|WritableStream|WritableStreamDefaultWriter|WritableStreamDefaultController|TransformStream|TransformStreamDefaultController|CompressionStream|DecompressionStream|CountQueuingStrategy|ByteLengthQueuingStrategy|TextEncoderStream|TextDecoderStream)(?![0-9A-Za-z$_\u0080-\uffff])/;
+
+/** True when a program source (user code or compiled npm JavaScript) names a
+ * web stream global. Like programNamesTemporal7, a cheap syntactic scan of
+ * the implementation files root discovery already materialized; a mention in
+ * a comment or string also counts, which only adds the declarations. */
+function programNamesWebStreams7(program: ts.Program): boolean {
+  for (const sf of program.getImplementationSourceFiles())
+    if (ts.sourceTextMatches(sf, WEB_STREAM_GLOBAL_WORD)) return true;
+  return false;
 }
 
 /** Program roots hidden behind canonical createRequire bindings. tsgo
@@ -1367,7 +1414,15 @@ function entryPackageProgramRoots7(
   const roots = new Set<string>();
   /** The file an edge adds to the roots, or null: a file the program
    * already holds, or an edge that names no compiled JavaScript. */
-  const rootOf = (from: string, spec: string, kind: "import" | "require"): string | null => {
+  const rootOf = (
+    from: string,
+    spec: string,
+    kind: "import" | "require",
+    /** True for an `export … from` edge: Node evaluates the module, so a
+     * declaration file cannot stand in for its runtime JavaScript, even in
+     * the project world that types authored code from declarations. */
+    evaluates = false,
+  ): string | null => {
     // The project edge, from any program file: a relative import, or a
     // tsconfig path, that lands on the entry package's JavaScript, on an
     // opted-in package's, or on a source package's (tsgo's own walk loads
@@ -1394,7 +1449,11 @@ function entryPackageProgramRoots7(
     if (packageRoots === null || isRelativeSpecifier(spec)) return null;
     if (target !== null && !(isNodeModulesPath(target) && !isJsSourceFileName(target))) return null;
     if (spec.startsWith("#") || canonicalBuiltinModule(spec) !== null) return null;
-    if (packageRoots.declared && resolveBareModule(from, spec, "types-only", kind) !== null)
+    if (
+      !evaluates &&
+      packageRoots.declared &&
+      resolveBareModule(from, spec, "types-only", kind) !== null
+    )
       return null;
     const npm = resolveBareModule(from, spec, undefined, kind);
     return npm !== null &&
@@ -1410,6 +1469,18 @@ function entryPackageProgramRoots7(
     for (const specifier of sf.imports) {
       if (!ts.isStringLiteralLike(specifier)) continue;
       const root = rootOf(sf.fileName, specifier.text, moduleSpecifierKind7(specifier));
+      if (root !== null) roots.add(root);
+    }
+    // `export … from "./pkg"` names a load edge too (Node evaluates the
+    // module), but TypeScript's import list holds only import declarations.
+    // Without this a star or named re-export from an opted-in package never
+    // roots the package's runtime JavaScript, so its implementation never
+    // joins the program and every name it supplies becomes an island.
+    for (const stmt of sf.statements.nodes) {
+      if (stmt.isTypeOnly || !ts.isExportDeclaration(stmt)) continue;
+      const specifier = stmt.moduleSpecifier;
+      if (specifier === undefined || !ts.isStringLiteralLike(specifier)) continue;
+      const root = rootOf(sf.fileName, specifier.text, "import", true);
       if (root !== null) roots.add(root);
     }
   }
@@ -1857,6 +1928,13 @@ function loadProgram7(
       : null,
   );
   const nodeTypes = config.configFile ? resolveNodeTypes7(entryPath) : null;
+  /** Whether the program type-checks against the bundled Node fallback
+   * declarations. A config-less project plans them, but a dependency can
+   * still pull the project's installed `@types/node` in (a
+   * `/// <reference types="node" />` directive resolves from the referring
+   * file regardless of the program roots), and the fallback then stands
+   * down. */
+  let nodeFallback = nodeTypes === null;
   // skipLibCheck is FORCED for every program: checking a third-party lib's
   // internals against OUR lib choice (es2025, no dyn, and the bundled Node
   // declarations when the project has no @types/node) is not scriptc's
@@ -1913,8 +1991,15 @@ function loadProgram7(
   const coreRoots = [
     entryPath,
     ambientDtsPath(),
+    // Without @types/node the fallback stands in; the web stream globals it
+    // carried through a reference path join as their own root (a declaration
+    // file cannot reference a sibling without a triple-slash directive).
     ...(nodeTypes === null
-      ? [fallbackDtsPath(), ...fallbackModulesNamedIn(host.sourceText(entryPath) ?? "")]
+      ? [
+          fallbackDtsPath(),
+          webStreamsDtsPath(),
+          ...fallbackModulesNamedIn(host.sourceText(entryPath) ?? ""),
+        ]
       : [nodeTypes]),
     ...(config.declarations ?? []),
   ];
@@ -1969,6 +2054,41 @@ function loadProgram7(
       program = host.createProgram([...programRoots, overridesDtsPath()], options, false, lineage);
       previous.dispose();
       if (pass === 31) throw new Error("static program-root discovery did not converge");
+    }
+    // The fallback stands down when the constructed program already holds
+    // the project's installed @types/node: a dependency's `/// <reference
+    // types="node" />` resolves it from the referring file, so both
+    // declaration sets would load and every global they share would be
+    // redeclared. `undici-types` alone is not Node's declarations (a
+    // dependency can reference it without installing @types/node), and the
+    // fallback stays for that program. Rebuild on the pulled types, and keep
+    // the bundled declarations only for a project that pulls nothing in.
+    const pulledNodeTypes = program
+      .getSourceFileNames()
+      .some((name) => npmPackageNameOf(name) === "@types/node");
+    if (nodeFallback && pulledNodeTypes) {
+      nodeFallback = false;
+      for (let index = programRoots.length - 1; index >= 0; index--)
+        if (isFallbackDtsPath(programRoots[index]!)) programRoots.splice(index, 1);
+      const previous = program;
+      program = host.createProgram([...programRoots, overridesDtsPath()], options, false, lineage);
+      previous.dispose();
+      // The adopted path adds the declarations an older @types/node lacks
+      // (DOMException for an imported package implementation's undici
+      // fetch); the fallback file carried them itself, so the stand-down
+      // must add them too.
+      const supplements = nodeTypesSupplementRoots7(program, host);
+      if (supplements.length > 0) {
+        for (const root of supplements) if (!programRoots.includes(root)) programRoots.push(root);
+        const withSupplements = program;
+        program = host.createProgram(
+          [...programRoots, overridesDtsPath()],
+          options,
+          false,
+          lineage,
+        );
+        withSupplements.dispose();
+      }
     }
     // Node 24 ships no temporal global, but TS 7 types it in an ESNext
     // lib slice. Programs that name it (feature probes such as smol-toml's
@@ -2211,48 +2331,47 @@ function loadProgram7(
     }
     // The other two things a file's tsconfig decides: the order of class
     // field initializers and parameter properties, which the lowering
-    // follows, and legacy decorators, which it refuses by name.
+    // follows, and legacy decorators, which the lowering lowers with the
+    // legacy calling convention and evaluation order. `emitDecoratorMetadata`
+    // is still refused by name: the design-type metadata serializer lands
+    // with its own support.
     const parameterPropertiesFirst = new Set<string>();
     const legacyDecoratorFiles = new Set<string>();
-    let legacyDecorators = 0;
-    let firstLegacyDecorator: ts.Node | null = null;
+    let metadataDecorators = 0;
+    let firstMetadataDecorator: ts.Node | null = null;
     for (const sf of program.getImplementationSourceFiles()) {
       if (sf.isDeclarationFile || !/\.(?:[mc]?ts|tsx)$/.test(sf.fileName)) continue;
       const dialect = dialectOf(sf.fileName);
       if (dialect === null) continue;
       if (dialect.parameterPropertiesFirst) parameterPropertiesFirst.add(sf.fileName);
-      const legacy = dialect.legacyDecorators;
-      if (legacy === null) continue;
+      if (dialect.legacyDecorators === null) continue;
+      // Every file compiled under the setting is marked, decorators or not:
+      // the lowering's class-statement order and calling convention follow
+      // the file's dialect, and only files with the setting have one.
+      legacyDecoratorFiles.add(sf.fileName);
+      if (dialect.legacyDecorators !== "all") continue;
       ts.walkPreorder(
         sf,
         (node) => {
-          const decorated = node.parent;
-          if (
-            legacy === "members" &&
-            decorated !== undefined &&
-            (ts.isClassDeclaration(decorated) || ts.isClassExpression(decorated))
-          )
-            return;
-          legacyDecorators++;
-          legacyDecoratorFiles.add(sf.fileName);
-          firstLegacyDecorator ??= node;
+          metadataDecorators++;
+          firstMetadataDecorator ??= node;
         },
         DECORATORS,
       );
     }
-    if (firstLegacyDecorator !== null) {
-      const at: ts.Node = firstLegacyDecorator;
+    if (firstMetadataDecorator !== null) {
+      const at: ts.Node = firstMetadataDecorator;
       config.diags.push(
         unfollowedSettingDiag(
-          '"experimentalDecorators"',
-          "a decorator here has the legacy semantics (it is called with the target, the member name and a descriptor, in another order), and scriptc compiles standard decorators only",
+          '"emitDecoratorMetadata"',
+          'this project sets "emitDecoratorMetadata", and scriptc does not emit the design-type metadata it asks for yet',
           {
             file: ts.getSourceFileOfNode(at).fileName,
             start: ts.tokenStartOfNode(at),
             end: at.end,
           },
-          legacyDecorators,
-          "remove the decorators from the compiled program, or write them as standard decorators and drop the setting",
+          metadataDecorators,
+          'remove "emitDecoratorMetadata" from the tsconfig until metadata support lands, or drop the decorators it covers',
         ),
       );
     }
@@ -2292,7 +2411,7 @@ function loadProgram7(
       ...(parameterPropertiesFirst.size > 0 ? { parameterPropertiesFirst } : {}),
       dependencyJs: dependencyJsPredicate(entry.fileName, projectSources),
       typeWorld: {
-        nodeFallback: nodeTypes === null,
+        nodeFallback,
         projectLib: config.projectLib ?? null,
         forcedStrictNullChecks: config.forcedStrictNullChecks ?? false,
         projectCheckJs: config.checkJs ?? false,
@@ -7569,16 +7688,19 @@ function preflightStructure7(load: LoadResult): PreflightStructure {
           ) {
             continue;
           }
-          // NAMED re-exports from an INSTALLED npm package (`export
-          // { isUrl } from "url-or-path"` — the pattern's universal facade,
-          // `export { visitorKeys as default } from "@glimmer/syntax"`):
-          // import-plus-export plumbing. The lowering owns the package
-          // value diagnostic when no compiled source can supply the binding.
+          // NAMED and STAR re-exports from an INSTALLED npm package
+          // (`export { isUrl } from "url-or-path"` — the pattern's
+          // universal facade, `export { visitorKeys as default } from
+          // "@glimmer/syntax"`, and `export * from "@vercel/drives"`):
+          // import-plus-export plumbing. Importers chase each name through
+          // the alias chain to the package's own declarations; the lowering
+          // owns the package value diagnostic when no compiled source can
+          // supply the binding. A namespace re-export (`export * as ns`)
+          // still needs a namespace object, so it keeps its fence.
           if (
-            stmt.exportClause !== undefined &&
-            ts.isNamedExports(stmt.exportClause) &&
             !fromSpec.startsWith("#") &&
-            resolveNpmImport7(sf.fileName, fromSpec) !== null
+            resolveNpmImport7(sf.fileName, fromSpec) !== null &&
+            (stmt.exportClause === undefined || ts.isNamedExports(stmt.exportClause))
           ) {
             continue;
           }
@@ -7896,15 +8018,9 @@ function preflightStructure7(load: LoadResult): PreflightStructure {
         if (clause.name && !isJson && dep === null && !defaultOk) {
           diags.push(unsupportedDiag("SC1012", locOf7(clause.name)));
         }
-        if (clause.namedBindings && ts.isNamedImports(clause.namedBindings) && isJson) {
-          diags.push(
-            unsupportedDiag(
-              "SC1012",
-              locOf7(clause.namedBindings),
-              "named imports from JSON modules",
-            ),
-          );
-        }
+        // Named JSON imports lower: resolveJsonModule types the document's
+        // keys, and collectJsonImports bakes each named binding from the
+        // parsed document (a default import bakes the whole record).
         if (clause.namedBindings && ts.isNamespaceImport(clause.namedBindings)) {
           // `import * as ns from "./m"` of a RESOLVED user module lowers:
           // ns.member accesses resolve statically through the checker to
@@ -8526,19 +8642,42 @@ export function blockCommentSpansOf(sf: ts.SourceFile): readonly (readonly [numb
     // one admitted setter and a large comment-free body gives every node a
     // trivia span with no opener in it, so the walk would be quadratic in the
     // file's length.
-    const trivia = text.slice(from, to);
-    let offset = trivia.indexOf("/*");
-    while (offset >= 0) {
-      const open = from + offset;
-      const close = text.indexOf("*/", open + 2);
-      const end = close < 0 ? text.length : close + 2;
-      // A block-comment opener in the leading trivia of several nodes (a
-      // statement and its first token share a full start) is one comment.
-      if (!scanned.has(open)) {
-        scanned.add(open);
-        found.push([open, end]);
+    //
+    // Walk the trivia by comment, not by raw `indexOf("/*")`: an opener
+    // spelled inside a line comment (`// /*`) or a shebang opens nothing,
+    // and treating it as a block comment would let it swallow the code that
+    // follows up to the next `*/`. Line terminators are every ECMAScript
+    // one, including CRLF and the Unicode separators.
+    const lineEnd = (at: number): number => {
+      let i = at;
+      while (i < text.length) {
+        const ch = text.charCodeAt(i);
+        if (ch === 10 || ch === 13 || ch === 0x2028 || ch === 0x2029) return i;
+        i++;
       }
-      offset = trivia.indexOf("/*", end - from);
+      return text.length;
+    };
+    let i = from;
+    if (i === 0 && text.startsWith("#!")) i = lineEnd(2);
+    while (i < to) {
+      if (text[i] === "/" && text[i + 1] === "/") {
+        i = Math.max(lineEnd(i + 2), i + 2);
+        continue;
+      }
+      if (text[i] === "/" && text[i + 1] === "*") {
+        const open = i;
+        const close = text.indexOf("*/", open + 2);
+        const end = close < 0 ? text.length : close + 2;
+        // A block-comment opener in the leading trivia of several nodes (a
+        // statement and its first token share a full start) is one comment.
+        if (!scanned.has(open)) {
+          scanned.add(open);
+          found.push([open, end]);
+        }
+        i = Math.min(end, to);
+        continue;
+      }
+      i++;
     }
   };
   let triviaFrom = -1;
@@ -8722,6 +8861,16 @@ function preflightGate7(load: LoadResult): PreflightGate {
     return false;
   };
 
+  /* TS1052 on a JavaScript setter parameter with a default
+   * (`set x(v = 1) {}`): the grammar rule belongs to TypeScript. The
+   * initializer is legal JavaScript and Node applies the default when the
+   * assigned value is undefined, which the lowering's omittable parameter
+   * prologue already does (call-signatures.ts's paramShape takes the
+   * initializer as an omittable dynamic parameter). A checked JavaScript
+   * file keeps no other opinion about it. */
+  const jsSetterParameterInitializerSuppressed = (d: ts.Diagnostic): boolean =>
+    d.code === 1052 && d.fileName !== undefined && isJsSourceFileName(d.fileName);
+
   // A `return` at the top level of a CommonJS module (TS1108): Node runs
   // the module as a function body, so the return ends the module's
   // evaluation. ES modules and TypeScript keep the error.
@@ -8898,6 +9047,7 @@ function preflightGate7(load: LoadResult): PreflightGate {
       !cjsTopLevelReturnSuppressed(p, d) &&
       !jsdocTypeSuppressed(p, d, commentDup) &&
       !jsdocOptionalSetterParameterSuppressed(p, d) &&
+      !jsSetterParameterInitializerSuppressed(d) &&
       !parameterPropertyOrderSuppressed(p, d, load.parameterPropertiesFirst);
     // Every filter except the opinion admission, in its historical order.
     const keptApartFromOpinion = (d: ts.Diagnostic): boolean =>
@@ -9018,18 +9168,9 @@ function preflightGate7(load: LoadResult): PreflightGate {
           : (tscWorld.projectWorld ?? tscWorld.program);
     // The errors a tsconfig setting scriptc does not follow produces, one
     // by one: a single SC0016 names the setting instead.
-    const legacyDecoratorFiles = load.typeWorld?.legacyDecoratorFiles;
     const projectModule = load.typeWorld?.projectModule ?? null;
     const moduleFormat: ScrDiagnostic[] = [];
     for (const d of errorsOf(world)) {
-      // The legacy decorators themselves are refused where the first one
-      // stands (loadProgram7).
-      if (
-        LEGACY_DECORATOR_ERRORS.has(d.code) &&
-        d.fileName !== undefined &&
-        legacyDecoratorFiles?.has(d.fileName) === true
-      )
-        continue;
       const diag = toPassthrough(d);
       if (projectModule !== null && (d.code === 1202 || d.code === 1203)) {
         moduleFormat.push(diag);
@@ -10840,12 +10981,6 @@ const DOM_GLOBALS = new Set([
 ]);
 /** Root identifiers whose members the bundled Node fallback declares. */
 const NODE_GLOBAL_ROOTS = new Set(["process", "Buffer", "console", "globalThis"]);
-
-/** TypeScript's errors about a decorator's signature when it is checked as
- * a standard decorator: TS1238 to TS1241 (unable to resolve the signature of
- * a class, parameter, property or method decorator), TS1270 and TS1271 (its
- * return type). */
-const LEGACY_DECORATOR_ERRORS: ReadonlySet<number> = new Set([1238, 1239, 1240, 1241, 1270, 1271]);
 
 /** TS2729 ("Property 'x' is used before its initialization") for a field
  * initializer that reads a parameter property, in a file whose tsconfig

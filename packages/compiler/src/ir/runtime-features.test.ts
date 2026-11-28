@@ -57,6 +57,20 @@ describe("runtime feature snapshots", () => {
     expect(moduleUsesRegex(regExp)).toBe(true);
   });
 
+  test("the compression classes' class-table entries link their unit's engines", () => {
+    // Computed global reads emit webstream.compressClass/compressInstanceOf
+    // without any zlib call of their own; the unit that answers them carries
+    // the zlib and Brotli engines, so both features must follow.
+    for (const fn of ["webstream.compressClass", "webstream.compressInstanceOf"] as const) {
+      const withTable = module();
+      withTable.functions[0]!.body.push(call(fn));
+      const features = moduleRuntimeFeatures(withTable);
+      expect(features.webStreams).toBe(true);
+      expect(features.zlib).toBe(true);
+      expect(features.brotli).toBe(true);
+    }
+  });
+
   test("links the units that build the host classes read as values", () => {
     const event = module();
     event.functions[0]!.body.push(readConstructor("Event"));
@@ -123,6 +137,35 @@ describe("runtime feature snapshots", () => {
     const blob = module();
     blob.functions[0]!.body.push(call("blob.new"), call("fetch.input"));
     expect(moduleRuntimeFeatures(blob)).toMatchObject({ fetch: true, webBodies: true });
+
+    // An fs.openAsBlob result handed straight to fetch is the same body.
+    const opened = module();
+    opened.functions[0]!.body.push(call("fs.openAsBlob"), call("fetch.input"));
+    expect(moduleRuntimeFeatures(opened)).toMatchObject({
+      fetch: true,
+      fsOpenAsBlob: true,
+      webBodies: true,
+    });
+  });
+
+  test("links the Blob unit for a body read whose member name is invisible", () => {
+    // A checked-dynamic read with a run-time key may name `blob` on a fetch
+    // handle; the handle's dispatch answers it and the Blob it builds needs
+    // the unit, so a fetch program selects it.
+    const computed = module();
+    computed.functions[0]!.body.push(call("fetch.input"));
+    computed.functions[0]!.body.push({
+      kind: "exprStmt",
+      loc,
+      expr: {
+        kind: "dynKeyGet",
+        value: { kind: "varRef", localId: "body", type: DYN, loc },
+        key: { kind: "varRef", localId: "name", type: DYN, loc },
+        type: DYN,
+        loc,
+      },
+    });
+    expect(moduleRuntimeFeatures(computed)).toMatchObject({ fetch: true, webBodies: true });
   });
 
   test("gates the call-time parameter bind unit on a barriered generator", () => {

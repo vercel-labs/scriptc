@@ -53,6 +53,7 @@ export const CLI_OPTIONS = {
   native: { type: "string", multiple: true },
   node: { type: "string" },
   "explain-island": { type: "string" },
+  strict: { type: "boolean", default: false },
   "strict-user-js": { type: "boolean", default: false },
   lib: { type: "boolean", default: false },
   profile: { type: "string" },
@@ -334,8 +335,9 @@ export const CLI_OPTION_DOCS: Readonly<Record<string, CliOptionDoc>> = {
       {
         term: "--profile-generate <pattern>",
         help: [
-          "Linux: instrument the executable for profile-guided",
-          "optimization. Each run writes a raw profile to the",
+          "Linux and macOS: instrument the executable for",
+          "profile-guided optimization. Each run writes a raw",
+          "profile to the",
           "pattern (%p expands to the process id; the",
           "LLVM_PROFILE_FILE environment variable overrides it).",
           "Instrumented programs run slower (--emit=exe only)",
@@ -566,9 +568,10 @@ export const CLI_OPTION_DOCS: Readonly<Record<string, CliOptionDoc>> = {
         help: [
           "Node island policy (default: auto): npm packages outside",
           "the native subset run in Node automatically; explicit",
-          "allows only marked islands; off allows none. REPORT-ONLY",
-          "in this version: coverage reports the islands a build",
-          "would choose; builds compile as before",
+          "allows only marked islands; off allows none, and a package",
+          "outside the native subset then fails the build (SC8002).",
+          "REPORT-ONLY in this version: coverage reports the islands a",
+          "build would choose; builds compile as before",
         ],
       },
     ],
@@ -611,6 +614,22 @@ export const CLI_OPTION_DOCS: Readonly<Record<string, CliOptionDoc>> = {
           "coverage only: why a package would run in a Node island,",
           "with the first reason per module, the native import",
           "sites and the packages inside its closure",
+        ],
+      },
+    ],
+  },
+  strict: {
+    entries: [
+      {
+        term: "--strict",
+        help: [
+          "build, run and coverage: fail on the findings that measure",
+          "distance from optimal code (SC6001/SC6007 conversions that copy,",
+          "every SC61xx performance hint including SC6107 dynamic-tier",
+          "functions, cold code included) and on any Node island use.",
+          "A // scriptc-allow <code> comment on the finding's line",
+          'opts that line out. "scriptc": { "strict": true } in',
+          "package.json turns it on too",
         ],
       },
     ],
@@ -730,6 +749,7 @@ const EXECUTABLE_OPTIONS: readonly CliOptionName[] = [
   "dynamic-tier-warning",
   "copy-warning",
   "key-order-warning",
+  "strict",
   ...NODE_ISLAND_OPTIONS,
 ];
 
@@ -796,6 +816,7 @@ export const CLI_COMMANDS: readonly CliCommand[] = [
       "dynamic-tier-warning",
       "copy-warning",
       "key-order-warning",
+      "strict",
       ...NODE_ISLAND_OPTIONS,
       "explain-island",
       "strict-user-js",
@@ -1017,6 +1038,7 @@ export const CLI_FAST_PATHS = {
       "npm-static",
       "shape-overlay",
       "dynamic-tier-warning",
+      "strict",
     ],
   },
   /** `coverage` replaying the verdict of an unchanged program. */
@@ -1029,6 +1051,7 @@ export const CLI_FAST_PATHS = {
       "dynamic-tier-warning",
       "copy-warning",
       "key-order-warning",
+      "strict",
     ],
   },
 } satisfies Record<string, CliFastPath>;

@@ -42,14 +42,13 @@
 #include "scr_node_bridge.h"
 #include "scr_node_island.h"
 
-#include <pthread.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#if !defined(_WIN32) && !defined(__wasi__)
+#if !defined(__wasi__)
 
 typedef struct ScrNodeRef {
   /* Native worker threads hold island values too (K4), so the ref count
@@ -92,7 +91,7 @@ static bool ni_stopped = false;
 static inline bool nh_stopped(void) { return ni_stopped; }
 #endif
 /* Worker threads reach the same island values, so the table is shared. */
-static pthread_mutex_t nh_refs_lock = PTHREAD_MUTEX_INITIALIZER;
+static ScrNiLock nh_refs_lock = SCR_NI_LOCK_INITIALIZER;
 
 /* Whether a thread other than the island's has used the island (K4).
  * Until then the island's thread is the only one that touches the refs,
@@ -112,14 +111,14 @@ static inline bool nh_shared(void) {
 }
 
 /* Takes `m` when the tables are shared; answers whether it did. */
-static inline bool nh_lock(pthread_mutex_t *m) {
+static inline bool nh_lock(ScrNiLock *m) {
   if (!nh_shared()) return false;
-  pthread_mutex_lock(m);
+  scr_ni_lock_enter(m);
   return true;
 }
 
-static inline void nh_unlock(pthread_mutex_t *m, bool held) {
-  if (held) pthread_mutex_unlock(m);
+static inline void nh_unlock(ScrNiLock *m, bool held) {
+  if (held) scr_ni_lock_leave(m);
 }
 
 static inline void nh_rc_inc(struct ScrNodeRef *ref) {
@@ -236,7 +235,7 @@ typedef struct {
  * nh_pins_lock once the tables are shared (nh_lock). */
 static NhPin *nh_pins = NULL;
 static size_t nh_npins = 0, nh_pins_cap = 0;
-static pthread_mutex_t nh_pins_lock = PTHREAD_MUTEX_INITIALIZER;
+static ScrNiLock nh_pins_lock = SCR_NI_LOCK_INITIALIZER;
 /* The count of its own pins at which this thread sweeps them next. */
 static SCR_TL size_t nh_sweep_at = 64;
 /* Pins from here on were made since the island thread's last entry
@@ -747,7 +746,7 @@ static void nh_young_flush(void) {
 
 /* ── runtime bytes V8 freed (any thread) ─────────────────────────────── */
 
-static pthread_mutex_t nh_freed_lock = PTHREAD_MUTEX_INITIALIZER;
+static ScrNiLock nh_freed_lock = SCR_NI_LOCK_INITIALIZER;
 static void **nh_freed = NULL;
 static size_t nh_nfreed = 0, nh_freed_cap = 0;
 /* How many are queued, for the island thread's test at every entry, which
@@ -755,7 +754,7 @@ static size_t nh_nfreed = 0, nh_freed_cap = 0;
 static atomic_size_t nh_freed_len;
 
 void scr_ni_bytes_free(void *owner) {
-  pthread_mutex_lock(&nh_freed_lock);
+  scr_ni_lock_enter(&nh_freed_lock);
   if (nh_nfreed == nh_freed_cap) {
     size_t cap = nh_freed_cap ? nh_freed_cap * 2 : 16;
     void **grown = realloc(nh_freed, cap * sizeof *grown);
@@ -765,16 +764,16 @@ void scr_ni_bytes_free(void *owner) {
   }
   nh_freed[nh_nfreed++] = owner;
   atomic_fetch_add_explicit(&nh_freed_len, 1, memory_order_release);
-  pthread_mutex_unlock(&nh_freed_lock);
+  scr_ni_lock_leave(&nh_freed_lock);
 }
 
 /* On the island's thread: the storages are its objects. */
 static void nh_drain_freed(void) {
   for (;;) {
-    pthread_mutex_lock(&nh_freed_lock);
+    scr_ni_lock_enter(&nh_freed_lock);
     void *owner = nh_nfreed > 0 ? nh_freed[--nh_nfreed] : NULL;
     if (owner != NULL) atomic_fetch_sub_explicit(&nh_freed_len, 1, memory_order_relaxed);
-    pthread_mutex_unlock(&nh_freed_lock);
+    scr_ni_lock_leave(&nh_freed_lock);
     if (owner == NULL) return;
     /* The store is gone: its reference no longer counts as V8's. */
     bool held = nh_lock(&nh_pins_lock);
@@ -867,7 +866,7 @@ static bool nh_can_drop(uint32_t id) {
  * so a drop a worker thread releases is queued for that thread instead of
  * being posted: a release may run under the pin lock, and posting from
  * there would wait on a thread that may want the lock. */
-static pthread_mutex_t nh_dropq_lock = PTHREAD_MUTEX_INITIALIZER;
+static ScrNiLock nh_dropq_lock = SCR_NI_LOCK_INITIALIZER;
 static uint32_t *nh_dropq = NULL;
 static size_t nh_ndropq = 0, nh_dropq_cap = 0;
 static atomic_size_t nh_dropq_len;
@@ -875,10 +874,10 @@ static atomic_size_t nh_dropq_len;
 static void nh_drop_drain(void) {
   if (atomic_load_explicit(&nh_dropq_len, memory_order_acquire) == 0) return;
   for (;;) {
-    pthread_mutex_lock(&nh_dropq_lock);
+    scr_ni_lock_enter(&nh_dropq_lock);
     uint32_t id = nh_ndropq > 0 ? nh_dropq[--nh_ndropq] : 0;
     if (id != 0) atomic_fetch_sub_explicit(&nh_dropq_len, 1, memory_order_relaxed);
-    pthread_mutex_unlock(&nh_dropq_lock);
+    scr_ni_lock_leave(&nh_dropq_lock);
     if (id == 0) return;
     bool held = nh_lock(&nh_refs_lock);
     bool can = nh_can_drop(id);
@@ -911,7 +910,7 @@ static void nh_drop(uint32_t id) {
     }
     return;
   }
-  pthread_mutex_lock(&nh_dropq_lock);
+  scr_ni_lock_enter(&nh_dropq_lock);
   if (nh_ndropq == nh_dropq_cap) {
     size_t cap = nh_dropq_cap ? nh_dropq_cap * 2 : 16;
     uint32_t *grown = realloc(nh_dropq, cap * sizeof *grown);
@@ -921,7 +920,7 @@ static void nh_drop(uint32_t id) {
   }
   nh_dropq[nh_ndropq++] = id;
   atomic_fetch_add_explicit(&nh_dropq_len, 1, memory_order_release);
-  pthread_mutex_unlock(&nh_dropq_lock);
+  scr_ni_lock_leave(&nh_dropq_lock);
 }
 
 static void nh_lazy_free(ScrNodeRef *ref) {
@@ -3651,4 +3650,4 @@ __attribute__((constructor)) static void nh_install(void) {
   scr_promise_subscribe_fn = nh_promise_subscribe;
 }
 
-#endif /* !_WIN32 && !__wasi__ */
+#endif /* !__wasi__ */

@@ -37,13 +37,12 @@
 #include "scr_node_bridge.h"
 #include "scr_node_island.h"
 
-#include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#if !defined(_WIN32) && !defined(__wasi__)
+#if !defined(__wasi__)
 
 const ScrDynHandleOps *scr_dyn_handle_ops_of(const ScrDyn *d); /* scr_json.c */
 
@@ -61,19 +60,19 @@ static NiExport *ni_exports = NULL; /* index = id; id 0 unused */
 static uint32_t ni_exports_len = 1, ni_exports_cap = 0;
 /* Worker threads read the table (a result that is a native value), while
  * the island's thread mints entries and the table grows. */
-static pthread_mutex_t ni_exports_lock = PTHREAD_MUTEX_INITIALIZER;
+static ScrNiLock ni_exports_lock = SCR_NI_LOCK_INITIALIZER;
 
 /* The lock is taken once another thread uses the island (the handle
  * unit's shared mode, which is set only between operations). */
 static inline bool ni_exports_take(void) {
   if (!SCR_NI_THREADS || !atomic_load_explicit(&scr_ni_threads_shared, memory_order_relaxed))
     return false;
-  pthread_mutex_lock(&ni_exports_lock);
+  scr_ni_lock_enter(&ni_exports_lock);
   return true;
 }
 
 static inline void ni_exports_give(bool held) {
-  if (held) pthread_mutex_unlock(&ni_exports_lock);
+  if (held) scr_ni_lock_leave(&ni_exports_lock);
 }
 
 static uint32_t *ni_free = NULL;
@@ -923,6 +922,7 @@ int scr_ni_host_export_construct(uint32_t id, const ScrNodeValue *args, size_t a
     size_t reading = ni_read_begin();
     ScrDyn **in = ni_args_in(args, argc, small, 8);
     ni_read_end(reading);
+    scr_ni_called_in();
     result = scr_dyn_call(helper, in, argc, "constructor");
     ni_args_free(in, argc, small);
   } else {
@@ -933,6 +933,7 @@ int scr_ni_host_export_construct(uint32_t id, const ScrNodeValue *args, size_t a
       scr_dyn_arr_push(list, repeated != NULL ? repeated : scr_ni_value_in(&args[i]));
     }
     ni_read_end(reading);
+    scr_ni_called_in();
     ScrStr *what = scr_str_new("constructor", 11);
     result = scr_dyn_construct(ctor, list, what);
     scr_str_release(what);
@@ -1120,8 +1121,13 @@ static bool ni_class_has_accessor(const ScrDyn *target, const ScrDyn *key, char 
 /* Runs accessor half `fn` with the capsule as `this` (+1 result, NULL with
  * the exception pending), and refreshes the shared bindings: an accessor can
  * write a shared module's state, and island code reads the new value as soon
- * as the call returns. */
+ * as the call returns. The arguments are runtime values already, so the
+ * bridge's housekeeping runs before the accessor, as it does for every other
+ * island-driven entry: a getter that returns a fresh Buffer or typed array
+ * would otherwise leave its young view rooted through the bridge's list
+ * until some later operation ended it. */
 static ScrDyn *ni_run_accessor(ScrDyn *fn, ScrDyn *target, ScrDyn *const *args, size_t argc) {
+  scr_ni_called_in();
   scr_dyn_this_push_dyn(target);
   ScrDyn *result = scr_dyn_call(fn, args, argc, "accessor");
   scr_dyn_this_pop();
@@ -2069,7 +2075,7 @@ void scr_ni_exports_release_all(void) {
 
 #endif
 
-#if !defined(_WIN32) && !defined(__wasi__)
+#if !defined(__wasi__)
 /* ── native classes extending island classes (scope-B NI-5b) ───────────
  * The class is a JavaScript constructor made by the bootstrap's helpers
  * (scr_node_island_host.cjs, module "scriptc:island-helpers"); its

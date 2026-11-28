@@ -1,13 +1,15 @@
 - **Null and optional values:** `undefined` and `null` compile as standalone values and union members.
   Optional record and class fields and optional, default, and rest parameters also compile, including rest parameters typed `unknown[]` or `any[]`, whose functions take any number of arguments.
-  A function value whose fixed parameters are all `unknown` or `any`, or that has none, can be stored where such a variadic function type without fixed parameters is expected: each call passes the arguments in order, `undefined` for the ones the caller left out.
-  Other function values with fixed parameters cannot be stored there.
+  A function value with fixed parameters can be stored where such a variadic function type without fixed parameters is expected: each call passes the arguments in order, and the parameters the function does not declare are evaluated and dropped.
+  An argument the call passes to a typed parameter is checked against that type, and a value the type does not hold throws a `TypeError`, as any `any`-typed value crossing into a typed slot does; a parameter typed `unknown` or `any`, or a missing argument there, passes as it is.
   A function value of such a variadic type can be stored where the program declares a function type with fixed parameters (a typed binding, parameter, result, field, member, or element): each call passes the declared arguments, a `void` result is discarded, and any other result is checked.
   That store is refused when the expected type's last parameter is optional, is `unknown` or `any`, or includes `undefined`, because the function would receive `undefined` where the call passes nothing.
-  It is also refused with `SC1090` when the program hands a function of the expected type to a caller that can pass more arguments than the type names: a function type with more parameters, or a library function whose callback takes more.
+  When the program hands a function of the expected type to an array method or to a function type with more parameters, the call passes the stored function every argument JavaScript passes, so the store compiles.
+  It is refused with `SC1090` when the caller is one whose arguments cannot reach the stored function: a string replacer, an `EventEmitter` listener that declares fewer parameters than the event carries, a typed rest function packed behind the fixed signature, or a caller that passes the function a receiver Node.js supplies and the native call does not.
   The stored function would not receive those arguments.
   Untyped code that receives the stored function calls the original, with every argument it passes.
   A variadic function passed directly to a library function that calls its callback with a fixed argument list is refused with `SC1090`.
   Event listeners, promise executors, timers, and `process.nextTick` pass such a function every argument, as do the methods of arrays whose elements are `unknown`.
+  A function that reads `arguments.length` can be stored where a variadic function type is expected: the count is the number of arguments each call passes.
   In a function expression written where a callback or listener is expected, `arguments.length` is the number of parameters that slot's function type declares.
   Handed where no function type is expected (an `any` or `unknown` slot, a JavaScript module's function, `Reflect.apply`), such a function expression is refused with `SC1090`.

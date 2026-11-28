@@ -31,7 +31,8 @@ console.log(anything === tagged);
 const asserted = tagged as Labeled;
 asserted.label = "asserted";
 
-// So does a later assignment to a binding declared with that type.
+// So does a later assignment to a binding declared with that type: the
+// binding holds a view of `tagged`, so nothing is reported.
 let later: Labeled = { label: "later" };
 later = tagged;
 later.label = "assigned";

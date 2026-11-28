@@ -12,6 +12,15 @@ export const CHECKER_SERVER_IDLE_EXIT = 600;
  * symbols, so its memory grows with each build it serves. */
 export const CHECKER_SERVER_MEMORY = 2048;
 
+/** The resident memory, in megabytes, above which a checker server is not
+ * kept for the next frontend load of the same build. tsc-ts never frees a
+ * program (see CHECKER_SERVER_MEMORY), and one build loads its frontend
+ * several times (the analysis, its scout, the diagnostic attribution, the
+ * island reload), so keeping the server between loads holds every load's
+ * program at once. Above this size the next load starts a fresh server
+ * instead, and this load's program is released with it. */
+export const CHECKER_SERVER_LOAD_MEMORY = 512;
+
 /** Whether builds use a shared checker server: by default, except in CI
  * (`CI` set to anything but `0` or `false`), where a job usually builds once
  * per directory and would only leave the server behind.

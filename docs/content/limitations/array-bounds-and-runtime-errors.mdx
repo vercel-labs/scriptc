@@ -6,6 +6,7 @@ Missing reads and empty `pop()`/`shift()` return `undefined`, indexed writes can
 
 Keyed reads of a `Record` or an index signature return `undefined` for a missing key, as in Node.js, with or without `noUncheckedIndexedAccess`.
 A missing array element or key that reaches storage that cannot hold `undefined`, such as a class field typed `number`, throws a `TypeError`.
+A property read or method call on a missing element or key throws Node.js's own `TypeError` (`Cannot read properties of undefined (reading 'toFixed')`), which `try`/`catch` can catch; without `noUncheckedIndexedAccess` the checker types the read as the element, so the call needs no guard.
 An array converted to an array of another element type, such as an array of narrower records, is copied element by element, and a hole or stored `undefined` that the new element type cannot hold throws a `TypeError`.
 
 Runtime traps cannot be caught.

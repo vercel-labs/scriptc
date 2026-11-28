@@ -9,8 +9,11 @@ import { Ts7Session, type Ts7SessionSnapshot, type Ts7Update } from "./session.j
  * that client and its server transport. */
 export class Ts7Api {
   private readonly session: Ts7Session;
+  /** The checker server process's ID, when the transport knows it. */
+  readonly serverPid: number | undefined;
 
   constructor(rpc: Ts7RpcClient, fs: Ts7FileSystem, collectTiming = false) {
+    this.serverPid = rpc.pid;
     try {
       const session = new Ts7Session(rpc, collectTiming);
       // Callbacks run inside requests, after initialize chose the protocol.

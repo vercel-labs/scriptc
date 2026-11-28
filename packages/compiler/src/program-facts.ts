@@ -66,6 +66,21 @@ const SRC = "packages/compiler/src";
 
 export const PROGRAM_FACTS: readonly ProgramFact[] = [
   {
+    name: "held-constructor-values",
+    file: `${SRC}/frontend/lowering/held-constructors.ts`,
+    symbol: "programHoldsConstructorValue",
+    source: "symbols",
+    scope: "program",
+    setBy:
+      "an identifier that resolves to the global String, Number, Boolean or BigInt constructor in a value position (not the callee of a call or the target of `new`)",
+    gates:
+      "whether a diagnostic is marked heldConstructor, and so whether the untyped-constructors comparison pass runs at all",
+    narrower:
+      "the value's type flow: a constructor written only into a checked-dynamic slot does not arm the comparison, and the array-callback sites H-2 lowers natively stop writing the value",
+    tracked: "RELEASE-PLAN H-1",
+    lowererFields: [],
+  },
+  {
     name: "member-call-receivers",
     file: `${SRC}/frontend/lowering/member-call-receivers.ts`,
     symbol: "memberCallReceivers",
@@ -147,6 +162,20 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     narrower: "the name read",
     tracked: null,
     lowererFields: ["namesWebStreamClass"],
+  },
+  {
+    name: "uses-compression-streams",
+    file: `${SRC}/frontend/lowering/builtins/web-streams-dyn.ts`,
+    symbol: "programUsesCompressionStreams",
+    source: "symbols",
+    scope: "runtime-build",
+    setBy:
+      "an identifier naming CompressionStream or DecompressionStream that resolves to the global",
+    gates:
+      "the compression streams' unit links with its zlib and Brotli engines; every construction, brand test and computed global read of the two classes lowers to its runtime entry",
+    narrower: "the construction or brand-test site",
+    tracked: null,
+    lowererFields: ["compressionStreams"],
   },
   {
     name: "reads-node-object-value",
@@ -734,6 +763,13 @@ const decides = (site: string, count: number, fact: string): ProgramScan =>
 
 export const PROGRAM_SCANS: readonly ProgramScan[] = [
   scan(
+    "frontend/lowering/held-constructors.ts#programHoldsConstructorValue",
+    1,
+    "fact",
+    "",
+    "held-constructor-values",
+  ),
+  scan(
     "frontend/fork-target.ts#namesChildProcess",
     4,
     "discovery",
@@ -797,6 +833,11 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "frontend/lowering/builtins/web-streams-dyn.ts#programUsesWebStreamOnlyMembers",
     1,
     "web-stream-only-members",
+  ),
+  decides(
+    "frontend/lowering/builtins/web-streams-dyn.ts#programUsesCompressionStreams",
+    1,
+    "uses-compression-streams",
   ),
   decides(
     "frontend/lowering/constant-conditions.ts#changesEnvironmentByComputedName",
@@ -1036,9 +1077,9 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
   ),
   scan(
     "frontend/pipeline.ts#detectAutoPackages",
-    2,
+    3,
     "discovery",
-    "the packages the program requires; the text test skips files without `require`",
+    "the packages the program requires and the ones a literal import() names; the text tests skip files without `require` or `import`",
   ),
   scan("frontend/pipeline.ts#scanDroppedPackages", 1, "discovery", "the packages a load dropped"),
   scan(
@@ -1084,6 +1125,12 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "the files whose `export *` re-exports a CommonJS module, which the lowering rewrites with the Node lexer's names; the text test picks a helper binding the file does not already spell",
   ),
   decides("frontend/program.ts#programNamesTemporal7", 2, "names-temporal"),
+  scan(
+    "frontend/program.ts#programNamesWebStreams7",
+    2,
+    "prefilter",
+    "whether any program source names a web stream global; the declaration joins only when no declaration file of the program declares the global (programDeclaresWebStreamGlobals7)",
+  ),
   scan(
     "frontend/program.ts#lowerProgramJsx7",
     1,

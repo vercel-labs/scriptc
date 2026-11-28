@@ -20,6 +20,11 @@ export const recordSignatures = defineLibFnSignatures({
    * (inspect, Object.keys/values/entries) then answer through its live
    * checked view. The receiver is any such record type. Never throws. */
   "record.sourceHas": { argTypes: [null], result: BOOL },
+  /** `record.sourceView(rec)`: the record's kept own-key source as a
+   * checked-dynamic object (+1), or undefined when it kept none. Its keys,
+   * in the view's order, are the keys the value holds in the order it
+   * created them. */
+  "record.sourceView": { argTypes: [null], result: DYN },
   /* Whether a closed declared-field record answers reflection from its
    * declared fields alone (scr_record_reflects_static): it kept no source,
    * is no copy linked to a wider source, and no live checked view of it

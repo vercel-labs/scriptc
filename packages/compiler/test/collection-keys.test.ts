@@ -280,11 +280,13 @@ test("Map value materialization validates the destination key domain", () => {
   // slot: both are supported elements now.
   expect(run(F64)).toEqual([]);
   expect(run(mapOf(STRING, F64))).toEqual([]);
-  // A child handle is a Map value but no Set element (nothing compares it by
-  // identity), so the domain fence names it.
-  expect(run({ kind: "child" })).toEqual([
-    "in main: mapIntrinsic valueSet element kind child (frontend must fence)",
-  ]);
+  // A spawned child is one handle for its whole life, so it compares by
+  // identity: the validator accepts it as a Set element and Map key, on the
+  // reference key kind the runtime's scr_child_retain/release adapters serve.
+  expect(run({ kind: "child" })).toEqual([]);
+  expect(isSupportedSetElem({ kind: "child" })).toBe(true);
+  expect(isIdentityCollectionKey({ kind: "child" })).toBe(true);
+  expect(mapKeyKindNum({ kind: "child" })).toBe(2);
 });
 
 test("primitive key ABI constants remain stable", () => {

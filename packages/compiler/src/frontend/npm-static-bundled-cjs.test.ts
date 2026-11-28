@@ -110,3 +110,14 @@ test.each([
     rewriteBundlerCjsExports(change(fixture), "/example/node_modules/bundle/index.js"),
   ).toEqual({ degrade: expect.stringContaining("__toESM") });
 });
+
+test("a bare-package star re-export keeps its spread", () => {
+  // A bare specifier cannot be resolved by the relative star probe, so its
+  // names are not known to be empty: the table must keep the spread.
+  const source = `"use strict";
+var __exportStar = (m, exports2) => { for (var p in m) if (p !== "default" && !Object.prototype.hasOwnProperty.call(exports2, p)) Object.defineProperty(exports2, p, { enumerable: true, get: function () { return m[p]; } }); };
+Object.defineProperty(exports, "__esModule", { value: true });
+__exportStar(require("dep-kit"), exports);
+`;
+  expect(rewritten(source)).toContain('...require("dep-kit")');
+});

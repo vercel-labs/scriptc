@@ -1104,11 +1104,19 @@ export function rewriteBundlerCjsSyntax(
    * is deliberately OMITTED from the canonical table. */
   // A star module with no visible names exports nothing: spreading it would
   // only widen the table (an untyped stub makes the whole object `any` and
-  // every alias a declaration-less property).
-  const spreadParts = [...starSpecs]
-    .reverse()
-    .filter((s) => host.starTargetNames(filePath, s).size > 0)
-    .map((s) => `...require(${JSON.stringify(s)}),`);
+  // every alias a declaration-less property). The module is still LOADED at
+  // the table's position, in order, so its side effects run as Node's does.
+  // A bare specifier is not resolved by the relative probe, so its names are
+  // not known to be empty and it keeps its spread.
+  const spreadParts: string[] = [];
+  const staticallyEmpty = (spec: string): boolean =>
+    (spec.startsWith(".") || spec.startsWith("/")) &&
+    host.starTargetNames(filePath, spec).size === 0;
+  for (const spec of [...starSpecs].reverse()) {
+    if (!staticallyEmpty(spec)) spreadParts.push(`...require(${JSON.stringify(spec)}),`);
+  }
+  for (const spec of starSpecs)
+    if (staticallyEmpty(spec)) lines.push(`require(${JSON.stringify(spec)});`);
   const esModulePart = lexed.exports.has("__esModule") ? "__esModule: true," : "";
   const memberParts = starMembers.map(
     (m) =>

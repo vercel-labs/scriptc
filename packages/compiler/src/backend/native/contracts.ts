@@ -583,6 +583,9 @@ export interface LibArchiveOptions {
   dynBuffer?: boolean;
   /** See CompileOptions.dynTier: the scr_js_* units. */
   dynTier?: boolean;
+  /** See CcOptions.hostAbsentGlobals: scr_global_host_absent.c and the
+   * SCR_GLOBAL_HOST_ABSENT build of the builtin lookup unit. */
+  hostAbsentGlobals?: boolean;
   /** See CcOptions.recordSourceGet: the kept-source read of a
    * record-to-record conversion (scr_record_source_get.c). */
   recordSourceGet?: boolean;

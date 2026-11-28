@@ -311,6 +311,19 @@ wrap empty: len 2 bytes 60 62
     expect(run.stdout).toBe(BUFFERS_EXPECTED);
   });
 
+  /* ── K16: dynamic constructor hooks in a library session ─────────────── */
+
+  test("K16: a library entry answers a dynamic constructor read", async () => {
+    const { archive, outDir } = await buildLibrary("dyn-constructors", emission);
+    const probe = buildProbe("dyn-constructors", archive, outDir);
+    const run = runProbe(probe);
+    expect(run.signal).toBeNull();
+    expect(run.status).toBe(0);
+    expect(run.stdout).toBe(`dyn-constructors ready
+ctor: DOMException
+`);
+  });
+
   /* ── K15: export facades — a re-exported function is an export ───────── */
 
   test("K15: re-export facades supply the entry's exports (Node order and state)", async () => {

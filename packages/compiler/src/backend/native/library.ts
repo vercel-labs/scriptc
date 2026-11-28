@@ -116,6 +116,9 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
     ...(opts.dynInvoke ? ["scr_dyn_invoke.c"] : []),
     ...(opts.dynInvoke && opts.dynBuffer ? ["scr_bytes_dyn.c"] : []),
     ...(opts.dynTier === true ? ["scr_js_value.c", "scr_js_object.c"] : []),
+    // A computed global-object read: the host-absent answer and the
+    // SCR_GLOBAL_HOST_ABSENT build of the builtin lookup unit.
+    ...(opts.hostAbsentGlobals === true ? ["scr_global_host_absent.c"] : []),
     // The buffer views registry: only a program that resizes, grows or
     // detaches a buffer installs its ops table.
     ...(opts.mutableBuffers === true ? ["scr_js_buffers.c"] : []),
@@ -147,6 +150,7 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
     // A function's own call/apply/bind and the other inherited members a
     // data property shadows: the same build the executable lane compiles.
     ...(opts.fnMemberProps === true ? ["-DSCR_FN_MEMBER_PROPS"] : []),
+    ...(opts.hostAbsentGlobals === true ? ["-DSCR_GLOBAL_HOST_ABSENT"] : []),
     "-I",
     rtDir,
     ...(regex ? ["-I", vendorEngineDir()] : []),

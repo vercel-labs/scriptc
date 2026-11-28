@@ -45,6 +45,12 @@ export function withLibraryRuntimeFlavors(matrix) {
     // calls scr_arr_join_str, so the library flavors carry the same optional
     // unit the executable flavors compile.
     "scr_arr_join_str.c",
+    // The dynamic global object's answer for the Node globals the native
+    // runtime does not implement: a library whose program computes a global
+    // read or tests `in globalThis` calls scr_global_host_absent_check and
+    // the installer, so the library flavors carry the unit the executable
+    // flavors compile.
+    "scr_global_host_absent.c",
   ]);
   const libraryUnits = [
     ...matrix.runtime_units.filter(

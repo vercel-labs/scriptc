@@ -2683,6 +2683,31 @@ export function emitLibDefs(
   stamps: string[],
 ): string[] {
   const lib = emitter.mod.lib!;
+  // The executable entry installs the dynamic constructor hooks before the
+  // program runs (the call block in the @main emission); a library has no
+  // @main, so the library initializer carries the same calls. A library
+  // entry that constructs through a stored global constructor
+  // (dyn.globalConstructor) needs them, or the NULL hooks answer the
+  // unsupported-constructor TypeError.
+  const libFeatures = emitter.runtimeFeatures;
+  const libDynConstructorAny =
+    libFeatures.dynConstructorAny === true || libFeatures.nodeIsland === true;
+  // The same reachability the executable entry uses: scr_dyn_invoke.c is in
+  // the link exactly when one of these facts selects it.
+  const libUsesDynConstructors =
+    libFeatures.dynInvoke === true ||
+    libFeatures.fsWebStream === true ||
+    libFeatures.fsOpenAsBlob === true ||
+    libFeatures.fetch === true ||
+    libFeatures.nodeIsland === true;
+  const libUsesDynCtorDate =
+    libUsesDynConstructors && (libFeatures.date === true || libDynConstructorAny);
+  const libUsesDynCtorCollections =
+    libUsesDynConstructors &&
+    (libFeatures.mapSet === true ||
+      libFeatures.dynCollections === true ||
+      libFeatures.weakCollections === true ||
+      libDynConstructorAny);
   const autoReset = lib.resultResetSymbol === null;
   const out: string[] = [``, `; ── library-mode entries (profile: ${lib.profileName}) ──`, ``];
   // Every entry's prologue records its external symbol in the funnel's
@@ -2767,6 +2792,9 @@ export function emitLibDefs(
     ...zeroStores,
     `  call void @scr_library_reset()`,
     ...stamps,
+    ...(libUsesDynConstructors ? [`  call void @scr_dyn_global_constructor_install()`] : []),
+    ...(libUsesDynCtorDate ? [`  call void @scr_dyn_ctor_date_install()`] : []),
+    ...(libUsesDynCtorCollections ? [`  call void @scr_dyn_ctor_collections_install()`] : []),
     `  call void @${mangleFunction(emitter.mod.entry)}()`,
     `  call void @scr_library_check_exc()`,
     `  ret void`,

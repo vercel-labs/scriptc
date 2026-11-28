@@ -119580,11 +119580,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-feature:webcrypto.context",
-        "tests": [
-          "tests/corpus/crypto-webcrypto-mlkem.mjs"
-        ]
+        "status": "not-implemented",
+        "evidence": "compiler-unmatched:webcrypto"
       },
       "anchorSource": "ancestor"
     },

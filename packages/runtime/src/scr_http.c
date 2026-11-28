@@ -3597,7 +3597,10 @@ static void scr_http_queue_req_aborted(ScrHttpReq *req) {
  * deferred stream destroy). */
 void scr_http_req_destroy_error(ScrHttpReq *r, ScrError *err /*borrowed*/) {
   if (r->destroy_error == NULL) r->destroy_error = scr_error_retain(err);
-  if (!r->destroyed && !r->close_emitted && r->err_ls.n != 0)
+  /* The 'error' emit is queued whichever listeners exist right now: Node's
+   * destroy reports the error on the next tick, so a listener registered
+   * after this call still hears it. The fire checks the list then. */
+  if (!r->destroyed && !r->close_emitted)
     scr_http_emit_push(SCR_HTTP_EMIT_REQ_DESTROY_ERROR, scr_http_req_retain(r));
   scr_http_req_destroy(r);
 }

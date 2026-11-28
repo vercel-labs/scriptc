@@ -3946,8 +3946,15 @@ void scr_http2_stream_close(ScrH2Stream *st, double code, ScrClosure *cb /*moves
    * END_STREAM this close sends — i.e. the peer's half already ended
    * (END_STREAM received). While the peer's half is still open the reset
    * travels, as Node's does. */
+  /* The clean end needs an END_STREAM that can actually go out: output still
+   * queued behind the peer's flow-control window, a file source still
+   * streaming, or a trailer block the program has not sent yet would hold it
+   * back forever, leaving the peer waiting — Node submits the reset in those
+   * cases. */
+  bool can_end = st->wbuf.len == 0 && (st->file_fd < 0 || st->file_done) &&
+                 !(st->want_trailers && !st->sent_trailers);
   if (headers_out && st->end_recv && !st->want_end && !scr_h2_stream_local_closed(st) &&
-      scr_h2_sock_alive(st->sess)) {
+      can_end && scr_h2_sock_alive(st->sess)) {
     if (!st->aborted) {
       st->aborted = true;
       if (st->compat_req != NULL) scr_http_h2_req_aborted(st->compat_req);

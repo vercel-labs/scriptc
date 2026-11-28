@@ -335,6 +335,7 @@ export function analyzeWithFrontend(
         ...(lowered.runtimeFences.length > 0 ? { runtimeFences: lowered.runtimeFences } : {}),
         ...(divergences !== undefined && divergences.length > 0 ? { divergences } : {}),
         ...(lowered.performance !== undefined ? { performance: lowered.performance } : {}),
+        ...(lowered.strictDynamic !== undefined ? { strictDynamic: lowered.strictDynamic } : {}),
         ...(lowered.dynamicSlots !== undefined ? { dynamicSlots: lowered.dynamicSlots } : {}),
         ...(lowered.typeClaims !== undefined ? { typeClaims: lowered.typeClaims } : {}),
         ...(lowered.unreached ? { unreached: lowered.unreached } : {}),

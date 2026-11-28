@@ -74,8 +74,11 @@ declare module "http" {
    * simple and spreads target the same string | undefined slot). */
   export type OutgoingHttpHeaders = { [name: string]: number | string | string[] | undefined };
   export interface IncomingMessage {
-    readonly url: string;
-    readonly method: string;
+    /* url, method and headers are own data properties Node assigns in its
+     * constructor and a program may assign again (a dev server builds a
+     * request this way); every later read answers the assigned value. */
+    url: string;
+    method: string;
     readonly httpVersion: string;
     readonly complete: boolean;
     readonly aborted: boolean;
@@ -87,7 +90,7 @@ declare module "http" {
     readonly statusMessage: string | undefined;
     readonly socket: Socket;
     readonly connection: Socket;
-    readonly headers: { [name: string]: string | undefined };
+    headers: { [name: string]: string | undefined };
     readonly headersDistinct: { [name: string]: string[] | undefined };
     readonly rawHeaders: string[];
     readonly trailers: { [name: string]: string | undefined };

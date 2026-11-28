@@ -26,6 +26,16 @@ test("a package.json without a scriptc key has the default configuration", () =>
   expect(parseProjectConfig(manifest, "{ not json").diagnostics).toEqual([]);
 });
 
+test("scriptc.strict turns strict mode on, and a non-boolean is SC8004", () => {
+  expect(config({ strict: true }).strict).toBe(true);
+  expect(config({}).strict).toBe(false);
+  const bad = config({ strict: "yes" });
+  expect(bad.strict).toBe(false);
+  expect(bad.diagnostics.map((d) => [d.code, d.message])).toEqual([
+    ["SC8004", `package.json 'scriptc.strict' must be true or false, not "yes"`],
+  ]);
+});
+
 test("readProjectConfig reads the nearest package.json like parseProjectConfig", () => {
   const root = mkdtempSync(join(tmpdir(), "scriptc-project-config-"));
   try {

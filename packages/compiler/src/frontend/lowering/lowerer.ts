@@ -316,7 +316,7 @@ import {
 import { settleClassIdentityHelpers } from "./class-instance-constructor.js";
 import { addUntypedIntegrityWords, guardClassAttributeWrites } from "./class-attributes.js";
 import { inferredCollectionType } from "./js-collection-types.js";
-import { sloppyDynamicWrites } from "./frozen-records.js";
+import { sloppyArrayWrites, sloppyDynamicWrites } from "./frozen-records.js";
 import { guardFrozenWrites, markSloppyRecordWrites } from "./frozen-records.js";
 import { FunctionCensus } from "./function-census.js";
 import { applyHandleProperties, handlePropertyScanRoots } from "./handle-properties.js";
@@ -332,7 +332,7 @@ import { enumObjectRefusal, type EnumObject } from "./enum-objects.js";
 import { enumNumberReadMayMiss } from "./lower-enums.js";
 import { recordTextCodecClass, sortArms } from "../../ir/ir.js";
 import { assignLegacyTiers, type DynamicFunction } from "../../ir/tiers.js";
-import { dynamicSlotOperationCounts, dynamicTierWarning } from "./dynamic-tier.js";
+import { dynamicSlotOperationCounts, dynamicTierWarnings } from "./dynamic-tier.js";
 import { promoteJsvals } from "../../ir/jsval.js";
 import { returnDispatchReceivers } from "./receiver-returns.js";
 import {
@@ -1303,6 +1303,10 @@ export interface LowerResult {
   /** Functions lowering placed in the dynamic tier (ir/tiers.ts), present
    * when there are any. */
   dynamicFunctions?: DynamicFunction[];
+  /** Strict mode's dynamic-tier finding (SC6107): every function the program
+   * compiles to the dynamic tier. An ordinary build filters it out; a strict
+   * build promotes it. Present only when there are dynamic functions. */
+  strictDynamic?: ScrDiagnostic;
   /** LowerOptions.tierReport: the report-only tier assignment. */
   tiers?: TierReport;
   /** The first place the program reaches into Node: the module that does and
@@ -2511,12 +2515,17 @@ function lowerToIrWithIslands(
   ];
   timing("divergence-scan", { found: divergences.length });
   if (divergences.length > 0) result = { ...result, divergences };
-  // The performance warning (SC6101): likely-hot functions of the program
-  // that compile to the dynamic tier because the source leaves them untyped.
+  // The performance warnings of the dynamic tier, from one scan: SC6101 names
+  // the likely-hot functions the source leaves untyped, and SC6107 (strict
+  // mode's finding, which an ordinary build filters out in
+  // diagnostics/build-warnings.ts and --strict promotes) names every function
+  // the program compiles to the dynamic tier, cold ones and untyped npm
+  // package code included.
   if (result.module !== null && resultLowerer.dynamicFunctions.length > 0) {
-    const hotDynamic = dynamicTierWarning(resultLowerer, result.module, dirname(entry.fileName));
-    timing("dynamic-tier-scan", { found: hotDynamic === null ? 0 : 1 });
-    if (hotDynamic !== null) result = { ...result, performance: [hotDynamic] };
+    const dynamic = dynamicTierWarnings(resultLowerer, result.module, dirname(entry.fileName));
+    timing("dynamic-tier-scan", { found: dynamic.hot === null ? 0 : 1 });
+    if (dynamic.hot !== null) result = { ...result, performance: [dynamic.hot] };
+    if (dynamic.strict !== null) result = { ...result, strictDynamic: dynamic.strict };
   }
   // Localized failure (SC6104): one performance warning per dynamic slot.
   if (resultLowerer.dynamicSlots.length > 0) {
@@ -15842,6 +15851,10 @@ export class Lowerer {
     refuseUnseenBuiltinMemberWrites(this);
     markInferredFactChecks(functions, this.program);
     const sloppyDynWrites = sloppyDynamicWrites(this, functions, census);
+    // Only a program that may freeze an array emits the array guard, so
+    // nothing else pays for the walk.
+    const sloppyArrayWriteKeys =
+      this.freezableArrays.size > 0 ? sloppyArrayWrites(this, functions) : [];
     const module: IrModule | null =
       this.diags.length > 0
         ? null
@@ -15883,6 +15896,7 @@ export class Lowerer {
             ...(this.untypedIntegrity ? { untypedIntegrity: true as const } : {}),
             ...(buffersMutable ? { bytesHeadersMutable: true as const } : {}),
             ...(sloppyDynWrites.length > 0 ? { sloppyDynWrites } : {}),
+            ...(sloppyArrayWriteKeys.length > 0 ? { sloppyArrayWrites: sloppyArrayWriteKeys } : {}),
             ...(isNodeEsmFile(this.entry, this.program) ? {} : { commonJsEntry: true }),
             ...(this.ffiImports.length > 0 ? { ffiImports: [...this.ffiImports] } : {}),
           };

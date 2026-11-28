@@ -349,6 +349,8 @@ import { staticAssertInstanceDecl } from "./assert-instances.js";
 import {
   lowerHttpClientFnBindingDecl,
   lowerHttpClientMaxHeadersCountAssignment,
+  lowerHttpReqHeaderWrite,
+  lowerHttpReqPropertyAssignment,
   lowerHttpResPropertyAssignment,
   lowerHttpServerTimeoutAssignment,
   lowerNetServerMaxConnectionsAssignment,
@@ -12027,7 +12029,12 @@ export function lowerExprStatement(
         const dereferenced = lowerDereferencedElementWrite(lowerer, expr);
         if (dereferenced) return dereferenced;
       }
-      if (ts.isElementAccessExpression(expr.left)) return lowerer.lowerElementWrite(expr);
+      if (ts.isElementAccessExpression(expr.left)) {
+        // req.headers[name] = value — the headers object Node mutates.
+        const headerWrite = lowerHttpReqHeaderWrite(lowerer, expr.left, expr.right, locOf(expr));
+        if (headerWrite) return headerWrite;
+        return lowerer.lowerElementWrite(expr);
+      }
       if (ts.isPropertyAccessExpression(expr.left)) {
         fenceNodeModuleMutation(lowerer, expr.left, "assignment");
         // The writable Event accessors on Event subclass instances.
@@ -12121,6 +12128,17 @@ export function lowerExprStatement(
             locOf(expr),
           );
           if (closeOverride) return closeOverride;
+        }
+        // req.method / req.url / req.headers — IncomingMessage's own data
+        // properties (util/dev/server.ts builds a request this way).
+        {
+          const reqProp = lowerHttpReqPropertyAssignment(
+            lowerer,
+            expr.left,
+            expr.right,
+            locOf(expr),
+          );
+          if (reqProp) return reqProp;
         }
         // res.statusCode = 404 / res.statusMessage = "..." — Node's
         // writable ServerResponse properties (same routing).

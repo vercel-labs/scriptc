@@ -2453,33 +2453,35 @@ const RUNTIME_FEATURE_RULES = {
     // A program that reads the AbortController class as a value may build
     // one (dyn.globalConstructor), and the construction runs this unit.
     libCall: (node) => readsGlobalConstructor(node, "AbortController"),
-    // A checked-dynamic read of a `signal` member (IncomingMessage.signal in
-    // a JavaScript source) reaches the abort unit through the handle's dyn
-    // dispatch, where no libCall names it.
-    // A runtime key can name signal, so every dynamic member read selects
-    // the unit the handle's dispatch needs.
+    // Readable.from(iterable, options): its `signal` option adds the abort
+    // listener through this unit. A literal options value is read here; an
+    // opaque one may carry the member, so it selects the unit too.
     expr: (node) =>
-      (node.kind === "dynKeyGet" && (node.key.kind !== "strLit" || node.key.value === "signal")) ||
-      // Readable.from(iterable, options): its `signal` option adds the abort
-      // listener through this unit. A literal options value is read here; an
-      // opaque one may carry the member, so it selects the unit too.
-      (node.kind === "libCall" &&
-        node.fn === "readable.fromDyn" &&
-        node.args[1] !== undefined &&
-        (node.args[1]!.kind !== "dynObjLit" ||
-          (node.args[1]!.fields ?? []).some(
-            (f) => f.key.kind === "strLit" && f.key.value === "signal",
-          ))),
+      node.kind === "libCall" &&
+      node.fn === "readable.fromDyn" &&
+      node.args[1] !== undefined &&
+      (node.args[1]!.kind !== "dynObjLit" ||
+        (node.args[1]!.fields ?? []).some(
+          (f) => f.key.kind === "strLit" && f.key.value === "signal",
+        )),
   }),
   /** IncomingMessage.signal: the message's abort signal is an
    * AbortController, so a program that reads it links the signal unit
-   * (scr_abort.c) without touching fetch. */
+   * (scr_abort.c) without touching fetch. A checked-dynamic read of the
+   * member reaches the abort unit through the handle's dyn dispatch, where
+   * no libCall names it; only node:http's message has one, so the read
+   * selects the unit only in a program that uses http (dynSignalKey). */
   httpSignal: rule({
     fns: ["http.reqSignal"],
-    // An untyped message reads `signal` through a checked-dynamic key get,
-    // which no libCall stands for: that read needs the signal unit too.
+  }),
+  /** A checked-dynamic member read that can name `signal` (a runtime key,
+   * or the literal). The only handle whose dynamic dispatch reaches the
+   * abort unit is IncomingMessage's, which a program using node:http holds;
+   * gating the fact on http keeps scr_abort.c out of every other dynamic
+   * program while an untyped `req[key]` read still links it. */
+  dynSignalKey: rule({
     expr: (node) =>
-      node.kind === "dynKeyGet" && node.key.kind === "strLit" && node.key.value === "signal",
+      node.kind === "dynKeyGet" && (node.key.kind !== "strLit" || node.key.value === "signal"),
   }),
   /** util.debounce and util.throttle (scr_util_timing.c). */
   utilTiming: rule({ fns: ["util.debounce", "util.throttle"] }),
@@ -3157,6 +3159,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     webStreams: false,
     abortSignal: false,
     httpSignal: false,
+    dynSignalKey: false,
     utilTiming: false,
     utilMarkPromiseAsHandled: false,
     utilTraceSigInt: false,

@@ -1130,6 +1130,11 @@ ScrArr *scr_dyn_for_in_key_strs(const ScrDyn *v);
 bool scr_dyn_for_in_stable(const ScrDyn *v);
 /* Object.keys as a native string[] (+1); NULL with an exception pending. */
 ScrArr *scr_dyn_obj_key_strs(const ScrDyn *v);
+
+/* The own string keys a property copy snapshots (Node's [[OwnPropertyKeys]],
+ * strings only and without the enumerable filter). +1; NULL with the
+ * exception pending. */
+ScrArr *scr_dyn_own_key_strs_all(const ScrDyn *v);
 /* Object.entries as owned (key, value) pairs: compiled code moves each
  * pair into a native [string, any] row, then frees the snapshot with
  * scr_dyn_entry_pairs_free. NULL with an exception pending. */

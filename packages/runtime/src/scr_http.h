@@ -187,6 +187,17 @@ ScrStr *scr_http_req_url_opt(ScrHttpReq *r);
  * :path (the CONNECT shape), Node's undefined url. */
 void scr_http_req_clear_url(ScrHttpReq *r);
 ScrStr *scr_http_req_method(ScrHttpReq *r);   /* +1 */
+/* IncomingMessage's own data properties: an assignment replaces what the
+ * getter answers, for this message only. */
+void scr_http_req_set_method(ScrHttpReq *r, ScrStr *method /*borrowed*/);
+void scr_http_req_set_url(ScrHttpReq *r, ScrStr *url /*borrowed*/);
+void scr_http_req_set_headers(ScrHttpReq *r, ScrDyn *value /*borrowed, NULL = undefined*/);
+bool scr_http_req_has_headers_override(ScrHttpReq *r);
+/* req.headers[name] = value: the write lands in the headers object Node
+ * mutates, so later reads see it. */
+bool scr_http_req_set_header_name(ScrHttpReq *r, ScrStr *name /*borrowed*/,
+                                  ScrDyn *value /*borrowed*/);
+ScrDyn *scr_http_req_headers_override(ScrHttpReq *r); /* +1 (immortal undefined when unassigned) */
 ScrStr *scr_http_req_header(ScrHttpReq *r, ScrStr *name /*borrowed*/); /* +1 or NULL (undefined arm) */
 ScrStr *scr_http_req_trailer(ScrHttpReq *r, ScrStr *name /*borrowed*/); /* +1 or NULL */
 ScrArr *scr_http_req_header_values(ScrHttpReq *r, ScrStr *name /*borrowed*/); /* +1 or NULL */

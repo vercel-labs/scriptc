@@ -107,6 +107,45 @@ Without a profile, a dynamic-tier function counts as likely to run often when a 
 
 The detailed list in `--print=diagnostics` names at most five functions, most likely to run often first, and gives the total. A function expression is named by its own name, else by the variable, property or class field it is assigned to, else as `anonymous function`. Dynamic-tier code in npm packages is summarized with each package's function count. A build that comes from the cache repeats the warning. `--no-dynamic-tier-warning` leaves it out, and `--fail-on=dynamic` fails a coverage run on it.
 
+## Strict mode
+
+Strict mode is the optimal scriptc target: everything typed, nothing copied,
+no Node islands. `--strict` on `build`, `run` or `coverage`, or `"strict": true`
+in the project's `scriptc` configuration in `package.json`, turns the findings
+that measure distance from it into errors:
+
+- `SC6001` and `SC6007`, every conversion that copies a record or an island
+  value the program could keep;
+- every `SC61xx` performance hint: `SC6101` likely-hot untyped functions, the
+  dynamic-slot notes, and `SC6107`, which names EVERY function the program
+  compiles to the dynamic tier, cold code and untyped npm package code
+  included, not only functions likely to run often, plus a module's top level
+  when its own values are untyped;
+- `SC8001`, any Node island use. There is no islands sub-flag: an island fails
+  strict mode.
+
+Each error keeps the diagnostic's message, source frame and existing hint
+(`fix` for refusals), and the build or coverage run exits 1. `--print=diagnostics`
+reports them with severity `error` and `success: false`. Key-order warnings
+(`SC6014`) are behavior notes rather than performance findings and stay
+warnings; `--fail-on=divergences` gates those.
+
+A line can opt out of one code in strict mode:
+
+```ts
+const payload = JSON.parse(text); // scriptc-allow SC6101
+```
+
+The comment names one or more four-digit codes, separated by commas or spaces.
+It covers the line the finding points at, silences only the codes it names, and
+has no effect outside strict mode. A finding allowed this way is still printed
+as a warning, so the cost stays visible without failing the run.
+`SC6101` and `SC6107` name several functions in one finding: the comment goes on
+a function's own declaration line and exempts that function, leaving the others
+as errors. A top-level entry in `SC6107` takes the comment on the file's first
+line. Untyped npm package functions in `SC6107` cannot be exempted line by line;
+compile the package natively or mark it native.
+
 ## Dynamic slots
 
 A declared type that has no native representation does not fail the build. The field, parameter, return value, variable or expression that holds it becomes a checked dynamic slot: the parts of the type that compile keep their native layout, and the failing parts hold checked-dynamic values. Coverage lists the slots under the statement counts, and `scriptc build` prints one `SC6104` warning per slot.

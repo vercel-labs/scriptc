@@ -473,14 +473,15 @@ export function locateDiagnostic(
     code: diag.code,
     category: categoryOf(diag),
     severity:
-      isDivergenceCode(diag.code) ||
+      diag.severity ??
+      (isDivergenceCode(diag.code) ||
       isPerformanceCode(diag.code) ||
       isNodeIslandNoticeCode(diag.code) ||
       diag.code === "SC6201" ||
       diag.code === "SC8004" ||
       isTypePatchCode(diag.code)
         ? "warning"
-        : "error",
+        : "error"),
     scope,
     file: diag.loc.file,
     line: start.line,

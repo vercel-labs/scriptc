@@ -1015,6 +1015,13 @@ export function lowerObjectLiteral(
    * whole union, so its contextual type cannot choose the layout. */
   exact = false,
 ): IrExpr {
+  // A prefix property the distributed conditional spread already evaluated
+  // once (spreadOnceBindings, lowerDistributedUnionSpread): the arm builds
+  // read the bound value instead of building the literal again. The check
+  // sits here as well as in lowerExpr because an arm build can enter this
+  // function directly.
+  const spreadOnce = lowerer.spreadOnceBindings.get(expr);
+  if (spreadOnce !== undefined) return spreadOnce;
   // `__proto__: v` sets the literal's [[Prototype]] as the literal is built.
   // A record is a native struct with no dynamic prototype slot, so a
   // JavaScript literal that carries one builds as a checked-dynamic object,
@@ -3270,6 +3277,16 @@ function lowerDistributedUnionSpread(
   // ahead: its arms build in the dispatch.
   const sourcePure = pureKeyExpr(lowerer, conditional ? conditional.node.condition : site);
   for (const prop of props.slice(0, spreadIndex)) {
+    if (
+      conditional !== null &&
+      (ts.isPropertyAssignment(prop) || ts.isShorthandPropertyAssignment(prop))
+    ) {
+      // A two-armed conditional's arms build inside the dispatch, after
+      // every earlier property; an earlier initializer is lowered once
+      // into a hidden local before the condition (spreadOnceBindings), so
+      // its effects run in source order exactly once.
+      continue;
+    }
     if (sourcePure && ts.isShorthandPropertyAssignment(prop)) continue;
     if (
       ts.isPropertyAssignment(prop) &&
@@ -3405,28 +3422,65 @@ function lowerDistributedUnionSpread(
   }
   const loc = locOf(expr);
   if (conditional) {
-    const cond = lowerer.lowerCondition(conditional.node.condition);
-    const built: IrExpr[] = [];
-    for (const { tag, arm, destination } of plan) {
-      const armNode = conditional.nodes[tag]!;
-      // A fresh arm builds at its own type: its checker context is the
-      // enclosing literal's, which one arm need not complete.
-      const armValue = ts.isObjectLiteralExpression(armNode)
-        ? lowerObjectLiteral(lowerer, armNode, arm as IrType & { kind: "record" }, true)
-        : lowerer.lowerExpr(armNode);
-      if (!typeEquals(armValue.type, arm)) return null;
-      lowerer.spreadArmOverrides.set(site, armValue);
-      let whole: IrExpr;
-      try {
-        whole = lowerObjectLiteral(lowerer, expr, destination, true);
-      } finally {
-        lowerer.spreadArmOverrides.delete(site);
-      }
-      const wrapped = lowerer.coerceToExpected(whole, mapped);
-      if (!typeEquals(wrapped.type, mapped)) return null;
-      built.push(wrapped);
+    // Both arms re-lower the WHOLE literal, so an earlier property with
+    // effects would run once per arm. Bind each such initializer once, in
+    // source order, before the condition; the arm builds then read the
+    // bound value (spreadOnceBindings) instead of re-lowering it.
+    const boundStmts: IrStmt[] = [];
+    const boundNodes: ts.Expression[] = [];
+    // EVERY earlier property evaluates once, in source order, before the
+    // condition. Binding only the effectful ones would reorder the rest:
+    // an identifier or field read would run after a later property's
+    // effects, where JavaScript reads it before them.
+    for (const prop of props.slice(0, spreadIndex)) {
+      const node: ts.Expression | null = ts.isPropertyAssignment(prop)
+        ? prop.initializer
+        : ts.isShorthandPropertyAssignment(prop)
+          ? (prop.name as ts.Expression)
+          : null;
+      if (node === null) continue;
+      const value = lowerer.lowerExpr(node);
+      const held = lowerer.declareHiddenLocal("%spreadOnce", value.type);
+      boundStmts.push({ kind: "varDecl", localId: held.id, init: value, loc: value.loc });
+      lowerer.spreadOnceBindings.set(node, varRef(held.id, value.type, value.loc));
+      boundNodes.push(node);
     }
-    return { kind: "ternary", cond, then: built[0]!, else_: built[1]!, type: mapped, loc };
+    try {
+      const cond = lowerer.lowerCondition(conditional.node.condition);
+      const built: IrExpr[] = [];
+      for (const { tag, arm, destination } of plan) {
+        const armNode = conditional.nodes[tag]!;
+        // A fresh arm builds at its own type: its checker context is the
+        // enclosing literal's, which one arm need not complete.
+        const armValue = ts.isObjectLiteralExpression(armNode)
+          ? lowerObjectLiteral(lowerer, armNode, arm as IrType & { kind: "record" }, true)
+          : lowerer.lowerExpr(armNode);
+        if (!typeEquals(armValue.type, arm)) return null;
+        lowerer.spreadArmOverrides.set(site, armValue);
+        let whole: IrExpr;
+        try {
+          whole = lowerObjectLiteral(lowerer, expr, destination, true);
+        } finally {
+          lowerer.spreadArmOverrides.delete(site);
+        }
+        const wrapped = lowerer.coerceToExpected(whole, mapped);
+        if (!typeEquals(wrapped.type, mapped)) return null;
+        built.push(wrapped);
+      }
+      const result: IrExpr = {
+        kind: "ternary",
+        cond,
+        then: built[0]!,
+        else_: built[1]!,
+        type: mapped,
+        loc,
+      };
+      return boundStmts.length === 0
+        ? result
+        : { kind: "seqExpr", stmts: boundStmts, result, type: mapped, loc };
+    } finally {
+      for (const node of boundNodes) lowerer.spreadOnceBindings.delete(node);
+    }
   }
   if (siteType?.kind !== "union") return null;
   let source = lowerer.lowerExpr(site);

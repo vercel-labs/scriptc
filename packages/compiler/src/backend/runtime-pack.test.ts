@@ -120,7 +120,7 @@ async function fixture(
       object_format: target.objectFormat,
       minimum_os: target.minimumOs,
     },
-    runtime_abi: { version: 53, marker: "scr_runtime_abi_v53" },
+    runtime_abi: { version: 54, marker: "scr_runtime_abi_v54" },
     compiler: {
       command: "clang",
       identity: "fixture clang",

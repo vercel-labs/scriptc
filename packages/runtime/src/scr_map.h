@@ -137,27 +137,29 @@ typedef struct ScrMapIdentityOps {
  * extensible at once. Its entries stay writable, as in Node. */
 #define SCR_MAP_NOT_EXTENSIBLE 2u
 
+/* The first cache line (bytes 0..63 on 64-bit targets, 0..47 on 32-bit)
+ * holds every field a lookup or an inline helper reads: the counts, the
+ * bucket count and pointer, the entries pointer and capacity, the filter
+ * and the number-key direct index. The second line holds what mutations,
+ * dynamic views and iteration touch (the ops tables, the iteration depth
+ * and the deleted-prefix head), so one lookup does not span both. */
 typedef struct ScrMap {
   size_t rc; /* SIZE_MAX = immortal (unused for maps; kept per convention) */
   uint8_t key_kind; /* ScrMapKeyKind */
   uint8_t val_kind; /* ScrMapValKind */
   uint8_t traced;   /* SCR_MAP_TRACED_KEY | SCR_MAP_TRACED_VAL, from ops */
   uint8_t flags;    /* SCR_MAP_NULL_PROTO */
-  uint32_t iter_depth; /* > 0: an iteration is active — no compaction */
-  const ScrMapOps *ops; /* never NULL */
-  const ScrMapDynOps *dyn_ops;
   /* Counts and capacities are 32-bit: a map holds fewer than 2^30 entries
    * (scr_map_grow_entries), and its tables are sized from that. */
   uint32_t nentries; /* dense entries used, tombstones included */
   uint32_t nlive;    /* live entries (Map.size) */
+  uint32_t nbuckets; /* zero for small linear maps; otherwise power of two >= 2 * nentries */
+  ScrMapEntry *entries; /* NULL until the first insertion */
+  void *buckets;  /* compact tagged indices, or size_t indices for large tables */
   /* Two bits per inserted entry hash (scr_map.c scr_map_filter_bits): a
    * lookup whose bits are not all set is absent without touching the index
    * or the entries. Deletions leave their bits; compaction recomputes it. */
   uint64_t filter;
-  ScrMapEntry *entries; /* NULL until the first insertion */
-  uint32_t ecap;     /* entries capacity */
-  uint32_t nbuckets; /* zero for small linear maps; otherwise power of two >= 2 * nentries */
-  void *buckets;  /* compact tagged indices, or size_t indices for large tables */
   /* Direct index for number keys (SCR_MAP_KEY_F64 only). While ndense is
    * nonzero every live key is an integer in [0, ndense) and dense[k] holds
    * its entry index + 1 (0 = absent); the map then keeps no bucket table.
@@ -166,6 +168,10 @@ typedef struct ScrMap {
    * always the entries array's. */
   uint32_t *dense;
   uint32_t ndense;
+  uint32_t ecap; /* entries capacity */
+  const ScrMapOps *ops; /* never NULL */
+  const ScrMapDynOps *dyn_ops;
+  uint32_t iter_depth; /* > 0: an iteration is active — no compaction */
   /* Every entry below this index is a tombstone. A walk that starts at or
    * below it advances it to the first live entry (scr_map_iter_skip);
    * compaction and clear reset it. A map that deletes from the front (a
@@ -197,40 +203,49 @@ static inline uint64_t scr_map_entry_val(const ScrMap *m, const ScrMapEntry *e) 
  * inline retain/release test the traced byte as %ScrMapRc field 3, as
  * scr_map_retain and scr_map_release do. The inline number-key lookup
  * (sc_map_entry_f64) reads entries, dense and ndense as %ScrMapIx fields
- * 11, 15 and 16, and entries as %ScrMapNumEntry { key, val }; its hashed
- * probe (sc_map_entry_f64_hashed) also reads the entry count, the i64
- * filter, nbuckets and buckets as fields 8, 10, 13 and 14, and the inline
- * iteration steps read the entry count and test each entry: its hash, the
- * third field (sc_map_iter_entry), or for a number-key map its key against
- * SCR_MAP_NUM_DEAD (sc_map_iter_entry_num). Iteration over a checked
- * (unknown-key) Map or Set picks one of the two steps from the key kind,
- * %ScrMapIx field 1, compared with SCR_MAP_KEY_F64 (0). Map.size
- * (sc_map_size) reads the live count, field 9, as scr_map_size does. */
+ * 8, 11 and 12, and entries as %ScrMapNumEntry { key, val }; its hashed
+ * probe (sc_map_entry_f64_hashed) also reads the entry count, the bucket
+ * count, the i64 filter and the buckets as fields 5, 7, 10 and 9, and the
+ * inline iteration steps read the entry count and test each entry: its
+ * hash, the third field (sc_map_iter_entry), or for a number-key map its
+ * key against SCR_MAP_NUM_DEAD (sc_map_iter_entry_num). Iteration over a
+ * checked (unknown-key) Map or Set picks one of the two steps from the key
+ * kind, %ScrMapIx field 1, compared with SCR_MAP_KEY_F64 (0). Map.size
+ * (sc_map_size) reads the live count, field 6, as scr_map_size does. */
 _Static_assert(offsetof(ScrMap, key_kind) == sizeof(size_t) && SCR_MAP_KEY_F64 == 0,
                "inline iteration over checked collections reads ScrMap.key_kind as %ScrMapIx field 1");
 _Static_assert(offsetof(ScrMap, traced) == sizeof(size_t) + 2,
                "inline RC fast paths read ScrMap.traced as %ScrMapRc field 3");
 _Static_assert(offsetof(ScrMap, flags) == sizeof(size_t) + 3,
                "compiled records read ScrMap.flags at byte offset sizeof(size_t) + 3");
-_Static_assert(offsetof(ScrMap, iter_depth) == sizeof(size_t) + 4 &&
-                   offsetof(ScrMap, ops) == sizeof(size_t) + 8 &&
-                   offsetof(ScrMap, dyn_ops) == offsetof(ScrMap, ops) + sizeof(void *),
-               "%ScrMapIx fields 5 to 7 are iter_depth, ops and dyn_ops");
-_Static_assert(offsetof(ScrMap, nentries) == offsetof(ScrMap, dyn_ops) + sizeof(void *) &&
-                   offsetof(ScrMap, nlive) == offsetof(ScrMap, nentries) + sizeof(uint32_t),
-               "%ScrMapIx fields 8 and 9 are ScrMap.nentries and nlive");
+_Static_assert(offsetof(ScrMap, nentries) == sizeof(size_t) + 4 &&
+                   offsetof(ScrMap, nlive) == offsetof(ScrMap, nentries) + sizeof(uint32_t) &&
+                   offsetof(ScrMap, nbuckets) == offsetof(ScrMap, nlive) + sizeof(uint32_t),
+               "%ScrMapIx fields 5 to 7 are nentries, nlive and nbuckets");
+_Static_assert(offsetof(ScrMap, entries) ==
+                       (offsetof(ScrMap, nbuckets) + sizeof(uint32_t) + sizeof(void *) - 1) /
+                           sizeof(void *) * sizeof(void *) &&
+                   offsetof(ScrMap, buckets) == offsetof(ScrMap, entries) + sizeof(void *),
+               "inline lookups read ScrMap.entries and buckets as %ScrMapIx fields 8 and 9");
 _Static_assert(offsetof(ScrMap, filter) ==
-                   (offsetof(ScrMap, nlive) + sizeof(uint32_t) + _Alignof(uint64_t) - 1) / _Alignof(uint64_t) * _Alignof(uint64_t),
-               "%ScrMapIx field 10 is ScrMap.filter, directly after nlive");
-_Static_assert(offsetof(ScrMap, entries) == offsetof(ScrMap, filter) + sizeof(uint64_t),
-               "inline number-key lookups read ScrMap.entries as %ScrMapIx field 11");
-_Static_assert(offsetof(ScrMap, ecap) == offsetof(ScrMap, entries) + sizeof(void *) &&
-                   offsetof(ScrMap, nbuckets) == offsetof(ScrMap, ecap) + sizeof(uint32_t) &&
-                   offsetof(ScrMap, buckets) == offsetof(ScrMap, nbuckets) + sizeof(uint32_t),
-               "inline number-key probes read ScrMap.nbuckets and buckets as %ScrMapIx fields 13 and 14");
-_Static_assert(offsetof(ScrMap, dense) == offsetof(ScrMap, buckets) + sizeof(void *) &&
+                   (offsetof(ScrMap, buckets) + sizeof(void *) + _Alignof(uint64_t) - 1) / _Alignof(uint64_t) *
+                       _Alignof(uint64_t),
+               "%ScrMapIx field 10 is ScrMap.filter, the first 8-byte-aligned slot after buckets");
+_Static_assert(offsetof(ScrMap, dense) == offsetof(ScrMap, filter) + sizeof(uint64_t) &&
                    offsetof(ScrMap, ndense) == offsetof(ScrMap, dense) + sizeof(void *),
-               "inline number-key lookups read ScrMap.dense and ndense as %ScrMapIx fields 15 and 16");
+               "inline number-key lookups read ScrMap.dense and ndense as %ScrMapIx fields 11 and 12");
+_Static_assert(offsetof(ScrMap, ecap) == offsetof(ScrMap, ndense) + sizeof(uint32_t),
+               "%ScrMapIx field 13 is ScrMap.ecap");
+_Static_assert(offsetof(ScrMap, ops) ==
+                       (offsetof(ScrMap, ecap) + sizeof(uint32_t) + sizeof(void *) - 1) / sizeof(void *) *
+                           sizeof(void *) &&
+                   offsetof(ScrMap, dyn_ops) == offsetof(ScrMap, ops) + sizeof(void *),
+               "%ScrMapIx fields 14 and 15 are ops and dyn_ops");
+_Static_assert(offsetof(ScrMap, iter_depth) == offsetof(ScrMap, dyn_ops) + sizeof(void *) &&
+                   offsetof(ScrMap, head) == offsetof(ScrMap, iter_depth) + sizeof(uint32_t),
+               "%ScrMapIx fields 16 and 17 are iter_depth and head");
+_Static_assert(offsetof(ScrMap, ecap) + sizeof(uint32_t) <= 64,
+               "every read-path field stays in the first cache line");
 _Static_assert(offsetof(ScrMapEntry, hash) == 16, "inline iteration reads ScrMapEntry.hash at byte 16");
 _Static_assert(sizeof(ScrMapEntry) == 24 && offsetof(ScrMapEntry, val) == 8,
                "inline lookups read ScrMapEntry.val at byte 8");
@@ -250,6 +265,11 @@ const ScrMapEntry *scr_map_entry_str(const ScrMap *m, const ScrStr *key);
 /* scr_map_entry_str for a SCR_MAP_VAL_CREF map: its entry is a
  * ScrMapCEntry. */
 const ScrMapCEntry *scr_map_entry_str_c(const ScrMap *m, const ScrStr *key);
+/* The same two lookups for a caller that tested the map's absent-key filter
+ * itself and passes the key's cached 32-bit hash h (nonzero; the widened
+ * runtime hash is (h << 32) | h). */
+const ScrMapEntry *scr_map_entry_str_h(const ScrMap *m, const ScrStr *key, uint32_t h);
+const ScrMapCEntry *scr_map_entry_str_c_h(const ScrMap *m, const ScrStr *key, uint32_t h);
 
 /* String-key lookups borrow an exact byte span. Reference results return
  * +1; scalar outputs are written only on a hit, like the string getters. */

@@ -1170,10 +1170,11 @@ export function emitModuleParts(emitter: LlEmitter): TextPart[] {
     // The complete ScrMap and its entries, read by the inline number-key
     // lookup (sc_map_entry_f64), the inline iteration steps
     // (sc_map_iter_entry, sc_map_iter_entry_num) and Map.size
-    // (sc_map_size): field 8 is the i32 entry count, field 9 the i32 live
-    // count, field 10 the i64 absent-key filter, entries is field 11,
-    // nbuckets and buckets fields 13 and 14, the direct index and its i32
-    // length fields 15 and 16.
+    // (sc_map_size): field 5 is the i32 entry count, field 6 the i32 live
+    // count, field 7 the i32 bucket count, entries and buckets fields 8 and
+    // 9, field 10 the i64 absent-key filter, the direct index and its i32
+    // length fields 11 and 12, field 13 the entry capacity, and the ops
+    // tables, iteration depth and deleted-prefix head fields 14 to 17.
     ...(emitter.decls.has(NUMBER_MAP_ENTRY_DECL) ||
     emitter.decls.has(STRING_MAP_ENTRY_DECL) ||
     emitter.decls.has(STRING_MAP_ENTRY_C_DECL) ||
@@ -1181,7 +1182,7 @@ export function emitModuleParts(emitter: LlEmitter): TextPart[] {
     emitter.decls.has(MAP_ITER_NUM_DECL) ||
     emitter.decls.has(MAP_SIZE_DECL)
       ? [
-          `%ScrMapIx = type { ${emitter.sizeType}, i8, i8, i8, i8, i32, ptr, ptr, i32, i32, i64, ptr, i32, i32, ptr, ptr, i32, i32 }`,
+          `%ScrMapIx = type { ${emitter.sizeType}, i8, i8, i8, i8, i32, i32, i32, ptr, ptr, i64, ptr, i32, i32, ptr, ptr, i32, i32 }`,
         ]
       : []),
     // The { key, val, hash } entry of every map but a number-key one, whose
@@ -1930,7 +1931,7 @@ function numberMapEntryHelpers(sz: string, loop: boolean): string[] {
   return [
     `define internal ptr @sc_map_entry_f64${flavor}(ptr %m, double %k) ${attrs} {`,
     `entry:`,
-    `  %ndp = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 16`,
+    `  %ndp = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 12`,
     ...(sz === "i64"
       ? [`  %nd32 = load i32, ptr %ndp`, `  %nd = zext i32 %nd32 to i64`]
       : [`  %nd = load i32, ptr %ndp`]),
@@ -1941,7 +1942,7 @@ function numberMapEntryHelpers(sz: string, loop: boolean): string[] {
     sz === "i64"
       ? `  %i = add i64 ${mapIndex.wide}, 0`
       : `  %i = trunc i64 ${mapIndex.wide} to ${sz}`,
-    `  %dp = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 15`,
+    `  %dp = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 11`,
     `  %dense = load ptr, ptr %dp`,
     `  %sp = getelementptr inbounds i32, ptr %dense, ${sz} %i`,
     `  %s = load i32, ptr %sp`,
@@ -1950,7 +1951,7 @@ function numberMapEntryHelpers(sz: string, loop: boolean): string[] {
     `hit:`,
     `  %e32 = sub i32 %s, 1`,
     sz === "i32" ? `  %e = add i32 %e32, 0` : `  %e = zext i32 %e32 to ${sz}`,
-    `  %ep = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 11`,
+    `  %ep = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 8`,
     `  %entries = load ptr, ptr %ep`,
     `  %found = getelementptr inbounds %ScrMapNumEntry, ptr %entries, ${sz} %e`,
     `  ret ptr %found`,
@@ -1967,14 +1968,14 @@ function numberMapEntryHelpers(sz: string, loop: boolean): string[] {
     // negative key is not below the index's size as an unsigned value.
     `define internal ptr @sc_map_entry_f64_int${flavor}(ptr %m, i64 %ki, double %k) ${attrs} {`,
     `entry:`,
-    `  %ndp = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 16`,
+    `  %ndp = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 12`,
     `  %nd32 = load i32, ptr %ndp`,
     `  %nd = zext i32 %nd32 to i64`,
     `  %inside = icmp ult i64 %ki, %nd`,
     `  br i1 %inside, label %slot, label %slow`,
     `slot:`,
     sz === "i64" ? `  %i = add i64 %ki, 0` : `  %i = trunc i64 %ki to ${sz}`,
-    `  %dp = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 15`,
+    `  %dp = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 11`,
     `  %dense = load ptr, ptr %dp`,
     `  %sp = getelementptr inbounds i32, ptr %dense, ${sz} %i`,
     `  %s = load i32, ptr %sp`,
@@ -1983,7 +1984,7 @@ function numberMapEntryHelpers(sz: string, loop: boolean): string[] {
     `hit:`,
     `  %e32 = sub i32 %s, 1`,
     sz === "i32" ? `  %e = add i32 %e32, 0` : `  %e = zext i32 %e32 to ${sz}`,
-    `  %ep = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 11`,
+    `  %ep = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 8`,
     `  %entries = load ptr, ptr %ep`,
     `  %found = getelementptr inbounds %ScrMapNumEntry, ptr %entries, ${sz} %e`,
     `  ret ptr %found`,
@@ -2063,18 +2064,18 @@ function hashedNumberProbe(
     `  %x3 = xor i64 %x2, %x3s`,
     `  %hz = icmp eq i64 %x3, 0`,
     `  %h = select i1 %hz, i64 1, i64 %x3`,
-    `  %nbp = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 13`,
+    `  %nbp = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 7`,
     ...(sz === "i64"
       ? [`  %nb32 = load i32, ptr %nbp`, `  %nb = zext i32 %nb32 to i64`]
       : [`  %nb = load i32, ptr %nbp`]),
-    `  %eps = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 11`,
+    `  %eps = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 8`,
     `  %ents = load ptr, ptr %eps`,
     `  %linear = icmp eq ${sz} %nb, 0`,
     `  br i1 %linear, label %unbucketed, label %buckets`,
     // A map without a bucket table either indexes its keys directly, and
     // then holds none outside the index, or scans its entries.
     `unbucketed:`,
-    `  %ndp = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 16`,
+    `  %ndp = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 12`,
     `  %nd = load i32, ptr %ndp`,
     `  %indexed = icmp ne i32 %nd, 0`,
     `  br i1 %indexed, label %miss, label %filter`,
@@ -2093,7 +2094,7 @@ function hashedNumberProbe(
     `  br i1 %fin, label %scan, label %miss`,
     // A number-key entry has no cached hash; a dead entry's key matches no key.
     `scan:`,
-    `  %nep = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 8`,
+    `  %nep = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 5`,
     ...(sz === "i64"
       ? [`  %ne32 = load i32, ptr %nep`, `  %ne = zext i32 %ne32 to i64`]
       : [`  %ne = load i32, ptr %nep`]),
@@ -2116,7 +2117,7 @@ function hashedNumberProbe(
     `  %wide = icmp ugt ${sz} %nb, 16777216`,
     `  br i1 %wide, label %runtime, label %probe`,
     `probe:`,
-    `  %bp = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 14`,
+    `  %bp = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 9`,
     `  %bk = load ptr, ptr %bp`,
     `  %mask = sub ${sz} %nb, 1`,
     `  %ht = lshr i64 %h, 32`,
@@ -2272,7 +2273,7 @@ export function helperDefs(emitter: LlEmitter): string[] {
       defs.push(
         `define internal ptr @sc_map_iter_entry(ptr %m, double %i) ${FN_ATTRS} {`,
         `entry:`,
-        `  %np = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 8`,
+        `  %np = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 5`,
         `  %n = load i32, ptr %np`,
         `  %nf = uitofp i32 %n to double`,
         `  %lo = fcmp oge double %i, 0.0`,
@@ -2281,7 +2282,7 @@ export function helperDefs(emitter: LlEmitter): string[] {
         `  br i1 %in, label %load, label %none`,
         `load:`,
         `  %ix = fptoui double %i to ${sz}`,
-        `  %ep = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 11`,
+        `  %ep = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 8`,
         `  %entries = load ptr, ptr %ep`,
         `  %e = getelementptr inbounds %ScrMapEntry, ptr %entries, ${sz} %ix`,
         `  %hp = getelementptr inbounds %ScrMapEntry, ptr %e, i32 0, i32 2`,
@@ -2299,7 +2300,7 @@ export function helperDefs(emitter: LlEmitter): string[] {
       defs.push(
         `define internal ptr @sc_map_iter_entry_num(ptr %m, double %i) ${FN_ATTRS} {`,
         `entry:`,
-        `  %np = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 8`,
+        `  %np = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 5`,
         `  %n = load i32, ptr %np`,
         `  %nf = uitofp i32 %n to double`,
         `  %lo = fcmp oge double %i, 0.0`,
@@ -2308,7 +2309,7 @@ export function helperDefs(emitter: LlEmitter): string[] {
         `  br i1 %in, label %load, label %none`,
         `load:`,
         `  %ix = fptoui double %i to ${sz}`,
-        `  %ep = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 11`,
+        `  %ep = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 8`,
         `  %entries = load ptr, ptr %ep`,
         `  %e = getelementptr inbounds %ScrMapNumEntry, ptr %entries, ${sz} %ix`,
         `  %key = load i64, ptr %e`,
@@ -2324,7 +2325,7 @@ export function helperDefs(emitter: LlEmitter): string[] {
     defs.push(
       `define internal double @sc_map_iter_count(ptr %m) ${FN_ATTRS} {`,
       `entry:`,
-      `  %np = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 8`,
+      `  %np = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 5`,
       `  %n = load i32, ptr %np`,
       `  %nf = uitofp i32 %n to double`,
       `  ret double %nf`,
@@ -2337,7 +2338,7 @@ export function helperDefs(emitter: LlEmitter): string[] {
     defs.push(
       `define internal double @sc_map_size(ptr %m) ${FN_ATTRS} {`,
       `entry:`,
-      `  %np = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 9`,
+      `  %np = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 6`,
       `  %n = load i32, ptr %np`,
       `  %nf = uitofp i32 %n to double`,
       `  ret double %nf`,
@@ -2350,12 +2351,13 @@ export function helperDefs(emitter: LlEmitter): string[] {
   // without a call. On 64-bit targets the key's cached hash h is the high
   // half of its capacity word, the runtime's widened hash is (h << 32) | h,
   // and the filter reads its bits 44..55, which are the capacity word's
-  // own. A key without a cached hash, and every possible hit, take the
-  // runtime lookup.
+  // own. A possible hit then passes h to the runtime's hash-carrying probe,
+  // which skips the second hash load and the second filter test. A key
+  // without a cached hash takes the complete lookup.
   // A compact-value map's lookup (sc_map_entry_str_c) tests the same filter
-  // and calls scr_map_entry_str_c; its iteration step (sc_map_iter_entry_c)
+  // and calls scr_map_entry_str_c_h; its iteration step (sc_map_iter_entry_c)
   // reads 16-byte entries and their 32-bit hash.
-  const stringMapEntry = (helper: string, runtime: string): string[] => [
+  const stringMapEntry = (helper: string, runtime: string, runtimeH: string): string[] => [
     `define internal ptr @${helper}(ptr %m, ptr %k) ${FN_ATTRS} {`,
     `entry:`,
     ...(emitter.sizeType === "i64"
@@ -2376,7 +2378,12 @@ export function helperDefs(emitter: LlEmitter): string[] {
           `  %bits = or i64 %b1, %b2`,
           `  %have = and i64 %filter, %bits`,
           `  %maybe = icmp eq i64 %have, %bits`,
-          `  br i1 %maybe, label %slow, label %absent`,
+          `  br i1 %maybe, label %lookup, label %absent`,
+          `lookup:`,
+          `  %h64 = lshr i64 %cap, 32`,
+          `  %h = trunc i64 %h64 to i32`,
+          `  %hit = call ptr @${runtimeH}(ptr %m, ptr %k, i32 %h)`,
+          `  ret ptr %hit`,
           `absent:`,
           `  ret ptr null`,
         ]
@@ -2387,15 +2394,24 @@ export function helperDefs(emitter: LlEmitter): string[] {
     `}`,
     ``,
   ];
+  // The hash-carrying runtime probes are referenced by the helpers below, and
+  // the helpers are emitted for keyed reads and for iteration steps alike, so
+  // their declarations belong here rather than with the keyed-read decl.
   if (emitter.decls.has(STRING_MAP_ENTRY_DECL))
-    defs.push(...stringMapEntry("sc_map_entry_str", "scr_map_entry_str"));
+    defs.push(
+      `declare ptr @scr_map_entry_str_h(ptr, ptr, i32)`,
+      ``,
+      ...stringMapEntry("sc_map_entry_str", "scr_map_entry_str", "scr_map_entry_str_h"),
+    );
   if (emitter.decls.has(STRING_MAP_ENTRY_C_DECL)) {
     const sz = emitter.sizeType;
     defs.push(
-      ...stringMapEntry("sc_map_entry_str_c", "scr_map_entry_str_c"),
+      `declare ptr @scr_map_entry_str_c_h(ptr, ptr, i32)`,
+      ``,
+      ...stringMapEntry("sc_map_entry_str_c", "scr_map_entry_str_c", "scr_map_entry_str_c_h"),
       `define internal ptr @sc_map_iter_entry_c(ptr %m, double %i) ${FN_ATTRS} {`,
       `entry:`,
-      `  %np = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 8`,
+      `  %np = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 5`,
       `  %n = load i32, ptr %np`,
       `  %nf = uitofp i32 %n to double`,
       `  %lo = fcmp oge double %i, 0.0`,
@@ -2404,7 +2420,7 @@ export function helperDefs(emitter: LlEmitter): string[] {
       `  br i1 %in, label %load, label %none`,
       `load:`,
       `  %ix = fptoui double %i to ${sz}`,
-      `  %ep = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 11`,
+      `  %ep = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 8`,
       `  %entries = load ptr, ptr %ep`,
       `  %e = getelementptr inbounds %ScrMapCEntry, ptr %entries, ${sz} %ix`,
       `  %hp = getelementptr inbounds %ScrMapCEntry, ptr %e, i32 0, i32 1`,

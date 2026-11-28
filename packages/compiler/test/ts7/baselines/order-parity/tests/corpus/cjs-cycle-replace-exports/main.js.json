@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/cjs-cycle-replace-exports/b.js",
+  "<repo>/tests/corpus/cjs-cycle-replace-exports/a.js",
+  "<repo>/tests/corpus/cjs-cycle-replace-exports/main.js"
+ ],
+ "diags": []
+}

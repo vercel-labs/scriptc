@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/cjs-cycle-seal-exports/b.js",
+  "<repo>/tests/corpus/cjs-cycle-seal-exports/a.js",
+  "<repo>/tests/corpus/cjs-cycle-seal-exports/main.js"
+ ],
+ "diags": []
+}

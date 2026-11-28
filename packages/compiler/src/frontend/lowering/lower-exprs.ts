@@ -2,6 +2,7 @@ import {
   lowerCjsExportsObjectCall,
   lowerCjsExportsObjectRead,
 } from "./cjs-exports-object-value.js";
+import { lowerCjsPartialCycleMemberRead } from "./cjs-exports-object.js";
 import type { DiagnosticCode } from "../../diagnostics/codes.js";
 import {
   arrayClassMemberOwner,
@@ -1134,6 +1135,12 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
   if (ts.isConditionalExpression(expr)) return lowerTernary(lowerer, expr);
 
   if (ts.isPropertyAccessExpression(expr)) {
+    // A member of a module of a partial require() cycle reads the live
+    // exports object as it stands (cjs-exports-object.ts).
+    if (lowerer.program.analysis.partialCjsCycleMembers.size > 0) {
+      const viaPartial = lowerCjsPartialCycleMemberRead(lowerer, expr);
+      if (viaPartial) return viaPartial;
+    }
     // A member of a module whose exports object some code takes reads
     // through that object (cjs-exports-object-value.ts).
     if (lowerer.cjsExportsObjects.size > 0) {

@@ -3814,7 +3814,9 @@ export function requireBindingEarlyUse7(
     if (ts.isIdentifier(value)) {
       const sym = symbolOf(value);
       if (sym !== undefined && bindings.has(sym)) {
-        hit = value;
+        // A published use the caller proved exact (a partial cycle's live
+        // exports object, say) runs nothing and keeps its object.
+        if (exactEarlyRead?.(value) !== true) hit = value;
         return;
       }
       if (sym !== undefined) {
@@ -5710,7 +5712,16 @@ function cjsCycleAdmission7(
         mark();
         return undefined;
       }
-      if (!read) stray = use;
+      if (!read) {
+        // The module observes its exports object as a VALUE (passing it to
+        // Object.*, comparing it, storing it): the live checked-dynamic
+        // object is exactly Node's, so the cluster keeps it. markPartial
+        // mirrors every export write into it and routes a member read
+        // through it, which is what a reflection callback (zod's
+        // seal-exports pass over its own exports) needs.
+        mark();
+        return undefined;
+      }
       return undefined;
     });
     if (stray !== null) {
@@ -5732,7 +5743,11 @@ function cjsCycleAdmission7(
             stmts.length,
             req.decl,
             [],
-            (id) => functionExportRead7(id, dep) || observableExportRead7(program, id),
+            (id) =>
+              partialBindingValueRead7(id) ||
+              partialMemberCallRead7(id) ||
+              functionExportRead7(id, dep) ||
+              observableExportRead7(program, id),
           );
           if (reached !== null && earlyUseReason === null) {
             earlyUseReason = `the top-level code of ${m.fileName} can use its binding '${reached.text}' of a module of the cycle (${lineOf(reached)}) while the cycle initializes`;
@@ -5813,6 +5828,50 @@ function publishedAlias7(use: ts.Node, decl: ts.Node | undefined): boolean {
     return undefined;
   });
   return !kept;
+}
+
+/** A use of a module binding as a VALUE: the bindings that hold the exports
+ * object their require answered, so a capture, an argument or an initializer
+ * reads the object as it stands, Node's per-requirer identity included. */
+function partialBindingValueRead7(id: ts.Identifier): boolean {
+  const parent = id.parent;
+  if (parent === undefined) return false;
+  if (
+    (ts.isPropertyAccessExpression(parent) || ts.isElementAccessExpression(parent)) &&
+    parent.expression === id
+  )
+    return false;
+  if (
+    ts.isBinaryExpression(parent) &&
+    parent.left === id &&
+    parent.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+    parent.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+  )
+    return false;
+  return true;
+}
+
+/** A use of a module binding that calls one of its members
+ * (`binding.fn(...)`, `(0, binding.fn)(...)`). In a partial require() cycle
+ * the call reads the live exports object (cjs-exports-object.ts), which
+ * answers the member as it stands: calling it early behaves as Node's call
+ * of the partial object does. */
+function partialMemberCallRead7(id: ts.Identifier): boolean {
+  const access = id.parent;
+  if (!ts.isPropertyAccessExpression(access) || access.expression !== id) return false;
+  let use: ts.Node = access;
+  for (;;) {
+    const p = use.parent;
+    if (ts.isParenthesizedExpression(p)) use = p;
+    else if (
+      ts.isBinaryExpression(p) &&
+      p.operatorToken.kind === ts.SyntaxKind.CommaToken &&
+      p.right === use
+    )
+      use = p;
+    else break;
+  }
+  return ts.isCallExpression(use.parent) && use.parent.expression === use;
 }
 
 /** True for a plain read `binding.name` of the cycle member `dep` used only

@@ -192,6 +192,18 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
     }
   }
 
+  // A module binding of a partial require() cycle used as a VALUE (an
+  // initializer, an argument, an assignment source): it holds the exports
+  // object its require answered, which a later module.exports replacement
+  // in the target does not change (Node's per-requirer identity).
+  {
+    const partialSymbol = lowerer.resolveValueSymbol(expr);
+    const capture =
+      partialSymbol === null ? undefined : lowerer.cjsPartialRequireObjects.get(partialSymbol);
+    if (capture !== undefined)
+      return { kind: "varRef", localId: capture.object.id, type: DYN, loc };
+  }
+
   // A createRequire loader as a VALUE (not the callee of a lowered call or
   // a resolve read, which their own lowerings own): a run-time require
   // function over the runtime resolver. Checked before the node:module

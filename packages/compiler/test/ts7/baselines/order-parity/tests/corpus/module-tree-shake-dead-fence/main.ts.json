@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/module-tree-shake-dead-fence/main.ts"
+ ],
+ "diags": []
+}

@@ -15,6 +15,7 @@ import {
 import { dynUndefinedExpr, nodeThrowExpr, varRef } from "../../../ir/build.js";
 import { resultIsDiscarded } from "../call-position.js";
 import { sideEffectFreeOptionValue } from "../surfaces.js";
+import { needsJsonRuntimeWalker } from "../json-walk.js";
 import { processHasIpc } from "./process.js";
 
 /** Method calls on ChildProcess receivers: `child.on("exit"|"error", cb)`
@@ -35,18 +36,45 @@ function ignoredListenerReturn(type: IrType): boolean {
 /** Node serializes the message inside send(), after every argument
  * expression has been evaluated: an argument that mutates the message changes
  * what is sent. `value` is the lowered message value, so a caller that must
- * evaluate other slots first can materialize it and stringify it at the end. */
+ * evaluate other slots first can materialize it and stringify it at the end.
+ * Node's channel writes JSON.stringify's answer, so a message that the
+ * type-directed serializer cannot write field by field takes the runtime
+ * walker: checked-dynamic members, a symbol or bigint anywhere, or a record
+ * that declares toJSON (which must run). */
 function ipcJsonStringify(
   lowerer: Lowerer,
   value: IrExpr,
   node: ts.Expression,
   loc: SrcLoc,
 ): IrExpr {
-  if (!lowerer.jsonStringifySafe(value.type) && value.type.kind !== "dyn") {
+  const type = value.type;
+  if (type.kind === "dyn" || needsJsonRuntimeWalker(lowerer, type)) {
+    if (type.kind !== "dyn" && !lowerer.dynConvertible(type)) {
+      lowerer.unsupported(
+        "SC1090",
+        node,
+        `IPC messages of '${lowerer.fmt(type)}' values (the message declares toJSON, which send must call, and the value cannot cross into the checked-dynamic boundary)`,
+      );
+    }
+    // The runtime JSON walker JSON.stringify uses, not the type-directed
+    // serializer: it runs toJSON, drops undefined members and answers a
+    // real undefined for a dropped root, which the channel writes as the
+    // text "undefined" exactly as Node does.
+    const boxed: IrExpr = type.kind === "dyn" ? value : { kind: "dynFrom", value, type: DYN, loc };
+    const raw: IrExpr = {
+      kind: "libCall",
+      fn: "json.stringifyReplacer",
+      args: [boxed, dynUndefinedExpr(loc), { kind: "strLit", value: "", type: STRING, loc }],
+      type: DYN,
+      loc,
+    };
+    return { kind: "toString", operand: raw, type: STRING, loc };
+  }
+  if (!lowerer.jsonStringifySafe(type)) {
     lowerer.unsupported(
       "SC1090",
       node,
-      `IPC messages of '${lowerer.fmt(value.type)}' values (messages must be JSON-stringifiable records, arrays, primitives, unions of those, or unknown)`,
+      `IPC messages of '${lowerer.fmt(type)}' values (messages must be JSON-stringifiable records, arrays, primitives, unions of those, or unknown)`,
     );
   }
   return { kind: "jsonStringify", value, type: STRING, loc };

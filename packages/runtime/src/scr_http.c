@@ -7621,7 +7621,10 @@ void scr_http_client_set_header_array(ScrHttpClientReq *c, ScrStr *name /*borrow
       scr_dyn_arr_push(arr, scr_dyn_new_str(undefined_text));
       continue;
     }
-    scr_dyn_arr_push(arr, scr_dyn_new_str((ScrStr *)scr_arr_get_ref(values, i)));
+    /* the element read is +1; the dynamic value keeps its own reference */
+    ScrStr *element = (ScrStr *)scr_arr_get_ref(values, i);
+    scr_dyn_arr_push(arr, scr_dyn_new_str(element));
+    scr_str_release(element);
   }
   if (undefined_text != NULL) scr_str_release(undefined_text);
   scr_http_client_set_header_dyn(c, name, arr);

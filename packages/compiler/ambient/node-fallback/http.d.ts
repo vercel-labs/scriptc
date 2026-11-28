@@ -343,6 +343,9 @@ declare module "http" {
     rawHeaders: string[];
   }
   export interface ClientRequest {
+    /* Node's OutgoingMessage.setHeaders on a request: each entry goes
+     * through setHeader (a request has no set-cookie join). */
+    setHeaders(headers: Headers | Map<string, number | string | readonly string[]>): this;
     /* The response's incoming header count cap (null = unset; 0 = no
      * limit). */
     maxHeadersCount: number | null;

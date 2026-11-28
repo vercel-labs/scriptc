@@ -10718,6 +10718,26 @@ function lowerHttpClientMethodCall(
   const name = access.name.text;
   const loc = locOf(call);
   const args = call.arguments.nodes;
+  if (name === "setHeaders") {
+    if (args.length !== 1)
+      lowerer.noLowering(
+        `request.setHeaders arguments`,
+        call,
+        "pass a Map (or a Headers object) of header names to values",
+      );
+    const receiver = coerceToHandle(lowerer, access.expression, HTTPCLIENTREQ_T);
+    const value = lowerer.lowerExpr(args[0]!);
+    const headers: IrExpr =
+      value.type.kind === "dyn" ? value : { kind: "dynFrom", value, type: DYN, loc };
+    // Node's OutgoingMessage form answers the message itself.
+    return receiverReturningCall(
+      lowerer,
+      "http.clientSetHeaders",
+      [receiver, headers],
+      HTTPCLIENTREQ_T,
+      loc,
+    );
+  }
   if (name === "setHeader" || name === "appendHeader") {
     requireStatementPosition(lowerer, call, `request.${name}(...)`);
     if (args.length !== 2)

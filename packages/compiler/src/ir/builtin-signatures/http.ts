@@ -475,6 +475,7 @@ export const httpSignatures = defineLibFnSignatures({
   "http.clientRemoveHeader": { argTypes: [HTTPCLIENTREQ_T, STRING], result: VOID },
   "http.clientGetHeaderNames": { argTypes: [HTTPCLIENTREQ_T], result: arrayOf(STRING) },
   "http.clientGetRawHeaderNames": { argTypes: [HTTPCLIENTREQ_T], result: arrayOf(STRING) },
+  "http.clientSetHeaders": { argTypes: [HTTPCLIENTREQ_T, DYN], result: VOID },
   "http.clientGetHeaders": { argTypes: [HTTPCLIENTREQ_T], result: DYN },
   "http.clientWriteBytes": { argTypes: [HTTPCLIENTREQ_T, BYTES_U8], result: BOOL },
   "http.clientEnd": { argTypes: [HTTPCLIENTREQ_T], result: VOID },

@@ -7466,7 +7466,11 @@ ScrStr *scr_http_client_get_header(ScrHttpClientReq *c, ScrStr *name) {
  * or a present undefined is the text "undefined" (Node reads the array the
  * way an iterator does), a present element is its string. */
 ScrStr *scr_http_header_array_element(ScrArr *values /*borrowed*/, double index) {
-  if (index < 0 || !scr_arr_has(values, index)) return scr_str_new("undefined", 9);
+  /* a hole and a present undefined both read as "undefined" (Node's
+   * iteration of the array yields undefined for each); only a slot holding a
+   * value takes the proven-presence accessor */
+  if (index < 0 || scr_arr_state(values, index) != (double)SCR_ARR_VALUE)
+    return scr_str_new("undefined", 9);
   return (ScrStr *)scr_arr_get_ref(values, index);
 }
 

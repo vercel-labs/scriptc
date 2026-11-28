@@ -1,0 +1,6 @@
+push-spread-user-map-alias.ts:18:11 - error SC1090: pushing a spread of '{ index: number }[]' onto a '{ index: number; kind: string | undefined }[]' array (only a same-element-type array spreads) is not supported yet
+
+  17 | const wide: Wide[] = [];
+  18 | wide.push(...mirror.map((value) => ({ index: value.index })));
+     |           ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  19 | kept.index = 9;

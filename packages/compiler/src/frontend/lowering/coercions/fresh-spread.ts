@@ -109,6 +109,13 @@ export function freshElementSpreadSource(lowerer: Lowerer, node: ts.Expression):
   if (freshSpreadSource(lowerer, e)) return true;
   if (!ts.isCallExpression(e) || !ts.isPropertyAccessExpression(e.expression)) return false;
   if (e.expression.name.text !== "map" || e.questionDotToken !== undefined) return false;
+  // The NAME alone proves nothing: a user-defined `map` (an object literal,
+  // a class method, a subclass override) may return elements it keeps and
+  // hands out again, so copying them would break the identity JavaScript
+  // keeps. Only the builtin Array.prototype.map builds a fresh array from
+  // the callback's results.
+  const method = lowerer.checker.getSymbolAtLocation(e.expression.name);
+  if (method === undefined || !lowerer.isStdlibSymbol(method)) return false;
   const callback = e.arguments.nodes[0];
   if (!callback || !(ts.isArrowFunction(callback) || ts.isFunctionExpression(callback)))
     return false;

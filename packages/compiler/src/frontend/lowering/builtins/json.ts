@@ -9,6 +9,7 @@ import { InternalCompilerError } from "../../../errors.js";
 import * as ts from "../../ts7/adapter.js";
 import { withoutParentheses } from "../../outer-expressions.js";
 import { type Lowerer } from "../lowerer.js";
+import { recordDeclaresToJson } from "../json-walk.js";
 
 /** Whether `node`, seen through parentheses and a non-null assertion, is an
  * ELEMENT read whose lowered value keeps an absent (undefined) arm the
@@ -337,42 +338,6 @@ export function lowerJsonMethodCall(
     return node;
   }
   return null; // unknown members are tsc errors before lowering
-}
-
-/** Whether a record reachable from `t` declares a toJSON method. Such a type
- * cannot be serialized field by field: Node calls the method (with the record
- * as receiver) and serializes what it answers, so the value takes the runtime
- * walker. */
-function recordDeclaresToJson(
-  lowerer: Lowerer,
-  t: IrType,
-  visiting: Set<string> = new Set(),
-): boolean {
-  switch (t.kind) {
-    case "array":
-      return recordDeclaresToJson(lowerer, t.elem, visiting);
-    case "record": {
-      const shape = lowerer.shapes.get(t.shapeId);
-      if (shape === undefined || visiting.has(t.shapeId)) return false;
-      visiting.add(t.shapeId);
-      for (const field of shape.fields) {
-        if (field.name === "toJSON" && field.type.kind === "func") return true;
-        if (recordDeclaresToJson(lowerer, field.type, visiting)) return true;
-      }
-      return shape.indexValue !== undefined
-        ? recordDeclaresToJson(lowerer, shape.indexValue, visiting)
-        : false;
-    }
-    case "union": {
-      const def = lowerer.unions.get(t.unionId);
-      const key = `union:${t.unionId}`;
-      if (def === undefined || visiting.has(key)) return false;
-      visiting.add(key);
-      return def.arms.some((arm) => recordDeclaresToJson(lowerer, arm, visiting));
-    }
-    default:
-      return false;
-  }
 }
 
 function lowerOptionalStringifyRoot(

@@ -2,8 +2,8 @@
 // pathToFileURL(cwd).href: a directory carrying a space, '#', '%', '?' and
 // non-ASCII bytes must encode exactly as Node's pathToFileURL spells it.
 // The frames here carry the href rather than the raw path, so the coloring
-// matches only through that encoding — which the inspect unit now builds
-// itself instead of calling scr_url.c/scr_path.c.
+// matches only through that encoding: any encoder the inspect unit uses for
+// the working directory must spell it byte-for-byte as pathToFileURL does.
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

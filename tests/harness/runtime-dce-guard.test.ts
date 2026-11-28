@@ -113,9 +113,10 @@ const FIXTURES: readonly Fixture[] = [
   },
   {
     id: "abort-controller",
-    entry: "tests/corpus/runtime-dce-abort-controller.ts",
+    entry: "tests/corpus/runtime-dce-abort-controller.mjs",
     forbidden: [],
-    // AbortController outside http still selects the abort unit.
+    // AbortController outside http (including construction from the global
+    // object's computed key) still selects the abort unit.
     required: [/^scr_abort\.o$/],
   },
   {

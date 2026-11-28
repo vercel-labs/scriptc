@@ -2784,7 +2784,7 @@ static bool scr_intl_list_format_step(ScrDyn *iterator, ScrDyn *next, bool *done
  * one the program sees. */
 static void scr_intl_list_format_close(ScrDyn *iterator) {
   ScrCaught *first = scr_exc_take();
-  ScrDyn *method = scr_dyn_member_get(iterator, "return");
+  ScrDyn *method = scr_dyn_iterator_member(iterator, "return");
   if (method != NULL) {
     if (method->kind != SCR_DYN_UNDEF && method->kind != SCR_DYN_NULL) {
       scr_dyn_this_push_dyn(iterator);
@@ -2807,13 +2807,14 @@ static void scr_intl_list_format_close(ScrDyn *iterator) {
 
 static ScrStr *scr_intl_list_format_run(const ScrIntlListFormat *format, ScrDyn *list) {
   if (list == NULL || list->kind == SCR_DYN_UNDEF) return scr_str_new("", 0);
-  int kind = 0;
-  ScrDyn *iterator = scr_dyn_open_iterator(list, &kind, true);
+  /* Intl.ListFormat takes a SYNCHRONOUS iterable: Symbol.iterator, never a
+   * dual-protocol object's async iterator. */
+  ScrDyn *iterator = scr_dyn_iterator(list, NULL);
   if (iterator == NULL) {
-    if (kind == 0) scr_dyn_throw_not_iterable(list);
+    if (!scr_exc_pending()) scr_dyn_throw_not_iterable(list);
     return NULL;
   }
-  ScrDyn *next = scr_dyn_member_get(iterator, "next");
+  ScrDyn *next = scr_dyn_iterator_member(iterator, "next");
   if (next == NULL) {
     scr_dyn_release(iterator);
     return NULL;

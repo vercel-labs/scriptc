@@ -2503,46 +2503,6 @@ ScrDyn *scr_dyn_obj_get(const ScrDyn *d, const char *key, size_t key_len) {
   return entry && !entry->class_view ? entry->value : NULL;
 }
 
-/* A member read over any checked-dynamic value, the one the iterator
- * protocols use for next/return: a typed capsule's own member or its
- * materialized view, a handle's, a proxy's, a promise's, a function's or a
- * plain object's. +1, or NULL with the exception pending. */
-ScrDyn *scr_dyn_member_get(const ScrDyn *object, const char *key) {
-  size_t len = strlen(key);
-  if (object->kind == SCR_DYN_TYPED_REF) {
-    ScrStr *name = scr_str_new(key, len);
-    ScrDyn *fast = scr_dyn_typed_ref_own_get(object, name);
-    scr_str_release(name);
-    if (fast) return fast;
-    ScrDyn *view = scr_dyn_typed_ref_materialize(object);
-    if (!view) return NULL;
-    ScrDyn *out = scr_dyn_member_get(view, key);
-    scr_dyn_release(view);
-    return out;
-  }
-  if (object->kind == SCR_DYN_HANDLE || object->kind == SCR_DYN_PROXY ||
-      object->kind == SCR_DYN_PROMISE) {
-    ScrStr *name = scr_str_new(key, len);
-    ScrDyn *out = object->kind == SCR_DYN_HANDLE
-                    ? scr_dyn_handle_key_get(object, name)
-                    : object->kind == SCR_DYN_PROXY ? scr_dyn_proxy_get(object, name)
-                                                    : scr_dyn_promise_key_get(object, name);
-    scr_str_release(name);
-    return out;
-  }
-  if (object->kind == SCR_DYN_FUNC) return scr_dyn_fn_get(object, key, len);
-  if (object->kind == SCR_DYN_OBJ) {
-    ScrDyn *own = scr_dyn_obj_get(object, key, len);
-    if (own != NULL) return scr_dyn_retain(own);
-    for (const ScrDyn *p = object->prototype; p != NULL; p = p->prototype) {
-      if (p->kind != SCR_DYN_OBJ) continue;
-      ScrDyn *inherited = scr_dyn_obj_get(p, key, len);
-      if (inherited != NULL) return scr_dyn_retain(inherited);
-    }
-    return scr_dyn_retain(scr_dyn_undefined());
-  }
-  return NULL;
-}
 
 bool scr_dyn_obj_enumerable(const ScrDyn *d, const char *key, size_t key_len) {
   if (scr_dyn_is_layout(d)) return scr_dyn_layout_slot(d, key, key_len) != NULL;
@@ -13072,6 +13032,34 @@ ScrDyn *scr_dyn_iterator(const ScrDyn *source, const ScrStr *spell) {
     return NULL;
   }
   return iterator;
+}
+
+/* A member read for the iterator protocols (next/return): a property Get,
+ * so an accessor runs once, like Node's GetIteratorGetNext; a compiled
+ * generator capsule answers from its own method table first, and a typed
+ * capsule through its materialized view. +1, or NULL with the exception
+ * pending. */
+ScrDyn *scr_dyn_iterator_member(const ScrDyn *value, const char *key) {
+  size_t len = strlen(key);
+  if (scr_generator_member_hook && scr_dyn_generator(value)) {
+    ScrDyn *member = scr_generator_member_hook(value, key, len);
+    if (member) return member;
+  }
+  if (value->kind == SCR_DYN_TYPED_REF) {
+    ScrDyn *view = scr_dyn_typed_ref_materialize(value);
+    if (!view) return NULL;
+    ScrDyn *result = scr_dyn_iterator_member(view, key);
+    scr_dyn_release(view);
+    return result;
+  }
+  ScrDyn *target = (ScrDyn *)value;
+  ScrStr *name = scr_str_new(key, len);
+  ScrDyn *boxed = scr_dyn_new_str(name);
+  scr_str_release(name);
+  ScrDyn *result = scr_dyn_reflect_get(target, boxed, target);
+  scr_dyn_release(boxed);
+  if (result == NULL && !scr_exc_pending()) return scr_dyn_retain(scr_dyn_undefined());
+  return result;
 }
 
 static ScrDyn *scr_iterator_read(const ScrDyn *value, const char *key, size_t len) {

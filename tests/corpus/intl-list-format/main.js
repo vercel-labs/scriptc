@@ -77,3 +77,52 @@ for (const options of [null, 5, "x", true]) {
     console.log("options:", error.constructor.name + ": " + error.message);
   }
 }
+
+// next is a getter: Node reads it once and calls what it answers.
+let nextReads = 0;
+const getterIterator = {
+  get next() {
+    nextReads += 1;
+    let index = 0;
+    return () => ({ done: index > 0, value: index++ === 0 ? "a" : undefined });
+  },
+};
+console.log(JSON.stringify(conjunction.format({ [Symbol.iterator]: () => getterIterator })), nextReads);
+
+// next and return inherited from a prototype; the non-string element closes
+// the iterator through the inherited return.
+let closed = 0;
+const proto = {
+  next() {
+    this.index = (this.index ?? 0) + 1;
+    return { done: false, value: this.index === 1 ? "b" : 5 };
+  },
+  return() {
+    closed += 1;
+    return { done: true };
+  },
+};
+const inherited = Object.create(proto);
+try {
+  conjunction.format({ [Symbol.iterator]: () => inherited });
+} catch (error) {
+  console.log(error.constructor.name + ": " + error.message, closed);
+}
+
+// A dual-protocol iterable: the synchronous format must use Symbol.iterator.
+const dual = {
+  [Symbol.iterator]() {
+    let done = false;
+    return {
+      next: () => {
+        if (done) return { done: true };
+        done = true;
+        return { done: false, value: "c" };
+      },
+    };
+  },
+  [Symbol.asyncIterator]() {
+    throw new Error("async iterator must not be chosen");
+  },
+};
+console.log(JSON.stringify(conjunction.format(dual)));

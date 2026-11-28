@@ -580,8 +580,8 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         null,
         emitter.sloppyArrayWrites.has(`${s.loc.file}\0${s.loc.start}\0${s.loc.end}`),
       );
-      if (acc === "ref") emitter.toHeap(v);
       if (noOp === null) {
+        if (acc === "ref") emitter.toHeap(v);
         emitDenseArraySet(
           emitter,
           arr.name,
@@ -597,12 +597,16 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       }
       {
         // A sloppy-mode write to a frozen array is ignored: the guard
-        // answers "no write" there and the store is skipped.
+        // answers "no write" there and the store is skipped. The value's
+        // reference moves into the array only on the storing path; the
+        // discarded write releases it, as the frame would have.
         const B = emitter.B;
         const skip = B.newLabel("arrset.skip");
         const run = B.newLabel("arrset.run");
+        const join = B.newLabel("arrset.join");
         B.condBr(noOp, skip, run);
         B.startBlock(run);
+        if (acc === "ref") emitter.toHeap(v);
         emitDenseArraySet(
           emitter,
           arr.name,
@@ -614,8 +618,11 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
           emitter.provenDenseIndex(s.arr, s.index),
           int32,
         );
-        B.br(skip);
+        B.br(join);
         B.startBlock(skip);
+        if (acc === "ref") emitter.releaseHeap(v.name, s.arr.type.elem);
+        B.br(join);
+        B.startBlock(join);
       }
       break;
     }

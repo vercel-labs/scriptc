@@ -149,6 +149,9 @@ describe.skipIf(!zigOnPath() || !wasmPackInstalled())("wasm32-wasi differential"
     // The dictionary read lowering's jsval conversion reads the checked-
     // dynamic layout, whose kind and value offsets follow the pointer width.
     "asserted-dictionary-read.ts",
+    // A dictionary read with a null arm keeps its runtime value through
+    // String, JSON and numeric uses; the null cell's ToNumber is 0.
+    "json-null-arm-missing-read.ts",
     "js-promise-pending-reactions.js",
     "js-promise-all-values.js",
     "js-promise-catch-handler.js",

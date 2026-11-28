@@ -5,7 +5,10 @@ import { dynUndefinedExpr, numLit, strLit, varRef } from "../../../ir/build.js";
 import { pathModuleSpreadSource } from "../lower-builtin-values.js";
 import { InternalCompilerError } from "../../../errors.js";
 import * as ts from "../../ts7/adapter.js";
-import { withoutParentheses } from "../../outer-expressions.js";
+import {
+  withoutParentheses,
+  withoutParenthesesAssertionsNonNull,
+} from "../../outer-expressions.js";
 import {
   BOOL,
   DYN,
@@ -1004,6 +1007,18 @@ function viewContextOf(
     outer = outer.parent;
   if (outer === expr) return contextual;
   return lowerer.checker.getContextualType(outer) ?? contextual;
+}
+
+/** Whether `node`, seen through parentheses and a non-null assertion, reads
+ * a checked-dynamic dictionary through its string index signature: the key
+ * may be missing at run time whatever the checker says the read has. */
+function isCheckedDictionaryReadNode(lowerer: Lowerer, node: ts.Node): boolean {
+  if (!ts.isExpression(node)) return false;
+  const read = withoutParenthesesAssertionsNonNull(node);
+  return (
+    (ts.isElementAccessExpression(read) || ts.isPropertyAccessExpression(read)) &&
+    lowerer.dynIndexSignatureValueRead(read) !== null
+  );
 }
 
 export function lowerObjectLiteral(
@@ -2915,9 +2930,19 @@ export function lowerObjectLiteral(
       continue;
     }
     // A nested literal whose own fields widened for missing-element reads
-    // keeps that layout in its parent field too.
+    // keeps that layout in its parent field too. A checked-dynamic
+    // dictionary read that the checker calls present can still answer a
+    // missing key at run time, so the field keeps the undefined arm: JSON
+    // drops the member and a probe observes it, as Node does.
+    const checkedReadField =
+      fieldType !== undefined &&
+      value.type.kind === "dyn" &&
+      isCheckedDictionaryReadNode(lowerer, valueNode)
+        ? lowerer.runtimeOptionalType(fieldType)
+        : null;
     const promotedField = fieldType
-      ? (lowerer.runtimeOptionalWidening(value.type, fieldType) ??
+      ? (checkedReadField ??
+        lowerer.runtimeOptionalWidening(value.type, fieldType) ??
         (lowerer.isRuntimeOptionalRecordVariant(value.type, fieldType) ? value.type : null))
       : null;
     if (promotedField && fieldType) {

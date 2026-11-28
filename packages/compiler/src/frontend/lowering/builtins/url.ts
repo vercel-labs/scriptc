@@ -24,9 +24,11 @@ import {
   arrayOf,
   funcOf,
   isUnitType,
+  shapeKeyOrders,
   typeKey,
 } from "../../../ir/ir.js";
 import { optionalStringTags } from "./arguments.js";
+import { perKeyOrder } from "../key-order-witness.js";
 import { type BuiltinModuleFn } from "../surfaces.js";
 import { lowerDynDispatchMethodCall } from "../lower-calls.js";
 import { isSafeToDiscard } from "../expressions/evaluation-safety.js";
@@ -222,6 +224,115 @@ export function lowerSearchParamsNew(
  * already the entry). */
 type ValueOf = { value: IrExpr; coerce: (raw: IrExpr) => IrExpr; coerces: boolean };
 
+/** A key stored as an array index (`"0"`, `"12"`): Node enumerates these
+ * ascending ahead of every other key. */
+function isIndexKey(key: string): boolean {
+  return /^(?:0|[1-9][0-9]*)$/.test(key) && Number(key) < 4294967295;
+}
+
+/** `acc` with one entry appended: the constructor's own append, converting
+ * the value with ToString. */
+function urlspEntry(acc: IrExpr, key: string, keyLoc: SrcLoc, value: IrExpr, loc: SrcLoc): IrExpr {
+  return {
+    kind: "libCall",
+    fn: "sp.with",
+    args: [acc, { kind: "strLit", value: key, type: STRING, loc: keyLoc }, value],
+    type: SEARCH_PARAMS_T,
+    loc,
+  };
+}
+
+/** A spread field's entry value: a string is already the entry; any other
+ * string-convertible value crosses into the checked-dynamic tree and
+ * stringifies there, at append time like Node's ToString. */
+function spreadEntryValue(type: IrType, raw: IrExpr): IrExpr {
+  if (type.kind === "string") return raw;
+  return {
+    kind: "libCall",
+    fn: "dyn.toStringCoerce",
+    args: [{ kind: "dynFrom", value: raw, type: DYN, loc: raw.loc }],
+    type: STRING,
+    loc: raw.loc,
+  };
+}
+
+/** The lifted appender for one spread source shape: `(acc, rec, values,
+ * presences)` appends the group's own present fields in the order `rec`
+ * enumerates its keys. Its body reads the shape's key table and is rebuilt
+ * when the key orders settle, so a source shape whose values enumerate in
+ * more than one order appends each value in the order that value carries
+ * (key-order-witness.ts). The caller appends index keys itself: they sort
+ * first, ascending, whichever value they came from. */
+function spreadAppender(lowerer: Lowerer, shapeId: string, loc: SrcLoc): string {
+  const key = `sp.record:${shapeId}`;
+  const known = lowerer.arrHofHelpers.get(key);
+  if (known !== undefined) return known;
+  const name = keyedHelperName(lowerer, "%sp.record", key);
+  lowerer.arrHofHelpers.set(key, name);
+  const shape = lowerer.shapes.get(shapeId)!;
+  const recordType: IrType = { kind: "record", shapeId };
+  const fields = shape.fields.filter((field) => !field.name.startsWith("%"));
+  const params: IrParam[] = [
+    { localId: "acc.0", name: "acc", type: SEARCH_PARAMS_T },
+    { localId: "rec.0", name: "rec", type: recordType },
+  ];
+  const locals: IrLocal[] = [
+    { id: "acc.0", name: "acc", type: SEARCH_PARAMS_T, mutable: true },
+    { id: "rec.0", name: "rec", type: recordType, mutable: false },
+  ];
+  fields.forEach((field, index) => {
+    params.push({ localId: `v.${index}`, name: `v${index}`, type: field.type });
+    locals.push({ id: `v.${index}`, name: `v${index}`, type: field.type, mutable: false });
+  });
+  fields.forEach((_field, index) => {
+    params.push({ localId: `has.${index}`, name: `has${index}`, type: BOOL });
+    locals.push({ id: `has.${index}`, name: `has${index}`, type: BOOL, mutable: false });
+  });
+  const fn: IrFunction = { name, params, returnType: SEARCH_PARAMS_T, locals, body: [], loc };
+  const finalize = (): void => {
+    const current = lowerer.shapes.get(shapeId);
+    if (current === undefined) return;
+    const walks = shapeKeyOrders(current).map((order): IrStmt[] => {
+      const steps: IrStmt[] = [];
+      for (const fieldName of order) {
+        if (fieldName.startsWith("%") || isIndexKey(fieldName)) continue;
+        const index = fields.findIndex((field) => field.name === fieldName);
+        if (index < 0) continue;
+        const field = fields[index]!;
+        steps.push({
+          kind: "if",
+          cond: varRef(`has.${index}`, BOOL, loc),
+          then: [
+            {
+              kind: "assign",
+              localId: "acc.0",
+              value: urlspEntry(
+                varRef("acc.0", SEARCH_PARAMS_T, loc),
+                field.name,
+                loc,
+                spreadEntryValue(field.type, varRef(`v.${index}`, field.type, loc)),
+                loc,
+              ),
+              loc,
+            },
+          ],
+          else_: null,
+          loc,
+        });
+      }
+      return steps;
+    });
+    fn.body = [
+      ...perKeyOrder(current, varRef("rec.0", recordType, loc), walks, loc),
+      { kind: "return", value: varRef("acc.0", SEARCH_PARAMS_T, loc), loc },
+    ];
+  };
+  finalize();
+  lowerer.shapeOrderHelperFinalizers.push(finalize);
+  lowerer.liftedFns.push(fn);
+  return name;
+}
+
 function lowerSearchParamsInit(lowerer: Lowerer, arg: ts.Expression, loc: SrcLoc): IrExpr {
   let inner = arg;
   while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
@@ -239,13 +350,12 @@ function lowerSearchParamsInit(lowerer: Lowerer, arg: ts.Expression, loc: SrcLoc
     return { kind: "libCall", fn: "sp.new", args: [], type: SEARCH_PARAMS_T, loc };
   }
   // The object-literal init: fold `{ a: "1", b: "2" }` into nested
-  // sp.with calls over the empty list. The order is Node's
-  // Reflect.ownKeys order for the literal rather than its source order:
-  // its integer index keys ascending first, then the other string keys in
-  // source order (`{ length: 2, 0: "a", 1: "b" }` answers
-  // `0=a&1=b&length=2`). Only plain property assignments (tsc's
-  // index-signature contextual type already rejects spreads' surprises,
-  // but keep the fence tight).
+  // sp.with calls over the empty list, and a spread of a closed record into
+  // the entries it copies. The order is Node's Reflect.ownKeys order for
+  // the merged literal rather than its source order: its integer index
+  // keys ascending first, then the other string keys in creation order
+  // (`{ length: 2, 0: "a", 1: "b" }` answers `0=a&1=b&length=2`). Only
+  // plain property assignments and spreads of closed records lower here.
   if (ts.isObjectLiteralExpression(arg)) {
     let acc: IrExpr = { kind: "libCall", fn: "sp.new", args: [], type: SEARCH_PARAMS_T, loc };
     // Each value is a USVString. A typed value lowers into the string
@@ -274,13 +384,26 @@ function lowerSearchParamsInit(lowerer: Lowerer, arg: ts.Expression, loc: SrcLoc
         coerces: true,
       };
     };
-    type SpreadGroup = { shapeId: string; localId: string; decl: IrStmt };
-    const pairs: {
-      key: string;
-      keyLoc: SrcLoc;
-      value: ValueOf;
-      spread?: SpreadGroup;
-    }[] = [];
+    /** One property the literal writes: its key, the location for its
+     * diagnostic, and its value. */
+    type LiteralPair = { key: string; keyLoc: SrcLoc; value: ValueOf };
+    /** A spread of a CLOSED record: the source expression, evaluated once
+     * at the spread's position, the declared fields it copies, and the
+     * lifted appender that appends them in the source's own key order. */
+    type SpreadGroup = {
+      shapeId: string;
+      source: { id: string; type: IrType };
+      decl: IrStmt;
+      fields: { name: string; type: IrType }[];
+      appender: string;
+    };
+    type Part = { pair: LiteralPair } | { group: SpreadGroup };
+    const pairs: LiteralPair[] = [];
+    // The literal's parts in SOURCE order: Node evaluates them in this
+    // order (a spread copies its source's fields where it stands), and only
+    // then does the constructor append entries in the merged record's key
+    // order.
+    const parts: Part[] = [];
     // A key names one entry: a spread that overlaps another entry (a later
     // duplicate would only replace the value) is outside the fold.
     const keys = new Set<string>();
@@ -294,33 +417,48 @@ function lowerSearchParamsInit(lowerer: Lowerer, arg: ts.Expression, loc: SrcLoc
       keys.add(key);
     };
     let hasSpread = false;
-    for (const prop of arg.properties.nodes) {
+    // One property of the init literal, in source order. A property of an
+    // object literal the init spreads enters here in place: Node evaluates
+    // that literal, and copies its properties, where the spread stands.
+    const addProperty = (prop: ts.ObjectLiteralElementLike): void => {
       // `{ model }` appends the binding's value under its own name, like
       // the `{ model: model }` spelling.
       if (ts.isShorthandPropertyAssignment(prop)) {
         const key = (prop.name as ts.Identifier | ts.StringLiteral).text;
         addKey(key, prop.name);
-        pairs.push({
+        const pair: LiteralPair = {
           key,
           keyLoc: locOf(prop.name),
           value: valueOf(prop.name, () => lowerer.lowerShorthandValue(prop)),
-        });
-        continue;
+        };
+        pairs.push(pair);
+        parts.push({ pair });
+        return;
       }
-      // A spread of a CLOSED record whose keys no other entry names: the
-      // merged object appends its fields in shape order, and the source
-      // evaluates once at the spread's position (the reads pass below
-      // hoists it when the orders differ). Anything else — an index
-      // signature (keys only known at run time), a tuple, an accessor
-      // record — stays outside the fold.
       if (ts.isSpreadAssignment(prop)) {
-        const mapped = lowerer.mapTypeOf(lowerer.typeOf(prop.expression));
-        const shape = mapped?.kind === "record" ? lowerer.shapes.get(mapped.shapeId) : undefined;
+        let inner = prop.expression;
+        while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
+        if (ts.isObjectLiteralExpression(inner)) {
+          for (const property of inner.properties.nodes) addProperty(property);
+          return;
+        }
+        // A spread of a CLOSED record whose keys no other entry names: the
+        // source evaluates once at the spread's position, its present
+        // fields are copied there, and the merged object appends them in
+        // the order the source enumerates its keys. Anything else — an
+        // index signature (keys only known at run time), a tuple, an
+        // accessor record — stays outside the fold.
+        //
+        // The spread copies the value's own enumerable fields, so the
+        // shape is the one the lowered value has.
+        const src = lowerer.lowerExpr(prop.expression);
+        const shape = src.type.kind === "record" ? lowerer.shapes.get(src.type.shapeId) : undefined;
         if (
-          mapped?.kind !== "record" ||
+          src.type.kind !== "record" ||
           !shape ||
           shape.tuple ||
           shape.indexValue !== undefined ||
+          shape.accessorOrder !== undefined ||
           shape.fields.some((field) => field.name.startsWith("%"))
         ) {
           lowerer.unsupported(
@@ -329,15 +467,14 @@ function lowerSearchParamsInit(lowerer: Lowerer, arg: ts.Expression, loc: SrcLoc
             "URLSearchParams record inits with spreads of anything but a closed record of strings",
           );
         }
-        const src = lowerer.lowerExpr(prop.expression);
-        const local = lowerer.declareHiddenLocal("%spSpread", src.type);
-        const group: SpreadGroup = {
-          shapeId: mapped.shapeId,
-          localId: local.id,
-          decl: { kind: "varDecl", localId: local.id, init: src, loc: locOf(prop) },
-        };
-        hasSpread = true;
-        for (const field of shape.fields) {
+        // A spread copies the source's own enumerable fields, so this
+        // surface reads the record's key order.
+        const type: IrType & { kind: "record" } = src.type;
+        lowerer.keyOrder.observe(type);
+        const fields = shape.fields
+          .filter((field) => !field.name.startsWith("%"))
+          .map((field) => ({ name: field.name, type: field.type }));
+        for (const field of fields) {
           if (field.type.kind !== "string" && !lowerer.dynConvertible(field.type))
             lowerer.unsupported(
               "SC1090",
@@ -345,33 +482,18 @@ function lowerSearchParamsInit(lowerer: Lowerer, arg: ts.Expression, loc: SrcLoc
               "URLSearchParams record inits whose spread source holds a non-string field",
             );
           addKey(field.name, prop);
-          const raw: IrExpr = {
-            kind: "recordGet",
-            obj: varRef(local.id, src.type, locOf(prop)),
-            shapeId: mapped.shapeId,
-            field: field.name,
-            type: field.type,
-            loc: locOf(prop),
-          };
-          const coerces = field.type.kind !== "string";
-          const coerce = (value: IrExpr): IrExpr =>
-            coerces
-              ? {
-                  kind: "libCall",
-                  fn: "dyn.toStringCoerce",
-                  args: [{ kind: "dynFrom", value, type: DYN, loc: value.loc }],
-                  type: STRING,
-                  loc: value.loc,
-                }
-              : value;
-          pairs.push({
-            key: field.name,
-            keyLoc: locOf(prop),
-            value: { value: raw, coerce, coerces },
-            spread: group,
-          });
         }
-        continue;
+        const local = lowerer.declareHiddenLocal("%spSpread", type);
+        const group: SpreadGroup = {
+          shapeId: type.shapeId,
+          source: { id: local.id, type },
+          decl: { kind: "varDecl", localId: local.id, init: src, loc: locOf(prop) },
+          fields,
+          appender: spreadAppender(lowerer, type.shapeId, locOf(prop)),
+        };
+        hasSpread = true;
+        parts.push({ group });
+        return;
       }
       if (!ts.isPropertyAssignment(prop) || prop.name === undefined) {
         lowerer.unsupported(
@@ -395,17 +517,149 @@ function lowerSearchParamsInit(lowerer: Lowerer, arg: ts.Expression, loc: SrcLoc
         );
       }
       addKey(key, prop.name);
-      pairs.push({
+      const pair: LiteralPair = {
         key,
         keyLoc: locOf(prop.name),
         value: valueOf(prop.initializer, () => lowerer.lowerExpr(prop.initializer)),
-      });
-    }
+      };
+      pairs.push(pair);
+      parts.push({ pair });
+    };
+    for (const prop of arg.properties.nodes) addProperty(prop);
     // Reflect.ownKeys order: the integer index keys ascending, then the
     // other string keys in source order. (tsc rejects a literal that names
     // one property twice, so every key here is distinct.)
-    const isIndexKey = (key: string): boolean =>
-      /^(?:0|[1-9][0-9]*)$/.test(key) && Number(key) < 4294967295;
+    if (hasSpread) {
+      // Node evaluates the literal's parts in SOURCE order — each
+      // property's initializer, and at a spread its source expression
+      // followed by the copy of that source's own present fields — and only
+      // then does the constructor append entries in the merged record's
+      // Reflect.ownKeys order: integer index keys ascending, then the other
+      // keys in creation order. Every part's value and every spread field's
+      // own-key presence are captured where they stand, so a later
+      // initializer that mutates the source cannot change what the spread
+      // contributed, and an omitted optional property contributes no entry.
+      const stmts: IrStmt[] = [];
+      const captured = new Map<LiteralPair, IrExpr>();
+      const copied = new Map<SpreadGroup, { values: IrExpr[]; presence: IrExpr[] }>();
+      for (const part of parts) {
+        if ("pair" in part) {
+          const pair = part.pair;
+          const value = pair.value.value;
+          // A bare unit (`{ c: null }`) has no local slot: locals may not
+          // carry a bare unit type. A literal needs no read; a unit-typed
+          // value with effects (a call answering undefined) keeps them in
+          // the statement list, and the append below converts the literal.
+          if (isUnitType(value.type)) {
+            if (value.kind !== "unitLit") stmts.push({ kind: "exprStmt", expr: value, loc });
+            captured.set(
+              pair,
+              value.kind === "unitLit"
+                ? value
+                : {
+                    kind: "unitLit",
+                    unit: value.type.kind === "nullT" ? "null" : "undefined",
+                    type: value.type,
+                    loc: value.loc,
+                  },
+            );
+            continue;
+          }
+          const local = lowerer.declareHiddenLocal("%spValue", value.type);
+          stmts.push({ kind: "varDecl", localId: local.id, init: value, loc });
+          captured.set(pair, varRef(local.id, value.type, loc));
+          continue;
+        }
+        const group = part.group;
+        stmts.push(group.decl);
+        const sourceRef = varRef(group.source.id, group.source.type, group.decl.loc);
+        const values: IrExpr[] = [];
+        const presence: IrExpr[] = [];
+        for (const field of group.fields) {
+          // Node copies only the source's OWN keys: an omitted optional
+          // property is no entry at all. The presence is captured here,
+          // with the value, so later writes cannot change either.
+          const owned = lowerer.recordFieldPresent(
+            sourceRef,
+            group.shapeId,
+            field.name,
+            group.decl.loc,
+          );
+          const has = lowerer.declareHiddenLocal("%spHas", BOOL);
+          stmts.push({ kind: "varDecl", localId: has.id, init: owned, loc: owned.loc });
+          presence.push(varRef(has.id, BOOL, loc));
+          const read: IrExpr = {
+            kind: "recordGet",
+            obj: sourceRef,
+            shapeId: group.shapeId,
+            field: field.name,
+            type: field.type,
+            loc: group.decl.loc,
+          };
+          const local = lowerer.declareHiddenLocal("%spField", field.type);
+          stmts.push({ kind: "varDecl", localId: local.id, init: read, loc: read.loc });
+          values.push(varRef(local.id, field.type, loc));
+        }
+        copied.set(group, { values, presence });
+      }
+      const indexEntries: { key: string; append: (acc: IrExpr) => IrExpr }[] = [];
+      const orderedEntries: { append: (acc: IrExpr) => IrExpr }[] = [];
+      for (const part of parts) {
+        if ("pair" in part) {
+          const pair = part.pair;
+          const value = pair.value.coerce(captured.get(pair)!);
+          const entry = {
+            key: pair.key,
+            append: (acc: IrExpr) => urlspEntry(acc, pair.key, pair.keyLoc, value, loc),
+          };
+          if (isIndexKey(pair.key)) indexEntries.push(entry);
+          else orderedEntries.push(entry);
+          continue;
+        }
+        const group = part.group;
+        const { values, presence } = copied.get(group)!;
+        // Index keys sort first, ascending, whichever entry they came from.
+        group.fields.forEach((field, index) => {
+          if (!isIndexKey(field.name)) return;
+          const value = spreadEntryValue(field.type, values[index]!);
+          const owned = presence[index]!;
+          indexEntries.push({
+            key: field.name,
+            append: (acc) => ({
+              kind: "ternary",
+              cond: owned,
+              then: urlspEntry(acc, field.name, group.decl.loc, value, loc),
+              else_: acc,
+              type: SEARCH_PARAMS_T,
+              loc,
+            }),
+          });
+        });
+        // The source's other fields append in the order its own value
+        // enumerates them; the appender reads that order from the record.
+        orderedEntries.push({
+          append: (acc) => ({
+            kind: "call",
+            callee: group.appender,
+            args: [
+              acc,
+              varRef(group.source.id, group.source.type, group.decl.loc),
+              ...values,
+              ...presence,
+            ],
+            type: SEARCH_PARAMS_T,
+            loc,
+          }),
+        });
+      }
+      const ordered = [
+        ...indexEntries.sort((a, b) => Number(a.key) - Number(b.key)),
+        ...orderedEntries,
+      ];
+      let chain: IrExpr = { kind: "libCall", fn: "sp.new", args: [], type: SEARCH_PARAMS_T, loc };
+      for (const entry of ordered) chain = entry.append(chain);
+      return { kind: "seqExpr", stmts, result: chain, type: SEARCH_PARAMS_T, loc };
+    }
     const indexed = pairs.map((pair, source) => ({ pair, source }));
     const ordered = [
       ...indexed
@@ -426,22 +680,11 @@ function lowerSearchParamsInit(lowerer: Lowerer, arg: ts.Expression, loc: SrcLoc
     // Reflect order.
     let reads: IrExpr[] | null = null;
     if (
-      hasSpread ||
       ordered.some((entry, i) => entry.source !== i) ||
       pairs.some((pair, i) => pair.value.coerces && i + 1 < pairs.length)
     ) {
       const stmts: IrStmt[] = [];
-      const emitted = new Set<SpreadGroup>();
       reads = pairs.map((pair) => {
-        // A spread source evaluates once, at its own position in the
-        // literal; its fields then read from the held value.
-        if (pair.spread !== undefined) {
-          if (!emitted.has(pair.spread)) {
-            emitted.add(pair.spread);
-            stmts.push(pair.spread.decl);
-          }
-          return pair.value.value;
-        }
         const value = pair.value.value;
         // A bare unit (`{ c: null }`) has no local slot: locals may not
         // carry a bare unit type. A literal needs no read; a unit-typed

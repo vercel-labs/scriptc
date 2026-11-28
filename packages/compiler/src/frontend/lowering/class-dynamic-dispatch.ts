@@ -5,6 +5,7 @@ import { dynUndefinedExpr, helperLoc, nodeThrowExpr, numLit, varRef } from "../.
 import { classKeyHash, classValueSlot, classValueSlotBits } from "../../ir/class-key-index.js";
 import { classCaseBranches, isClassCaseDispatch } from "../../ir/class-case.js";
 import { constructedDynValue } from "./constructor-returns.js";
+import { classConstructHelper, classMethodsBuilder } from "./lower-node-island.js";
 import { eventTargetApiMembers, eventTargetInheritedMember } from "./lower-event-target.js";
 import {
   DATE_PROTOTYPE_METHOD_NAMES,
@@ -103,7 +104,7 @@ import {
   refreshClassMethodValueSelections,
 } from "./class-method-values.js";
 import { classStaticData } from "./class-static-data.js";
-import { isJsSourceFile } from "../program.js";
+import { isJsSourceFile, locOf } from "../program.js";
 import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import * as ts from "../ts7/adapter.js";
 import { SYMBOL_T, type IrLibFn } from "../../ir/ir.js";
@@ -3169,6 +3170,54 @@ export class ClassDynamicDispatch {
     }
     return changed;
   }
+  /** Whether a class value boxed into the checked-dynamic tree was
+   * registered with the Node island runtime (method table + constructor
+   * helper), once per class. */
+  private readonly islandRegistered = new Set<string>();
+
+  /** Registers every class value the program boxes with the Node island
+   * runtime (nodeIsland.classMethodsOf): island code that receives the class
+   * value constructs it through the registered constructor helper, and its
+   * instances answer the class's methods (NI-6). Programs without islands
+   * keep their IR. */
+  private installIslandClassRegistration(
+    lowerer: Lowerer,
+    functions: readonly IrFunction[],
+  ): boolean {
+    if (!lowerer.hasNodeIslands() || this.boxedConstructors.size === 0) return false;
+    let changed = false;
+    for (const name of this.boxedConstructors) {
+      if (this.islandRegistered.has(name)) continue;
+      const info = lowerer.classes.get(name);
+      if (!info || !info.decl || info.def.runtime || info.generic || info.localClass) continue;
+      if (info.decl.name === undefined || !ts.isIdentifier(info.decl.name)) continue;
+      const loc = locOf(info.decl);
+      let builder: IrExpr | null = null;
+      let ctor: IrExpr | null = null;
+      try {
+        builder = classMethodsBuilder(lowerer, info.decl, info.decl.name, loc);
+        ctor = classConstructHelper(lowerer, info.decl, loc);
+      } catch (error) {
+        if (!(error instanceof PoisonError)) throw error;
+        continue;
+      }
+      if (ctor === null) continue;
+      if (
+        !insertIslandClassRegistration(
+          lowerer,
+          info,
+          functions,
+          builder ?? dynUndefinedExpr(loc),
+          ctor,
+        )
+      )
+        continue;
+      this.islandRegistered.add(name);
+      changed = true;
+    }
+    return changed;
+  }
+
   private readonly boxedConstructors = new Set<string>();
   /** Every class a boxed value was statically typed as, runtime error
    * classes included: the value's capsule can be any of its subclasses. */
@@ -3345,6 +3394,7 @@ export class ClassDynamicDispatch {
     sortAdded(lowerer, this.boxed, boxedBefore);
     sortAdded(lowerer, this.boxedConstructors, boxedConstructorsBefore);
     changed = this.installStaticTables(lowerer, functions) || changed;
+    changed = this.installIslandClassRegistration(lowerer, functions) || changed;
     changed = this.branchComputedStaticWrites(lowerer) || changed;
     changed = this.branchStaticDescriptorWrites(lowerer) || changed;
     changed = this.syncStaticTableWrites(lowerer, functions) || changed;
@@ -10241,4 +10291,47 @@ function isAsyncGenerator(decl: GenericFnInfo["decl"]): boolean {
     decl.asteriskToken !== undefined &&
     decl.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword) === true
   );
+}
+
+/** Inserts the class's registration with the Node island runtime after its
+ * class statement in the module's %init (the class value exists there):
+ * `nodeIsland.classMethodsOf(value, builder, ctor)`, whose result is
+ * discarded — the call is the island's record of how to construct the class
+ * and answer its method tables. */
+function insertIslandClassRegistration(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  functions: readonly IrFunction[],
+  builder: IrExpr,
+  ctor: IrExpr,
+): boolean {
+  const decl = info.decl;
+  if (!decl) return false;
+  const sf = ts.getSourceFileOfNode(decl);
+  const initName = lowerer.initNameOf.get(sf);
+  if (initName === undefined) return false;
+  const init = functions.find((candidate) => candidate.name === initName);
+  if (!init) return false;
+  const loc = locOf(decl);
+  const call: IrStmt = {
+    kind: "exprStmt",
+    expr: {
+      kind: "libCall",
+      fn: "nodeIsland.classMethodsOf",
+      args: [lowerer.coerceToExpected(classValueRef(lowerer, info, decl), DYN), builder, ctor],
+      type: DYN,
+      loc,
+    },
+    loc,
+  };
+  const end = decl.end;
+  const file = sf.fileName;
+  let at = 0;
+  for (let i = 0; i < init.body.length; i++) {
+    const statement = init.body[i]!;
+    if (statement.loc.file !== file || statement.loc.start >= end) continue;
+    at = i + 1;
+  }
+  init.body.splice(at, 0, call);
+  return true;
 }

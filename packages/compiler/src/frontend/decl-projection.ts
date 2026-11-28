@@ -265,7 +265,13 @@ class TypePrinter {
   /** While set, printing registers no recursive alias (projectable()). */
   private dry = false;
 
-  constructor(private readonly checker: ts.TypeChecker) {}
+  constructor(
+    private readonly checker: ts.TypeChecker,
+    /** Whether a source file is one of TypeScript's own default libraries:
+     * the checker's answer, never the file name (a package may ship a file
+     * named lib.d.ts). */
+    private readonly isDefaultLib: (file: ts.SourceFile) => boolean = () => false,
+  ) {}
 
   /** Whether a type projects, without naming it in the generated file. */
   projectable(type: ts.Type): boolean {
@@ -400,8 +406,8 @@ class TypePrinter {
     return (
       declarations.length > 0 &&
       declarations.every((d) => {
-        const file = ts.getSourceFileOfNode(d).fileName.split("\\").join("/");
-        return /(^|\/)lib(\.[\w.-]+)?\.d\.ts$/.test(file) || file.startsWith("bundled:");
+        const sf = ts.getSourceFileOfNode(d);
+        return this.isDefaultLib(sf) || sf.fileName.split("\\").join("/").startsWith("bundled:");
       })
     );
   }
@@ -565,10 +571,20 @@ class TypePrinter {
       const type = this.checker.getTypeOfSymbol(param);
       const text = this.print(type, depth + 1);
       if (text === null) return null;
-      const optional = (param.flags & ts.SymbolFlags.Optional) !== 0;
+      // A signature parameter's OPTIONAL flag is not always set; its
+      // declaration's question token is, and its type carries undefined.
+      const optional =
+        (param.flags & ts.SymbolFlags.Optional) !== 0 ||
+        (param.declarations ?? []).some((d) => ts.isParameter(d) && d.questionToken !== undefined);
       const paramName = ts.symbolName(param);
       const name = /^[A-Za-z_$][\w$]*$/.test(paramName) ? paramName : "arg";
-      out.push(`${name}${optional ? "?" : ""}: ${text}`);
+      const spelled = optional
+        ? text
+            .split(" | ")
+            .filter((part) => part.trim() !== "undefined")
+            .join(" | ")
+        : text;
+      out.push(`${name}${optional ? "?" : ""}: ${spelled}`);
     }
     return out.join(", ");
   }
@@ -778,7 +794,13 @@ export function collectProjectionTypeQueries(
 export function planDeclProjection(input: DeclProjectionInput): DeclProjection | null {
   const jsChecker = input.jsProgram.getTypeChecker();
   const declChecker = input.declProgram.getTypeChecker();
-  const printer = new TypePrinter(declChecker);
+  const printer = new TypePrinter(declChecker, (sf) => {
+    try {
+      return input.declProgram.isSourceFileDefaultLibrary(sf);
+    } catch {
+      return false;
+    }
+  });
   const plan: string[] = [];
   const edits = new Map<string, Edit[]>();
   /** The marker declarations, one per iteration site (a `declare

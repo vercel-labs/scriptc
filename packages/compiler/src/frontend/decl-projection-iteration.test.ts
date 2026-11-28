@@ -282,3 +282,75 @@ test(
     expect(stdout).toBe("hi\n");
   },
 );
+
+test(
+  "a package file named lib.d.ts is not the standard library",
+  { timeout: 600_000 },
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scriptc-decl-libname-"));
+    const module = join(dir, "node_modules", "sdk-pkg");
+    mkdirSync(module, { recursive: true });
+    writeFileSync(
+      join(module, "package.json"),
+      JSON.stringify({ name: "sdk-pkg", version: "1.0.0", main: "index.js", types: "lib.d.ts" }),
+    );
+    writeFileSync(
+      join(module, "lib.d.ts"),
+      "export interface Error { code: number }\n" +
+        'export type PollItem = { _tag: "Error"; error: Error };\n' +
+        "export declare function poll(): AsyncGenerator<PollItem, void, void>;\n",
+    );
+    writeFileSync(
+      join(module, "index.js"),
+      'export async function* poll() { yield { _tag: "Error", error: { code: "7" } }; }\n',
+    );
+    writeFileSync(
+      join(dir, "main.ts"),
+      'import { poll } from "sdk-pkg";\n' +
+        "async function main() {\n" +
+        "  for await (const event of poll()) {\n" +
+        '    if (event._tag === "Error") console.log(event.error.code / 2);\n' +
+        "  }\n" +
+        "}\n" +
+        "main();\n",
+    );
+    const { result, plan } = await compileCapturingPlan(join(dir, "main.ts"), dir);
+    // The file's name does not make it TypeScript's own lib: the package
+    // interface is not named as the global Error and the site refuses.
+    expect(plan).not.toContain("error: Error");
+    if (result.ok)
+      throw new Error("compiled; the package lib.d.ts Error was treated as the global one");
+    expect(result.diagnostics.map((d) => d.code)).toContain("SC1043");
+  },
+);
+
+test(
+  "an optional method parameter stays optional in the boundary declaration",
+  { timeout: 600_000 },
+  async () => {
+    const dir = project(
+      {
+        types:
+          'export type Item = { _tag: "R"; read(from?: string): string };\n' +
+          "export declare function poll(): AsyncGenerator<Item, void, void>;\n",
+        js:
+          "export async function* poll() {\n" +
+          '  yield { _tag: "R", read: (from) => String(from ?? "all") };\n' +
+          "}\n",
+      },
+      'import { poll } from "sdk-pkg";\n' +
+        "async function main() {\n" +
+        "  for await (const event of poll()) {\n" +
+        '    if (event._tag === "R") console.log(event.read(), event.read("x"));\n' +
+        "  }\n" +
+        "}\n" +
+        "main();\n",
+    );
+    const { result, plan } = await compileCapturingPlan(join(dir, "main.ts"), dir);
+    expect(plan).toContain("read(from?: string): string");
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const { stdout } = await execFileAsync(result.binaryPath, [], { encoding: "utf8" });
+    expect(stdout).toBe("all x\n");
+  },
+);

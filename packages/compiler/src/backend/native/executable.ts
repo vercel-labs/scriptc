@@ -37,6 +37,7 @@ import {
   runtimeFingerprint,
   runtimeFingerprintInputPaths,
 } from "./runtime-inputs.js";
+import { SANITIZER_FLAG } from "../sanitizer-checks.js";
 import {
   resolveCc,
   targetPlatform,
@@ -213,6 +214,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.fsExistsValue === true, "scr_fs_exists_dyn.c"),
   // node:module's compile cache family (scr_module_cache.c).
   unit((u) => u.opts.moduleCompileCache === true, "scr_module_cache.c"),
+  // node:module's SourceMap class (scr_source_map.c).
+  unit((u) => u.opts.sourceMap === true, "scr_source_map.c"),
   // The BYTE-data spellings of the options write and fs.promises.writeFile
   // (scr_fs_bytes_write.c), gated apart from the string forms' unit so a
   // program that writes no byte payload keeps both objects unchanged.
@@ -292,7 +295,11 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // links no part of the unit.
   unit((u) => u.opts.mutableBuffers === true, "scr_js_buffers.c"),
   unit(
-    (u) => u.opts.eventTarget || u.nativeFetch || u.opts.abortSignal === true,
+    (u) =>
+      u.opts.eventTarget ||
+      u.nativeFetch ||
+      u.opts.webSocket === true ||
+      u.opts.abortSignal === true,
     "scr_event_target.c",
   ),
   unit((u) => u.opts.wasm, "scr_wasm.c"),
@@ -392,6 +399,7 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // filehandle.readableWebStream's byte stream over the handle's reads,
   // its own gate (it links the FileHandle and web stream units with it).
   unit((u) => u.opts.fsWebStream === true, "scr_fs_web_stream.c"),
+  unit((u) => u.opts.fsUtf8Stream === true, "scr_fs_utf8_stream.c"),
   // scr_dyn_handle_class.c also carries the class installs dns.Resolver and
   // dns/promises' Resolver need (scr_dns_resolve.c's own class row) and the
   // one node:module's Module class value needs (scr_module_class.c), so a
@@ -452,7 +460,11 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
       u.opts.symbol,
     "scr_dyn_builtin_stream.c",
   ),
-  unit((u) => u.opts.stream, "scr_stream.c", "scr_fs_stream.c"),
+  // The web-streams unit's pair adaptation lives in the stream unit, and a
+  // program that uses web streams without node:stream links both: on macOS an
+  // undefined weak reference fails the link, and everywhere the hook stayed
+  // empty without it.
+  unit((u) => u.opts.stream || u.opts.webStreams === true, "scr_stream.c", "scr_fs_stream.c"),
   // stream.duplexPair builds its two Duplexes on the stream constructor and
   // its implementer hooks (scr_stream_pair.c).
   unit((u) => u.opts.stream, "scr_stream_pair.c"),
@@ -460,9 +472,13 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.stream, "scr_stream_wrap.c"),
   // Its checked-dynamic entry point unwraps a boxed readable (scr_stream_dyn.c).
   unit((u) => u.opts.streamDyn === true, "scr_stream_wrap_dyn.c"),
-  // The stream defaults (setDefaultHighWaterMark) are process state the net
-  // and http units read for the streams they build.
-  unit((u) => u.opts.stream || u.net || u.http, "scr_stream_defaults.c"),
+  // The stream defaults (setDefaultHighWaterMark) are process state the
+  // stream constructors, and the net and http units, read for the streams
+  // they build: the constructors' unit is linked for web streams too.
+  unit(
+    (u) => u.opts.stream || u.net || u.http || u.opts.webStreams === true,
+    "scr_stream_defaults.c",
+  ),
   // The zlib stream classes reference both the zlib engine and the
   // stream unit.
   unit((u) => u.opts.zlib && u.opts.stream, "scr_zlib_stream.c"),
@@ -578,6 +594,7 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unitArgs((u) => (u.tlsCa && targetPlatform(u.driver) === "win32" ? ["-lcrypt32"] : [])),
   // Fetch uses the native network, TLS, and HTTP runtime.
   unit((u) => u.nativeFetch, "scr_fetch.c"),
+  unit((u) => u.opts.webSocket === true, "scr_websocket.c"),
   unit(
     (u) => u.opts.nodeIsland === true,
     "scr_node_island.c",
@@ -607,15 +624,9 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
     "scr_stream_to_web.c",
   ),
   // Duplex.fromWeb reads and writes the web pair directly.
-  unit(
-    (u) => u.opts.stream && u.opts.webStreams === true && u.opts.dynAsync,
-    "scr_stream_duplex_from_web.c",
-  ),
+  unit((u) => u.opts.webStreams === true && u.opts.dynAsync, "scr_stream_duplex_from_web.c"),
   // Writable.fromWeb wraps a web WritableStream's writer.
-  unit(
-    (u) => u.opts.stream && u.opts.webStreams === true && u.opts.dynAsync,
-    "scr_stream_from_web_writable.c",
-  ),
+  unit((u) => u.opts.webStreams === true && u.opts.dynAsync, "scr_stream_from_web_writable.c"),
   // Writable.toWeb wraps the writable in a web WritableStream.
   unit(
     (u) => u.opts.stream && u.opts.webStreams === true && u.opts.dynAsync,
@@ -1189,7 +1200,7 @@ export async function compileCInternal(
     ...threadArgs,
     ...(opts.workers ? ["-DSCR_WORKERS"] : []),
     ...(sanitize
-      ? ["-O1", "-fsanitize=address", "-DSCR_RC_AUDIT"]
+      ? ["-O1", SANITIZER_FLAG, "-DSCR_RC_AUDIT"]
       : [optimization === "dev" ? "-O0" : "-O2"]),
     ...executableSectionFlags.compile,
     ...runtimeDefineArgs(opts),
@@ -1274,7 +1285,7 @@ export async function compileCInternal(
     ...threadArgs,
     ...(opts.workers ? ["-DSCR_WORKERS"] : []),
     ...(sanitize
-      ? ["-O1", "-fsanitize=address", "-DSCR_RC_AUDIT"]
+      ? ["-O1", SANITIZER_FLAG, "-DSCR_RC_AUDIT"]
       : [optimization === "dev" ? "-O0" : "-O2"]),
     ...executableSectionFlags.compile,
     ...runtimeDefineArgs(opts),
@@ -1506,7 +1517,7 @@ export async function compileCInternal(
     (opts.systemLibraries?.length ?? 0) === 0;
   let programDependencies: string | null = null;
   const linkProbeArgs = [
-    ...(sanitize ? ["-fsanitize=address"] : []),
+    ...(sanitize ? [SANITIZER_FLAG] : []),
     ...threadArgs,
     ...(opts.workers ? ["-DSCR_WORKERS"] : []),
     ...(targetPlatform(driver) === "win32" ? ["-ladvapi32", "-liphlpapi", "-lws2_32"] : []),

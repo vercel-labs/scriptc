@@ -65,6 +65,7 @@ export interface EarlyExecutableNativeFeatures {
   bigintBytes: boolean;
   fileHandle: boolean;
   fetch: boolean;
+  webSocket?: boolean;
   eventTarget?: boolean;
   wasm?: boolean;
   warningReplace?: boolean;
@@ -75,6 +76,7 @@ export interface EarlyExecutableNativeFeatures {
   fsFlags?: boolean;
   fsExistsValue?: boolean;
   moduleCompileCache?: boolean;
+  sourceMap?: boolean;
   /** A function's inherited member shadowed by an own data property:
    * SCR_FN_MEMBER_PROPS. */
   fnMemberProps?: boolean;
@@ -150,6 +152,7 @@ export interface EarlyExecutableNativeFeatures {
   webStreams?: boolean;
   /** filehandle.readableWebStream: scr_fs_web_stream.c. */
   fsWebStream?: boolean;
+  fsUtf8Stream?: boolean;
   webBodies?: boolean;
   abortSignal?: boolean;
   utilTiming?: boolean;

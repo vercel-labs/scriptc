@@ -1,4 +1,5 @@
 #include "scr_worker.h"
+#include "scr_symbol.h"
 
 #ifdef SCR_WORKERS
 #include <limits.h>
@@ -27,6 +28,15 @@ typedef struct ScrCpuWait {
   ScrPromise *promise;
   struct ScrCpuWait *next;
 } ScrCpuWait;
+
+/* One type's place in a port's shared listener order. The surface that
+ * registered the type first decides which kind Node's emit reaches first:
+ * Node keeps one ordered set, and the two stores here cannot interleave
+ * further than that. */
+typedef struct {
+  ScrStr *name; /* +1 */
+  bool core_first;
+} ScrWorkerOrderEntry;
 
 typedef struct ScrWorkerView {
   size_t rc;
@@ -64,6 +74,11 @@ typedef struct ScrWorkerView {
   bool broadcast;
   ScrStr *name;
   ScrEventTargetCore *et;
+  /* NodeEventTarget lists its EventEmitter and EventTarget types from one
+   * map, in first-registration order; the two surfaces are separate stores
+   * here, so a port keeps that order beside them. */
+  ScrWorkerOrderEntry *order;
+  size_t order_n;
   /* A Worker's stdout/stderr streams (the stdout and stderr options) and
    * their checked-dynamic boxes, made on first read */
   ScrStream *stdio[2];
@@ -128,7 +143,8 @@ static bool scr_worker_batch_next(void) {
 static const char *const scr_worker_method_names[] = {
   "ref", "unref", "hasRef", "terminate", "postMessage", "on", "once", "addListener",
   "prependListener", "prependOnceListener", "off", "removeListener", "removeAllListeners",
-  "listenerCount", "close", "start", "cpuUsage", "addEventListener", "removeEventListener",
+  "listenerCount", "close", "start", "cpuUsage", "getHeapStatistics", "addEventListener",
+  "removeEventListener",
   "dispatchEvent",
 };
 static SCR_TL ScrDyn *scr_worker_methods[sizeof scr_worker_method_names / sizeof scr_worker_method_names[0]];
@@ -139,6 +155,8 @@ static SCR_TL ScrDyn *scr_broadcast_methods[sizeof scr_broadcast_method_names / 
 
 /* a port's EventTarget core, created on first use (defined below) */
 static ScrEventTargetCore *scr_port_core(ScrWorkerView *view);
+static void scr_worker_drop_if_empty(ScrWorkerView *view, const ScrStr *name);
+static void scr_worker_order_clear(ScrWorkerView *view);
 
 
 /* The stream unit's half of worker.stdout, worker.stderr and
@@ -216,6 +234,10 @@ static void scr_worker_view_trace(void *ptr, ScrTraceVisit visit, void *ctx) {
 
 static void scr_worker_view_gcfree(void *ptr) {
   ScrWorkerView *view = ptr;
+  /* Both the reference-count destructor and the cycle collector end here,
+   * so the port's listener order (its allocation and its retained event
+   * names) is released on either path. */
+  scr_worker_order_clear(view);
   scr_worker_thread_release(view->thread);
   if (view->broadcast && view->channel && !view->closed) scr_broadcast_leave(view->channel);
   scr_channel_release(view->channel);
@@ -307,8 +329,87 @@ static void scr_port_message_refs(ScrWorkerView *view) {
   }
 }
 
+/* ── NodeEventTarget's one listener map ──────────────────────────────
+ * A Node MessagePort keeps its EventTarget listeners and its EventEmitter
+ * listeners in one map, so eventNames() lists both spellings in
+ * first-registration order and the counting and removal methods walk the
+ * same entries. The two surfaces are separate stores here (an emitter
+ * registry and an EventTarget core), so a port keeps the shared order
+ * beside them: a type enters with its first listener anywhere and leaves
+ * when its last one is gone. */
+static void scr_worker_order_note(ScrWorkerView *view, const ScrStr *name, bool from_core) {
+  if (!view->port || scr_str_is_symbol_key(name)) return;
+  for (size_t i = 0; i < view->order_n; i++)
+    if (view->order[i].name->len == name->len &&
+        !memcmp(view->order[i].name->data, name->data, name->len)) return;
+  ScrWorkerOrderEntry *grown = realloc(view->order, (view->order_n + 1) * sizeof *grown);
+  if (!grown) scr_trap("scriptc: out of memory\n");
+  view->order = grown;
+  view->order[view->order_n].name = scr_str_retain((ScrStr *)name);
+  view->order[view->order_n].core_first = from_core;
+  view->order_n++;
+}
+
+/* The surface that registered the type first; emit walks that one first, as
+ * Node's single ordered set does for the usual monotone registrations. */
+static bool scr_worker_order_core_first(ScrWorkerView *view, const ScrStr *name) {
+  for (size_t i = 0; i < view->order_n; i++)
+    if (view->order[i].name->len == name->len &&
+        !memcmp(view->order[i].name->data, name->data, name->len))
+      return view->order[i].core_first;
+  return false;
+}
+
+static void scr_worker_order_drop(ScrWorkerView *view, const ScrStr *name) {
+  for (size_t i = 0; i < view->order_n; i++) {
+    if (view->order[i].name->len != name->len ||
+        memcmp(view->order[i].name->data, name->data, name->len)) continue;
+    scr_str_release(view->order[i].name);
+    memmove(view->order + i, view->order + i + 1, (view->order_n - i - 1) * sizeof *view->order);
+    view->order_n--;
+    return;
+  }
+}
+
+static void scr_worker_order_clear(ScrWorkerView *view) {
+  for (size_t i = 0; i < view->order_n; i++) scr_str_release(view->order[i].name);
+  free(view->order);
+  view->order = NULL;
+  view->order_n = 0;
+}
+
+/* The type's listeners on the port's EventTarget core (the on<type>
+ * attribute counts as one, as Node's port bookkeeping does). */
+static double scr_worker_core_count(ScrWorkerView *view, const ScrStr *name) {
+  if (!view->port || !view->et || !scr_et_broadcast_ops || !scr_et_broadcast_ops->listener_count)
+    return 0;
+  if (scr_str_is_symbol_key(name)) return 0;
+  return scr_et_broadcast_ops->listener_count(view->et, name->data);
+}
+
+/* Whether the core still holds a map entry for the type: a root outlives its
+ * last listener when a `{ once: true }` listener fired or the on<type>
+ * attribute was cleared by assignment, and Node keeps reporting such a type
+ * from eventNames() until an explicit removal deletes it. */
+static bool scr_worker_core_has_type(ScrWorkerView *view, const ScrStr *name) {
+  if (!view->port || !view->et || !scr_et_broadcast_ops || !scr_et_broadcast_ops->has_type)
+    return false;
+  if (scr_str_is_symbol_key(name)) return false;
+  return scr_et_broadcast_ops->has_type(view->et, name->data);
+}
+
+/* A type whose last listener left both surfaces leaves the order. */
+static void scr_worker_drop_if_empty(ScrWorkerView *view, const ScrStr *name) {
+  if (!view->port || scr_str_is_symbol_key(name)) return;
+  if (scr_emitter_listener_count(view->events, (ScrStr *)name) > 0) return;
+  if (scr_worker_core_has_type(view, name)) return;
+  scr_worker_order_drop(view, name);
+}
+
 static void scr_worker_message_listeners(void *ptr, const ScrStr *name, bool present) {
   ScrWorkerView *view = ptr;
+  if (present) scr_worker_order_note(view, name, false);
+  else scr_worker_drop_if_empty(view, name);
   if (name->len != 7 || memcmp(name->data, "message", 7)) return;
   if (!view->port) view->message_port_ref = present;
   else scr_port_message_refs(view);
@@ -442,7 +543,25 @@ void scr_worker_mark_untransferable(ScrDyn *value) {
 
 /* postMessage's transfer argument: an array, or { transfer } (+1, or NULL
  * when empty) */
-static ScrDyn *scr_worker_transfer_list(ScrDyn *arg) {
+/* Node reports the self-post warning through process.emitWarning(message):
+ * a replacement installed at the call sees it there with the arguments the
+ * call passes (type undefined), and the default report and the 'warning'
+ * listeners run on the next tick, one tick per warning. */
+static void scr_post_warning(ScrStr *message /* moves in */) {
+  ScrDyn *args = scr_dyn_new_arr();
+  scr_dyn_arr_push(args, scr_dyn_new_str(message));
+  scr_process_emit_warning(args);
+  scr_dyn_release(args);
+  scr_str_release(message);
+}
+
+/* The three shapes Node reads a transfer list in: postMessage's second
+ * argument, the `transfer` member of an options object, and a Worker's
+ * transferList option (whose refusals are a DataCloneError rather than the
+ * message forms' TypeError). */
+enum { SCR_TRANSFER_POST, SCR_TRANSFER_OPTIONS, SCR_TRANSFER_WORKER };
+
+static ScrDyn *scr_worker_transfer_list_form(ScrDyn *arg, int form) {
   ScrDyn *value = arg;
   ScrDyn *own = NULL;
   if (value->kind == SCR_DYN_TYPED_REF) {
@@ -453,13 +572,24 @@ static ScrDyn *scr_worker_transfer_list(ScrDyn *arg) {
     }
     value = own;
   }
-  if (value->kind == SCR_DYN_OBJ) {
+  /* No second argument, null or undefined: there is no transfer list, as in
+   * Node. */
+  if (value->kind == SCR_DYN_NULL || value->kind == SCR_DYN_UNDEF) {
+    scr_dyn_release(own);
+    return NULL;
+  }
+  if (value->kind == SCR_DYN_OBJ && form != SCR_TRANSFER_WORKER) {
     ScrDyn *list = scr_dyn_obj_get(value, "transfer", 8);
-    ScrDyn *result = list ? scr_worker_transfer_list(list) : NULL;
+    ScrDyn *result =
+        list ? scr_worker_transfer_list_form(list, SCR_TRANSFER_OPTIONS) : NULL;
     scr_dyn_release(own);
     return result;
   }
-  if (value->kind == SCR_DYN_ARR && value->v.arr.len > 0) {
+  if (value->kind == SCR_DYN_ARR) {
+    if (value->v.arr.len == 0) {
+      scr_dyn_release(own);
+      return NULL;
+    }
     for (size_t i = 0; i < value->v.arr.len; i++) {
       ScrDyn *item = value->v.arr.items[i];
       if (item && scr_worker_is_marked_untransferable(item)) {
@@ -471,6 +601,12 @@ static ScrDyn *scr_worker_transfer_list(ScrDyn *arg) {
        * duplicate, and a value that is no transferable at all is invalid. An
        * ArrayBuffer or SharedArrayBuffer keeps the documented refusal. */
       if (item && item->kind == SCR_DYN_HANDLE && item->v.handle.tag == SCR_DYNH_MESSAGE_PORT) {
+        const ScrWorkerView *port_view = item->v.handle.ptr;
+        if (port_view->detached || port_view->closed) {
+          scr_dyn_release(own);
+          scr_throw_domex("DataCloneError", "MessagePort in transfer list is already detached");
+          return NULL;
+        }
         for (size_t j = 0; j < i; j++) {
           const ScrDyn *earlier = value->v.arr.items[j];
           if (earlier && earlier->kind == SCR_DYN_HANDLE &&
@@ -492,10 +628,28 @@ static ScrDyn *scr_worker_transfer_list(ScrDyn *arg) {
     scr_dyn_release(own);
     return result;
   }
-  bool empty = scr_worker_empty_transfer(value);
+  ScrDynKind kind = value->kind;
+  ScrDynHandleTag tag = kind == SCR_DYN_HANDLE ? value->v.handle.tag : (ScrDynHandleTag)0;
   scr_dyn_release(own);
-  if (!empty) scr_worker_refusal("This postMessage transfer argument is not supported yet");
+  if (form == SCR_TRANSFER_WORKER) {
+    scr_throw_domex("DataCloneError", "Found invalid value in transferList.");
+    return NULL;
+  }
+  /* A Set is an iterable Node would walk and this build refuses by name;
+   * everything else is Node's "must be an iterable" TypeError. */
+  if (kind == SCR_DYN_HANDLE && tag == SCR_DYNH_SET) {
+    scr_worker_refusal("This postMessage transfer argument is not supported yet");
+    return NULL;
+  }
+  const char *message = form == SCR_TRANSFER_OPTIONS
+                            ? "Optional options.transfer argument must be an iterable"
+                            : "Optional transferList argument must be an iterable";
+  scr_throw_error_msg_code(SCR_ERR_TYPE, message, strlen(message), "ERR_INVALID_ARG_TYPE");
   return NULL;
+}
+
+static ScrDyn *scr_worker_transfer_list(ScrDyn *arg) {
+  return scr_worker_transfer_list_form(arg, SCR_TRANSFER_POST);
 }
 
 static bool scr_worker_transfer_has(const ScrDyn *transfer, const ScrWorkerView *view) {
@@ -725,6 +879,45 @@ static bool scr_worker_cpu_settle(ScrWorkerView *view, int seq, double user, dou
 
 /* worker.cpuUsage([prev]): the worker's thread measures its own CPU usage,
  * which Node reads from the worker's isolate. */
+/* worker.getHeapStatistics(): the runtime's heap figures in V8's field
+ * names and order. A compiled program has one heap for every thread, so the
+ * numbers describe the process's runtime heap (the same sample
+ * v8.getHeapStatistics() takes) rather than a per-thread V8 isolate. */
+ScrPromise *scr_worker_heap_statistics(ScrDyn *value) {
+  ScrPromise *promise = scr_promise_new();
+  ScrWorkerView *view = NULL;
+  if (value != NULL && value->kind == SCR_DYN_HANDLE && value->v.handle.tag == SCR_DYNH_WORKER)
+    view = value->v.handle.ptr;
+  if (view == NULL || !view->online || view->closed) {
+    static const char message[] = "Worker instance not running";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "ERR_WORKER_NOT_RUNNING");
+    scr_promise_reject_pending(promise);
+    return promise;
+  }
+  double heap_total = 0, heap_used = 0;
+  scr_heap_stats(&heap_total, &heap_used);
+  double limit = scr_available_memory() + heap_used;
+  ScrDyn *stats = scr_dyn_new_obj();
+  scr_dyn_obj_set(stats, "total_heap_size", 15, scr_dyn_new_num(heap_total));
+  scr_dyn_obj_set(stats, "total_heap_size_executable", 26, scr_dyn_new_num(0));
+  scr_dyn_obj_set(stats, "total_physical_size", 19, scr_dyn_new_num(heap_total));
+  scr_dyn_obj_set(stats, "total_available_size", 20,
+                  scr_dyn_new_num(limit > heap_used ? limit - heap_used : 0));
+  scr_dyn_obj_set(stats, "used_heap_size", 14, scr_dyn_new_num(heap_used));
+  scr_dyn_obj_set(stats, "heap_size_limit", 15, scr_dyn_new_num(limit));
+  scr_dyn_obj_set(stats, "malloced_memory", 15, scr_dyn_new_num(0));
+  scr_dyn_obj_set(stats, "peak_malloced_memory", 20, scr_dyn_new_num(0));
+  scr_dyn_obj_set(stats, "does_zap_garbage", 16, scr_dyn_new_bool(false));
+  scr_dyn_obj_set(stats, "number_of_native_contexts", 25, scr_dyn_new_num(1));
+  scr_dyn_obj_set(stats, "number_of_detached_contexts", 27, scr_dyn_new_num(0));
+  scr_dyn_obj_set(stats, "total_global_handles_size", 25, scr_dyn_new_num(0));
+  scr_dyn_obj_set(stats, "used_global_handles_size", 24, scr_dyn_new_num(0));
+  scr_dyn_obj_set(stats, "external_memory", 15, scr_dyn_new_num(0));
+  /* The promise keeps the sample's reference (the cpuUsage pattern). */
+  scr_promise_fulfill_ref(promise, stats, scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
+  return promise;
+}
+
 static ScrDyn *scr_worker_cpu_usage(ScrWorkerView *view, ScrDyn *prev) {
   double prev_user = 0;
   double prev_system = 0;
@@ -751,6 +944,31 @@ static ScrDyn *scr_worker_cpu_usage(ScrWorkerView *view, ScrDyn *prev) {
   return result;
 }
 
+/* An event key. A Worker's emitter follows property-key conversion: a symbol
+ * stays a symbol key and every other value converts with String(). A
+ * MessagePort's on/once/off names are DOM strings, which a symbol has no
+ * conversion for — Node reports that as ERR_INVALID_ARG_TYPE rather than the
+ * language's TypeError. */
+static ScrStr *scr_worker_event_name(const ScrWorkerView *view, const ScrDyn *value) {
+  if (view->port && value->kind == SCR_DYN_SYMBOL) {
+    static const char message[] = "Value is a Symbol and cannot be converted to a string.";
+    scr_throw_error_msg_code(SCR_ERR_TYPE, message, sizeof message - 1, "ERR_INVALID_ARG_TYPE");
+    return NULL;
+  }
+  return scr_emitter_name_dyn(value);
+}
+
+/* A name for the key-table walks. Node's NodeEventTarget converts a symbol
+ * with String() in listenerCount() and removeAllListeners(), so Symbol("s")
+ * names the string key "Symbol(s)" — a port cannot register a listener under
+ * a symbol (its on, once and off convert with the DOM string conversion and
+ * throw), so that string key is the only one it can match. A Worker is an
+ * EventEmitter: a symbol there stays its own key, as in Node. */
+static ScrStr *scr_worker_key_table_name(const ScrWorkerView *view, const ScrDyn *value) {
+  if (view->port && value->kind == SCR_DYN_SYMBOL) return scr_sym_to_string(value->v.symbol.value);
+  return scr_emitter_name_dyn(value);
+}
+
 static ScrDyn *scr_worker_view_invoke(void *ptr, ScrDyn *self, const char *method,
                                      ScrDyn *const *args, size_t argc, const char *what) {
   (void)what;
@@ -766,6 +984,13 @@ static ScrDyn *scr_worker_view_invoke(void *ptr, ScrDyn *self, const char *metho
     return scr_dyn_new_bool(view->referenced && (!view->closed || (view->channel && view->closing)));
   if (!view->port && method_is(method, "cpuUsage"))
     return scr_worker_cpu_usage(view, argc ? args[0] : scr_dyn_undefined());
+  if (!view->port && method_is(method, "getHeapStatistics")) {
+    /* The dyn view retains the promise; the sample's reference is dropped. */
+    ScrPromise *promise = scr_worker_heap_statistics(self);
+    ScrDyn *result = scr_dyn_new_promise(promise);
+    scr_promise_release(promise);
+    return result;
+  }
   if (!view->port && method_is(method, "terminate")) {
     /* Node's terminate() returns a fresh promise per call. It refs the worker
      * before stopping the thread, so the loop stays up until the exit event
@@ -813,15 +1038,40 @@ static ScrDyn *scr_worker_view_invoke(void *ptr, ScrDyn *self, const char *metho
       scr_throw_domex("DataCloneError", "Transfer list contains source port");
       return NULL;
     }
+    /* Node's self-post case: the transfer list names this port's entangled
+     * other end, so a transfer loses the channel. The warning follows a
+     * transfer that actually happened (a clone that fails leaves the
+     * channel intact), and it is reported on the next tick. */
+    bool self_post = false;
+    if (view->port && view->channel && transfer) {
+      for (size_t i = 0; i < transfer->v.arr.len; i++) {
+        ScrDyn *item = transfer->v.arr.items[i];
+        if (!item || item->kind != SCR_DYN_HANDLE || item->v.handle.tag != SCR_DYNH_MESSAGE_PORT)
+          continue;
+        ScrWorkerView *peer = item->v.handle.ptr;
+        if (peer->channel != view->channel || peer->side == view->side) continue;
+        self_post = true;
+        break;
+      }
+    }
     ScrMessage *message = scr_message_encode_transfer(args[0], transfer);
     scr_dyn_release(transfer);
     if (!message) return NULL;
-    if (view->closed) scr_message_free(message);
-    else if (view->channel)
+    if (self_post) {
+      static const char text[] =
+          "The target port was posted to itself, and the communication channel was lost";
+      scr_post_warning(scr_str_new(text, sizeof text - 1));
+    }
+    if (view->closed) {
+      scr_message_free(message);
+      return scr_dyn_retain(scr_dyn_undefined());
+    }
+    if (view->channel)
       scr_channel_post(view->channel, view->side, message, SCR_WORKER_MESSAGE, SCR_WORKER_WAKE);
     else if (view->port) scr_worker_post_parent(message);
     else scr_worker_thread_post(view->thread, message);
-    return scr_dyn_retain(scr_dyn_undefined());
+    /* A MessagePort answers true, a Worker undefined, as in Node. */
+    return view->port ? scr_dyn_new_bool(true) : scr_dyn_retain(scr_dyn_undefined());
   }
   bool once = method_is(method, "once") || method_is(method, "prependOnceListener");
   bool prepend = method_is(method, "prependListener") || method_is(method, "prependOnceListener");
@@ -829,39 +1079,78 @@ static ScrDyn *scr_worker_view_invoke(void *ptr, ScrDyn *self, const char *metho
     ScrDyn *listener = argc > 1 ? args[1] : scr_dyn_undefined();
     scr_dyn_check_listener(listener, "listener");
     if (scr_exc_pending()) return NULL;
-    if (!argc || args[0]->kind != SCR_DYN_STR)
-      return scr_worker_refusal("Worker event names must be strings");
+    ScrStr *name = scr_worker_event_name(view, argc ? args[0] : scr_dyn_undefined());
+    if (!name) return NULL;
     /* NodeEventTarget keeps one entry per listener (Node's Set holds the
      * original function, once() included): any second registration of the
      * same function is a no-op. A Worker is an EventEmitter and adds the
      * same function again. */
-    if (view->port && scr_emitter_has_listener_fn(view->events, args[0]->v.str, listener))
+    if (view->port && scr_emitter_has_listener_fn(view->events, name, listener)) {
+      scr_str_release(name);
       return scr_dyn_retain(self);
-    scr_emitter_release(scr_emitter_on_flex(view->events, args[0]->v.str, listener, once, prepend));
+    }
+    scr_emitter_release(scr_emitter_on_flex(view->events, name, listener, once, prepend));
+    scr_str_release(name);
     return scr_exc_pending() ? NULL : scr_dyn_retain(self);
   }
   if (method_is(method, "off") || method_is(method, "removeListener")) {
     ScrDyn *listener = argc > 1 ? args[1] : scr_dyn_undefined();
     scr_dyn_check_listener(listener, "listener");
     if (scr_exc_pending()) return NULL;
-    if (!argc || args[0]->kind != SCR_DYN_STR)
-      return scr_worker_refusal("Worker event names must be strings");
-    scr_emitter_release(scr_emitter_off_dyn(view->events, args[0]->v.str, listener));
+    ScrStr *name = scr_worker_event_name(view, argc ? args[0] : scr_dyn_undefined());
+    if (!name) return NULL;
+    scr_emitter_release(scr_emitter_off_dyn(view->events, name, listener));
+    /* NodeEventTarget's off removes an addEventListener listener too; the
+     * on<type> attribute keeps its registration, as Node's does. */
+    if (view->port && !scr_exc_pending() && view->et && scr_et_broadcast_ops &&
+        scr_worker_core_count(view, name) > 0) {
+      ScrDyn *type = scr_dyn_new_str(name);
+      ScrDyn *core_args[2] = {type, (ScrDyn *)listener};
+      ScrDyn *out = NULL;
+      scr_et_broadcast_ops->method(view->et, self, "removeEventListener", core_args, 2, &out);
+      scr_dyn_release(out);
+      scr_dyn_release(type);
+      if (scr_exc_pending()) {
+        scr_str_release(name);
+        return NULL;
+      }
+      scr_worker_drop_if_empty(view, name);
+    }
+    scr_str_release(name);
     return scr_exc_pending() ? NULL : scr_dyn_retain(self);
   }
   if (method_is(method, "removeAllListeners")) {
     bool all = !argc || args[0]->kind == SCR_DYN_UNDEF;
-    if (!all && args[0]->kind != SCR_DYN_STR)
-      return scr_worker_refusal("Worker event names must be strings");
-    scr_emitter_release(scr_emitter_remove_all(view->events, all ? NULL : args[0]->v.str, all));
+    /* No DOMString here: Node's removeAllListeners walks the key table, so a
+     * symbol name is its String() form instead of throwing. */
+    ScrStr *name = all ? NULL : scr_worker_key_table_name(view, args[0]);
+    if (!all && !name) return NULL;
+    scr_emitter_release(scr_emitter_remove_all(view->events, name, all));
+    /* One map in Node: the EventTarget listeners leave too, the on<type>
+     * attribute's registration with them. */
+    if (view->port && view->et && scr_et_broadcast_ops) {
+      scr_et_broadcast_ops->remove_all(view->et, name ? name->data : NULL);
+      if (name) scr_worker_drop_if_empty(view, name);
+      else scr_worker_order_clear(view);
+    }
+    scr_str_release(name);
     return scr_exc_pending() ? NULL : scr_dyn_retain(self);
   }
   if (method_is(method, "listenerCount")) {
-    if (!argc || args[0]->kind != SCR_DYN_STR)
-      return scr_worker_refusal("Worker event names must be strings");
-    return scr_dyn_new_num(argc > 1 && args[1]->kind != SCR_DYN_UNDEF
-      ? scr_emitter_listener_count_dyn(view->events, args[0]->v.str, args[1])
-      : scr_emitter_listener_count(view->events, args[0]->v.str));
+    ScrStr *name = scr_worker_key_table_name(view, argc ? args[0] : scr_dyn_undefined());
+    if (!name) return NULL;
+    double count;
+    if (view->port) {
+      /* NodeEventTarget counts both surfaces' listeners and ignores the
+       * function argument. */
+      count = scr_emitter_listener_count(view->events, name) + scr_worker_core_count(view, name);
+    } else {
+      count = argc > 1 && args[1]->kind != SCR_DYN_UNDEF
+        ? scr_emitter_listener_count_dyn(view->events, name, args[1])
+        : scr_emitter_listener_count(view->events, name);
+    }
+    scr_str_release(name);
+    return scr_dyn_new_num(count);
   }
   /* NodeEventTarget's emit/eventNames/setMaxListeners/getMaxListeners —
    * the surface MessagePort and Worker share with EventEmitter. A port's
@@ -871,7 +1160,9 @@ static ScrDyn *scr_worker_view_invoke(void *ptr, ScrDyn *self, const char *metho
    * registry. A Worker's emit is EventEmitter's: every argument reaches
    * the listeners, and an unhandled 'error' throws. */
   if (method_is(method, "emit")) {
-    if (!argc || args[0]->kind != SCR_DYN_STR) {
+    /* A port's raw dispatch takes a string type only (Node's error is
+     * reproduced below); a Worker's EventEmitter takes any key. */
+    if (view->port && (!argc || args[0]->kind != SCR_DYN_STR)) {
       char detail[64];
       const char *received =
         scr_dyn_specific_type(argc ? args[0] : scr_dyn_undefined(), detail, sizeof detail);
@@ -881,18 +1172,47 @@ static ScrDyn *scr_worker_view_invoke(void *ptr, ScrDyn *self, const char *metho
       scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)n, "ERR_INVALID_ARG_TYPE");
       return NULL;
     }
+    ScrStr *name = scr_emitter_name_dyn(argc ? args[0] : scr_dyn_undefined());
+    if (!name) return NULL;
     bool had;
     if (view->port) {
-      /* Node's kHybridDispatch always hands the listener exactly one value. */
+      /* One map in Node: the EventTarget listeners and the EventEmitter
+       * listeners run in registration order, the first with a plain Event of
+       * the type and the second with the raw argument. Which kind goes first
+       * is the one that registered the type first. */
+      had = false;
+      bool core = view->et && scr_et_broadcast_ops && scr_worker_core_count(view, name) > 0;
+      bool core_first = scr_worker_order_core_first(view, name);
       ScrDyn *arg = argc > 1 ? args[1] : scr_dyn_undefined();
-      had = scr_emitter_emit_flex(view->events, args[0]->v.str, &arg, 1);
+      for (int pass = 0; pass < 2; pass++) {
+        bool take_core = core_first ? pass == 0 : pass == 1;
+        if (take_core) {
+          if (core) {
+            scr_et_broadcast_ops->dispatch_type(view->et, self, name->data);
+            had = true;
+          }
+        } else if (scr_emitter_emit_flex(view->events, name, &arg, 1)) {
+          had = true;
+        }
+      }
     } else {
-      had = scr_emitter_emit_any(view->events, args[0]->v.str, args + 1,
-                                 argc > 1 ? argc - 1 : 0);
+      had = scr_emitter_emit_any(view->events, name, args + 1, argc > 1 ? argc - 1 : 0);
     }
+    scr_str_release(name);
     return scr_exc_pending() ? NULL : scr_dyn_new_bool(had);
   }
-  if (method_is(method, "eventNames")) return scr_emitter_event_names(view->events);
+  if (method_is(method, "eventNames")) {
+    if (!view->port) return scr_emitter_event_names(view->events);
+    ScrDyn *out = scr_dyn_new_arr();
+    for (size_t i = 0; i < view->order_n; i++) {
+      /* A type that lost its listeners without a notification is not
+       * reported; the order normally drops it as it empties. */
+      if (scr_emitter_listener_count(view->events, view->order[i].name) == 0 &&
+          !scr_worker_core_has_type(view, view->order[i].name)) continue;
+      scr_dyn_arr_push(out, scr_dyn_new_str(view->order[i].name));
+    }
+    return out;
+  }
   if (method_is(method, "setMaxListeners")) {
     scr_emitter_release(
       scr_emitter_set_max_chk(view->events, argc ? args[0] : scr_dyn_undefined()));
@@ -930,8 +1250,25 @@ static ScrDyn *scr_worker_view_invoke(void *ptr, ScrDyn *self, const char *metho
    * the port, as Node does. */
   if (view->port && (method_is(method, "addEventListener") ||
                      method_is(method, "removeEventListener") || method_is(method, "dispatchEvent"))) {
-    ScrDyn *out = NULL;
     ScrEventTargetCore *core = scr_port_core(view);
+    /* addEventListener runs the core's DOM steps — the options are read
+     * first, an aborted signal returns before the type is read, then the
+     * type is converted once — and hands the registered name back for the
+     * eventNames order. */
+    if (core && method_is(method, "addEventListener") && scr_et_broadcast_ops->add_listener) {
+      ScrStr *type = NULL;
+      ScrDyn *added = scr_et_broadcast_ops->add_listener(core, args, argc, &type);
+      if (type) {
+        if (type->len == 7 && !memcmp(type->data, "message", 7)) scr_port_message_refs(view);
+        if (!scr_exc_pending()) {
+          if (scr_worker_core_count(view, type) > 0) scr_worker_order_note(view, type, true);
+          else scr_worker_drop_if_empty(view, type);
+        }
+        scr_str_release(type);
+      }
+      return scr_exc_pending() ? NULL : added;
+    }
+    ScrDyn *out = NULL;
     if (core && scr_et_broadcast_ops->method(core, self, method, args, argc, &out)) {
       if (argc > 0 && args[0]->kind == SCR_DYN_STR && args[0]->v.str->len == 7 &&
           !memcmp(args[0]->v.str->data, "message", 7))
@@ -1008,8 +1345,13 @@ static ScrDyn *scr_worker_symbol_get(void *ptr, const ScrDyn *key) {
  * 'message' listener moves the port's loop reference, as Node's
  * setupPortReferencing hooks only that event. */
 static void scr_port_listeners_changed(void *ctx, const ScrStr *type) {
-  if (type == NULL || type->len != 7 || memcmp(type->data, "message", 7) != 0) return;
-  scr_port_message_refs((ScrWorkerView *)ctx);
+  if (type == NULL) return;
+  ScrWorkerView *view = ctx;
+  /* A type whose last listener left the EventTarget surface leaves the
+   * eventNames order unless the EventEmitter surface still holds one. */
+  scr_worker_drop_if_empty(view, type);
+  if (type->len != 7 || memcmp(type->data, "message", 7) != 0) return;
+  scr_port_message_refs(view);
 }
 
 /* A port's EventTarget core, created on first use (Node's MessagePort is an
@@ -1106,6 +1448,10 @@ static bool scr_worker_view_set(void *ptr, const char *key, size_t length, const
     ScrEventTargetCore *core = scr_port_core(view);
     if (!core) return false;
     scr_et_broadcast_ops->handler_set(core, type, value);
+    ScrStr *name = scr_str_new(type, strlen(type));
+    if (scr_worker_core_count(view, name) > 0) scr_worker_order_note(view, name, true);
+    else scr_worker_drop_if_empty(view, name);
+    scr_str_release(name);
     if (!strcmp(type, "message")) scr_port_message_refs(view);
     return true;
   }
@@ -2279,7 +2625,7 @@ static ScrDyn *scr_worker_new_options(double root, ScrStr *filename, ScrDyn *opt
   } else {
     thread_name = scr_str_new("WorkerThread", 12);
   }
-  ScrDyn *transfer = scr_worker_transfer_list(transfer_list);
+  ScrDyn *transfer = scr_worker_transfer_list_form(transfer_list, SCR_TRANSFER_WORKER);
   if (scr_exc_pending()) {
     scr_arr_release(arguments);
     scr_str_release(thread_name);

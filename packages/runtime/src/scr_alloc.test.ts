@@ -64,7 +64,26 @@ test.each([
       },
     });
     expect(result.stdout).toBe(`allocator checks passed: ${mode}\n`);
-    expect(result.stderr).toBe("");
+    // A grow whose new run cannot be mapped reports it and recovers; the
+    // checks force those maps to fail, so a size-class build prints one line
+    // per forced failure and nothing else.
+    const lines = result.stderr.split("\n").filter((line) => line !== "");
+    for (const line of lines)
+      expect(line).toMatch(
+        /^scriptc: grow could not map (the new run|the old run back) \(errno \d+\): run 0x[0-9a-f]+ of \d+ bytes, new run 0x[0-9a-f]+ of \d+ bytes, window 0x[0-9a-f]+ of \d+ chunks$/,
+      );
+    // The failure injection compiles only for Linux's fixed remap: the other
+    // platforms force nothing and report nothing. A worker build forces two
+    // more (the keep-registry cases), so it prints four lines.
+    const forced =
+      process.platform !== "linux"
+        ? 0
+        : mode === "size-class"
+          ? 2
+          : mode === "size-class workers"
+            ? 4
+            : 0;
+    expect(lines).toHaveLength(forced);
   } finally {
     await rm(scratch, { recursive: true, force: true });
   }

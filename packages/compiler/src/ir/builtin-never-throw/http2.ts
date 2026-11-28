@@ -45,4 +45,25 @@ export const http2NeverThrow: readonly IrLibFn[] = [
   "http2.streamSentInfoHeaders",
   "http2.streamSentTrailers",
   "http2.streamState",
+  // The connect-protocol server constructors: they create the server and
+  // put the eager handler into internal lists; no listener runs inside the
+  // call, and a failed allocation ends the process.
+  "http2.createServerOpts",
+  "http2.createServerReqOpts",
+  // The stream's ready/timeout listeners and its idle timer: internal list
+  // inserts and a timer arm, no user code inside the call.
+  "http2.streamOnReady",
+  "http2.streamOnTimeout",
+  "http2.streamSetTimeout",
+  "http2.streamSetTimeoutCb",
+  // DEP0194 is scheduled on the next tick, so the warning, and any
+  // 'warning' listener it reaches, runs after the call returned.
+  "http2.streamPriority",
+  "http2.streamPriority0",
+  // The session's timeout listener and its ref state: an internal list
+  // insert and a refcount change — no user code runs inside the call, and a
+  // failed allocation ends the process.
+  "http2.sessionOnTimeout",
+  "http2.sessionRef",
+  "http2.sessionUnref",
 ];

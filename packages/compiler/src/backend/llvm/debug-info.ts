@@ -61,6 +61,9 @@ export class LlvmDebugInfo {
     private readonly unions: readonly IrUnionDef[] = [],
     /** Unions whose values are the nullable arm pointer itself. */
     private readonly nullableArms: ReadonlyMap<string, IrType> = new Map(),
+    /** The name a file EMITS as (a library profile's file_prefix_map);
+     * diagnostics keep the read path. */
+    private readonly sourcePathMap: ((file: string) => string) | undefined = undefined,
   ) {
     this.source = new SourceLocations(sources);
     this.unit(sourceFile);
@@ -77,8 +80,9 @@ export class LlvmDebugInfo {
   private file(path: string): string {
     let file = this.files.get(path);
     if (file === undefined) {
+      const emitted = this.sourcePathMap === undefined ? path : this.sourcePathMap(path);
       file = this.add(
-        `!DIFile(filename: ${quoted(basename(path))}, directory: ${quoted(dirname(path))})`,
+        `!DIFile(filename: ${quoted(basename(emitted))}, directory: ${quoted(dirname(emitted))})`,
       );
       this.files.set(path, file);
     }

@@ -19,7 +19,8 @@ import { Normalizer } from "../canon.js";
 import { resolveEntryExportSymbol } from "../lib-exports.js";
 import { compactDeclOrigins, recordOrigin, slotOrigin, type RecordOrigin } from "./decl-origin.js";
 import { claimKey, collectTypeClaims, declaredUntypedIn } from "./type-claims.js";
-import { isDeclBoundaryTypeNode } from "../decl-projection.js";
+import { isDeclBoundaryTypeNode, isDeclIterMarkerName } from "../decl-projection.js";
+import { declIterationSource } from "./decl-iteration.js";
 import type { TypeClaimSite } from "../../diagnostics/type-claims.js";
 import { relieveHeapPressure } from "../../heap-pressure.js";
 import { timingProcessMetrics } from "../../timing.js";
@@ -123,6 +124,7 @@ import {
 import { guardedDeferredFences, type GuardedDeferredFence } from "../../ir/deferred-fence.js";
 import {
   absentDefaultStopDiag,
+  castThroughUnknownDiag,
   deferredRefusalDiag,
   strandedInstanceArmDiag,
   guardedDeferredFenceDiag,
@@ -183,8 +185,10 @@ import { valueStreamOf, writableStreamOf } from "./builtins/hash-stream.js";
 import { lowerNetAddressCall, lowerNetAddressNew } from "./builtins/net-address.js";
 import { lowerMimeCall, lowerMimeNew } from "./builtins/mime.js";
 import { lowerSqliteCall, lowerSqliteNew } from "./builtins/sqlite.js";
+import { lowerSourceMapNew } from "./builtins/source-map.js";
 import { lowerPerfNew } from "./builtins/performance.js";
 import {
+  installCompressionStreamZlib,
   installFetchBodyWebStreams,
   lowerWebStreamNew,
   lowerWebStreamStaticCall,
@@ -555,6 +559,7 @@ import {
   widenCjsExportsOfWidenedBindings,
 } from "./lower-modules.js";
 import {
+  isCjsRequireGlobal,
   isNodeModuleHandle,
   prepareCjsModuleGraph,
   untypedModuleValueFence,
@@ -595,6 +600,7 @@ import {
   builtinEmitterInfoOf,
   builtinStreamInfoOf,
   analyzeClassDecoration,
+  validateLegacyMemberDispatch,
   classIteratorDrainCall,
   classIteratorMethodCall,
   classIteratorNextCall,
@@ -1321,6 +1327,10 @@ export interface LowerOptions {
   dependencyJs?: ((file: string) => boolean) | undefined;
   /** LoadResult.parameterPropertiesFirst. */
   parameterPropertiesFirst?: ReadonlySet<string> | undefined;
+  /** LoadResult.typeWorld.legacyDecoratorFiles: the files whose tsconfig
+   * sets `experimentalDecorators`, which take the legacy decorator order,
+   * calling convention and descriptor rules. */
+  legacyDecoratorFiles?: ReadonlySet<string> | undefined;
   /** Coverage: additionally lower the unreached remainder (bodies nothing
    * on the entry path reaches) in a throwaway pass and report its
    * diagnostics and stats under `unreached` — the whole-program analysis
@@ -1530,6 +1540,8 @@ export interface LowererMode {
   dependencyJs?: ((file: string) => boolean) | undefined;
   /** LoadResult.parameterPropertiesFirst. */
   parameterPropertiesFirst?: ReadonlySet<string> | undefined;
+  /** LoadResult.typeWorld.legacyDecoratorFiles. */
+  legacyDecoratorFiles?: ReadonlySet<string> | undefined;
   /** Names of bodies a prior reachability pass reached; null lowers everything. */
   reachable?: ReadonlySet<string> | null;
   /** Coverage remainder: lower ONLY bodies outside `reachable`, skip the
@@ -2000,6 +2012,7 @@ function lowerToIrWithIslands(
       projectCheckJs: options.projectCheckJs ?? false,
       dependencyJs: options.dependencyJs,
       parameterPropertiesFirst: options.parameterPropertiesFirst,
+      legacyDecoratorFiles: options.legacyDecoratorFiles,
       targetPlatform,
       define: options.define,
       startupCrash,
@@ -2037,6 +2050,7 @@ function lowerToIrWithIslands(
             projectCheckJs: options.projectCheckJs ?? false,
             dependencyJs: options.dependencyJs,
             parameterPropertiesFirst: options.parameterPropertiesFirst,
+            legacyDecoratorFiles: options.legacyDecoratorFiles,
             targetPlatform,
             define: options.define,
             startupCrash,
@@ -2170,6 +2184,7 @@ function lowerToIrWithIslands(
         projectCheckJs: options.projectCheckJs ?? false,
         dependencyJs: options.dependencyJs,
         parameterPropertiesFirst: options.parameterPropertiesFirst,
+        legacyDecoratorFiles: options.legacyDecoratorFiles,
         ...(general
           ? {
               generalNodeStreams: true,
@@ -2266,6 +2281,7 @@ function lowerToIrWithIslands(
       projectCheckJs: options.projectCheckJs ?? false,
       dependencyJs: options.dependencyJs,
       parameterPropertiesFirst: options.parameterPropertiesFirst,
+      legacyDecoratorFiles: options.legacyDecoratorFiles,
       targetPlatform,
       define: options.define,
       startupCrash,
@@ -2360,6 +2376,7 @@ function lowerToIrWithIslands(
       projectCheckJs: options.projectCheckJs ?? false,
       dependencyJs: options.dependencyJs,
       parameterPropertiesFirst: options.parameterPropertiesFirst,
+      legacyDecoratorFiles: options.legacyDecoratorFiles,
       ...(generalNodeStreams ? { generalNodeStreams: true } : {}),
       ...(dynNodeStreams ? { dynNodeStreams: true } : {}),
       reachable,
@@ -2464,6 +2481,9 @@ function lowerToIrWithIslands(
     ...resultLowerer.sharedModuleWarnings,
     ...resultLowerer.islandWorkerWarnings,
     ...resultLowerer.deferredRefusalWarnings,
+    // Assertions through `unknown` to a layout the static type cannot have:
+    // still checked at run time, named here so the trap is visible first.
+    ...resultLowerer.castThroughUnknownWarnings,
     ...Array.from(resultLowerer.absentDefaultStops.values(), (site) =>
       absentDefaultStopDiag(resultLowerer.fmt(site.from), resultLowerer.fmt(site.to), site.loc),
     ),
@@ -2612,6 +2632,7 @@ function lowerToIrWithIslands(
       projectCheckJs: options.projectCheckJs ?? false,
       dependencyJs: options.dependencyJs,
       parameterPropertiesFirst: options.parameterPropertiesFirst,
+      legacyDecoratorFiles: options.legacyDecoratorFiles,
       ...(general ? { generalNodeStreams: true } : {}),
       ...(general && dyn ? { dynNodeStreams: true } : {}),
       reachable,
@@ -4095,6 +4116,10 @@ export class Lowerer {
    * that assigns module.exports) does not change the binding. Required
    * bindings read the live slot at their own position instead. */
   readonly cjsRuntimeExportSnapshotGlobals = new Map<ts.SourceFile, IrGlobal>();
+  /** Element kinds (SCR_ELEM_* numbers) whose arrays the program gives a
+   * prototype: their allocations carry the collector header, so the
+   * prototype the array owns is an edge the collector can see. */
+  readonly prototypeArrayKinds = new Set<number>();
   /** Per module some namespace import reads, the export members its
    * functions assign (`cjsExportsAssignedInFunctions`): each member's slot
    * takes the values the module's exports held when the first ESM module
@@ -5769,6 +5794,10 @@ export class Lowerer {
    * (noteDeferredRefusal), one per statement. Warnings, so they leave with
    * the divergences and never fail the build. */
   readonly deferredRefusalWarnings: ScrDiagnostic[] = [];
+  /** SC6016 warnings: `value as unknown as T` where T is a layout type the
+   * value's static type cannot have (noteCastThroughUnknown), one per cast.
+   * The cast is still checked when it runs; the warning names it first. */
+  readonly castThroughUnknownWarnings: ScrDiagnostic[] = [];
   /** The sites whose receiver proof read `f.call(this, …)` or
    * `f.apply(this, …)` as the builtin (module-member-this.ts), each as
    * `start:end:file`: refused when the lowered program gives a function its
@@ -6055,6 +6084,9 @@ export class Lowerer {
   /** web-streams-dyn.ts's answer: whether a TypeScript source uses a web
    * stream operation the native streams lack; undefined until asked. */
   typedWebStreams: boolean | undefined = undefined;
+  /** web-streams-dyn.ts's answer: whether the program names CompressionStream
+   * or DecompressionStream; undefined until asked. */
+  compressionStreams: boolean | undefined = undefined;
   /** The first lifted function of each name (liftedFnNamed), for the first
    * liftedFnsIndexed entries of liftedFns, and the last of those entries.
    * liftedFns mostly grows; the unit journal cuts it back and record-links.ts
@@ -6472,6 +6504,7 @@ export class Lowerer {
       checkedTable("sharedModuleWarnings", () => this.sharedModuleWarnings.length),
       checkedTable("islandWorkerWarnings", () => this.islandWorkerWarnings.length),
       checkedTable("deferredRefusalWarnings", () => this.deferredRefusalWarnings.length),
+      checkedTable("castThroughUnknownWarnings", () => this.castThroughUnknownWarnings.length),
       // Node island call sites hold literals of the unit's IR that lowering's
       // end rewrites to module tree paths (nodeIslandRecord): a unit that adds
       // one lowers again rather than replaying a record.
@@ -6802,12 +6835,17 @@ export class Lowerer {
     // fixed for the program, like projectCheckJs.
     "dependencyJs",
     "parameterPropertiesFirst",
+    "legacyDecoratorFiles",
     "libraryCallbacks",
     "ffiBindingSymbols",
     "priorRetriedSymbols",
     "wholeSlotDegradation",
     "untypedConstructors",
     "dynamicClassValues",
+    // Element kinds the program gives a prototype: a program fact the
+    // setPrototypeOf lowerings record, and a replay of a unit records its
+    // kinds again (the set only grows with the program's own calls).
+    "prototypeArrayKinds",
     // Which refusals involve a held constructor (held-constructors.ts): a
     // count and its mark for the statement being lowered, and the answers
     // per named type, computed again when asked.
@@ -6949,6 +6987,7 @@ export class Lowerer {
     "nodeObjectValueReads",
     "namesWebStreamClass",
     "typedWebStreams",
+    "compressionStreams",
     "timeValueDateDecisions",
     "timeValueDateWrites",
     "dynamicOverloadAnswers",
@@ -7333,6 +7372,9 @@ export class Lowerer {
   /** The files whose classes assign parameter properties before their
    * field initializers run (LoadResult.parameterPropertiesFirst). */
   readonly parameterPropertiesFirst: ReadonlySet<string> | null;
+  /** The files whose tsconfig sets `experimentalDecorators`
+   * (LoadResult.typeWorld.legacyDecoratorFiles). */
+  readonly legacyDecoratorFiles: ReadonlySet<string> | null;
   private readonly checkedJsFiles = new Map<ts.SourceFile, boolean>();
   /** Outbound native bindings by their source-level ambient name. */
   readonly ffiImports: readonly IrFfiImport[];
@@ -7999,6 +8041,7 @@ export class Lowerer {
     this.projectCheckJs = mode.projectCheckJs ?? false;
     this.dependencyJs = mode.dependencyJs ?? null;
     this.parameterPropertiesFirst = mode.parameterPropertiesFirst ?? null;
+    this.legacyDecoratorFiles = mode.legacyDecoratorFiles ?? null;
     this.reachable = mode.reachable ?? null;
     this.remainder = mode.remainder ?? false;
     this.coverageReached = mode.coverageReached ?? false;
@@ -10666,11 +10709,23 @@ export class Lowerer {
       this.facts.npmStaticModule(ts.getSourceFileOfNode(node), spec, "require");
     if (!dep || dep.fileName.endsWith(".json")) return null;
     if (this.asyncInitFiles.has(dep)) {
-      this.unsupported(
-        "SC1090",
-        node,
-        `require() of '${spec}' (its ES-module graph uses top-level await; use import() instead)`,
-      );
+      // Node throws here: the require is synchronous and the graph is not.
+      const loc = locOf(node);
+      return {
+        kind: "exprStmt",
+        expr: nodeThrowExpr(
+          0,
+          "ERR_REQUIRE_ASYNC_MODULE",
+          "require() cannot be used on an ESM graph with top-level await. " +
+            "Use import() instead. To see where the top-level await comes from, " +
+            "use --experimental-print-required-tla." +
+            `\nRequired module: ${dep.fileName}` +
+            `\nRequire stack:\n- ${ts.getSourceFileOfNode(node).fileName}`,
+          VOID,
+          loc,
+        ),
+        loc,
+      };
     }
     const initName = this.initNameOf.get(dep);
     if (initName === undefined) return null;
@@ -15351,6 +15406,7 @@ export class Lowerer {
     // class, and reference lowering needs each class's rebindability
     // (valueGlobalId) settled before any body lowers.
     for (const info of this.classes.values()) analyzeClassDecoration(this, info);
+    validateLegacyMemberDispatch(this);
     this.prepareModuleInits(parts);
     prepareCjsModuleGraph(this, parts);
 
@@ -15662,6 +15718,9 @@ export class Lowerer {
     // exists, so every buffer in it is detachable from the start.
     const buffersMutable = this.buffersMutable && installMutableBuffersArm(functions);
     this.timedPass("installFetchBodyWebStreams", () => installFetchBodyWebStreams(this, functions));
+    this.timedPass("installCompressionStreamZlib", () =>
+      installCompressionStreamZlib(this, functions),
+    );
     this.timedPass("returnDispatchReceivers", () =>
       returnDispatchReceivers(this, functions, census),
     );
@@ -15774,6 +15833,9 @@ export class Lowerer {
             ...(this.usesLifetimeRegions ? { lifetimeRegions: true as const } : {}),
             ...(this.usesNodeIsland ? { nodeIsland: this.nodeIslandRecord() } : {}),
             ...(this.declBoundary ? { declBoundary: true as const } : {}),
+            ...(this.prototypeArrayKinds.size > 0
+              ? { prototypeOverrideArrayKinds: [...this.prototypeArrayKinds].sort((a, b) => a - b) }
+              : {}),
             ...(shapeOverlayFileNames().length > 0
               ? {
                   inferredFactFiles: shapeOverlayFileNames()
@@ -16178,6 +16240,7 @@ export class Lowerer {
       // lower the decoration calls, whose edges (decorator bodies, construct
       // thunks) reachable emit must see.
       for (const info of this.classes.values()) analyzeClassDecoration(this, info);
+      validateLegacyMemberDispatch(this);
       this.prepareModuleInits(parts);
       prepareCjsModuleGraph(this, parts);
     } catch (e) {
@@ -17481,6 +17544,24 @@ export class Lowerer {
       this.deferredRefusalWarnings.push(diag);
   }
 
+  /** SC6016 for a double assertion whose target layout the source's static
+   * type cannot have (castThroughUnknownDiag): once per cast. */
+  noteCastThroughUnknown(
+    node: ts.Node,
+    cast: string,
+    source: string,
+    from: string,
+    to: string,
+  ): void {
+    const diag = castThroughUnknownDiag(cast, source, from, to, locOf(node));
+    if (
+      !this.castThroughUnknownWarnings.some(
+        (w) => w.loc.file === diag.loc.file && w.loc.start === diag.loc.start,
+      )
+    )
+      this.castThroughUnknownWarnings.push(diag);
+  }
+
   /** SC6015 for the statement at `node`, which takes the record `target` out
    * of a generic instance's binding that holds `others` further layouts
    * (strandedInstanceArmDiag): once per site, whatever the number of
@@ -18379,6 +18460,26 @@ export class Lowerer {
   }
 
   private typeOfNode(node: ts.Node): ts.Type {
+    // An iteration marker's type is its source expression's: every loop
+    // dispatch decision (protocol, element extraction) follows the value
+    // actually iterated, while the checker types the binding from the
+    // marker's declaration.
+    if (ts.isCallExpression(node)) {
+      const callee = node.expression;
+      if (ts.isIdentifier(callee) && isDeclIterMarkerName(callee.text)) {
+        const source = declIterationSource(this, node);
+        if (source !== null) return this.checker.getTypeAtLocation(source);
+      }
+    }
+    // require.cache is the live cache object, not the Dict record the checker
+    // types it as: every use of it is checked-dynamic.
+    if (
+      ts.isPropertyAccessExpression(node) &&
+      !node.questionDotToken &&
+      node.name.text === "cache" &&
+      isCjsRequireGlobal(this, node.expression)
+    )
+      return this.checker.getAnyType();
     if (ts.isIdentifier(node)) {
       const inferred = inferredCollectionType(this, node);
       if (inferred) return inferred;
@@ -18722,6 +18823,34 @@ export class Lowerer {
     }
   }
 
+  /** mapTypeOf for the TARGET TYPE of a static assertion: a record
+   * intersection with a bound type parameter keeps the bound layout, because
+   * the assertion does not make the parameter's values carry the members it
+   * names (type-mapper.ts, TypeMapperCtx.assertionTarget). */
+  mapAssertionTargetType(t: ts.Type): IrType | null {
+    // Outside a generic instantiation no bound parameter can make the
+    // mapping differ, so the ordinary path (and its memo) answers.
+    if (this.typeParamBindings === null && this.typeParamTsBindings === null)
+      return this.mapTypeOf(t);
+    // A BINDING-SCOPED answer must not be stored under the key a
+    // non-assertion mapping of the same checker type uses: the asserted
+    // layout (the bound one) is right here and wrong there. Map with a
+    // throwaway memo for this call; shapes and unions intern globally, so
+    // type identity is unchanged.
+    const memo = new Map<number, IrType>();
+    return this.mapTypeWithContext(t, {
+      ...this.typeCtx,
+      assertionTarget: true as const,
+      typeMemo: memo,
+      typeMemoFor: () => memo,
+    });
+  }
+  private mapTypeWithContext(t: ts.Type, ctx: TypeMapperCtx): IrType | null {
+    const mapped = mapType(t, ctx);
+    return mapped === null || mapped.kind === "func"
+      ? (jsArgumentsFunctionType(this, t) ?? mapped)
+      : mapped;
+  }
   /** mapType with this Lowerer's registries and (while a generic instance
    * body lowers) type-parameter bindings threaded through. A supplied mapper
    * retains interface-view substitutions while sharing ABI normalization. */
@@ -23318,8 +23447,8 @@ export class Lowerer {
   /** A function-scope local bound to NO ts.Symbol — the hidden ABI slot of a
    * defaulted parameter (the parameter's symbol binds to the separately-
    * declared body local; nothing in the source can name this one). */
-  declareHiddenLocal(name: string, type: IrType): IrLocal {
-    return declareContextLocal(this.ctx, name, type, false, undefined, undefined);
+  declareHiddenLocal(name: string, type: IrType, mutable = false): IrLocal {
+    return declareContextLocal(this.ctx, name, type, mutable, undefined, undefined);
   }
 
   /** Read a hidden slot from the current function: the slot itself when it
@@ -25189,6 +25318,7 @@ export class Lowerer {
       lowerNetAddressNew(this, expr) ??
       lowerMimeNew(this, expr) ??
       lowerSqliteNew(this, expr) ??
+      lowerSourceMapNew(this, expr) ??
       lowerPerfNew(this, expr) ??
       lowerWebStreamNew(this, expr) ??
       lowerStaticReadableStreamNew(this, expr) ??
@@ -26228,6 +26358,8 @@ export class Lowerer {
     if (module === "module" && member === "builtinModules") return this.builtinModulesValue(loc);
     if (module === "module" && member === "Module")
       return { kind: "libCall", fn: "module.ctor", args: [], type: DYN, loc };
+    if (module === "module" && member === "constants")
+      return { kind: "libCall", fn: "module.compileCacheConstants", args: [], type: DYN, loc };
     if (module === "http" && member === "METHODS")
       return { kind: "libCall", fn: "http.methods", args: [], type: arrayOf(STRING), loc };
     if ((module === "http" || module === "https") && member === "globalAgent")
@@ -26544,8 +26676,8 @@ export class Lowerer {
     return lowerExecSyncCall(this, expr, shell, loc);
   }
 
-  envToPairsHelper(shapeId: string, loc: SrcLoc): string | null {
-    return lowerEnvToPairsHelper(this, shapeId, loc);
+  envToPairsHelper(shapeId: string, loc: SrcLoc, markArrays = false): string | null {
+    return lowerEnvToPairsHelper(this, shapeId, loc, markArrays);
   }
 
   lowerJsonMethodCall(call: ts.CallExpression, access: ts.PropertyAccessExpression): IrExpr | null {

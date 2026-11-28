@@ -37,7 +37,7 @@
 
 #include <string.h>
 
-#if !defined(_WIN32) && !defined(__wasi__)
+#if !defined(__wasi__)
 
 /* process.on (0), once (1), prependListener (2), removeListener (3) or
  * prependOnceListener (4) of a native listener. A JavaScript throw (a `newListener` listener's) is left

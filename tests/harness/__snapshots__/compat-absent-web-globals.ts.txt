@@ -1,27 +1,6 @@
-compat-absent-web-globals.ts:7:20 - error SC0001: Cannot find name 'WebSocket'. Did you mean 'socket'?
+compat-absent-web-globals.ts:9:21 - error SC0001: Cannot find name 'URLPattern'. Did you mean 'pattern'?
 
-  6 | // does not have the name at all.)
-  7 | const socket = new WebSocket("ws://localhost:1");
-    |                    ^~~~~~~~~
-  8 | socket.close();
-
-compat-absent-web-globals.ts:10:21 - error SC0001: Cannot find name 'URLPattern'. Did you mean 'pattern'?
-
-   9 | 
-  10 | const pattern = new URLPattern({ pathname: "/books/:id" });
+   8 | 
+   9 | const pattern = new URLPattern({ pathname: "/books/:id" });
      |                     ^~~~~~~~~~
-  11 | console.log(pattern.test("http://localhost/books/1"));
-
-compat-absent-web-globals.ts:13:18 - error SC0001: Cannot find name 'CompressionStream'.
-
-  12 | 
-  13 | const gzip = new CompressionStream("gzip");
-     |                  ^~~~~~~~~~~~~~~~~
-  14 | const gunzip = new DecompressionStream("gzip");
-
-compat-absent-web-globals.ts:14:20 - error SC0001: Cannot find name 'DecompressionStream'.
-
-  13 | const gzip = new CompressionStream("gzip");
-  14 | const gunzip = new DecompressionStream("gzip");
-     |                    ^~~~~~~~~~~~~~~~~~~
-  15 | console.log(typeof gzip.readable, typeof gunzip.writable);
+  10 | console.log(pattern.test("http://localhost/books/1"));

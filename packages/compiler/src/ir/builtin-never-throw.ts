@@ -31,6 +31,7 @@ import { promiseNeverThrow } from "./builtin-never-throw/promise.js";
 import { readableNeverThrow } from "./builtin-never-throw/readable.js";
 import { recordNeverThrow } from "./builtin-never-throw/record.js";
 import { seaNeverThrow } from "./builtin-never-throw/sea.js";
+import { sourceMapNeverThrow } from "./builtin-never-throw/sourceMap.js";
 import { sqliteNeverThrow } from "./builtin-never-throw/sqlite.js";
 import { statWatcherNeverThrow } from "./builtin-never-throw/statWatcher.js";
 import { streamNeverThrow } from "./builtin-never-throw/stream.js";
@@ -44,6 +45,7 @@ import { watchEventsNeverThrow } from "./builtin-never-throw/watchEvents.js";
 import { watcherNeverThrow } from "./builtin-never-throw/watcher.js";
 import { weakMapNeverThrow } from "./builtin-never-throw/weakMap.js";
 import { weakRefNeverThrow } from "./builtin-never-throw/weakRef.js";
+import { websocketNeverThrow } from "./builtin-never-throw/websocket.js";
 import { webstreamNeverThrow } from "./builtin-never-throw/webstream.js";
 import { workerNeverThrow } from "./builtin-never-throw/worker.js";
 import { zlibNeverThrow } from "./builtin-never-throw/zlib.js";
@@ -92,6 +94,7 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   ...readableNeverThrow,
   ...recordNeverThrow,
   ...seaNeverThrow,
+  ...sourceMapNeverThrow,
   ...sqliteNeverThrow,
   ...statWatcherNeverThrow,
   ...streamNeverThrow,
@@ -105,6 +108,7 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   ...watcherNeverThrow,
   ...weakMapNeverThrow,
   ...weakRefNeverThrow,
+  ...websocketNeverThrow,
   ...webstreamNeverThrow,
   ...workerNeverThrow,
   ...zlibNeverThrow,

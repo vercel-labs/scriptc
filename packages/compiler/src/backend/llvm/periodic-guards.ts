@@ -9,6 +9,7 @@
  * not what it computes. */
 import type { IrExpr, IrStmt } from "../../ir/ir.js";
 import { everyExprChild, everyStmtChild } from "../../ir/traverse.js";
+import { partIncludes, type TextPart } from "../../text-parts.js";
 
 /** The most IR nodes a loop body may have, times the period, for the loop
  * to be unrolled: a larger body gains less than its unrolled copies cost. */
@@ -82,11 +83,12 @@ export function loopUnrollAttachment(period: number): string {
 }
 
 /** The loop ID nodes that the module's text `lines` refer to. */
-export function loopUnrollMetadata(lines: readonly string[]): string[] {
+export function loopUnrollMetadata(lines: readonly TextPart[]): string[] {
   const used = new Set<number>();
-  for (const line of lines) {
-    if (!line.includes("!llvm.loop !")) continue;
-    for (const [period, id] of loopIds) if (line.includes(`!llvm.loop !${id}`)) used.add(period);
+  for (const part of lines) {
+    if (!partIncludes(part, "!llvm.loop !")) continue;
+    for (const [period, id] of loopIds)
+      if (partIncludes(part, `!llvm.loop !${id}`)) used.add(period);
   }
   return [...used]
     .sort((a, b) => a - b)

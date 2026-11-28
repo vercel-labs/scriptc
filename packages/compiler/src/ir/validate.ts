@@ -6211,6 +6211,8 @@ function validateFunction(
       e.fn === "stream.duplexFromGen" ||
       e.fn === "stream.duplexFromGenNoSource" ||
       e.fn === "stream.duplexFromDyn" ||
+      e.fn === "stream.composeStageDyn" ||
+      e.fn === "stream.composeTailDyn" ||
       e.fn === "stream.duplexifyReadable" ||
       e.fn === "stream.duplexifyWritable" ||
       e.fn === "stream.duplexifyPair" ||
@@ -6312,6 +6314,8 @@ function validateFunction(
         e.fn === "stream.duplexFromGen" ||
         e.fn === "stream.duplexFromGenNoSource" ||
         e.fn === "stream.duplexFromDyn" ||
+        e.fn === "stream.composeStageDyn" ||
+        e.fn === "stream.composeTailDyn" ||
         e.fn === "stream.duplexFromAsyncFn" ||
         e.fn === "stream.duplexFromAsyncFnNoSource" ||
         e.fn === "stream.duplexFromGenSignal" ||

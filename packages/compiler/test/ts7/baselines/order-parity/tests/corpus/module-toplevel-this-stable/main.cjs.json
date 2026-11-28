@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/module-toplevel-this-stable/main.cjs"
+ ],
+ "diags": []
+}

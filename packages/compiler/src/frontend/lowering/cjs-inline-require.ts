@@ -658,8 +658,7 @@ export function cjsRuntimeWholeExportValueWritesOf(
     const assigns =
       operator >= ts.SyntaxKind.FirstAssignment && operator <= ts.SyntaxKind.LastAssignment;
     const memberThroughModuleExports =
-      ts.isPropertyAccessExpression(node.left) &&
-      isCjsModuleExports(lowerer, node.left.expression);
+      ts.isPropertyAccessExpression(node.left) && isCjsModuleExports(lowerer, node.left.expression);
     if (
       assigns &&
       !isModuleExportsAccess(node.left) &&

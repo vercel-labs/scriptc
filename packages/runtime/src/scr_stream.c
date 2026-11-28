@@ -809,17 +809,23 @@ static void scr_stream_emit_stream(ScrStream *s, const char *name, ScrStream *pa
      * program holds for the source (a comparison against it holds, capsule
      * to capsule by stream identity), and its members read live through the
      * stream's ref hooks instead of freezing at the emission. */
-    char key[64];
-    int key_len =
+    /* The longest class name the runtime records is 63 bytes (BcsRec.cls in
+     * scr_dyn_builtin_stream.c), so the key holds the prefix and that name.
+     * snprintf answers the length it WOULD write, which is longer than the
+     * buffer when a caller names a longer class: the answer is clamped
+     * before it is used as a length. */
+    char key[80];
+    int wanted =
         snprintf(key, sizeof key, "object:%%%s", payload->cls != NULL ? payload->cls : "Readable");
+    size_t key_len =
+        wanted < 0 ? 0 : (size_t)wanted < sizeof key ? (size_t)wanted : sizeof key - 1;
     /* The capsule keeps the key pointer it is given, so the stack buffer is
      * interned: a listener that keeps the stream value reads a key that
      * outlives this frame (a later pipe of the same stream compares it). */
-    const char *interned =
-        key_len > 0 ? scr_dyn_type_key_intern(key, (size_t)key_len) : key;
+    const char *interned = key_len > 0 ? scr_dyn_type_key_intern(key, key_len) : key;
     ScrDyn *arg = scr_dyn_new_typed_ref_traced(
-        payload, scr_stream_retain_v, scr_stream_release_v, interned,
-        key_len > 0 ? (size_t)key_len : 0, scr_stream_ref_view, NULL);
+        payload, scr_stream_retain_v, scr_stream_release_v, interned, key_len,
+        scr_stream_ref_view, NULL);
     bool had = scr_emitter_emit_mixed(em, n, &arg, 1, payload);
     scr_dyn_release(arg);
     (void)had;
@@ -5030,7 +5036,26 @@ static int scr_pipe_dest_dyn_kind(const ScrPipeStages *fs, ScrDyn *r, void **out
     scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
     return -1;
   }
-  if (scr_exc_pending() || scr_stream_dyn_stage_returned_stream(r)) return -1;
+  /* A native stream the destination function answered: Node pumps its
+   * readable side (a Writable-only stream is not async iterable, so it
+   * throws ERR_INVALID_RETURN_VALUE). */
+  if (scr_exc_pending()) return -1;
+  ScrStream *native = scr_stream_of_handle(r);
+  if (!native) native = scr_stream_boxed(r);
+  if (native) {
+    bool readable = native->st->has_r;
+    scr_stream_release(native);
+    if (!readable) {
+      if (!scr_exc_pending())
+        scr_stream_throw_invalid_return("AsyncIterable or Promise", "destination", r);
+      return -1;
+    }
+    ScrGen *g = ((ScrPipeIterFn)fs->box->fn)(fs->box, scr_dyn_retain((ScrDyn *)r));
+    if (!g) return -1;
+    *out = g;
+    return SCR_PIPE_DYN_ITER;
+  }
+  if (scr_exc_pending()) return -1;
   ScrDyn *read = NULL;
   int kind = scr_dyn_iterable_kind(r);
   if (kind < 0) return -1;
@@ -10351,14 +10376,14 @@ static void scr_stream_throw_web_stage(void) {
   scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
 }
 
-/* A native stream returned by an untyped pipeline function, which Node
- * pipes or passes on as the stream: throws the not-supported Error. */
+/* A native stream returned by an untyped pipeline source function, which
+ * Node pumps as the source: throws the not-supported Error. */
 static bool scr_stream_dyn_stage_returned_stream(const ScrDyn *value) {
   ScrStream *stream = scr_stream_of_handle(value);
   if (!stream) stream = scr_stream_boxed(value);
   if (!stream) return false;
   scr_stream_release(stream);
-  static const char msg[] = "pipeline function stages that return a stream are not supported yet";
+  static const char msg[] = "a pipeline source function that returns a stream is not supported yet";
   scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
   return true;
 }
@@ -10393,11 +10418,24 @@ static void scr_stream_throw_invalid_return_class(const char *expected, const ch
 }
 
 /* An untyped pipeline function stage's result before the last stage
- * (pipelineImpl's `isIterable(ret, true)` check): an async iterable
- * answers itself (+1); other values throw ERR_INVALID_RETURN_VALUE naming
- * the stage, as `label` ("transform[i]") does. */
+ * (pipelineImpl's `isIterable(ret, true)` check): an async iterable or a
+ * native readable stream answers itself (+1); other values throw
+ * ERR_INVALID_RETURN_VALUE naming the stage, as `label` ("transform[i]")
+ * does. */
 ScrDyn *scr_stream_dyn_transform_result(const ScrDyn *value, const ScrStr *label) {
-  if (scr_stream_dyn_stage_returned_stream(value)) return NULL;
+  /* A native readable stream is async iterable in Node, so the wrapper
+   * iterates it like any other; a Writable-only stream is not. */
+  ScrStream *native = scr_stream_of_handle(value);
+  if (!native) native = scr_stream_boxed(value);
+  if (native) {
+    bool readable = native->st->has_r;
+    scr_stream_release(native);
+    if (!readable) {
+      if (!scr_exc_pending()) scr_stream_throw_invalid_return("AsyncIterable", label->data, value);
+      return NULL;
+    }
+    return scr_dyn_retain((ScrDyn *)value);
+  }
   int kind = scr_dyn_iterable_kind(value);
   if (kind < 0) return NULL;
   if (kind != 2) {

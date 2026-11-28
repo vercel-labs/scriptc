@@ -64,6 +64,10 @@ class Ts7NamedPipeIo implements Ts7WireIo {
   private closed = false;
   private spawnError: Error | undefined;
 
+  get pid(): number | undefined {
+    return this.child.pid;
+  }
+
   constructor(executable: string, args: string[]) {
     const pipe = `\\\\.\\pipe\\scriptc-ts7-${process.pid}-${randomUUID()}`;
     this.child = spawn(executable, [...args, "--pipe", pipe], {

@@ -249,6 +249,10 @@ export const dynSignatures = defineLibFnSignatures({
   "dyn.numberConstructor": { argTypes: [DYN], result: F64 },
   "dyn.bigintConstructor": { argTypes: [DYN], result: BIGINT_T },
   "dyn.toNumberCoerce": { argTypes: [DYN], result: F64 },
+  /** ToNumber where the undefined value is NaN and a present number takes
+   * the inline jsval unbox (js.toNumberOrNaN): a non-null asserted
+   * dictionary read consumed numerically. Borrowed dyn; f64 result. */
+  "dyn.toNumberOrNaN": { argTypes: [DYN], result: F64 },
   "dyn.add": { argTypes: [DYN, DYN], result: DYN },
   "dyn.arithmetic": { argTypes: [DYN, DYN, STRING], result: DYN },
   "dyn.compare": { argTypes: [DYN, DYN, STRING], result: BOOL },

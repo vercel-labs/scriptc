@@ -2704,16 +2704,15 @@ static SCR_TL void *scr_main_fake_stack; /* fake-stack slot for the main context
  * single-threaded, so one lazy conversion covers the process). Also the
  * loop-home keeper: whenever main is the caller this IS scr_loop_ctx's
  * value — assigned at the conversion so parked fibers can always switch
- * back to it. */
+ * back to it. The island runtime converts the same thread for Node's stack
+ * (scr_node_island.c), so the thread may already be a fiber. */
 static void *scr_win_self(void) {
-  static bool converted = false;
-  if (!converted) {
-    scr_loop_ctx = ConvertThreadToFiber(NULL);
+  if (scr_loop_ctx == NULL) {
+    scr_loop_ctx = IsThreadAFiber() ? GetCurrentFiber() : ConvertThreadToFiber(NULL);
     if (scr_loop_ctx == NULL) {
       fputs("scriptc: ConvertThreadToFiber failed\n", stderr);
       abort();
     }
-    converted = true;
   }
   return GetCurrentFiber();
 }

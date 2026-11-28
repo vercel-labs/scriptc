@@ -2,6 +2,7 @@ import { ts7Diagnostic, type Ts7Diagnostic } from "./diagnostic.js";
 import type { SourceFile } from "./ast-types.js";
 import { AstFile, AstNode } from "./ast-node.js";
 import { Ts7RpcClient } from "./rpc-client.js";
+import { Ts7FrameLimitError } from "./rpc-wire.js";
 import { SemanticChecker } from "./semantic-checker.js";
 import { SemanticSnapshot, type SemanticDocument } from "./semantic-model.js";
 import { parseSemanticJson } from "./semantic-json.js";
@@ -572,4 +573,50 @@ export class Ts7SessionProgram {
     this.sources.clear();
     this.metadata.clear();
   }
+}
+
+/** Files named in one getDiagnosticsOfCheckedFiles request. The answer is
+ * one frame, and a large program's answer can exceed the channel limit, so
+ * the files are asked for in batches of this size. */
+export const DIAGNOSTIC_FILES_PER_REQUEST = 64;
+
+/** checkedFileDiagnosticData for any number of files: requests batches of
+ * DIAGNOSTIC_FILES_PER_REQUEST and merges the per-file answers in the
+ * requested order. A batch that still overflows is halved and retried down
+ * to one file. Global diagnostics, which a subset's check may repeat, are
+ * reported once. */
+export function checkedFileDiagnosticDataBatched(
+  program: Ts7SessionProgram,
+  files: readonly string[],
+): Ts7CheckedFileDiagnosticData | null {
+  if (files.length === 0) return program.checkedFileDiagnosticData(files);
+  const out: Ts7DiagnosticData[][] = new Array(files.length);
+  const seen = new Set<string>();
+  const global: Ts7DiagnosticData[] = [];
+  for (let start = 0; start < files.length;) {
+    let end = Math.min(start + DIAGNOSTIC_FILES_PER_REQUEST, files.length);
+    let answer: Ts7CheckedFileDiagnosticData | null;
+    for (;;) {
+      try {
+        answer = program.checkedFileDiagnosticData(files.slice(start, end));
+        break;
+      } catch (error) {
+        // A single file's own answer can still overflow; batching cannot
+        // shrink it further, so that refusal stands.
+        if (!(error instanceof Ts7FrameLimitError) || end - start === 1) throw error;
+        end = start + Math.max(1, Math.floor((end - start) / 2));
+      }
+    }
+    if (answer === null) return null;
+    for (let index = 0; index < end - start; index++)
+      out[start + index] = answer.files[index] ?? [];
+    for (const diagnostic of answer.global) {
+      const key = `${diagnostic.fileName ?? ""}:${diagnostic.pos}:${diagnostic.end}:${diagnostic.code}:${diagnostic.category}:${diagnostic.text}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      global.push(diagnostic);
+    }
+    start = end;
+  }
+  return { files: out, global };
 }

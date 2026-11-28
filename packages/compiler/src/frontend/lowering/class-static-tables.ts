@@ -22,6 +22,7 @@ import {
   type ClassInfo,
 } from "./lower-classes.js";
 import { classPrototypeData } from "./class-prototypes.js";
+import { classSymbolKeyOf } from "./symbol-fields.js";
 import {
   reflectedClassStaticMethodValueForTable,
   staticTableMemberRefused,
@@ -103,6 +104,10 @@ function ownStaticsRepresentable(lowerer: Lowerer, info: ClassInfo): boolean {
       // A symbol or run-time key defines a property no source name reads,
       // and the table could not list it: reflectively it would go missing.
       if (classMemberNameOf(lowerer, name) === null) return false;
+      // A symbol key has no string name the table could list; listing its
+      // `%symbol:` spelling would invent a public STRING property on the
+      // class, so the class keeps its runtime fence instead.
+      if (classSymbolKeyOf(lowerer, name.expression) !== null) return false;
       // A computed field's value has no native storage the table could
       // answer from (`static ["#x"] = v` is a public key, not the private
       // `#x`): the class keeps its fence rather than list it as undefined.

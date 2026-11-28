@@ -83,6 +83,8 @@ import {
   symbolFieldTarget,
 } from "../lower-exprs.js";
 import { hasRuntimeStatics } from "../class-runtime-statics.js";
+import { lowerClassStaticRead } from "../lower-classes.js";
+import { classSymbolKeyOf } from "../symbol-fields.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
 import {
   assertedMemberRead,
@@ -443,6 +445,18 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
     }
     const classInfo =
       receiver.type.kind === "classval" ? lowerer.classes.get(receiver.type.className) : undefined;
+    // A symbol-keyed STATIC member read through an exact class value
+    // (`C[kError]`): the declaration stores under the same `%symbol:` name
+    // a field of that key uses, beside the named statics, so the read is
+    // the named static read.
+    if (classInfo !== undefined) {
+      const keyInfo = classSymbolKeyOf(lowerer, expr.argumentExpression);
+      const staticRead =
+        keyInfo === null
+          ? null
+          : lowerClassStaticRead(lowerer, classInfo, keyInfo.fieldName, expr.expression, expr);
+      if (staticRead !== null) return lowerer.maybeNarrow(staticRead, expr);
+    }
     if (
       receiver.type.kind === "func" ||
       receiver.type.kind === "generator" ||

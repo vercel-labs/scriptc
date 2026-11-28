@@ -25,6 +25,30 @@ function constantSymbolDescription(
 ): string | null {
   while (ts.isParenthesizedExpression(expression)) expression = expression.expression;
   if (ts.isStringLiteralLike(expression)) return expression.text;
+  // A template of constants spells its own description (the AI SDK's
+  // `Symbol.for(\`vercel.ai.gateway.error.${name}\`)`): fold every part
+  // through the same rule. Each part folds with its own `seen` copy, so
+  // the same constant may appear in more than one substitution.
+  if (ts.isTemplateExpression(expression)) {
+    let out = expression.head.text;
+    for (const span of expression.templateSpans.nodes) {
+      const part = constantSymbolDescription(lowerer, span.expression, new Set(seen));
+      if (part === null) return null;
+      out += part + span.literal.text;
+    }
+    return out;
+  }
+  // A `+` of two constant strings is their concatenation. Numbers would
+  // need ToString's own spelling, so only strings fold here.
+  if (
+    ts.isBinaryExpression(expression) &&
+    expression.operatorToken.kind === ts.SyntaxKind.PlusToken
+  ) {
+    const left = constantSymbolDescription(lowerer, expression.left, new Set(seen));
+    if (left === null) return null;
+    const right = constantSymbolDescription(lowerer, expression.right, new Set(seen));
+    return right === null ? null : left + right;
+  }
   if (!ts.isIdentifier(expression) && !ts.isPropertyAccessExpression(expression)) return null;
   const name = ts.isPropertyAccessExpression(expression) ? expression.name : expression;
   if (!ts.isIdentifier(name)) return null;

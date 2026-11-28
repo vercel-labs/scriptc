@@ -3,6 +3,7 @@ import { lowerHistogramStatsMethodCall } from "./builtins/histogram-stats.js";
 import { isCheckerPanic } from "../../diagnostics/diagnostic.js";
 import { reboundRequireBindingOf } from "./rebindable-requires.js";
 import { voidTruthinessNeedsRuntimeValue } from "../tsc-codes.js";
+import { awaitDynThenable } from "./thenables.js";
 import { checkedIterableSpread } from "./checked-iterable-spread.js";
 import { mayReplacePrototype } from "./class-method-mutations.js";
 import { lowerIteratorFromDyn } from "./iterator-prototype.js";
@@ -659,6 +660,42 @@ function staticallyStringPattern(lowerer: Lowerer, pattern: ts.Expression | unde
   return (
     type !== null && (type.kind === "string" || type.kind === "undefinedT" || type.kind === "void")
   );
+}
+
+/** `await call` whose awaited result a truthiness test reads and whose
+ * call the checker types void (tsc-codes.ts voidTruthinessAwaitedCall):
+ * Node awaits the value the call answered. The call runs through the
+ * checked-dynamic invocation and the await adopts that value, so the test
+ * reads the value Node reads. Null for every other await. */
+export function lowerAwaitedVoidTruthinessCall(
+  lowerer: Lowerer,
+  expr: ts.AwaitExpression,
+  loc: SrcLoc,
+): IrExpr | null {
+  // The diagnostic can sit on an enclosing parenthesized expression
+  // (`(await obj.f()) || fallback`), so the site may be the await itself or
+  // one of the parentheses around it.
+  let admitted = lowerer.opinionAt(expr, 1345);
+  if (!admitted) {
+    let parent: ts.Node | undefined = expr.parent;
+    while (parent !== undefined && ts.isParenthesizedExpression(parent)) {
+      if (lowerer.opinionAtNode(parent, 1345)) {
+        admitted = true;
+        break;
+      }
+      parent = parent.parent;
+    }
+  }
+  if (!admitted) return null;
+  let inner: ts.Expression = expr.expression;
+  while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
+  if (!ts.isCallExpression(inner)) return null;
+  const call = lowerVoidTruthinessCall(lowerer, inner, true);
+  if (call === null) return null;
+  // Node's await is PromiseResolve over the value the call answered, so a
+  // lazy thenable the callee returns has its then called: adopt it here,
+  // as the typed and checked-dynamic awaits do.
+  return awaitDynThenable(lowerer, call, loc);
 }
 
 /** A void-typed call whose result a truthiness test reads (preflight

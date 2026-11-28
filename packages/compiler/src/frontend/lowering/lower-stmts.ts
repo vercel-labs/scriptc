@@ -3413,13 +3413,58 @@ function lowerVarDeclarator(
   if (
     decl.initializer !== undefined &&
     ts.isIdentifier(decl.name) &&
-    voidDeclaredDynCall(lowerer, decl.initializer)
+    (voidDeclaredDynCall(lowerer, decl.initializer) ||
+      initializerAnswersCheckedDynamic(lowerer, decl.initializer))
   ) {
     const symbol = lowerer.resolveValueSymbol(decl.name);
-    if (symbol !== null) lowerer.runtimeOptionalBindingTypes.set(symbol, DYN);
+    if (symbol !== null) {
+      lowerer.runtimeOptionalBindingTypes.set(symbol, DYN);
+      // Read as the storage holds it: the truthiness expression's value is
+      // checked-dynamic, not the checker's declared type.
+      if (initializerAnswersCheckedDynamic(lowerer, decl.initializer))
+        lowerer.jsWidenedBindings.add(symbol);
+    }
   }
   const lowered = lowerer.lowerVarDecl(decl, isLet);
   return lowered ? [lowered] : [];
+}
+
+/** Whether `expr` answers a checked-dynamic value because a truthiness
+ * test inside it reads a void-typed call's runtime value (tsc-codes.ts
+ * TS1345): the operator's result is the dyn value, so a binding initialized
+ * from it must store dyn rather than coerce to the checker's declared type
+ * (a plain object answer would throw a string conversion). */
+function initializerAnswersCheckedDynamic(lowerer: Lowerer, expr: ts.Expression): boolean {
+  let e: ts.Expression = expr;
+  for (;;) {
+    if (ts.isParenthesizedExpression(e) || ts.isNonNullExpression(e) || ts.isAsExpression(e)) {
+      e = e.expression;
+      continue;
+    }
+    break;
+  }
+  if (
+    ts.isBinaryExpression(e) &&
+    (e.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
+      e.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken)
+  ) {
+    return operandAnswersCheckedDynamic(lowerer, e.left) ||
+      operandAnswersCheckedDynamic(lowerer, e.right)
+      ? true
+      : initializerAnswersCheckedDynamic(lowerer, e.left) ||
+          initializerAnswersCheckedDynamic(lowerer, e.right);
+  }
+  return operandAnswersCheckedDynamic(lowerer, e);
+}
+
+/** Whether an operand of a logical pair is a void-typed call whose result
+ * the 1345 opinion reads at run time (the awaited or direct form). */
+function operandAnswersCheckedDynamic(lowerer: Lowerer, expr: ts.Expression): boolean {
+  let e: ts.Expression = expr;
+  while (ts.isParenthesizedExpression(e) || ts.isNonNullExpression(e) || ts.isAsExpression(e))
+    e = e.expression;
+  if (!ts.isCallExpression(e) && !ts.isAwaitExpression(e)) return false;
+  return lowerer.opinionAt(expr, 1345);
 }
 
 /** Whether `expr` is a call through a checked-dynamic receiver whose

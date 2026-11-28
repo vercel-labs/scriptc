@@ -9818,6 +9818,8 @@ static void scr_ipc_closed_send_tick(void) {
   }
 }
 
+static void scr_ipc_closed_sends_teardown(void);
+
 static void scr_ipc_queue_closed_send(ScrStr *send_error, ScrClosure *cb,
                                       ScrIpcSendFn fn) {
   ScrIpcClosedSend *items =
@@ -9831,6 +9833,13 @@ static void scr_ipc_queue_closed_send(ScrStr *send_error, ScrClosure *cb,
   scr_str_release(message);
   scr_error_set_code(error, "ERR_IPC_CHANNEL_CLOSED");
   items[scr_ipc_closed_n++] = (ScrIpcClosedSend){cb, fn, error, scr_als_capture()};
+  /* The teardown hook registers on first use rather than from a unit
+   * constructor: a constructor is a link root, and it would keep this
+   * unit's closed-send queue reachable in every program that links the
+   * runtime pack (the tree-shaking contract). */
+  if (scr_raw_tick_teardown_hook == NULL) {
+    scr_raw_tick_teardown_hook = scr_ipc_closed_sends_teardown;
+  }
   /* One tick per send, FIFO among the ticks the program queues itself. */
   scr_next_tick_raw(&scr_ipc_closed_send_tick);
 }
@@ -9848,10 +9857,9 @@ static void scr_ipc_closed_sends_teardown(void) {
   scr_ipc_closed_n = 0;
   free(scr_ipc_closed_sends);
   scr_ipc_closed_sends = NULL;
-}
-
-__attribute__((constructor)) static void scr_ipc_install_closed_send_teardown(void) {
-  scr_raw_tick_teardown_hook = scr_ipc_closed_sends_teardown;
+  if (scr_raw_tick_teardown_hook == scr_ipc_closed_sends_teardown) {
+    scr_raw_tick_teardown_hook = NULL;
+  }
 }
 
 static bool scr_ipc_send(ScrIpc *ipc, ScrStr *json, ScrClosure *cb,

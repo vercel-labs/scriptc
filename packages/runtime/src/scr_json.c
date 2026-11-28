@@ -6637,6 +6637,53 @@ bool scr_jb_try_record_source(ScrJsonBuf *b, void *rec,
   return true;
 }
 
+/* Type keys must outlive the capsules that name them: a typed reference
+ * stores the pointer it is given, and program keys are string constants. A
+ * key built on the stack — the stream unit's class-named pipe/event capsule —
+ * is copied here once per distinct key and owned by this table, so the
+ * capsule's key stays valid after the frame that spelled it is gone. */
+typedef struct {
+  char *key;
+  size_t len;
+} ScrKeyIntern;
+static SCR_TL ScrKeyIntern *scr_key_interns;
+static SCR_TL size_t scr_key_intern_count, scr_key_intern_capacity;
+static SCR_TL bool scr_key_intern_exit_registered;
+
+static void scr_key_intern_cleanup(void) {
+  for (size_t i = 0; i < scr_key_intern_count; i++) free(scr_key_interns[i].key);
+  free(scr_key_interns);
+  scr_key_interns = NULL;
+  scr_key_intern_count = 0;
+  scr_key_intern_capacity = 0;
+  scr_key_intern_exit_registered = false;
+}
+
+const char *scr_dyn_type_key_intern(const char *key, size_t len) {
+  for (size_t i = 0; i < scr_key_intern_count; i++)
+    if (scr_key_interns[i].len == len && !memcmp(scr_key_interns[i].key, key, len))
+      return scr_key_interns[i].key;
+  if (scr_key_intern_count == scr_key_intern_capacity) {
+    size_t capacity = scr_key_intern_capacity ? scr_key_intern_capacity * 2 : 8;
+    ScrKeyIntern *grown = realloc(scr_key_interns, capacity * sizeof *grown);
+    if (!grown) scr_json_oom();
+    scr_key_interns = grown;
+    scr_key_intern_capacity = capacity;
+    if (!scr_key_intern_exit_registered) {
+      scr_key_intern_exit_registered = true;
+      scr_atexit(scr_key_intern_cleanup);
+    }
+  }
+  char *copy = malloc(len + 1);
+  if (!copy) scr_json_oom();
+  memcpy(copy, key, len);
+  copy[len] = '\0';
+  scr_key_interns[scr_key_intern_count].key = copy;
+  scr_key_interns[scr_key_intern_count].len = len;
+  scr_key_intern_count++;
+  return copy;
+}
+
 /* The flags are written with the rest of the capsule: setting a flag bit
  * afterwards is a byte store that the next read of the flag word (the
  * live-view bind right after construction) cannot forward from. */
@@ -10168,6 +10215,13 @@ static const char *scr_dyn_specific_type_impl(const ScrDyn *cb, char *detail, si
   case SCR_DYN_PROMISE: d = "an instance of Promise"; break;
 
   case SCR_DYN_TYPED_REF: {
+    /* A generator object has no `constructor` property, so Node's
+     * determineSpecificType falls back to inspect(value, { depth: -1 }),
+     * which tags it "[Generator]" (the async form "[AsyncGenerator]"). */
+    if (scr_dyn_generator(cb)) {
+      d = cb->v.typed_ref.type_key[0] == 'a' ? "Object [AsyncGenerator] {}" : "Object [Generator] {}";
+      break;
+    }
     /* A class instance's view has no prototype; Node names its class. */
     const ScrStr *class_name = scr_dyn_typed_ref_class_name(cb);
     if (class_name && class_name->len) {

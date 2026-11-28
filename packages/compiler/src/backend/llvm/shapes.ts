@@ -4,6 +4,7 @@
  * and participates in the runtime allocation audit. */
 import type { HeapCensus } from "./heap-census.js";
 import type { IrClassDef, IrModule, IrRecordLink, IrRecordShape, IrType } from "../../ir/ir.js";
+import { bytesOfText, type TextPart, textOfPart } from "../../text-parts.js";
 import {
   isIdentityCollectionKey,
   isRefCounted,
@@ -878,9 +879,9 @@ export const INLINE_STR_RELEASES_PER_FUNCTION = 8;
  * module, given as parts joined by newlines. A function can span parts
  * (main's lines) and a part can hold several functions. */
 export function limitInlineReleases(
-  parts: readonly string[],
+  parts: readonly TextPart[],
   mode: InlineRcMode | undefined,
-): string[] {
+): TextPart[] {
   const families: readonly ("dyn" | "str")[] = mode === "release" ? ["dyn", "str"] : ["dyn"];
   const limits = families.map((family) =>
     family === "dyn" ? INLINE_DYN_RELEASES_PER_FUNCTION : INLINE_STR_RELEASES_PER_FUNCTION,
@@ -921,7 +922,7 @@ export function limitInlineReleases(
   for (const part of parts) {
     spans.push(fn);
     fn = sites(
-      part,
+      textOfPart(part),
       (_, family, f) => counts[family]!.set(f, (counts[family]!.get(f) ?? 0) + 1),
       fn,
     );
@@ -947,12 +948,13 @@ export function limitInlineReleases(
   return parts.map((part, index) => {
     const from = spans[2 * index]!;
     if (!touches(from, spans[2 * index + 1]!)) return part;
+    const text = textOfPart(part);
     const cuts: { at: number; family: number }[] = [];
     sites(
-      part,
+      text,
       (at, family, f) => {
         if (!over[family]!.has(f)) return;
-        if (family === dynFamily && inLoop(part, at)) {
+        if (family === dynFamily && inLoop(text, at)) {
           const kept = keptInLoops.get(f) ?? 0;
           if (kept < limits[family]!) {
             keptInLoops.set(f, kept + 1);
@@ -967,10 +969,11 @@ export function limitInlineReleases(
     let out = "";
     let next = 0;
     for (const cut of cuts) {
-      out += part.slice(next, cut.at) + runtimes[cut.family]!;
+      out += text.slice(next, cut.at) + runtimes[cut.family]!;
       next = cut.at + head.length + calls[cut.family]!.length;
     }
-    return out + part.slice(next);
+    out += text.slice(next);
+    return typeof part === "string" ? out : bytesOfText(out);
   });
 }
 

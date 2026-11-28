@@ -217,7 +217,7 @@ export const V8_MEMBER_REASON =
   "by design: this member observes V8 engine internals — heap snapshots and spaces, GC and CPU profiles, flags, serialize/deserialize — and a compiled binary embeds no V8 engine to observe";
 
 const OUT_OF_SCOPE_BUILTIN_REASONS: Record<string, string | undefined> = {
-  vm: "it compiles and runs JavaScript source at runtime, and a compiled binary embeds no JavaScript engine to run it",
+  vm: "it compiles and runs JavaScript source at runtime, and a compiled binary embeds no JavaScript engine to run it; a program that needs it runs that code in a Node island, named with --node-island=<package>",
   inspector:
     "it drives the V8 inspector protocol — debugger, profiler, heap access — and a compiled binary embeds no V8 engine to inspect",
   "inspector/promises":

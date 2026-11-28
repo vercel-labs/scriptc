@@ -153,7 +153,8 @@ export function awaitTypedThenable(
   value: IrExpr,
   loc: SrcLoc,
 ): IrExpr | null {
-  if (value.type.kind !== "record" && value.type.kind !== "object") return null;
+  if (value.type.kind !== "record" && value.type.kind !== "object" && value.type.kind !== "func")
+    return null;
   if (thenableParts(lowerer, lowerer.typeOf(node.expression), node.expression).length === 0)
     return null;
   if (!lowerer.dynConvertible(value.type)) return null;

@@ -37,6 +37,7 @@ import {
   runtimeFingerprint,
   runtimeFingerprintInputPaths,
 } from "./runtime-inputs.js";
+import { SANITIZER_FLAG } from "../sanitizer-checks.js";
 import {
   resolveCc,
   targetPlatform,
@@ -1199,7 +1200,7 @@ export async function compileCInternal(
     ...threadArgs,
     ...(opts.workers ? ["-DSCR_WORKERS"] : []),
     ...(sanitize
-      ? ["-O1", "-fsanitize=address", "-DSCR_RC_AUDIT"]
+      ? ["-O1", SANITIZER_FLAG, "-DSCR_RC_AUDIT"]
       : [optimization === "dev" ? "-O0" : "-O2"]),
     ...executableSectionFlags.compile,
     ...runtimeDefineArgs(opts),
@@ -1284,7 +1285,7 @@ export async function compileCInternal(
     ...threadArgs,
     ...(opts.workers ? ["-DSCR_WORKERS"] : []),
     ...(sanitize
-      ? ["-O1", "-fsanitize=address", "-DSCR_RC_AUDIT"]
+      ? ["-O1", SANITIZER_FLAG, "-DSCR_RC_AUDIT"]
       : [optimization === "dev" ? "-O0" : "-O2"]),
     ...executableSectionFlags.compile,
     ...runtimeDefineArgs(opts),
@@ -1516,7 +1517,7 @@ export async function compileCInternal(
     (opts.systemLibraries?.length ?? 0) === 0;
   let programDependencies: string | null = null;
   const linkProbeArgs = [
-    ...(sanitize ? ["-fsanitize=address"] : []),
+    ...(sanitize ? [SANITIZER_FLAG] : []),
     ...threadArgs,
     ...(opts.workers ? ["-DSCR_WORKERS"] : []),
     ...(targetPlatform(driver) === "win32" ? ["-ladvapi32", "-liphlpapi", "-lws2_32"] : []),

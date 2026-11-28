@@ -2,6 +2,7 @@
 import { heritageArmReaches } from "./relational.js";
 import { consoleInto, isConsoleObjectRead, isConsoleTyped } from "../coercions/console-records.js";
 import { declBoundaryOrigin } from "../../decl-projection.js";
+import { ORIGIN_SEPARATOR } from "../decl-origin.js";
 import {
   isWebStreamMemberInJavaScript,
   typeInvolvesWebStream,
@@ -982,6 +983,23 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
         ts.isIdentifier(node)) &&
       isJsSourceFile(ts.getSourceFileOfNode(node)) &&
       guessedOverloadValue(lowerer, node)
+    )
+      return expr;
+    // `record[key]!`: the checker asserts the read present and JavaScript's
+    // `!` performs no check, so the read keeps the direct value. The
+    // assertion's own consumer decides what it observes: a numeric use
+    // coerces it with ToNumber (a present number unboxes in place, a MISSING
+    // key answers NaN, exactly what `undefined + n` computes), while a
+    // value or string use sees the undefined itself (`String(x)` is
+    // "undefined", JSON.stringify answers undefined). lower-exprs.ts
+    // (assertedDictionaryRead) applies the use's conversion; a checked
+    // extraction here would throw its value TypeError for the missing key.
+    // The validated `T | undefined` read below is for reads whose absence
+    // the program observes.
+    if (
+      node.parent !== undefined &&
+      ts.isNonNullExpression(node.parent) &&
+      node.parent.expression === node
     )
       return expr;
     // A dynamic read names the member it validated, so a failing check
@@ -2193,12 +2211,138 @@ function assertedBindingUsesIdentity(lowerer: Lowerer, expr: ts.Expression): boo
   return bindingIdentityUse(decl, lowerer.checker);
 }
 
+/** The inner assertion of a double assertion (`value as unknown as T`), when
+ * its asserted type is `unknown` or `any`: the hop the checker used to
+ * relate two types it cannot. Null for every other operand. */
+function throughUnknownAssertion(
+  operand: ts.Expression,
+): ts.AsExpression | ts.TypeAssertion | null {
+  let e = operand;
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  if (!ts.isAsExpression(e) && !ts.isTypeAssertion(e)) return null;
+  return e;
+}
+
+/** Whether no value of static type `from` can have the layout `to`: the two
+ * are different layout families (an array is never a record or a class, and
+ * a record is never an array), or `from` is no layout at all. Record and
+ * class are left to the checker: an instance's fields can serve a record,
+ * and a class assertion is checked against the class at run time. */
+function layoutKindsCannotMatch(lowerer: Lowerer, from: IrType, to: IrType): boolean {
+  // A dynamic source is not judged: its value can be anything.
+  if (from.kind === "union" || from.kind === "dyn") return false;
+  // A tuple is a record with positional fields, and a tuple and an array of
+  // the matching elements convert on either side (arrTuple/tupleArr), so an
+  // assertion between them is representable rather than impossible.
+  const tuple = (type: IrType): boolean =>
+    type.kind === "record" && lowerer.shapes.get(type.shapeId)?.tuple === true;
+  if (tuple(from) || tuple(to)) return false;
+  const family = (t: IrType): "array" | "record" | "object" | "other" =>
+    t.kind === "array"
+      ? "array"
+      : t.kind === "record"
+        ? "record"
+        : t.kind === "object"
+          ? "object"
+          : "other";
+  const source = family(from);
+  const target = family(to);
+  if (source === target) return false;
+  if (target === "array") return true;
+  return source === "array" || source === "other";
+}
+
+/** `<file>:<line>:<column>` of `loc`, for a cast origin note. */
+function castWhere(lowerer: Lowerer, loc: SrcLoc): string {
+  const name = loc.file.split(/[\\/]/).pop() ?? loc.file;
+  const source = lowerer.program.getSourceFile(loc.file);
+  if (source === undefined) return name;
+  const at = ts.getLineAndCharacterOfPosition(source, loc.start);
+  return `${name}:${at.line + 1}:${at.character + 1}`;
+}
+
+/** SC6016: name a double assertion whose target layout the source's static
+ * type cannot have, before any branch of the lowering runs, so the warning
+ * covers the erased form (`arr as unknown as Row` is pure typing here) as
+ * well as the checked one. */
+function noteDoubleAssertionWarning(
+  lowerer: Lowerer,
+  expr: ts.AsExpression | ts.TypeAssertion,
+): void {
+  const inner = throughUnknownAssertion(expr.expression);
+  if (inner === null) return;
+  let asserted: ts.Type;
+  let target: IrType | null;
+  try {
+    asserted = lowerer.checker.getTypeFromTypeNode(inner.type);
+    target = lowerer.mapAssertionTargetType(lowerer.checker.getTypeFromTypeNode(expr.type));
+  } catch {
+    return;
+  }
+  if ((asserted.flags & (ts.TypeFlags.Unknown | ts.TypeFlags.Any)) === 0) return;
+  if (
+    target === null ||
+    (target.kind !== "array" && target.kind !== "record" && target.kind !== "object")
+  )
+    return;
+  let sourceNode = inner.expression;
+  while (ts.isParenthesizedExpression(sourceNode)) sourceNode = sourceNode.expression;
+  const sourceType = (() => {
+    try {
+      return lowerer.mapTypeOf(lowerer.typeOf(sourceNode));
+    } catch {
+      return null;
+    }
+  })();
+  if (sourceType !== null && layoutKindsCannotMatch(lowerer, sourceType, target))
+    lowerer.noteCastThroughUnknown(
+      expr,
+      ts.getTextOfNode(expr),
+      ts.getTextOfNode(sourceNode),
+      lowerer.fmt(sourceType),
+      lowerer.fmt(target),
+    );
+}
+
+/** A double assertion's origin note (decl-origin.ts, the `cast` kind): the
+ * cast as written, where it is, and the expression it applies to, so a
+ * failing checked cast names all three (the message already names the
+ * value's actual kind and path). */
+function doubleAssertionNote(
+  lowerer: Lowerer,
+  expr: ts.AsExpression | ts.TypeAssertion,
+  target: IrType,
+): number | undefined {
+  if (target.kind !== "array" && target.kind !== "record" && target.kind !== "object")
+    return undefined;
+  const inner = throughUnknownAssertion(expr.expression);
+  if (inner === null) return undefined;
+  let asserted: ts.Type;
+  try {
+    asserted = lowerer.checker.getTypeFromTypeNode(inner.type);
+  } catch {
+    return undefined;
+  }
+  if ((asserted.flags & (ts.TypeFlags.Unknown | ts.TypeFlags.Any)) === 0) return undefined;
+  let sourceNode = inner.expression;
+  while (ts.isParenthesizedExpression(sourceNode)) sourceNode = sourceNode.expression;
+  return lowerer.declOriginIndex(
+    [
+      "cast",
+      ts.getTextOfNode(expr),
+      castWhere(lowerer, locOf(expr)),
+      ts.getTextOfNode(sourceNode),
+    ].join(ORIGIN_SEPARATOR),
+  );
+}
+
 /** `e as T` and the old-style assertion `<T>e` — one node shape (both
  * carry `.type` and `.expression`), one lowering. */
 export function lowerAsExpression(
   lowerer: Lowerer,
   expr: ts.AsExpression | ts.TypeAssertion,
 ): IrExpr {
+  noteDoubleAssertionWarning(lowerer, expr);
   // `[] as const` — tsgo panics computing the expression's `readonly []`
   // type (the facade's fence answers `any`), but the syntax pins the
   // value exactly: the empty tuple, ridden as the unit-element array
@@ -2645,7 +2789,7 @@ export function lowerAsExpression(
         `(${lowerer.dynCheckBlocker(target) ?? "this target"} is outside the checked conversion's domain)`,
     );
   }
-  return checkedDynCast(lowerer, expr, inner, target);
+  return checkedDynCast(lowerer, expr, inner, target, doubleAssertionNote(lowerer, expr, target));
 }
 
 /** `value as undefined` over a dynamic value: the checked conversion into
@@ -2713,6 +2857,7 @@ function checkedDynCast(
   expr: ts.AsExpression | ts.TypeAssertion,
   inner: IrExpr,
   target: IrType,
+  originId?: number,
 ): IrExpr {
   if (
     holdsReference(lowerer, target) &&
@@ -2727,9 +2872,15 @@ function checkedDynCast(
     // form instead, and every key of the assertion rides the source's own
     // keyed reads and writes.
     if (overflowMapRecord(lowerer, target)) return inner;
-    return adoptingCast(lowerer, inner, target, locOf(expr), "dyn.adoptShared");
+    return adoptingCast(lowerer, inner, target, locOf(expr), "dyn.adoptShared", originId);
   }
-  return { kind: "dynCheck", value: inner, type: target, loc: locOf(expr) };
+  return {
+    kind: "dynCheck",
+    value: inner,
+    type: target,
+    loc: locOf(expr),
+    ...(originId === undefined ? {} : { origin: originId }),
+  };
 }
 
 /** The checked conversion of a dynamic value where a typed slot takes it

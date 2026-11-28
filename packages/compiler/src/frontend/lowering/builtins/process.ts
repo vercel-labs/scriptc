@@ -641,7 +641,7 @@ export function lowerProcStreamMethodCall(
       lowerer.typeCtx,
     )
       ? "write(data) with one string and getWindowSize() are the supported stream-value methods"
-      : "write(data[, encoding][, callback]), listeners for 'resize' and 'error' (as literals), getWindowSize(), getColorDepth([env]) and hasColors([count][, env]) are the supported stream-value methods",
+      : "write(data[, encoding][, callback]), listeners for 'resize', 'error' and 'close' (as literals), getWindowSize(), getColorDepth([env]) and hasColors([count][, env]) are the supported stream-value methods",
     lowerer.checker.getSymbolAtLocation(access.name),
   );
 }
@@ -744,7 +744,7 @@ export function isTerminalStreamMethodRead(lowerer: Lowerer, node: ts.Expression
 
 /** The event names the runtime's process stream object takes listeners
  * for on stdout and stderr. */
-const PROC_STREAM_EVENTS: ReadonlySet<string> = new Set(["resize", "error"]);
+const PROC_STREAM_EVENTS: ReadonlySet<string> = new Set(["resize", "error", "close"]);
 
 /** The listener methods of the runtime's process stream object. */
 const PROC_STREAM_LISTENER_METHODS: ReadonlySet<string> = new Set([
@@ -782,10 +782,16 @@ function lowerProcStreamObjectCall(
   const args = call.arguments.nodes;
   if (args.some(ts.isSpreadElement)) return null;
   const listener = PROC_STREAM_LISTENER_METHODS.has(name);
+  // destroy() tears the stream down; the runtime's stream object fires the
+  // 'close' listeners on the next tick and later writes still reach the
+  // descriptor, as in Node 24.
+  const destroy = name === "destroy";
   if (listener) {
     if (args.length !== 2) return null;
     const event = lowerer.typeOf(args[0]!);
     if (!event.isStringLiteralType() || !PROC_STREAM_EVENTS.has(event.value)) return null;
+  } else if (destroy) {
+    if (args.length !== 0) return null;
   } else if (name !== "write" || args.length < 1 || args.length > 3) {
     return null;
   }
@@ -797,6 +803,8 @@ function lowerProcStreamObjectCall(
   let lowered: IrExpr[];
   if (listener) {
     lowered = args.map((arg) => lowerer.lowerExprExpecting(arg, DYN));
+  } else if (destroy) {
+    lowered = [];
   } else {
     const chunk = lowerer.lowerExpr(args[0]!);
     // The one-string write is the direct descriptor write.
@@ -826,8 +834,8 @@ function lowerProcStreamObjectCall(
   });
   if (resultIsDiscarded(call)) return invoke(stream);
   // write answers Node's boolean.
-  if (!listener) return lowerer.coerceToExpected(invoke(stream), BOOL);
-  // A listener method answers the stream it was called on.
+  if (!listener && !destroy) return lowerer.coerceToExpected(invoke(stream), BOOL);
+  // A listener method and destroy answer the stream they were called on.
   const kept = lowerer.declareHiddenLocal("%procStream", PROCSTREAM_T);
   const receiver = varRef(kept.id, PROCSTREAM_T, loc);
   return {
@@ -984,6 +992,7 @@ export const PROCESS_STREAM_VALUE_MEMBERS: readonly string[] = [
   "writableLength",
   "writableHighWaterMark",
   "writableNeedDrain",
+  "destroyed",
 ];
 
 /** The members of a process output stream that do not depend on the stream:
@@ -1023,7 +1032,10 @@ export function processStreamValueMember(
       type: DYN,
       loc,
     },
-    lowerer.withUndefinedArm(member === "isTTY" ? BOOL : F64),
+    // `destroyed` is declared boolean and always answers one (Node's special
+    // stdout/stderr streams keep false even after destroy); the other
+    // members have no value off a terminal.
+    member === "destroyed" ? BOOL : lowerer.withUndefinedArm(member === "isTTY" ? BOOL : F64),
   );
 }
 
@@ -1119,7 +1131,8 @@ export function lowerProcessStreamProperty(
     member !== "fd" &&
     member !== "isRaw" &&
     member !== "writableHighWaterMark" &&
-    member !== "writableNeedDrain"
+    member !== "writableNeedDrain" &&
+    member !== "destroyed"
   )
     return null;
   let recv: ts.Expression = expr.expression;
@@ -1223,6 +1236,12 @@ export function lowerProcessStreamProperty(
       loc,
     };
   }
+  // Node's special stdout/stderr streams answer destroyed=false, before and
+  // after destroy() (the stdin socket keeps its own flag, which the value
+  // path serves). Without this branch the read fell through to the terminal
+  // geometry tail below and answered process.columns.
+  if (member === "destroyed" && stream !== "stdin")
+    return { kind: "boolLit", value: false, type: BOOL, loc };
   if (stream === "stdin") {
     if (member !== "isRaw") return null;
     // Node answers the raw-mode flag of a TTY stdin and undefined on

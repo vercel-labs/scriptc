@@ -2084,6 +2084,9 @@ function lowerNetServerMethodCall(
       );
     const receiver = coerceToHandle(lowerer, access.expression, NETSERVER_T);
     const ms = lowerer.lowerExprExpecting(args[0]!, F64);
+    const timeoutServerType = ts.symbolNameOf(lowerer.typeOf(access.expression).getSymbol());
+    const h2Server =
+      timeoutServerType === "Http2Server" || timeoutServerType === "Http2SecureServer";
     const cb =
       args.length === 2
         ? lowerCallbackArg(
@@ -2091,12 +2094,17 @@ function lowerNetServerMethodCall(
             args[1]!,
             "server timeout callbacks",
             1,
-            (p) => p.kind === "netSocket",
-            "use (socket) or ()",
-            [NETSOCKET_T],
+            (p) => (h2Server ? p.kind === "http2Session" : p.kind === "netSocket"),
+            h2Server ? "use (session) or ()" : "use (socket) or ()",
+            h2Server ? [HTTP2SESSION_T] : [NETSOCKET_T],
           ).cb
         : null;
-    const fn: IrLibFn = cb === null ? "http.serverSetTimeout" : "http.serverSetTimeoutCb";
+    const fn: IrLibFn =
+      cb === null
+        ? "http.serverSetTimeout"
+        : h2Server
+          ? "http2.serverSetTimeoutCb"
+          : "http.serverSetTimeoutCb";
     const callArgs = cb === null ? [receiver, ms] : [receiver, ms, cb];
     if (chainingResultDiscarded(lowerer, call))
       return { kind: "libCall", fn, args: callArgs, type: VOID, loc };
@@ -2875,6 +2883,27 @@ function lowerNetServerMethodCall(
       };
     }
     if (event === "timeout") {
+      const timeoutServerType = ts.symbolNameOf(lowerer.typeOf(access.expression).getSymbol());
+      if (timeoutServerType === "Http2Server" || timeoutServerType === "Http2SecureServer") {
+        /* Node's Http2Server timeout listener hears the SESSION (the
+         * server-level timeout arms each accepted session). */
+        const { cb: sessionCb } = lowerCallbackArg(
+          lowerer,
+          args[1]!,
+          "server timeout listeners",
+          1,
+          (p) => p.kind === "http2Session",
+          "use (session) or ()",
+          [HTTP2SESSION_T],
+        );
+        return {
+          kind: "libCall",
+          fn: "http2.serverOnTimeout",
+          args: [receiver, sessionCb, once],
+          type: VOID,
+          loc,
+        };
+      }
       const { cb } = lowerCallbackArg(
         lowerer,
         args[1]!,
@@ -10704,13 +10733,23 @@ function lowerHttpClientMethodCall(
       lowerer.noLowering(`request.${name} arguments`, call, `pass one header name`);
     const receiver = coerceToHandle(lowerer, access.expression, HTTPCLIENTREQ_T);
     const header = lowerer.lowerExprExpecting(args[0]!, STRING);
-    const fn: IrLibFn =
-      name === "getHeader"
-        ? "http.clientGetHeader"
-        : name === "hasHeader"
-          ? "http.clientHasHeader"
-          : "http.clientRemoveHeader";
-    const type = name === "getHeader" ? lowerer.envValueType() : name === "hasHeader" ? BOOL : VOID;
+    if (name === "getHeader") {
+      // The value as set: number, string or string[] (undefined when
+      // absent), checked against the declared result type.
+      const value: IrExpr = {
+        kind: "libCall",
+        fn: "http.clientGetHeaderDyn",
+        args: [receiver, header],
+        type: DYN,
+        loc,
+      };
+      const declared = lowerer.mapTypeOf(lowerer.typeOf(call));
+      return declared === null || declared.kind === "dyn"
+        ? value
+        : lowerer.coerceInto(call, value, declared);
+    }
+    const fn: IrLibFn = name === "hasHeader" ? "http.clientHasHeader" : "http.clientRemoveHeader";
+    const type = name === "hasHeader" ? BOOL : VOID;
     return { kind: "libCall", fn, args: [receiver, header], type, loc };
   }
   if (name === "getHeaderNames" || name === "getRawHeaderNames" || name === "getHeaders") {

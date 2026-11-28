@@ -30,10 +30,13 @@ describe("npm static namespace re-export pruning", () => {
     expect(files.some((file) => file.endsWith("/purebarrel/dist/esm/spare.js"))).toBe(false);
   });
 
-  test("a requested namespace retains its module edge and its preflight fence", () => {
+  test("a requested namespace retains its module edge", () => {
     const { files, diagnostics } = moduleOrder("purebarrel-spare-cli.ts", "purebarrel");
+    // The edge is the point: the requested namespace is not pruned. The
+    // spare module's `export * from "picocolors"` is a package star
+    // re-export, which lowers now, so the old SC1014 fence is gone.
     expect(files.some((file) => file.endsWith("/purebarrel/dist/esm/spare.js"))).toBe(true);
-    expect(diagnostics).toContain("SC1014");
+    expect(diagnostics).toEqual([]);
   });
 
   test("a package without sideEffects metadata retains unused module initialization", () => {

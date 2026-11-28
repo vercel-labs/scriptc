@@ -1,3 +1,5 @@
+import { bytesOfText, type TextPart, textOfPart } from "../../text-parts.js";
+
 /** The alignment of every emitted function's entry. Each definition pads to
  * it, so a change in one function's size cannot move another function's code
  * relative to a cache-line boundary: the hot loops inside that function keep
@@ -8,7 +10,7 @@ export const FUNCTION_ENTRY_ALIGNMENT = 64;
  * its parameter list (where LLVM's grammar puts it, ahead of the attribute
  * group and the personality). A definition that already names an alignment
  * keeps it, so aligning a region the emitter already aligned is a no-op. */
-export function alignFunctionEntries(parts: string[]): string[] {
+export function alignFunctionEntries(parts: TextPart[]): TextPart[] {
   const align = (line: string): string => {
     const open = line.indexOf("(", line.indexOf("@"));
     if (open < 0) return line;
@@ -28,7 +30,11 @@ export function alignFunctionEntries(parts: string[]): string[] {
   // every original string alive beside its aligned copy until the pass ends.
   for (let i = 0; i < parts.length; i++) {
     const part = parts[i]!;
-    if (part.includes("define ")) parts[i] = part.replace(/^define .*$/gm, (line) => align(line));
+    const text = textOfPart(part);
+    if (!text.includes("define ")) continue;
+    const aligned = text.replace(/^define .*$/gm, (line) => align(line));
+    if (aligned === text) continue;
+    parts[i] = typeof part === "string" ? aligned : bytesOfText(aligned);
   }
   return parts;
 }

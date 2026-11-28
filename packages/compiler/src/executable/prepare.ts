@@ -828,6 +828,7 @@ function prepareRound(
       ...(islandDecision?.notes ?? []),
       ...(fe.warnings ?? []),
       ...(lowered.divergences ?? []),
+      ...(lowered.strictDynamic === undefined ? [] : [lowered.strictDynamic]),
       ...(lowered.performance ?? []),
       ...contractWarnings,
     ],

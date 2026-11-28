@@ -77,6 +77,10 @@ export interface CoverageInput {
    * leaves untyped. Never blockers; `--fail-on=dynamic` opts into failing
    * on it. */
   performance?: ScrDiagnostic[];
+  /** Strict mode's dynamic-tier finding (SC6107): every function the program
+   * compiles to the dynamic tier. Not printed; a strict coverage run promotes
+   * it. */
+  strictDynamic?: ScrDiagnostic;
   /** Localized failure: the checked dynamic slots (SC6104, also in
    * `performance`). `--fail-on=dynamic-slots` fails on them. */
   dynamicSlots?: DynamicSlotEntry[];

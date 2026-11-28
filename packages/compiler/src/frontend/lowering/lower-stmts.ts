@@ -5419,21 +5419,31 @@ function lowerModuleNamespacePattern(
         const sig =
           (exported === undefined ? undefined : lowerer.fnSigsBySymbol.get(exported)) ??
           (defaultSym === null ? undefined : lowerer.fnSigsBySymbol.get(defaultSym));
-        if (sig === undefined) {
-          lowerer.unsupported(
-            "SC1031",
-            el,
-            "destructuring module namespace members that are not named value exports",
-          );
+        if (sig !== undefined) {
+          lowerer.noteEdge(sig.name);
+          value = {
+            kind: "closure",
+            fnName: sig.name,
+            captures: [],
+            type: funcTypeFromParamShapes(sig.params, sig.returnType),
+            loc: locOf(el),
+          };
+        } else {
+          // An unnamed CLASS default has neither a global nor a signature:
+          // its registered class object is the value, as the dotted read and
+          // the computed namespace read answer.
+          const info =
+            (exported === undefined ? undefined : lowerer.classBySymbol.get(exported)) ??
+            (defaultSym === null ? undefined : lowerer.classBySymbol.get(defaultSym));
+          if (info === undefined) {
+            lowerer.unsupported(
+              "SC1031",
+              el,
+              "destructuring module namespace members that are not named value exports",
+            );
+          }
+          value = lowerer.classValueRef(info, el);
         }
-        lowerer.noteEdge(sig.name);
-        value = {
-          kind: "closure",
-          fnName: sig.name,
-          captures: [],
-          type: funcTypeFromParamShapes(sig.params, sig.returnType),
-          loc: locOf(el),
-        };
       }
     }
     if (el.initializer) value = applyBindingDefault(lowerer, el, value);

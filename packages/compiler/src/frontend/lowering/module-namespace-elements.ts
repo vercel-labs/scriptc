@@ -113,18 +113,26 @@ function moduleNamespaceDispatch(
           // An unnamed FUNCTION default has no binding to read: its collected
           // signature interns the zero-capture closure a default import reads.
           const sig = lowerer.fnSigsBySymbol.get(target) ?? lowerer.fnSigsBySymbol.get(exported);
-          if (sig === undefined) continue;
-          lowerer.noteEdge(sig.name);
-          value = lowerer.coerceToExpected(
-            {
-              kind: "closure",
-              fnName: sig.name,
-              captures: [],
-              type: funcTypeFromParamShapes(sig.params, sig.returnType),
-              loc,
-            },
-            DYN,
-          );
+          if (sig !== undefined) {
+            lowerer.noteEdge(sig.name);
+            value = lowerer.coerceToExpected(
+              {
+                kind: "closure",
+                fnName: sig.name,
+                captures: [],
+                type: funcTypeFromParamShapes(sig.params, sig.returnType),
+                loc,
+              },
+              DYN,
+            );
+          } else {
+            // An unnamed CLASS default (`export default class { ... }`) has
+            // neither a global nor a signature: the class object registered
+            // for its declaration is the value, as the dotted read answers.
+            const info = lowerer.classBySymbol.get(target) ?? lowerer.classBySymbol.get(exported);
+            if (info === undefined) continue;
+            value = lowerer.coerceToExpected(lowerer.classValueRef(info, blame), DYN);
+          }
         }
       }
       body.push({

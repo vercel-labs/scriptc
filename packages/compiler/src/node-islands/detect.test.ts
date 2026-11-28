@@ -240,7 +240,9 @@ describe("R2 object-model markers", () => {
     expect(markers("const p = new Proxy(t, h);")).toEqual(["R2.5 proxy"]);
     // Modeled process state and tuning knobs stay; so do redeclared names.
     expect(
-      markers("process.exitCode = 1; process.env.X = 'y'; Error.stackTraceLimit = 50;"),
+      markers(
+        "process.exitCode = 1; process.env.X = 'y'; Error.stackTraceLimit = 50; Error.prepareStackTrace = void 0;",
+      ),
     ).toEqual([]);
     expect(markers("var Promise = require('bluebird'); Promise.config = {};")).toEqual([]);
   });

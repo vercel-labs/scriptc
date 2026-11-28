@@ -494,7 +494,10 @@ function writeTargetOf(lowerer: Lowerer, expr: ts.Expression): WriteTarget | nul
 /** A built-in member the runtime models as program state: assigning it is
  * what the member is for, and compiled code reads the assigned value. */
 function isAssignableState(target: { owner: string; member: string }): boolean {
-  return target.owner === "Error" && target.member === "stackTraceLimit";
+  return (
+    target.owner === "Error" &&
+    (target.member === "stackTraceLimit" || target.member === "prepareStackTrace")
+  );
 }
 
 /** Whether a read of the member always answers a value that is neither

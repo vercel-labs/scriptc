@@ -139,6 +139,7 @@ const ALLOWED_BUILTIN_WRITES = new Set([
   "process.title",
   "process.env",
   "Error.stackTraceLimit",
+  "Error.prepareStackTrace",
   "Buffer.poolSize",
   "events.defaultMaxListeners",
   "events.EventEmitter.defaultMaxListeners",

@@ -218,6 +218,8 @@ describe.skipIf(!zigOnPath() || !wasmPackInstalled())("wasm32-wasi differential"
     "buffer-codec-boundaries.ts",
     "text-encode-into-boundaries.ts",
     "object-key-indexes.js",
+    // Error.prepareStackTrace program state.
+    "error-prepare-stack-trace-state.js",
     "record-key-order.ts",
     "typed-array-bulk-conversion.mjs",
     "typed-array-numeric-import.ts",

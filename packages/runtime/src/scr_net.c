@@ -820,6 +820,12 @@ struct ScrNetSocket {
    * or a connect that failed): its queued write callbacks receive
    * ERR_SOCKET_CLOSED_BEFORE_CONNECTION. */
   bool closed_before_connect;
+  /* Node answers such a write from a once 'close' listener the write
+   * itself registers, so the answer runs where the write happened among
+   * the application's close listeners: remember how many were registered
+   * when the first write queued while connecting. */
+  bool wcb_close_armed;
+  size_t wcb_close_at;
   /* a connection an HTTP server accepted: its setEncoding throws
    * ERR_HTTP_SOCKET_ENCODING for good. */
   bool http_server_conn;
@@ -1630,8 +1636,9 @@ static void scr_net_sock_write_raw(ScrNetSocket *s, const char *data, size_t len
  * that has already failed (the failure and its close wait for the sweep)
  * still takes writes: Node's socket is still connecting when the error
  * lands, so the write queues and its callback gets
- * ERR_SOCKET_CLOSED_BEFORE_CONNECTION at the close (an explicit destroy()
- * ends the write half first and keeps answering ERR_STREAM_DESTROYED). */
+ * ERR_SOCKET_CLOSED_BEFORE_CONNECTION just before the close (an explicit
+ * destroy() ends the write half first and keeps answering
+ * ERR_STREAM_DESTROYED). */
 static bool scr_net_sock_write_open(ScrNetSocket *w) {
   if (w->wr_ending || w->close_emitted) return false;
   return w->fd >= 0 || w->dial_deferred || w->lookup_wait ||
@@ -1726,6 +1733,12 @@ static void scr_net_sock_write_raw(ScrNetSocket *s, const char *data, size_t len
       (s->tops && !s->t_est)) {
     /* mid-connect and mid-handshake bytes buffer; the flush after
      * 'connect'/establishment sends them */
+    if (!s->wcb_close_armed && (s->connecting || pre_dial)) {
+      /* Node's _writeGeneric registers a once 'close' listener for a
+       * write queued while connecting; remember where it would sit. */
+      s->wcb_close_armed = true;
+      s->wcb_close_at = s->close_ls.n;
+    }
     scr_net_sock_buffer(s, data, len, len);
     scr_net_sock_update_write(s);
     return;
@@ -9704,6 +9717,48 @@ static void scr_net_server_settle(ScrNetServer *srv) {
  * registry. A socket that took over another's connection settles that one
  * first, so the wrapped socket's 'close' comes just before its own. False
  * with an exception pending. */
+/* The 'close' pass with the queued-write answers in registration order:
+ * Node's _writeGeneric installs a once 'close' listener per write queued
+ * while connecting, so the answer runs where that write happened relative
+ * to the application's own close listeners (a listener registered before
+ * the write sees 'close' first; one registered after it sees the answer
+ * first). The position recorded at the first such write is the insertion
+ * point; a socket that established before closing answers from the flush
+ * path instead, and closed_before_connect is false. */
+static void scr_net_sock_fire_close(ScrNetSocket *sock) {
+  ScrNetL *snap = NULL;
+  size_t n = scr_net_ls_snapshot(&sock->close_ls, &snap);
+  size_t at = sock->wcb_close_armed && sock->wcb_close_at < n ? sock->wcb_close_at : n;
+  bool answered = false;
+  ScrDyn *had_error = scr_dyn_new_bool(sock->had_error);
+  scr_dyn_this_push(sock, SCR_DYNH_NET_SOCKET);
+  for (size_t i = 0; i <= n; i++) {
+    if (!answered && i == at) {
+      answered = true;
+      if (sock->closed_before_connect && sock->wcb_ls.n > 0) {
+        static const char text[] = "Socket closed before the connection was established";
+        ScrStr *msg = scr_str_new(text, sizeof text - 1);
+        ScrError *e = scr_error_new(SCR_ERR_ERROR, msg);
+        scr_str_release(msg);
+        scr_error_set_code(e, "ERR_SOCKET_CLOSED_BEFORE_CONNECTION");
+        ScrDyn *error = scr_dyn_from_error(e);
+        scr_error_release(e);
+        scr_net_fire_arg_this(&sock->wcb_ls, error, sock, SCR_DYNH_NET_SOCKET);
+        scr_dyn_release(error);
+      }
+    }
+    if (i == n) break;
+    if (!scr_exc_pending()) {
+      if (snap[i].fn != NULL) ((ScrNetArgFn)snap[i].fn)(snap[i].cb, had_error);
+      else ((void (*)(ScrClosure *))snap[i].cb->fn)(snap[i].cb);
+    }
+    scr_closure_release(snap[i].cb);
+  }
+  scr_dyn_this_pop();
+  scr_dyn_release(had_error);
+  free(snap);
+}
+
 static bool scr_net_sock_settle(ScrNetSocket *sock) {
   ScrNetSocket *raw = sock->adopted_from;
   if (raw != NULL) {
@@ -9747,26 +9802,7 @@ static bool scr_net_sock_settle(ScrNetSocket *sock) {
     sock->native_closed(sock->native_reader_ctx != NULL ? sock->native_reader_ctx : sock->native_ctx);
     if (scr_exc_pending()) return false;
   }
-  {
-    ScrDyn *had_error = scr_dyn_new_bool(sock->had_error);
-    scr_net_fire_arg_this(&sock->close_ls, had_error, sock, SCR_DYNH_NET_SOCKET);
-    scr_dyn_release(had_error);
-  }
-  if (sock->closed_before_connect && sock->wcb_ls.n > 0) {
-    /* Writes queued before the connection was established answer at
-     * 'close', after the 'close' event: Node's _writeGeneric reports
-     * ERR_SOCKET_CLOSED_BEFORE_CONNECTION for them. */
-    static const char text[] = "Socket closed before the connection was established";
-    ScrStr *msg = scr_str_new(text, sizeof text - 1);
-    ScrError *e = scr_error_new(SCR_ERR_ERROR, msg);
-    scr_str_release(msg);
-    scr_error_set_code(e, "ERR_SOCKET_CLOSED_BEFORE_CONNECTION");
-    ScrDyn *error = scr_dyn_from_error(e);
-    scr_error_release(e);
-    scr_net_fire_arg_this(&sock->wcb_ls, error, sock, SCR_DYNH_NET_SOCKET);
-    scr_dyn_release(error);
-    if (scr_exc_pending()) return false;
-  }
+  scr_net_sock_fire_close(sock);
   /* the transport settles first: a listener its last events add (a TLS
    * server's 'tlsClientError') drops with the rest */
   if (sock->tops && sock->tops->settle) sock->tops->settle(sock->tctx);

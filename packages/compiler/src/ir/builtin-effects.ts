@@ -594,6 +594,10 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   // setMaxSendFragment throws Node's ERR_OUT_OF_RANGE for NaN, an infinity
   // or a fraction.
   "tls.sockSetMaxFragment",
+  // setSession throws Node's ERR_INVALID_ARG_TYPE ("Session must be a
+  // buffer") for an argument that is neither a Buffer, a typed array nor a
+  // string.
+  "tls.sockSetSession",
   "net.sockWriteDyn",
   "net.sockEndDyn",
   // socket.write/end(data, encoding): Buffer.from's encoding ladder throws

@@ -1,0 +1,4 @@
+{
+  "order": ["<repo>/tests/corpus/stream-flow-control.mjs"],
+  "diags": []
+}

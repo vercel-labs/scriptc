@@ -9526,6 +9526,7 @@ typedef struct {
   ScrClosure *cb;
   ScrIpcMessageFn fn;
   bool once;
+  uint64_t id; /* identifies the registration when a once entry leaves */
 } ScrIpcMessageEntry;
 
 typedef struct {
@@ -9559,6 +9560,11 @@ struct ScrIpc {
   size_t n_pending, cap_pending;
   ScrIpcMessageEntry *message_ls;
   size_t n_message, cap_message;
+  uint64_t next_message_id;
+  /* An explicit process.channel.ref()/unref() pins the ref state: listener
+   * additions and removals no longer move it, as in Node. */
+  bool explicit_ref;
+  bool explicit_state;
   ScrIpcDisconnectEntry *disconnect_ls;
   size_t n_disconnect, cap_disconnect;
   ScrIpcSendEntry *send_cbs;
@@ -9818,6 +9824,8 @@ static void scr_ipc_closed_send_tick(void) {
   }
 }
 
+static void scr_ipc_closed_sends_teardown(void);
+
 static void scr_ipc_queue_closed_send(ScrStr *send_error, ScrClosure *cb,
                                       ScrIpcSendFn fn) {
   ScrIpcClosedSend *items =
@@ -9831,6 +9839,13 @@ static void scr_ipc_queue_closed_send(ScrStr *send_error, ScrClosure *cb,
   scr_str_release(message);
   scr_error_set_code(error, "ERR_IPC_CHANNEL_CLOSED");
   items[scr_ipc_closed_n++] = (ScrIpcClosedSend){cb, fn, error, scr_als_capture()};
+  /* The teardown hook registers on first use rather than from a unit
+   * constructor: a constructor is a link root, and it would keep this
+   * unit's closed-send queue reachable in every program that links the
+   * runtime pack (the tree-shaking contract). */
+  if (scr_raw_tick_teardown_hook == NULL) {
+    scr_raw_tick_teardown_hook = scr_ipc_closed_sends_teardown;
+  }
   /* One tick per send, FIFO among the ticks the program queues itself. */
   scr_next_tick_raw(&scr_ipc_closed_send_tick);
 }
@@ -9848,10 +9863,9 @@ static void scr_ipc_closed_sends_teardown(void) {
   scr_ipc_closed_n = 0;
   free(scr_ipc_closed_sends);
   scr_ipc_closed_sends = NULL;
-}
-
-__attribute__((constructor)) static void scr_ipc_install_closed_send_teardown(void) {
-  scr_raw_tick_teardown_hook = scr_ipc_closed_sends_teardown;
+  if (scr_raw_tick_teardown_hook == scr_ipc_closed_sends_teardown) {
+    scr_raw_tick_teardown_hook = NULL;
+  }
 }
 
 static bool scr_ipc_send(ScrIpc *ipc, ScrStr *json, ScrClosure *cb,
@@ -9891,6 +9905,8 @@ static void scr_ipc_disconnect(ScrIpc *ipc) {
   scr_child_writer_end(ipc->writer);
 }
 
+static void scr_ipc_listener_balance(ScrIpc *ipc);
+
 static void scr_ipc_add_message(ScrIpc *ipc, ScrClosure *cb,
                                 ScrIpcMessageFn fn, bool once) {
   if (!ipc || ipc->disconnect_emitted) {
@@ -9902,8 +9918,9 @@ static void scr_ipc_add_message(ScrIpc *ipc, ScrClosure *cb,
     ipc->message_ls = realloc(ipc->message_ls, ipc->cap_message * sizeof(*ipc->message_ls));
     if (!ipc->message_ls) scr_trap("out of memory");
   }
-  ipc->message_ls[ipc->n_message++] = (ScrIpcMessageEntry){cb, fn, once};
+  ipc->message_ls[ipc->n_message++] = (ScrIpcMessageEntry){cb, fn, once, ++ipc->next_message_id};
   scr_ipc_arm(ipc);
+  scr_ipc_listener_balance(ipc);
 }
 
 static void scr_ipc_add_disconnect(ScrIpc *ipc, ScrClosure *cb, bool once) {
@@ -9919,15 +9936,62 @@ static void scr_ipc_add_disconnect(ScrIpc *ipc, ScrClosure *cb, bool once) {
   }
   ipc->disconnect_ls[ipc->n_disconnect++] = (ScrIpcDisconnectEntry){cb, once};
   scr_ipc_arm(ipc);
+  scr_ipc_listener_balance(ipc);
 }
 
-static void scr_ipc_remove_message_once(ScrIpc *ipc, ScrClosure *cb) {
+/* The process-level channel follows Node's listener ref counting: the
+ * channel is ref'd while any message or disconnect listener exists, and
+ * unref'd once the last one leaves, so a child whose listeners are all
+ * removed exits instead of waiting on the channel. */
+static void scr_ipc_listener_balance(ScrIpc *ipc) {
+  if (ipc != scr_process_ipc || !ipc->connected || ipc->reader == NULL) return;
+  if (ipc->explicit_ref) {
+    scr_child_stream_chan_state(ipc->reader, ipc->explicit_state);
+    return;
+  }
+  scr_child_stream_chan_state(ipc->reader, ipc->n_message + ipc->n_disconnect > 0);
+}
+
+/* A once registration leaves the list when its message is dispatched. The
+ * ID names that exact registration: a listener the program re-registers
+ * during the dispatch appends a new entry, which this removal must not
+ * take (Node removes the once wrapper it is running, not a later one). */
+static void scr_ipc_remove_message_once(ScrIpc *ipc, uint64_t id) {
   for (size_t i = 0; i < ipc->n_message; i++) {
-    if (ipc->message_ls[i].cb != cb || !ipc->message_ls[i].once) continue;
+    if (ipc->message_ls[i].id != id) continue;
     scr_closure_release(ipc->message_ls[i].cb);
     memmove(ipc->message_ls + i, ipc->message_ls + i + 1,
             (ipc->n_message - i - 1) * sizeof(*ipc->message_ls));
     ipc->n_message--;
+    scr_ipc_listener_balance(ipc);
+    return;
+  }
+}
+
+/* process.off / removeListener on the channel's message listeners. Node
+ * removes the most recently added listener that is the same function, so the
+ * scan runs from the end. The argument closure is borrowed: the caller keeps
+ * its reference, and only a matching registered entry is released. */
+static void scr_ipc_remove_message(ScrIpc *ipc, ScrClosure *cb) {
+  for (size_t i = ipc->n_message; i-- > 0;) {
+    if (!scr_closure_identity_equal(ipc->message_ls[i].cb, cb)) continue;
+    scr_closure_release(ipc->message_ls[i].cb);
+    memmove(ipc->message_ls + i, ipc->message_ls + i + 1,
+            (ipc->n_message - i - 1) * sizeof(*ipc->message_ls));
+    ipc->n_message--;
+    scr_ipc_listener_balance(ipc);
+    return;
+  }
+}
+
+static void scr_ipc_remove_disconnect(ScrIpc *ipc, ScrClosure *cb) {
+  for (size_t i = ipc->n_disconnect; i-- > 0;) {
+    if (!scr_closure_identity_equal(ipc->disconnect_ls[i].cb, cb)) continue;
+    scr_closure_release(ipc->disconnect_ls[i].cb);
+    memmove(ipc->disconnect_ls + i, ipc->disconnect_ls + i + 1,
+            (ipc->n_disconnect - i - 1) * sizeof(*ipc->disconnect_ls));
+    ipc->n_disconnect--;
+    scr_ipc_listener_balance(ipc);
     return;
   }
 }
@@ -9983,7 +10047,7 @@ static void scr_ipc_fire_messages_in(ScrIpc *ipc) {
       scr_closure_retain(snapshot[i].cb);
     }
     for (size_t i = 0; i < count; i++) {
-      if (snapshot[i].once) scr_ipc_remove_message_once(ipc, snapshot[i].cb);
+      if (snapshot[i].once) scr_ipc_remove_message_once(ipc, snapshot[i].id);
       if (!scr_exc_pending()) snapshot[i].fn(snapshot[i].cb, message);
       scr_closure_release(snapshot[i].cb);
     }
@@ -10332,6 +10396,19 @@ void scr_process_ipc_on_disconnect(ScrClosure *cb, bool once) {
   scr_ipc_add_disconnect(scr_process_ipc, cb, once);
 }
 
+/* process.off(event, listener) / removeListener: the listener is borrowed,
+ * and a process without a channel has no registry to remove from (Node
+ * answers the same: nothing was registered, so nothing is removed). */
+void scr_process_ipc_off_message(ScrClosure *cb) {
+  if (scr_process_ipc == NULL) return;
+  scr_ipc_remove_message(scr_process_ipc, cb);
+}
+
+void scr_process_ipc_off_disconnect(ScrClosure *cb) {
+  if (scr_process_ipc == NULL) return;
+  scr_ipc_remove_disconnect(scr_process_ipc, cb);
+}
+
 /* process.channel — Node's Control in a forked child: the cached object
  * with ref()/unref() while the channel is open, undefined in a process
  * that never had one, and null once it is gone (local or remote
@@ -10353,8 +10430,11 @@ static ScrDyn *scr_channel_ref_thunk(ScrClosure *clo, ScrDyn *const *args, size_
   /* A disconnected channel is closed: ref/unref on a captured object are
    * no-ops (uv_ref on a closed handle), and process.channel itself reads
    * null. */
-  if (scr_process_ipc != NULL && scr_process_ipc->connected)
+  if (scr_process_ipc != NULL && scr_process_ipc->connected) {
+    scr_process_ipc->explicit_ref = true;
+    scr_process_ipc->explicit_state = true;
     scr_child_stream_chan_state(scr_process_ipc->reader, true);
+  }
   return scr_dyn_undefined();
 }
 
@@ -10362,8 +10442,11 @@ static ScrDyn *scr_channel_unref_thunk(ScrClosure *clo, ScrDyn *const *args, siz
   (void)clo;
   (void)args;
   (void)argc;
-  if (scr_process_ipc != NULL && scr_process_ipc->connected)
+  if (scr_process_ipc != NULL && scr_process_ipc->connected) {
+    scr_process_ipc->explicit_ref = true;
+    scr_process_ipc->explicit_state = false;
     scr_child_stream_chan_state(scr_process_ipc->reader, false);
+  }
   return scr_dyn_undefined();
 }
 

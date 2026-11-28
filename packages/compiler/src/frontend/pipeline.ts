@@ -12,6 +12,7 @@ import {
   shapeOverlayReport,
 } from "./shape-inference/index.js";
 import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
+import { isImportFence } from "./import-fences.js";
 import { startupFailureDiag } from "../diagnostics/diagnostic.js";
 import type { IrModule } from "../ir/ir.js";
 import type { SrcLoc } from "../ir/ir.js";
@@ -23,6 +24,7 @@ import {
   npmBuiltinAliasOf,
   checkModuleOrder,
   checkPreflight,
+  isCjsJsFile,
   isNodeTypesPath,
   locOf,
   npmStaticDepSf7,
@@ -42,6 +44,7 @@ import {
 import {
   clearResolveCaches,
   isInstalledPackagePath,
+  nearestPackageType,
   resolveBareModule,
   resolveWorkspaceSourceModule,
 } from "./resolve.js";
@@ -309,6 +312,27 @@ function addLazyRequireGraph(load: LoadResult, scanned: Set<SourceFile>): void {
   }
 }
 
+/** Whether a literal `import(spec)` of a package compiles natively: its
+ * installed entry is an ES module or a TypeScript source, whose graph the
+ * build embeds and evaluates at the call. A CommonJS entry keeps its
+ * pre-existing treatment (the refusal a static import of its exports object
+ * gets, which the automatic policy may answer with a Node island): its
+ * import() namespace is Node's CJS facade, which this build has no
+ * compiled story for. Null when nothing installed resolves the specifier. */
+function dynamicImportCompilesNatively(
+  program: LoadResult["program"],
+  fromFile: string,
+  spec: string,
+): boolean | null {
+  const js = resolveBareModule(fromFile, spec, "js-only");
+  if (js === null) return null;
+  const source = program.getSourceFile(js.typesFile);
+  if (source !== undefined) return !isCjsJsFile(source, program);
+  if (/\.(mjs|mts)$/.test(js.typesFile)) return true;
+  if (/\.(cjs|cts)$/.test(js.typesFile)) return false;
+  return nearestPackageType(js.typesFile) === "module";
+}
+
 function detectAutoPackages(
   load: LoadResult,
   statuses: NpmStaticStatus[],
@@ -375,6 +399,32 @@ function detectAutoPackages(
         // import-statement scan alone would miss every one of them.
         for (const req of requiresOf(stmt, load.program))
           edges.push({ spec: req.spec, loc: locOf(req.node) });
+      }
+    }
+    // A program file's literal import("pkg") names a package the module
+    // graph must hold: the specifier is static, so the selection judges the
+    // package exactly as a static import would, and the compiled module is
+    // what the import() site evaluates at the call. Without this edge the
+    // package stays outside the graph and the site refuses with SC2013,
+    // even though nothing about the load is decided at run time.
+    if (
+      owner === null &&
+      !isInstalledPackagePath(sf.fileName) &&
+      sourceTextIncludes(sf, "import")
+    ) {
+      for (const call of moduleSourceCandidates(load.program, sf).calls) {
+        const arg = call.arguments.nodes[0];
+        if (
+          call.expression.kind !== SyntaxKind.ImportKeyword ||
+          arg === undefined ||
+          !isStringLiteralLike(arg)
+        )
+          continue;
+        // A CommonJS package keeps its old treatment: selecting it here
+        // would replace the island the automatic policy gives it with the
+        // dynamic-import refusal for its exports object.
+        if (dynamicImportCompilesNatively(load.program, sf.fileName, arg.text) !== true) continue;
+        edges.push({ spec: arg.text, loc: locOf(call) });
       }
     }
     // A program file's literal require() calls outside top-level require
@@ -1079,7 +1129,8 @@ function loadFrontend(
     // (program.ts), and lowering and the program-source classification read
     // that state after this function returns. A load opened here with a
     // probe's set therefore has to be followed by one reload of the set the
-    // retained program keeps, unless a culprit reload already reset it.
+    // retained program keeps, unless a culprit reload already reset it or the
+    // preflight has already stopped the build (the reload below).
     let probeStateStale = false;
     const programOwnsDiagnostic = (): boolean => {
       if (baselineKeys === null) {
@@ -1160,7 +1211,18 @@ function loadFrontend(
         probeStateStale = false;
       }
     }
-    if (probeStateStale) {
+    // The reload restores the retained program's package set as npm-static's
+    // live state, which lowering and the program-source classification read
+    // after this function returns. A preflight holding a diagnostic outside
+    // the import fences stops both before they read it: the analysis stops
+    // before lowering and a build fails on the diagnostic. Then the program
+    // that reported the blockers stands and the reload is skipped, because it
+    // would rebuild the whole graph for a state nothing reads. The analysis
+    // reads the preflight without the island modules' own blockers (it stops
+    // on `withoutIslandModules`), so only those count here: a blocker inside
+    // an island module leaves the lowering running, and the state it reads
+    // has to be the one the program was compiled with.
+    if (probeStateStale && !withoutIslandModules(preflight).some((d) => !isImportFence(d.code))) {
       load.dispose();
       load = loadProgram(entryPath, { npmStatic: [...effective], externalTypes });
       preflight = checkPreflight(load);
@@ -1288,6 +1350,7 @@ function loadFrontend(
           projectCheckJs: l.typeWorld?.projectCheckJs ?? false,
           dependencyJs: l.dependencyJs,
           parameterPropertiesFirst: l.parameterPropertiesFirst,
+          legacyDecoratorFiles: l.typeWorld?.legacyDecoratorFiles,
           externalTypes: l.externalTypes,
           externalTypeSpecifiersByFile: l.externalTypeSpecifiersByFile,
         });

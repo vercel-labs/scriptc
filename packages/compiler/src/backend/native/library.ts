@@ -18,6 +18,7 @@ import {
 import { type LibArchiveOptions } from "./contracts.js";
 import { clearCcCaches, ensureRuntimeObjects, stageRuntimeObjects } from "./runtime-objects.js";
 import { runtimeSrcDir, LIB_RUNTIME_SOURCES, runtimeFingerprint } from "./runtime-inputs.js";
+import { SANITIZER_FLAG } from "../sanitizer-checks.js";
 import {
   resolveCc,
   targetPlatform,
@@ -128,7 +129,7 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
     "-std=c11",
     ...driver.targetArgs,
     ...(sanitize
-      ? ["-O1", "-fsanitize=address", "-DSCR_RC_AUDIT"]
+      ? ["-O1", SANITIZER_FLAG, "-DSCR_RC_AUDIT"]
       : [optimization === "dev" ? "-O0" : "-O2"]),
     ...executableSectionEliminationFlags(targetPlatform(driver)).compile,
     "-fno-math-errno",

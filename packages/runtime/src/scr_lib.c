@@ -253,6 +253,35 @@ static SCR_TL ScrModuleRecord *scr_module_records = NULL;
 static SCR_TL size_t scr_module_record_count = 0;
 static SCR_TL size_t scr_module_next_cache_order = 1;
 
+/* The live cache entries in the order their requires entered them. A failed
+ * require drops its entry here, so require.cache's sync walks the current
+ * cache — never the history of orders assigned — and retrying a throwing
+ * lazy dependency costs the same every time. */
+static SCR_TL double *scr_module_cache_live = NULL;
+static SCR_TL size_t scr_module_cache_live_count = 0;
+static SCR_TL size_t scr_module_cache_live_cap = 0;
+
+static void scr_module_cache_live_push(double module_id) {
+  if (scr_module_cache_live_count == scr_module_cache_live_cap) {
+    size_t cap = scr_module_cache_live_cap ? scr_module_cache_live_cap * 2 : 16;
+    double *next = realloc(scr_module_cache_live, cap * sizeof *next);
+    if (!next) scr_trap("out of memory");
+    scr_module_cache_live = next;
+    scr_module_cache_live_cap = cap;
+  }
+  scr_module_cache_live[scr_module_cache_live_count++] = module_id;
+}
+
+static void scr_module_cache_live_remove(double module_id) {
+  for (size_t i = 0; i < scr_module_cache_live_count; i++) {
+    if (scr_module_cache_live[i] != module_id) continue;
+    for (size_t j = i + 1; j < scr_module_cache_live_count; j++)
+      scr_module_cache_live[j - 1] = scr_module_cache_live[j];
+    scr_module_cache_live_count--;
+    return;
+  }
+}
+
 static void scr_module_registry_cleanup(void) {
   for (size_t i = 0; i < scr_module_record_count; i++) {
     ScrModuleRecord *m = &scr_module_records[i];
@@ -268,6 +297,10 @@ static void scr_module_registry_cleanup(void) {
   scr_module_records = NULL;
   scr_module_record_count = 0;
   scr_module_next_cache_order = 1;
+  free(scr_module_cache_live);
+  scr_module_cache_live = NULL;
+  scr_module_cache_live_count = 0;
+  scr_module_cache_live_cap = 0;
 }
 
 /* Keep lazy process values out of the startup cleanup root.  The executable
@@ -538,11 +571,18 @@ void scr_module_define(double module_id, ScrStr *filename, ScrStr *id,
   m->is_main = is_main;
 }
 
+/* The live require.cache object (below): a program that holds it sees the
+ * modules a require enters and drops. */
+static void scr_module_cache_obj_sync(void);
+static SCR_TL ScrDyn *scr_module_cache_obj;
+
 void scr_module_enter(double module_id) {
   ScrModuleRecord *m = scr_module_record(module_id);
   if (!m->in_cache) {
     m->in_cache = true;
     m->cache_order = scr_module_next_cache_order++;
+    scr_module_cache_live_push(module_id);
+    scr_module_cache_obj_sync();
   }
   m->loaded = false;
 }
@@ -588,6 +628,9 @@ void scr_module_fail(double module_id) {
   m->in_cache = false;
   m->loaded = false;
   scr_module_dyn_refresh(m);
+  scr_module_cache_live_remove(module_id);
+  if (scr_module_cache_obj != NULL && m->filename != NULL)
+    scr_dyn_obj_delete_field(scr_module_cache_obj, m->filename);
 }
 
 /* process.config: the build configuration Node reports. A compiled binary
@@ -693,6 +736,13 @@ void scr_module_set_exports_dyn(double module_id, ScrDyn *value) {
   ScrDyn *previous = m->exports_dyn;
   m->exports_dyn = value ? scr_dyn_retain(value) : NULL;
   scr_dyn_release(previous);
+  /* A view built before the module's exports object existed (a parent's
+   * children array does that) answers the object too: Node's view reads the
+   * module's own exports, one object for the module's life. */
+  if (m->dyn_self != NULL)
+    scr_dyn_obj_set(m->dyn_self, "exports", 7,
+                    m->exports_dyn ? scr_dyn_retain(m->exports_dyn)
+                                   : scr_dyn_retain(scr_dyn_undefined()));
 }
 
 /* Node's Module keeps `children` live and `loaded` current on the object a
@@ -731,6 +781,47 @@ static void scr_module_dyn_children_remove(ScrModuleRecord *m, double child_id) 
  * names `Module` links none of it, and its module views keep the plain
  * object prototype. */
 extern ScrDyn *scr_module_class_prototype(void) __attribute__((weak));
+
+/* require.extensions (node:module's Module._extensions): Node's loader
+ * table. A compiled program loads no module at run time, so the three
+ * handlers exist as function values with Node's empty name and length 2 and
+ * refuse when called, while the table itself — one per thread, null
+ * prototype like Node's — answers keys, JSON and identity with
+ * Module._extensions as Node's does. */
+static SCR_TL ScrDyn *scr_module_extensions_table;
+static SCR_TL bool scr_module_extensions_cleanup_registered;
+
+static ScrDyn *scr_module_extensions_refuse(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
+  (void)clo;
+  (void)args;
+  (void)argc;
+  static const char message[] =
+    "require.extensions handlers are part of the standard library types but have no scriptc lowering yet";
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+  return NULL;
+}
+
+static void scr_module_extensions_cleanup(void) {
+  scr_dyn_release(scr_module_extensions_table);
+  scr_module_extensions_table = NULL;
+}
+
+ScrDyn *scr_module_extensions(void) {
+  if (scr_module_extensions_table) return scr_dyn_retain(scr_module_extensions_table);
+  if (!scr_module_extensions_cleanup_registered) {
+    scr_atexit(scr_module_extensions_cleanup);
+    scr_module_extensions_cleanup_registered = true;
+  }
+  ScrDyn *table = scr_dyn_new_obj_null_proto();
+  static const char *names[] = {".js", ".json", ".node"};
+  for (size_t i = 0; i < 3; i++) {
+    ScrDyn *handler = scr_dyn_new_func(scr_closure_new(NULL, 0), scr_module_extensions_refuse, 2,
+                                       "native:module", "");
+    scr_dyn_obj_set(table, names[i], strlen(names[i]), handler);
+  }
+  scr_module_extensions_table = scr_dyn_retain(table);
+  return table;
+}
 
 /* The checked-dynamic view of one module record (Node's Module object as a
  * program sees it when the value's type is any): one object per record,
@@ -856,6 +947,48 @@ ScrArr *scr_module_cache_keys(void) {
     }
   }
   return keys;
+}
+
+/* require.cache as a VALUE: Node's cache object, one per process and the
+ * same object Module._cache answers. Its keys are the loaded modules'
+ * filenames and its values their Module views — the records
+ * scr_module_cache_get and scr_module_cache_keys walk. The contents are
+ * re-synced on every read, so a module a require added (or a failed require
+ * dropped) is what the program sees at that read, while the object keeps
+ * Node's identity for the process. +1. */
+static SCR_TL ScrDyn *scr_module_cache_obj = NULL;
+static SCR_TL bool scr_module_cache_obj_cleanup_registered = false;
+
+static void scr_module_cache_obj_cleanup(void) {
+  scr_dyn_release(scr_module_cache_obj);
+  scr_module_cache_obj = NULL;
+}
+
+static void scr_module_cache_obj_sync(void) {
+  if (scr_module_cache_obj == NULL) return;
+  /* The live entries, in the order their requires entered them: the work
+   * scales with the current cache. A module a failed require dropped is
+   * removed from this list and from the object when it fails. */
+  for (size_t i = 0; i < scr_module_cache_live_count; i++) {
+    size_t r = (size_t)scr_module_cache_live[i];
+    if (r >= scr_module_record_count) continue;
+    ScrModuleRecord *m = &scr_module_records[r];
+    if (!m->in_cache || m->filename == NULL) continue;
+    scr_dyn_obj_set(scr_module_cache_obj, m->filename->data, m->filename->len,
+                    scr_module_dyn_object((double)r));
+  }
+}
+
+ScrDyn *scr_module_cache_object(void) {
+  if (scr_module_cache_obj == NULL) {
+    if (!scr_module_cache_obj_cleanup_registered) {
+      scr_atexit(scr_module_cache_obj_cleanup);
+      scr_module_cache_obj_cleanup_registered = true;
+    }
+    scr_module_cache_obj = scr_dyn_new_obj_null_proto();
+  }
+  scr_module_cache_obj_sync();
+  return scr_dyn_retain(scr_module_cache_obj);
 }
 
 int scr_lib_arg_count(void) {
@@ -3388,12 +3521,19 @@ static void scr_detach_teardown(void) {
 }
 #endif
 
-#if defined(__linux__)
+#if defined(__linux__) || defined(__APPLE__)
 /* LLVM's profile writer. Instrumented builds (--profile-generate) link the
  * profile runtime, which writes the profile from an atexit handler that the
  * _Exit below skips, so the exit writes it first. Every other build leaves the
- * weak reference null. */
+ * weak reference null. Mach-O refuses an undefined weak reference in an
+ * executable, so macOS carries a hidden weak definition instead: the profile
+ * runtime's strong definition overrides it, and a build without the runtime
+ * calls the definition and writes nothing. */
+#if defined(__APPLE__)
+__attribute__((weak, visibility("hidden"))) int __llvm_profile_write_file(void) { return 0; }
+#else
 extern int __llvm_profile_write_file(void) __attribute__((weak));
+#endif
 #endif
 
 /* The shared exit sequence, after the code's exitCode-setter validation:
@@ -3426,8 +3566,10 @@ static void scr_process_exit_finish(int code) {
   scr_stdout_settle();
   fflush(stdout);
   scr_process_stdin_restore_mode();
-#if defined(__linux__)
+#if defined(__linux__) || defined(__APPLE__)
   if (__llvm_profile_write_file != NULL) (void)__llvm_profile_write_file();
+#endif
+#if defined(__linux__)
 #ifndef SCR_LIB
   if (scr_census_write != NULL) scr_census_write();
 #endif
@@ -5016,6 +5158,7 @@ static const char *scr_errno_name(int e, char *fallback, size_t cap) {
   case EPIPE: return "EPIPE";
   case ESPIPE: return "ESPIPE";
   case ELOOP: return "ELOOP";
+  case ENXIO: return "ENXIO";
   case ENOSYS: return "ENOSYS";
   case ENOTSUP: return "ENOTSUP";
   case ESRCH: return "ESRCH";
@@ -5048,6 +5191,7 @@ static const char *scr_errno_text(int e) {
   case EPIPE: return "broken pipe";
   case ESPIPE: return "invalid seek";
   case ELOOP: return "too many levels of symbolic links";
+  case ENXIO: return "no such device or address";
   case ENOSYS: return "function not implemented";
   default: return strerror(e);
   }
@@ -10775,7 +10919,7 @@ static size_t scr_sha1_final(const ScrSha1Ctx *source, unsigned char out[32]) {
   return 20;
 }
 
-static size_t scr_sha1_digest(const unsigned char *data, size_t len, unsigned char out[32]) {
+size_t scr_sha1_digest(const unsigned char *data, size_t len, unsigned char out[32]) {
   ScrSha1Ctx ctx;
   scr_sha1_init(&ctx);
   scr_sha1_update(&ctx, data, len);

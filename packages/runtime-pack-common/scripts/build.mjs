@@ -478,7 +478,9 @@ async function build() {
               unit.source === "scr_webcrypto_aes.c"
                 ? ["-I", join(mbedtls, "include")]
                 : []),
-              ...(unit.source === "scr_zlib.c" || unit.source === "scr_fetch.c"
+              ...(unit.source === "scr_zlib.c" ||
+              unit.source === "scr_fetch.c" ||
+              unit.source === "scr_webstream_compress.c"
                 ? ["-I", zlib]
                 : []),
               ...(unit.source === "scr_brotli.c" ? ["-I", join(brotli, "include")] : []),

@@ -146,6 +146,10 @@ export const httpSignatures = defineLibFnSignatures({
   /* writeInformation(status[, headers]): the generic informational
    * response, answering write()'s backpressure boolean. */
   "http.resWriteInformation": { argTypes: [HTTPRES_T, F64, arrayOf(STRING)], result: BOOL },
+  "http.resWriteInformationCb": {
+    argTypes: [HTTPRES_T, F64, arrayOf(STRING), { kind: "func", params: [], ret: VOID }],
+    result: BOOL,
+  },
   /** The callback forms: the callback fires once the head is written. */
   "http.resWriteContinueCb": {
     argTypes: [HTTPRES_T, { kind: "func", params: [], ret: VOID }],
@@ -166,6 +170,10 @@ export const httpSignatures = defineLibFnSignatures({
   "http.resEndBytes": { argTypes: [HTTPRES_T, BYTES_U8], result: VOID },
   /** The checked-dynamic chunk twins (the net.sockWriteDyn story). */
   "http.resWriteDyn": { argTypes: [HTTPRES_T, DYN], result: BOOL },
+  /* write/end with an encoding or a callback: the extra arguments cross as
+   * checked-dynamic values (undefined when the call omits them). */
+  "http.resWriteArgs": { argTypes: [HTTPRES_T, DYN, DYN, DYN], result: BOOL },
+  "http.resEndArgs": { argTypes: [HTTPRES_T, DYN, DYN, DYN], result: VOID },
   "http.resEndDyn": { argTypes: [HTTPRES_T, DYN], result: VOID },
   "http.resHeadersSent": { argTypes: [HTTPRES_T], result: BOOL },
   "http.resWritableEnded": { argTypes: [HTTPRES_T], result: BOOL },
@@ -273,6 +281,20 @@ export const httpSignatures = defineLibFnSignatures({
   "http.reqPipeRes": { argTypes: [HTTPREQ_T, HTTPRES_T], result: VOID },
   "http.reqPipeClient": { argTypes: [HTTPREQ_T, HTTPCLIENTREQ_T], result: VOID },
   "http.reqPipeSock": { argTypes: [HTTPREQ_T, NETSOCKET_T], result: VOID },
+  /** req.unpipe(dest): that destination stops receiving the body; a
+   * destination the request is not piping to changes nothing. */
+  "http.reqUnpipeRes": { argTypes: [HTTPREQ_T, HTTPRES_T], result: VOID },
+  "http.reqUnpipeClient": { argTypes: [HTTPREQ_T, HTTPCLIENTREQ_T], result: VOID },
+  "http.reqUnpipeSock": { argTypes: [HTTPREQ_T, NETSOCKET_T], result: VOID },
+  /** req.off(event, listener) / removeListener: [message, listener
+   * closure, list kind]. The kind selects the event's registry (1 data,
+   * 2 end, 3 error, 4 close, 5 aborted — the scr_http.h
+   * SCR_HTTP_REQ_OFF_* values); Node removes the most recently added
+   * matching listener. Never throws. */
+  "http.reqOff": { argTypes: [HTTPREQ_T, null, F64], result: VOID },
+  /** res.off(event, listener) / removeListener, the ServerResponse twin
+   * (1 close, 2 finish, 3 prefinish, 4 drain). */
+  "http.resOff": { argTypes: [HTTPRES_T, null, F64], result: VOID },
   "http.reqResume": { argTypes: [HTTPREQ_T], result: VOID },
   "http.reqPause": { argTypes: [HTTPREQ_T], result: VOID },
   "http.reqDestroy": { argTypes: [HTTPREQ_T], result: VOID },
@@ -446,6 +468,9 @@ export const httpSignatures = defineLibFnSignatures({
   "http.clientSetHeaderDyn": { argTypes: [HTTPCLIENTREQ_T, STRING, DYN], result: VOID },
   "http.clientAppendHeaderDyn": { argTypes: [HTTPCLIENTREQ_T, STRING, DYN], result: VOID },
   "http.clientGetHeader": { argTypes: [HTTPCLIENTREQ_T, STRING], result: VOID },
+  /** getHeader as Node answers it: the number, string or string[] that was
+   * set, or undefined, as a checked-dynamic value. */
+  "http.clientGetHeaderDyn": { argTypes: [HTTPCLIENTREQ_T, STRING], result: DYN },
   "http.clientHasHeader": { argTypes: [HTTPCLIENTREQ_T, STRING], result: BOOL },
   "http.clientRemoveHeader": { argTypes: [HTTPCLIENTREQ_T, STRING], result: VOID },
   "http.clientGetHeaderNames": { argTypes: [HTTPCLIENTREQ_T], result: arrayOf(STRING) },
@@ -457,6 +482,8 @@ export const httpSignatures = defineLibFnSignatures({
   "http.clientEndBytes": { argTypes: [HTTPCLIENTREQ_T, BYTES_U8], result: VOID },
   /** The checked-dynamic chunk twins (the net.sockWriteDyn story). */
   "http.clientWriteDyn": { argTypes: [HTTPCLIENTREQ_T, DYN], result: BOOL },
+  "http.clientWriteArgs": { argTypes: [HTTPCLIENTREQ_T, DYN, DYN, DYN], result: BOOL },
+  "http.clientEndArgs": { argTypes: [HTTPCLIENTREQ_T, DYN, DYN, DYN], result: VOID },
   "http.clientEndDyn": { argTypes: [HTTPCLIENTREQ_T, DYN], result: VOID },
   "http.clientFlushHeaders": { argTypes: [HTTPCLIENTREQ_T], result: VOID },
   "http.clientAddTrailers": { argTypes: [HTTPCLIENTREQ_T, arrayOf(STRING)], result: VOID },

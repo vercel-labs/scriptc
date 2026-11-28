@@ -50,6 +50,7 @@ export const streamSignatures = defineLibFnSignatures({
    * stream with pipe() and on(), a { readable, writable } pair, or a
    * source function's result) instead of piping it as a stream. */
   "stream.dynIterableSource": { argTypes: [DYN], result: BOOL },
+  "stream.dynHandsValue": { argTypes: [DYN], result: BOOL },
   /** The value pipeline() pumps for a checked-dynamic first stage: a
    * source function's result (the flag set), which must be iterable, else
    * a { readable, writable } pair's readable side or the value itself. */
@@ -178,6 +179,10 @@ export const streamSignatures = defineLibFnSignatures({
    * stream answers a Duplex whose chunks stay web values (the pipeline's
    * adaptation), where Duplex.from's body adaptation encodes them. */
   "stream.composeStageDyn": { argTypes: [DYN], result: VOID },
+  /** A compose last stage whose value arrives untyped: a web stream pair
+   * keeps duplexify's byte-for-byte sides, and a lone web WritableStream
+   * keeps the chunks written to it. */
+  "stream.composeTailDyn": { argTypes: [DYN], result: VOID },
   /** Duplex.from over a lone Readable or Writable, or a { readable,
    * writable } pair of streams (duplexify.js's _duplexify). */
   "stream.duplexifyReadable": { argTypes: [null], result: VOID },

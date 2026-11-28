@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
 import {
+  emittedSourcePath,
   loadLibraryProfile,
   profileRemediation,
   profileTeaching,
@@ -840,4 +841,50 @@ describe("library profile host-callback channels", () => {
       },
       "slot capacity is 32",
     ));
+});
+
+describe("file_prefix_map", () => {
+  test("folders and prefixes resolve against the profile's directory", () => {
+    const r = loadLibraryProfile(
+      writeProfile({ ...good, file_prefix_map: { stage: "src", "vendor/staged": "vendor/src" } }),
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.profile.filePrefixMap).toEqual([
+      { folder: join(dir, "stage"), prefix: join(dir, "src") },
+      { folder: join(dir, "vendor/staged"), prefix: join(dir, "vendor/src") },
+    ]);
+  });
+
+  test("the first folder that holds a file applies", () => {
+    const profile = { filePrefixMap: [{ folder: "/build/stage", prefix: "/project/src" }] };
+    expect(emittedSourcePath(profile, "/build/stage/lib.ts")).toBe(join("/project/src", "lib.ts"));
+    expect(emittedSourcePath(profile, "/build/stage/deep/a.ts")).toBe(
+      join("/project/src", "deep", "a.ts"),
+    );
+    expect(emittedSourcePath(profile, "/build/stageother/lib.ts")).toBe("/build/stageother/lib.ts");
+    expect(emittedSourcePath({ filePrefixMap: [] }, "/build/stage/lib.ts")).toBe(
+      "/build/stage/lib.ts",
+    );
+  });
+
+  test("Windows-style folders match slash-separated source paths", () => {
+    // The frontend names files with forward slashes (`C:/build/stage/lib.ts`)
+    // while a profile resolved on Windows keeps backslashes; the emitted name
+    // keeps the mapped prefix's own form.
+    const profile = {
+      filePrefixMap: [{ folder: "C:\\build\\stage", prefix: "C:\\project\\src" }],
+    };
+    expect(emittedSourcePath(profile, "C:/build/stage/lib.ts")).toBe("C:\\project\\src\\lib.ts");
+    // A drive letter's case is not identity.
+    expect(emittedSourcePath(profile, "c:/build/stage/deep/a.ts")).toBe(
+      "C:\\project\\src\\deep\\a.ts",
+    );
+    expect(emittedSourcePath(profile, "C:/other/lib.ts")).toBe("C:/other/lib.ts");
+  });
+
+  test("a malformed map refuses with the field name", () => {
+    expectSc4001({ ...good, file_prefix_map: ["stage"] }, "file_prefix_map");
+    expectSc4001({ ...good, file_prefix_map: { stage: 1 } }, "file_prefix_map");
+  });
 });

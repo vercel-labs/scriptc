@@ -153,6 +153,11 @@ ScrStream *scr_stream_consumer_source(const struct ScrDyn *value, const ScrStr *
  * to pump rather than as a stream (false with an exception pending when
  * reading the value's members throws). */
 bool scr_stream_dyn_iterable_source(const struct ScrDyn *value);
+/* Whether a checked-dynamic source's value reaches the next function
+ * stage as itself: Node's makeAsyncIterable answers an iterable, and a
+ * native readable stream answers its iterator; a JS stream-like object
+ * goes as the generator over it. */
+bool scr_stream_dyn_hands_value(const struct ScrDyn *value);
 /* A checked-dynamic pipeline() stage the pipeline takes as a stream: a
  * native stream (+1), or Duplex.from of a value that is not stream-like
  * or a function, which the pipeline uses without piping into it; NULL
@@ -813,6 +818,11 @@ ScrStream *scr_stream_duplex_from_dyn(struct ScrDyn *body);
  * (object mode), as the pipeline's stages do; any other body is Duplex.from's
  * (borrowed). +1. */
 ScrStream *scr_stream_duplex_stage_dyn(struct ScrDyn *body);
+/* Duplex.from over a checked-dynamic compose stage in the last position: a
+ * web stream pair answers duplexify's byte-for-byte sides (the composed Duplex
+ * reads them as Buffers), and a lone web WritableStream answers a writable
+ * Duplex that keeps the chunks the stage before it writes (borrowed). +1. */
+ScrStream *scr_stream_duplex_tail_dyn(struct ScrDyn *body);
 /* Readable.fromWeb(readableStream, { objectMode, highWaterMark, encoding })
  * (scr_stream_from_web.c): hwm < 0 is the mode's default, encoding NULL or
  * a known name; web and encoding borrowed. +1, or NULL with the error. */

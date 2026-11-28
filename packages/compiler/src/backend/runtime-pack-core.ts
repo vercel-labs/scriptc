@@ -655,14 +655,16 @@ export function selectRuntimePackArtifacts(
   // Intl needs the ICU objects only the host-flavored packs carry (ICU is
   // C++, so a pack builds it with Zig's C++ driver for its own glibc target);
   // say so instead of linking a program whose scr_intl.c references would go
-  // undefined.
+  // undefined. Only linux-x64-gnu builds ICU today, so name the capability
+  // and the pack that provides it rather than telling the user to reinstall.
   if (
     features.intl === true &&
     !selectedFlavor.runtime_units.some((unit) => unit.source === "scr_intl.c")
   )
     throw new RuntimePackError(
-      `the ${manifest.target.name} runtime pack has no ICU objects, which Intl needs; reinstall a runtime package that supports Intl`,
+      `the ${manifest.target.name} runtime pack has no Intl support: it ships no ICU objects, and only the linux-x64-gnu runtime pack (@scriptc/runtime-linux-x64-gnu) provides Intl`,
       "unsupported",
+      `ICU is C++, and only the linux-x64-gnu pack builds it. Intl is reached here through the import graph (possibly a dependency's), not necessarily at this site: build for x86_64-linux-gnu with @scriptc/runtime-linux-x64-gnu, or remove the Intl use from the program's graph. scriptc coverage lists the Intl members a program reaches.`,
     );
   return {
     features,

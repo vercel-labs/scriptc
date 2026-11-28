@@ -81,6 +81,12 @@ void scr_tls_sock_on_secure_connect(ScrNetSocket *s, ScrClosure *cb /*moves*/, b
  * Buffer, NULL without a resumable session yet). */
 ScrDyn *scr_tls_sock_servername(ScrNetSocket *s);
 ScrDyn *scr_tls_sock_get_session(ScrNetSocket *s);
+/* isSessionReused(): the standing handshake resumed a session (the peer's
+ * ticket, or the session a client offered with tls.connect's session
+ * option). setSession(session): Node's latin1 conversion and reuse filter;
+ * the engine offers the bytes only before the handshake starts. */
+bool scr_tls_sock_is_session_reused(ScrNetSocket *s);
+void scr_tls_sock_set_session(ScrNetSocket *s, const ScrDyn *session);
 /* tlsSocket.getTLSTicket(): the received session ticket as a +1 Buffer, or
  * undefined (a server socket, or a client without one yet). */
 ScrDyn *scr_tls_sock_get_tls_ticket(ScrNetSocket *s);

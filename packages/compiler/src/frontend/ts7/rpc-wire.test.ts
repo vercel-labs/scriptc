@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { Ts7ProtocolError, Ts7Wire, type Ts7WireIo } from "./rpc-wire.js";
+import { Ts7FrameLimitError, Ts7ProtocolError, Ts7Wire, type Ts7WireIo } from "./rpc-wire.js";
 
 function memory(bytes: Uint8Array = new Uint8Array(), readSize = Infinity, writeSize = Infinity) {
   let position = 0;
@@ -138,16 +138,16 @@ describe("TypeScript MessagePack wire framing", () => {
     }
   });
 
-  test("checks incoming limits before allocating, including unsigned bin32", () => {
-    for (const prefix of [
-      [0x93, 4, 0xc6, 0x80, 0, 0, 0],
-      [0x93, 4, 0xc4, 0, 0xc6, 0xff, 0xff, 0xff, 0xff],
-      [0x93, 4, 0xc4, 0, 0xc4, 5],
-    ]) {
-      const io = memory(Uint8Array.from(prefix));
-      expect(() => new Ts7Wire(io.io, 4, 4).read()).toThrow("exceeds");
-      expect(io.closes()).toBe(1);
-    }
+  test.each([
+    [[0x93, 4, 0xc6, 0x80, 0, 0, 0], "method exceeds"],
+    [[0x93, 4, 0xc4, 0, 0xc6, 0xff, 0xff, 0xff, 0xff], "payload exceeds"],
+    [[0x93, 4, 0xc4, 0, 0xc4, 5], "end of stream"],
+  ] as const)("a truncated over-limit frame closes the channel %j", (prefix, message) => {
+    const io = memory(Uint8Array.from(prefix));
+    // bin32 lengths are parsed unsigned: the drain asks for their bytes
+    // instead of allocating a negative or enormous buffer.
+    expect(() => new Ts7Wire(io.io, 4, 4).read()).toThrow(message);
+    expect(io.closes()).toBe(1);
   });
 
   test("outgoing validation does not write or poison the wire", () => {
@@ -199,6 +199,30 @@ describe("TypeScript MessagePack wire framing", () => {
     expect(() => wire.read()).toThrow(Ts7ProtocolError);
     expect(() => wire.close()).not.toThrow();
   });
+
+  test.each([7, 65536])(
+    "drains an over-limit frame of %i byte reads and keeps the channel open",
+    (readSize) => {
+      const oversize = 1000;
+      const frame = new Uint8Array(9 + 4 + oversize + echo.length);
+      frame.set([0x93, 4, 0xc4, 4, 101, 99, 104, 111, 0xc6]);
+      frame.set(
+        [oversize >>> 24, (oversize >>> 16) & 255, (oversize >>> 8) & 255, oversize & 255],
+        9,
+      );
+      frame.set(echo, 13 + oversize);
+      const io = memory(frame, readSize);
+      // 1000 bytes is over the limit but within the drain cap (4 x limit).
+      const wire = new Ts7Wire(io.io, 400);
+      expect(() => wire.read()).toThrow(Ts7FrameLimitError);
+      expect(io.closes()).toBe(0);
+      expect(wire.read()).toEqual({
+        kind: 4,
+        method: "echo",
+        payload: Uint8Array.from([0, 128, 255]),
+      });
+    },
+  );
 
   test("a partial write failure makes further writes impossible", () => {
     const io = memory();

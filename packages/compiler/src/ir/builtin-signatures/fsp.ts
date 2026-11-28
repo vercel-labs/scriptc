@@ -156,6 +156,12 @@ export const fspSignatures = defineLibFnSignatures({
   "fsp.stat": { argTypes: [STRING], result: { kind: "promise", inner: STATS_T } },
   "fsp.realpath": { argTypes: [STRING], result: { kind: "promise", inner: STRING } },
   "fsp.lstat": { argTypes: [STRING], result: { kind: "promise", inner: STATS_T } },
+  /** fs.promises.stat/lstat(path, options): bigint and throwIfNoEntry are
+   * read at run time by the ladder the synchronous forms use; the call's
+   * type names the member table and whether a suppressed miss answers
+   * undefined. */
+  "fsp.statOpts": { argTypes: [STRING, DYN], result: DYN },
+  "fsp.lstatOpts": { argTypes: [STRING, DYN], result: DYN },
   /** fs/promises.open and the statically represented FileHandle surface.
    * Every operation returns an already-settled promise; syscall failures
    * become rejections rather than escaping synchronously. read/write

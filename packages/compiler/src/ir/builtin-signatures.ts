@@ -105,6 +105,7 @@ import { weakMapSignatures } from "./builtin-signatures/weakMap.js";
 import { weakRefSignatures } from "./builtin-signatures/weakRef.js";
 import { weakSetSignatures } from "./builtin-signatures/weakSet.js";
 import { webcryptoSignatures } from "./builtin-signatures/webcrypto.js";
+import { websocketSignatures } from "./builtin-signatures/websocket.js";
 import { webstreamSignatures } from "./builtin-signatures/webstream.js";
 import { workerSignatures } from "./builtin-signatures/worker.js";
 import { wrapperSignatures } from "./builtin-signatures/wrapper.js";
@@ -227,6 +228,7 @@ function buildLibFnSignatures() {
     ...weakRefSignatures,
     ...weakSetSignatures,
     ...webcryptoSignatures,
+    ...websocketSignatures,
     ...webstreamSignatures,
     ...workerSignatures,
     ...wrapperSignatures,

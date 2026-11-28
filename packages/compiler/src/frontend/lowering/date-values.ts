@@ -102,7 +102,17 @@ function decideTimeValueDate(lowerer: Lowerer, decl: ts.VariableDeclaration): bo
   const visit = (node: ts.Node): void => {
     if (!ok) return;
     if (ts.isIdentifier(node) && node !== decl.name && node.text === decl.name.text) {
-      if (lowerer.checker.getSymbolAtLocation(node) === symbol) {
+      // In shorthand position (`{ startTime }`) the checker answers the
+      // PROPERTY symbol, not the binding's: ask for the value symbol the
+      // shorthand carries, so the Date flows as the object it is.
+      const shorthand =
+        node.parent !== undefined &&
+        ts.isShorthandPropertyAssignment(node.parent) &&
+        node.parent.name === node;
+      const at = shorthand
+        ? lowerer.checker.getShorthandAssignmentValueSymbol(node.parent)
+        : lowerer.checker.getSymbolAtLocation(node);
+      if (at === symbol) {
         const use = enclosingFunction(node) === fn ? timeValueUse(lowerer, node, symbol) : null;
         if (use === null) ok = false;
         else if (use === "set") sets = true;

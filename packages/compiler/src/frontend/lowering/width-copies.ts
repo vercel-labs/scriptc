@@ -22,11 +22,35 @@
  *
  * A program with an aliasable copy and no observation of its layouts
  * behaves as it does under Node; every other aliasable copy is reported
- * (SC6001). Programs without copy helpers skip the scan. */
+ * (SC6001). Programs without copy helpers skip the scan.
+ *
+ * A record copy the program observes, and whose pair the backend can plan a
+ * record view for, is not left as a copy: viewObservedRecordCopies rewrites
+ * it into the live checked conversion that answers a VIEW of the original
+ * record (backend/llvm/record-views.ts), so writes and identity through
+ * either name reach the one object. The pass runs before the scan, on the
+ * same function list, so a rewritten conversion performs no copy and is not
+ * reported. */
 import type { IrExpr, IrFunction, IrLibFn, IrStmt, IrType, SrcLoc } from "../../ir/ir.js";
-import { isUnitType, typeKey } from "../../ir/ir.js";
+import {
+  DYN,
+  isDirentShape,
+  isUnitType,
+  KEY_ORDER_FIELD,
+  RECORD_VIEW_LEAF_KINDS,
+  shapeHasAccessorSlots,
+  shapeKeyOrders,
+  typeKey,
+  canDynCheckTo,
+} from "../../ir/ir.js";
 import { dynamicFieldStores, type DynamicFieldStores } from "../../ir/int32-slots.js";
-import { everyExprChild, everyStmtChild, everyTypeChild } from "../../ir/traverse.js";
+import {
+  everyExprChild,
+  everyStmtChild,
+  everyStmtList,
+  everyTypeChild,
+  transformStmtList,
+} from "../../ir/traverse.js";
 import type { IrModule } from "../../ir/ir.js";
 import * as ts from "../ts7/adapter.js";
 import {
@@ -140,8 +164,11 @@ interface CopyEffect {
   routed: boolean;
 }
 
-/** A conversion site before the program's observations are asked. */
-type CopySite = Omit<WidthCopyFact, "observed">;
+/** A conversion site before the program's observations are asked. `call`
+ * names the helper call a value-depth copy is made by, for the pass that
+ * turns observed record copies into record views; it never leaves this
+ * module. */
+type CopySite = Omit<WidthCopyFact, "observed"> & { call?: IrExpr & { kind: "call" } };
 
 function copyKindOf(name: string): WidthCopyKind | null {
   if (name.charCodeAt(0) !== 37 /* % */) return null;
@@ -272,14 +299,486 @@ function collectCopies(
     const key = `${site.loc.file}\0${site.loc.start}\0${site.kind}\0${site.depth}\0${site.routed ? 1 : 0}\0${typeKey(site.from)}\0${typeKey(site.to)}`;
     if (seen.has(key)) continue;
     seen.add(key);
+    const fact: CopySite = { ...site };
+    delete fact.call;
     if (!site.aliasable) {
-      facts.push({ ...site, observed: null });
+      facts.push({ ...fact, observed: null });
       continue;
     }
     observations ??= new Observations(lowerer, functions);
-    facts.push({ ...site, observed: observations.of(site) });
+    facts.push({ ...fact, observed: observations.of(site) });
   }
   return facts;
+}
+
+/** Turns the record-to-record copies the program can observe into record
+ * VIEWS (backend/llvm/record-views.ts): the source will be boxed as a live
+ * capsule and checked against the narrower record type, which the backend
+ * answers with a view whose field offsets point at the source's slots. Reads
+ * and writes through either name then reach the same storage, and boxing
+ * either answers the source's capsule, so identity holds as in Node.js.
+ *
+ * Only pairs the program OBSERVES are converted: the same scan that reports
+ * SC6001 decides, and a copy nothing can tell from its object stays a native
+ * copy, so the dynamic field tests a view target pays are confined to
+ * programs that can observe the difference. A pair this pass cannot prove
+ * viewable keeps its copies and its warning: a freezable shape, an arm of a
+ * shape union, and a pair the backend could not answer with a view (a source
+ * that holds a function or a class instance, an unboxable field such as
+ * fs.Stats, or the target itself). A worker program and one that publishes
+ * values have no view target at all (other threads cannot read one), so
+ * those programs keep every copy. Returns the number of conversions
+ * rewritten. */
+export function viewObservedRecordCopies(lowerer: Lowerer, functions: IrFunction[]): number {
+  if (lowerer.usesWorkers) return 0;
+  const helpers = new Map<string, IrFunction>();
+  for (const fn of functions) if (isConversionHelper(fn.name)) helpers.set(fn.name, fn);
+  if (helpers.size === 0) return 0;
+  // A published type has no view target: readers in other threads have no
+  // entry for the value. The IR names the publish call its arguments reach.
+  let publishes = false;
+  for (const fn of functions)
+    everyStmtList(fn.body, {
+      stmt: () => !publishes,
+      expr: (expr) => {
+        if (expr.kind === "intrinsic" && expr.name === "threads.publish") publishes = true;
+        return !publishes;
+      },
+    });
+  if (publishes) return 0;
+  const scan = new CopyScan(helpers, functions, false, (id) => lowerer.unions.get(id)?.arms);
+  // Shapes whose values may carry properties their shape does not declare:
+  // the target of a narrowing copy keeps the source's other properties
+  // beside it, and a conversion of such a value keeps them again. A view of
+  // such a value answers its own-key queries (in, hasOwnProperty,
+  // getOwnPropertyNames, Object.keys/values/entries, JSON, spread, assign)
+  // from the target shape, so a pair with such a source keeps its copy.
+  const extraCarrying = extraCarryingShapes(lowerer, functions, scan.sites());
+  // Record shapes a union-typed binding holds: the arm keeps the properties
+  // its conversion kept beside it, and a view of the same shape loses them
+  // for the union's value.
+  const unionFed = unionFedShapes(lowerer, functions);
+  // Record shapes a width conversion reads: a copy made FROM a view loses
+  // the properties the view's source kept beside it, so a conversion whose
+  // result another width conversion reads stays a copy itself.
+  // Record shapes whose value the program also holds in a union arm: the
+  // arm keeps the properties its conversion kept beside it, and a view of
+  // the same shape would lose them for the arm.
+  const unionWrapped = new Set<string>();
+  const wrappedSource = (value: IrExpr): void => {
+    const target = value.kind === "dynCheck" ? value.value : value;
+    const source = target.kind === "dynFrom" ? target.value : target;
+    if (source.type.kind === "record") unionWrapped.add(source.type.shapeId);
+  };
+  function walkExpr(expr: IrExpr): boolean {
+    if (expr.kind === "unionWrap") wrappedSource(expr.value);
+    return everyExprChild(expr, walkExpr, walkStmt);
+  }
+  function walkStmt(stmt: IrStmt): boolean {
+    return everyStmtChild(stmt, walkExpr, walkStmt);
+  }
+  for (const fn of functions) for (const stmt of fn.body) walkStmt(stmt);
+  const widthSources = new Set<string>();
+  for (const site of scan.sites())
+    if (site.kind === "width" && site.from.kind === "record") widthSources.add(site.from.shapeId);
+  const sites = scan.sites().filter(
+    (site) =>
+      site.call !== undefined &&
+      site.kind === "width" &&
+      site.depth === "value" &&
+      !site.routed &&
+      // A collection stores its elements by value in a vector, a Map slot
+      // or a dictionary table, where a view's own storage is what the slot
+      // holds: the copy the store makes is not the object the source names
+      // (an untyped write through the stored element does not reach it).
+      // Those slots keep their copies and their warning.
+      !collectionSlot(site.slot) &&
+      // The call must be the conversion itself, not a routing helper whose
+      // result is another type.
+      typeKey(site.call.type) === typeKey(site.to),
+  );
+  if (sites.length === 0) return 0;
+  const observations = new Observations(lowerer, functions);
+  const pairOf = (site: CopySite): string => `${typeKey(site.from)}\0${typeKey(site.to)}`;
+  const candidates = new Map<string, { target: string; source: string }>();
+  for (const site of sites) {
+    if (!site.aliasable || observations.of(site) === null) continue;
+    if (site.from.kind !== "record" || site.to.kind !== "record") continue;
+    if (extraCarrying.has(site.from.shapeId)) continue;
+    if (unionFed.has(site.from.shapeId)) continue;
+    if (widthSources.has(site.to.shapeId)) continue;
+    const fromFields = lowerer.shapes.get(site.from.shapeId)?.fields ?? [];
+    const toNames = new Set((lowerer.shapes.get(site.to.shapeId)?.fields ?? []).map((f) => f.name));
+    const drops = fromFields.some((field) => !toNames.has(field.name));
+    if (drops && unionWrapped.has(site.from.shapeId)) continue;
+    if (!viewableRecordPair(lowerer, site.from, site.to)) continue;
+    candidates.set(pairOf(site), { target: site.to.shapeId, source: site.from.shapeId });
+  }
+  // A pair the backend's planner would refuse is not a view: rewriting it
+  // would leave a copy behind the conversion and lose its SC6001 warning.
+  // The planner's refusal depends on every other planned pair (a source can
+  // hold the target through the sources of the views it reaches), so the
+  // pairs are settled together.
+  const observed = survivingPairs(lowerer, functions, candidates);
+  if (observed.size === 0) return 0;
+  const views = new Map<IrExpr & { kind: "call" }, IrType>();
+  for (const site of sites) {
+    if (site.call === undefined || !site.aliasable) continue;
+    if (!observed.has(pairOf(site))) continue;
+    views.set(site.call, site.to);
+  }
+  if (views.size === 0) return 0;
+  let rewritten = 0;
+  for (const fn of functions) {
+    if (helpers.has(fn.name)) continue;
+    fn.body = transformStmtList(fn.body, {
+      stmt: (stmt) => stmt,
+      expr: (expr) => {
+        const target = views.get(expr as IrExpr & { kind: "call" });
+        if (target === undefined) return expr;
+        rewritten++;
+        const call = expr as IrExpr & { kind: "call" };
+        return {
+          kind: "dynCheck",
+          value: { kind: "dynFrom", value: call.args[0]!, liveRef: true, type: DYN, loc: call.loc },
+          type: target,
+          loc: call.loc,
+        };
+      },
+    });
+  }
+  return rewritten;
+}
+
+/** Slots that store a record by value inside a collection: array elements
+ * (a literal, `push`/`unshift`/index stores, the element of a width-lifted
+ * array), Map/Set entries and dictionary tables. A view stored there keeps
+ * its own bytes, so the store's copy is not the source object. */
+function collectionSlot(slot: string): boolean {
+  return (
+    slot === "arrayLit" ||
+    slot === "arraySet" ||
+    slot === "dynSet" ||
+    slot === "recordSet" ||
+    slot.startsWith("arrIntrinsic.") ||
+    slot.startsWith("mapIntrinsic.") ||
+    slot.startsWith("setIntrinsic.")
+  );
+}
+
+/** Whether a wider record `from` can be viewed as the narrower record `to`:
+ * the target's fields all exist in the source with the same types, both
+ * shapes are plain, neither may be frozen, and the target is not an arm of
+ * a shape union (the backend declines views there, and the frontend cannot
+ * see published types, so those programs keep their copies). */
+function viewableRecordPair(lowerer: Lowerer, from: IrType, to: IrType): boolean {
+  if (from.kind !== "record" || to.kind !== "record") return false;
+  const source = lowerer.shapes.get(from.shapeId);
+  const target = lowerer.shapes.get(to.shapeId);
+  if (source === undefined || target === undefined) return false;
+  const plain = (shape: typeof source): boolean =>
+    !shape.tuple &&
+    shape.indexValue === undefined &&
+    !isDirentShape(shape) &&
+    !shapeHasAccessorSlots(shape) &&
+    shapeKeyOrders(shape).length === 1 &&
+    !shape.fields.some((field) => field.name === KEY_ORDER_FIELD || field.name.startsWith("%"));
+  if (!plain(source) || !plain(target)) return false;
+  if (source.freezable === true || target.freezable === true) return false;
+  const sourceFields = new Map(source.fields.map((field) => [field.name, typeKey(field.type)]));
+  if (!target.fields.every((field) => sourceFields.get(field.name) === typeKey(field.type)))
+    return false;
+  // The view conversion starts by boxing the source as a live capsule. A
+  // source that holds a function, a class instance, an untyped value or a
+  // promise, anywhere in its fields, cannot be boxed that way: the backend's
+  // planner treats the source as holding EVERY record type and declines the
+  // pair (record-views.ts), so the copy keeps its SC6001 warning instead of
+  // being rewritten into a view the backend answers with a copy.
+  if (source.fields.some((field) => mayHoldAny(lowerer, field.type, new Set()))) return false;
+  // The capsule is a checked-dynamic box of the source record: a field that
+  // cannot be boxed (fs.Stats and the other native-handle kinds) has no
+  // dynFrom, which the backend would refuse after the copy was already
+  // rewritten.
+  if (!lowerer.dynConvertible(from)) return false;
+  if (
+    holdsShape(
+      lowerer,
+      source.fields.map((field) => field.type),
+      to.shapeId,
+      new Set(),
+    )
+  )
+    return false;
+  // Only a union of TWO OR MORE record shapes tags its arms' reserved word
+  // (the backend's shape union): the target keeps that encoding and cannot
+  // carry a view. A single record arm beside a unit arm (`T | null`) does
+  // not, so it stays viewable.
+  for (const union of lowerer.unions.unions) {
+    const recordArms = union.arms.filter((arm) => arm.kind === "record");
+    if (
+      recordArms.length > 1 &&
+      recordArms.some((arm) => arm.kind === "record" && arm.shapeId === to.shapeId)
+    )
+      return false;
+  }
+  return canDynCheckTo(
+    to,
+    (id) => lowerer.shapes.get(id),
+    (id) => lowerer.unions.get(id),
+  );
+}
+
+/** Record shapes a union-typed binding holds. A record assigned to a union
+ * keeps the properties its conversion kept beside it; a view of the same
+ * shape would lose them for the union's value. */
+function unionFedShapes(lowerer: Lowerer, functions: readonly IrFunction[]): Set<string> {
+  const declared = new Map<string, IrType>();
+  for (const fn of functions)
+    for (const local of fn.locals ?? []) declared.set(local.id, local.type);
+  // Top-level bindings are globals: their declared types live in the
+  // lowerer's global table, not in a function's locals.
+  for (const global of lowerer.globalsList) declared.set(global.id, global.type);
+  const out = new Set<string>();
+  const recordTypeOf = (expr: IrExpr): (IrType & { kind: "record" }) | null => {
+    let cur = expr;
+    for (;;) {
+      if (cur.kind === "unionWrap" || cur.kind === "dynCheck" || cur.kind === "dynFrom") {
+        cur = cur.value;
+        continue;
+      }
+      // A conversion call reads its source from its first argument: the
+      // record value the union arm was converted from.
+      if (cur.kind === "call" && isConversionHelper(cur.callee) && cur.args[0] !== undefined) {
+        cur = cur.args[0];
+        continue;
+      }
+      break;
+    }
+    return cur.type.kind === "record" ? cur.type : null;
+  };
+  const note = (expr: IrExpr, localId: string): void => {
+    if (expr.type.kind !== "union" && declared.get(localId)?.kind !== "union") return;
+    const record = recordTypeOf(expr);
+    if (record !== null) out.add(record.shapeId);
+  };
+  for (const fn of functions)
+    everyStmtList(fn.body, {
+      stmt: (stmt) => {
+        if (stmt.kind === "varDecl" && stmt.init !== null) note(stmt.init, stmt.localId);
+        else if (stmt.kind === "assign") note(stmt.value, stmt.localId);
+        return true;
+      },
+      expr: (expr) => {
+        if (expr.kind === "unionWrap") {
+          const record = recordTypeOf(expr.value);
+          if (record !== null) out.add(record.shapeId);
+        }
+        return true;
+      },
+    });
+  return out;
+}
+
+/** Record shapes whose values may carry properties their shape does not
+ * declare. A narrowing copy keeps the source's other properties beside the
+ * copy (the runtime's record-source table), and a conversion of such a value
+ * keeps them further on. */
+function extraCarryingShapes(
+  lowerer: Lowerer,
+  functions: readonly IrFunction[],
+  sites: readonly CopySite[],
+): Set<string> {
+  const pairs: { from: string; to: string }[] = [];
+  for (const link of lowerer.recordLinks.values()) pairs.push({ from: link.from, to: link.to });
+  for (const site of sites)
+    if (site.kind === "width" && site.from.kind === "record" && site.to.kind === "record")
+      pairs.push({ from: site.from.shapeId, to: site.to.shapeId });
+  const declared = new Map<string, IrType>();
+  for (const fn of functions)
+    for (const local of fn.locals ?? []) declared.set(local.id, local.type);
+  const binding = (value: IrType, localId: string): void => {
+    const type = declared.get(localId);
+    if (value.kind === "record" && type?.kind === "record")
+      pairs.push({ from: value.shapeId, to: type.shapeId });
+  };
+  for (const fn of functions)
+    everyStmtList(fn.body, {
+      stmt: (stmt) => {
+        if (stmt.kind === "varDecl" && stmt.init !== null) binding(stmt.init.type, stmt.localId);
+        else if (stmt.kind === "assign") binding(stmt.value.type, stmt.localId);
+        return true;
+      },
+      expr: () => true,
+    });
+  const extra = new Set<string>();
+  for (let changed = true; changed;) {
+    changed = false;
+    for (const pair of pairs) {
+      const from = lowerer.shapes.get(pair.from);
+      const to = lowerer.shapes.get(pair.to);
+      if (from === undefined || to === undefined) continue;
+      const carried =
+        extra.has(pair.from) ||
+        from.fields.some((field) => !to.fields.some((other) => other.name === field.name));
+      if (!carried || extra.has(pair.to)) continue;
+      extra.add(pair.to);
+      changed = true;
+    }
+  }
+  return extra;
+}
+
+/** The pairs among `pairs` the backend's view planner keeps: a pair whose
+ * source can hold the target through its fields, elements or the sources of
+ * the pairs its records reach is refused there (record-views.ts's `holds`
+ * fixpoint), so the copy must keep its SC6001 warning. Dropping one pair
+ * removes a source another pair can reach, so the answer repeats to a
+ * fixpoint. */
+function survivingPairs(
+  lowerer: Lowerer,
+  functions: readonly IrFunction[],
+  pairs: ReadonlyMap<string, { target: string; source: string }>,
+): Set<string> {
+  const sourcesOf = new Map<string, Set<string>>();
+  const add = (target: string, source: string): void => {
+    const set = sourcesOf.get(target);
+    if (set === undefined) sourcesOf.set(target, new Set([source]));
+    else set.add(source);
+  };
+  for (const pair of pairs.values()) add(pair.target, pair.source);
+  // The planner's graph holds every value it can view, not only this pass's
+  // candidates: an existing checked conversion of a boxed record (an
+  // `unknown`-to-record assertion, say) is a view source too, and a record
+  // that reaches it reaches what it holds.
+  const covers = (sourceId: string, targetId: string): boolean => {
+    const source = lowerer.shapes.get(sourceId);
+    const target = lowerer.shapes.get(targetId);
+    if (source === undefined || target === undefined) return false;
+    const fields = new Map(source.fields.map((field) => [field.name, typeKey(field.type)]));
+    return target.fields.every((field) => fields.get(field.name) === typeKey(field.type));
+  };
+  for (const fn of functions)
+    everyStmtList(fn.body, {
+      stmt: () => true,
+      expr: (expr) => {
+        if (expr.kind !== "dynCheck" || expr.value.kind !== "dynFrom") return true;
+        if (expr.value.liveRef !== true) return true;
+        const from = expr.value.value.type;
+        const to = expr.type;
+        if (from.kind === "record" && to.kind === "record" && covers(from.shapeId, to.shapeId))
+          add(to.shapeId, from.shapeId);
+        return true;
+      },
+    });
+  const holds = (shapeId: string): Set<string> | "any" => {
+    const out = new Set<string>();
+    const seen = new Set<string>();
+    const visit = (type: IrType): boolean => {
+      const key = `t:${typeKey(type)}`;
+      if (seen.has(key)) return true;
+      seen.add(key);
+      switch (type.kind) {
+        case "record": {
+          out.add(type.shapeId);
+          const shape = lowerer.shapes.get(type.shapeId);
+          if (shape?.indexValue !== undefined && !visit(shape.indexValue)) return false;
+          for (const source of sourcesOf.get(type.shapeId) ?? [])
+            if (!visit({ kind: "record", shapeId: source })) return false;
+          return (shape?.fields ?? []).every((field) => visit(field.type));
+        }
+        case "array":
+        case "set":
+          return visit(type.elem);
+        case "map":
+          return visit(type.key) && visit(type.value);
+        case "union":
+          return (lowerer.unions.get(type.unionId)?.arms ?? []).every(visit);
+        default:
+          return RECORD_VIEW_LEAF_KINDS.has(type.kind);
+      }
+    };
+    return visit({ kind: "record", shapeId }) ? out : "any";
+  };
+  for (let changed = true; changed;) {
+    changed = false;
+    for (const [target, set] of sourcesOf) {
+      for (const source of [...set]) {
+        const held = holds(source);
+        if (held === "any" || held.has(target)) {
+          set.delete(source);
+          changed = true;
+        }
+      }
+    }
+  }
+  const kept = new Set<string>();
+  for (const [key, pair] of pairs)
+    if (sourcesOf.get(pair.target)?.has(pair.source) === true) kept.add(key);
+  return kept;
+}
+
+/** Whether a value of `type` may reference an arbitrary object: a function,
+ * a class instance, an untyped value, a promise or a handle kind. The
+ * backend's view planner treats a record that holds one as holding EVERY
+ * record type (record-views.ts), so a view pair with such a source is
+ * declined there. */
+function mayHoldAny(lowerer: Lowerer, type: IrType, seen: Set<string>): boolean {
+  const key = `t:${typeKey(type)}`;
+  if (seen.has(key)) return false;
+  seen.add(key);
+  switch (type.kind) {
+    case "record":
+      return (lowerer.shapes.get(type.shapeId)?.fields ?? []).some((field) =>
+        mayHoldAny(lowerer, field.type, seen),
+      );
+    case "array":
+    case "set":
+      return mayHoldAny(lowerer, type.elem, seen);
+    case "map":
+      return mayHoldAny(lowerer, type.key, seen) || mayHoldAny(lowerer, type.value, seen);
+    case "union":
+      return (lowerer.unions.get(type.unionId)?.arms ?? []).some((arm) =>
+        mayHoldAny(lowerer, arm, seen),
+      );
+    default:
+      return !RECORD_VIEW_LEAF_KINDS.has(type.kind);
+  }
+}
+
+/** Whether any of `types` is, or holds through a record's fields, an array,
+ * a map, a set or a union, a record of `shapeId`. */
+function holdsShape(
+  lowerer: Lowerer,
+  types: readonly IrType[],
+  shapeId: string,
+  seen: Set<string>,
+): boolean {
+  for (const type of types) {
+    if (type.kind === "record") {
+      if (type.shapeId === shapeId) return true;
+      const key = `t:${typeKey(type)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const shape = lowerer.shapes.get(type.shapeId);
+      const inner = (shape?.fields ?? []).map((field) => field.type);
+      if (shape?.indexValue !== undefined) inner.push(shape.indexValue);
+      if (holdsShape(lowerer, inner, shapeId, seen)) return true;
+      continue;
+    }
+    if (type.kind === "array" || type.kind === "set") {
+      if (holdsShape(lowerer, [type.elem], shapeId, seen)) return true;
+      continue;
+    }
+    if (type.kind === "map") {
+      if (holdsShape(lowerer, [type.key, type.value], shapeId, seen)) return true;
+      continue;
+    }
+    if (type.kind !== "union" || seen.has(`u:${type.unionId}`)) continue;
+    seen.add(`u:${type.unionId}`);
+    const arms = lowerer.unions.get(type.unionId)?.arms ?? [];
+    if (holdsShape(lowerer, arms, shapeId, seen)) return true;
+  }
+  return false;
 }
 
 /** Finds the copy helper calls of a function list and whether each
@@ -330,7 +829,13 @@ class CopyScan {
         effect.depth === "value"
           ? this.fresh(arg) || PROJECTING_SLOTS.has(slot)
           : this.deepFresh(arg);
-      this.out.push({ ...effect, loc: call.loc, aliasable: !unseen, slot });
+      this.out.push({
+        ...effect,
+        loc: call.loc,
+        aliasable: !unseen,
+        slot,
+        ...(effect.depth === "value" ? { call } : {}),
+      });
     }
   }
 

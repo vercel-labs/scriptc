@@ -67,6 +67,11 @@ void scr_et_core_drop(ScrEventTargetCore *core);
  * value (borrowed — `this` for listeners and the events' target), args
  * borrowed. +1 result, or NULL with the exception pending. */
 ScrDyn *scr_et_add_listener(ScrEventTargetCore *core, ScrDyn *const *args, size_t argc);
+/* The same, answering the converted type's name (+1) when the listener was
+ * registered, and NULL when nothing was (an aborted signal, a null listener,
+ * a refused argument). */
+ScrDyn *scr_et_add_listener_named(ScrEventTargetCore *core, ScrDyn *const *args, size_t argc,
+                                  ScrStr **type);
 ScrDyn *scr_et_remove_listener(ScrEventTargetCore *core, ScrDyn *const *args, size_t argc);
 ScrDyn *scr_et_dispatch_event(ScrEventTargetCore *core, ScrDyn *self, ScrDyn *const *args, size_t argc);
 /* EventTarget.prototype's method `key` (addEventListener,
@@ -82,6 +87,11 @@ ScrDyn *scr_et_handler_get(ScrEventTargetCore *core, const char *type);
 void scr_et_handler_set(ScrEventTargetCore *core, const char *type, const ScrDyn *value);
 /* A trusted (isTrusted) Event handle of the given type, +1. */
 ScrDyn *scr_event_new_trusted(const char *type);
+/* The trusted events a native emitter dispatches: a MessageEvent carrying
+ * `data` (borrowed) and a CloseEvent with its code, reason (borrowed) and
+ * wasClean flag. +1. */
+ScrDyn *scr_message_event_with(ScrDyn *data, bool trusted);
+ScrDyn *scr_close_event_with(int64_t code, ScrStr *reason, bool was_clean, bool trusted);
 /* new EventTarget() / new Event(type, options) / new CustomEvent(type,
  * options): `args` is the argument vector as one dyn array (borrowed).
  * +1 handle, or NULL with the exception pending. */
@@ -150,6 +160,25 @@ typedef struct {
   ScrDyn *(*method_value)(const char *name, size_t length);
   ScrDyn *(*handler_get)(ScrEventTargetCore *core, const char *type);
   void (*handler_set)(ScrEventTargetCore *core, const char *type, const ScrDyn *value);
+  /* NodeEventTarget's listenerCount/removeAllListeners walk one map for the
+   * EventTarget and EventEmitter spellings, so the owner removes through the
+   * core too: every listener of `type` leaves, the on<type> attribute's
+   * registration with them (its stored value stays, as Node's does); a null
+   * `type` removes every listener of every type. The core's changed hook
+   * runs for each type that lost its last listener. */
+  void (*remove_all)(ScrEventTargetCore *core, const char *type);
+  /* Whether the type still has a map entry. A root outlives its last
+   * listener when that listener was consumed by firing (a `{ once: true }`
+   * listener) or the on<type> attribute was cleared by assignment, so
+   * eventNames() keeps reporting it until an explicit removal deletes the
+   * type, as Node's map does. */
+  bool (*has_type)(ScrEventTargetCore *core, const char *type);
+  /* addEventListener's DOM steps with the registered type's name handed back
+   * (+1 in *type) for the owner's listener order: the options are read first,
+   * an aborted signal returns before the type is touched, and the conversion
+   * happens once. */
+  ScrDyn *(*add_listener)(ScrEventTargetCore *core, ScrDyn *const *args, size_t argc,
+                          ScrStr **type);
 } ScrEtBroadcastOps;
 extern SCR_TL const ScrEtBroadcastOps *scr_et_broadcast_ops;
 void scr_et_broadcast_install(void);

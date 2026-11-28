@@ -37,6 +37,9 @@ const programs = [
   "tests/corpus/tls-renegotiate-policy-tls13.ts",
   "tests/corpus/tls-renegotiation-rejected-certificate.ts",
   "tests/corpus/tls-set-key-cert.ts",
+  "tests/corpus/tls-session-resumption.ts",
+  "tests/corpus/tls-session-resumption-checks.ts",
+  "tests/corpus/tls-session-verdict-at-secure-connect.ts",
 ];
 
 describe.skipIf(!sanitize || process.platform !== "linux")(

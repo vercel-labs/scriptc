@@ -85,12 +85,15 @@ import {
 import { hasRuntimeStatics } from "../class-runtime-statics.js";
 import {
   classMemberNameOf,
+  classValueIsExactlyOwn,
   classValueRef,
+  findStaticOn,
   lowerClassStaticRead,
   staticReceiverClass,
   staticShadowBelow,
   type ClassInfo,
 } from "../lower-classes.js";
+import { usesStaticReceiver } from "../static-this.js";
 import { classSymbolKeyOf, symbolFieldDisplayName } from "../symbol-fields.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
 import {
@@ -501,12 +504,22 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
             break;
           }
         }
-        if (storage === "module" && !exactReceiver && accessor)
-          lowerer.unsupported(
-            "SC1090",
-            expr,
-            "receiver-dependent symbol-keyed static accessors through a polymorphic class value",
-          );
+        if (
+          storage === "module" &&
+          accessor &&
+          !classValueIsExactlyOwn(lowerer, expr.expression, classInfo)
+        ) {
+          // Only a getter that reads the static receiver differs between a
+          // class and its subclasses; a constant getter answers the same
+          // value through every receiver, exactly as the named read does.
+          const getter = findStaticOn(lowerer, classInfo, `get:${name}`);
+          if (getter?.method && usesStaticReceiver(getter.method.member))
+            lowerer.unsupported(
+              "SC1090",
+              expr,
+              "receiver-dependent symbol-keyed static accessors through a polymorphic class value",
+            );
+        }
         if (storage === "module") {
           const staticRead = lowerClassStaticRead(lowerer, classInfo, name, expr.expression, expr);
           if (staticRead !== null) return lowerer.maybeNarrow(staticRead, expr);

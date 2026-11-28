@@ -9622,7 +9622,11 @@ export function lowerStaticMethodCall(
  * rebindable global). Exactly then a #private static access through
  * the value always carries the declaring class's brand — Node's
  * TypeError cannot arise. */
-function classValueIsExactlyOwn(lowerer: Lowerer, recv: ts.Expression, info: ClassInfo): boolean {
+export function classValueIsExactlyOwn(
+  lowerer: Lowerer,
+  recv: ts.Expression,
+  info: ClassInfo,
+): boolean {
   return exactClassOfReceiver(lowerer, recv) === info || info.subclasses.length === 0;
 }
 

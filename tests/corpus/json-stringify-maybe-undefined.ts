@@ -59,3 +59,36 @@ class Notebook {
 const notebook = new Notebook();
 notebook.add({ k: [1, undefined] });
 out("recursive union", () => JSON.stringify(notebook.latest));
+
+// A maybe-undefined record root crosses the walker as a live reference: a
+// toJSON hook that deletes a later field keeps it out of the output, and
+// one that rewrites a later field writes the new value, as in Node.
+type Secret = { hook: { toJSON(): unknown }; secret?: string };
+function deletingRoot(): Secret | undefined {
+  const value: Secret = {
+    hook: {
+      toJSON(): unknown {
+        delete liveDelete!.secret;
+        return "hooked";
+      },
+    },
+    secret: "hunter2",
+  };
+  return value;
+}
+let liveDelete: Secret | undefined = deletingRoot();
+out("live delete", () => JSON.stringify(liveDelete));
+function redactingRoot(): Secret | undefined {
+  const value: Secret = {
+    hook: {
+      toJSON(): unknown {
+        liveRedact!.secret = "[redacted]";
+        return "hooked";
+      },
+    },
+    secret: "hunter2",
+  };
+  return value;
+}
+let liveRedact: Secret | undefined = redactingRoot();
+out("live redact", () => JSON.stringify(liveRedact));

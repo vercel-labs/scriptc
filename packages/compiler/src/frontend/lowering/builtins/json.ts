@@ -417,7 +417,18 @@ function lowerMaybeUndefinedStringifyRoot(
         `(the value may be undefined and cannot cross into the checked-dynamic boundary)`,
     );
   }
-  const boxed: IrExpr = { kind: "dynFrom", value, type: DYN, loc };
+  // A record, array or class root stays a live reference while the walker
+  // visits it: a toJSON hook can mutate a later field, as in Node. A union
+  // of scalars only holds no container and converts by value.
+  const boxed: IrExpr = {
+    kind: "dynFrom",
+    value,
+    ...(isLiveDynRefType(value.type, (id) => lowerer.unions.get(id))
+      ? { liveRef: true as const }
+      : {}),
+    type: DYN,
+    loc,
+  };
   const raw: IrExpr = {
     kind: "libCall",
     fn: "json.stringifyReplacer",

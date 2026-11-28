@@ -195,6 +195,7 @@ export const darwinFiles = [
   "packages/cli/test/bootstrap.test.ts",
   "packages/cli/test/native-link-info.test.ts",
   "packages/cli/test/native-output.test.ts",
+  "packages/cli/test/profile.test.ts",
   "packages/cli/test/runtime-pack.test.ts",
   "packages/compiler/test/debug-variables.test.ts",
   "packages/compiler/test/native-codegen-integration.test.ts",

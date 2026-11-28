@@ -31,7 +31,7 @@ async function scriptc(args: string[], env: NodeJS.ProcessEnv) {
   });
 }
 
-test.skipIf(process.platform !== "linux")(
+test.skipIf(process.platform !== "linux" && process.platform !== "darwin")(
   "instrumented runs write profiles that merge and optimize the program, stale or not",
   async () => {
     const dir = await mkdtemp(join(tmpdir(), "scriptc-profile-"));

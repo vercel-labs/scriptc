@@ -18,27 +18,48 @@ function loadLocalEnv() {
   }
 }
 
+/** Read one duration setting (`90m`, `2h`, `500ms`) as written text and
+ * milliseconds. A malformed value fails before any Sandbox is created. */
+function sandboxDuration(source, name, fallback) {
+  const text = source[name] ?? fallback;
+  const match = /^(\d+)\s*(ms|s|m|h)$/.exec(text.trim());
+  const units = { ms: 1, s: 1000, m: 60_000, h: 3_600_000 };
+  const milliseconds = match ? Number(match[1]) * units[match[2]] : 0;
+  if (!Number.isSafeInteger(milliseconds) || milliseconds <= 0 || milliseconds > 2_147_483_647) {
+    throw new Error(`${name} must be a positive duration such as 45m or 2h`);
+  }
+  return { text, milliseconds };
+}
+
 export function sandboxRunnerConfig(env) {
   loadLocalEnv();
   const source = env ?? process.env;
-  const sandboxTimeout = source.SCRIPTC_SANDBOX_TIMEOUT ?? "45m";
-  const duration = /^(\d+)\s*(ms|s|m|h)$/.exec(sandboxTimeout.trim());
-  const units = { ms: 1, s: 1000, m: 60_000, h: 3_600_000 };
-  const sandboxTimeoutMs = duration ? Number(duration[1]) * units[duration[2]] : 0;
-  if (
-    !Number.isSafeInteger(sandboxTimeoutMs) ||
-    sandboxTimeoutMs <= 0 ||
-    sandboxTimeoutMs > 2_147_483_647
-  ) {
-    throw new Error("SCRIPTC_SANDBOX_TIMEOUT must be a positive duration such as 45m or 2h");
-  }
+  // The default has to cover a whole lane, and a lane's clock starts when its
+  // Sandbox is created: preparation takes about 13 minutes per wave, all
+  // Sandboxes then wait for the last wave before testing begins (about 30
+  // minutes for 18 Sandboxes at the preparation concurrency), and the corpus
+  // shard itself runs for an hour or more. At 45 minutes a healthy lane was
+  // killed mid-suite, and at 90 minutes the first wave still ran out during
+  // its corpus step.
+  const sandboxTimeout = sandboxDuration(source, "SCRIPTC_SANDBOX_TIMEOUT", "150m");
+  // Building the Linux LLVM helper and runtime pack from source takes about
+  // 7 minutes at 8 vCPUs for one Sandbox alone and longer when a whole wave
+  // of shards builds at once, so the native steps get their own, much larger
+  // limit than a test command. Measured times and the headroom they leave are
+  // in CONTRIBUTING.md.
+  const nativeTimeout = sandboxDuration(source, "SCRIPTC_SANDBOX_NATIVE_TIMEOUT", "20m");
   return {
     vcpus: source.SCRIPTC_SANDBOX_VCPUS ?? "8",
+    // The native bootstrap Sandboxes need the memory the sanitized emitter
+    // peaks at; each vCPU adds 2 GB.
+    nativeVcpus: source.SCRIPTC_SANDBOX_NATIVE_VCPUS ?? "32",
     testWorkers: source.SCRIPTC_TEST_WORKERS ?? "4",
     localTestWorkers: source.SCRIPTC_LOCAL_TEST_WORKERS ?? "2",
     localCaseShards: source.SCRIPTC_LOCAL_CASE_SHARDS ?? "2",
-    sandboxTimeout,
-    sandboxTimeoutMs,
+    sandboxTimeout: sandboxTimeout.text,
+    sandboxTimeoutMs: sandboxTimeout.milliseconds,
+    nativeTimeout: nativeTimeout.text,
+    nativeTimeoutMs: nativeTimeout.milliseconds,
   };
 }
 
@@ -95,12 +116,21 @@ export function sandboxVercelConfig(env) {
 }
 
 /** Build a child environment that makes the selected authentication source
- * unambiguous. The Vercel wrapper otherwise prefers a stored/access token to
- * VERCEL_OIDC_TOKEN when both are available. */
+ * unambiguous. The Vercel CLI otherwise prefers a stored/access token to
+ * VERCEL_OIDC_TOKEN when both are available. An OIDC token must stay the only
+ * credential: forwarding it as VERCEL_AUTH_TOKEN as well makes the Sandbox API
+ * answer 403 "Not authorized" (invalidToken), which the Nov 13 gate run hit
+ * with a freshly pulled development token on CLI 58.1.0 and 65.14.0. */
 export function sandboxVercelEnvironment(config, env) {
   const childEnv = { ...(env ?? process.env) };
-  if (config.authToken) childEnv.VERCEL_AUTH_TOKEN = config.authToken;
-  if (config.oidc) delete childEnv.VERCEL_TOKEN;
+  delete childEnv.VERCEL_TOKEN;
+  if (config.oidc) {
+    childEnv.VERCEL_OIDC_TOKEN = config.authToken;
+    delete childEnv.VERCEL_AUTH_TOKEN;
+  } else if (config.authToken) {
+    childEnv.VERCEL_AUTH_TOKEN = config.authToken;
+    delete childEnv.VERCEL_OIDC_TOKEN;
+  }
   return childEnv;
 }
 

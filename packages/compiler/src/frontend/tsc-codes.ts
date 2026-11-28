@@ -1186,8 +1186,99 @@ export function voidTruthinessAwaitedCall(node: ts.Node, program: ts.Program): b
   return (
     ts.isCallExpression(inner) &&
     !undefinedAtRunTime(awaited, program) &&
-    voidTruthinessNeedsRuntimeValue(inner, program)
+    voidTruthinessNeedsRuntimeValue(inner, program) &&
+    memberKeepsValue(program, inner)
   );
+}
+
+/** Whether the member an awaited call reads keeps the value its callee
+ * answers. An object-literal METHOD declaration compiles with a
+ * value-carrying return, so its answer survives; a property holding a
+ * function literal written into a void-typed slot keeps the slot's void ABI
+ * and drops the value, so a waited call through it answers undefined where
+ * Node answers the callee's value. Only proof of the first shape admits the
+ * awaited call. */
+function memberKeepsValue(program: ts.Program, call: ts.CallExpression): boolean {
+  const checker = program.getTypeChecker();
+  let callee: ts.Node = call.expression;
+  while (ts.isParenthesizedExpression(callee)) callee = callee.expression;
+  const site = ts.isPropertyAccessExpression(callee)
+    ? callee.name
+    : ts.isElementAccessExpression(callee) && ts.isStringLiteralLike(callee.argumentExpression)
+      ? callee.argumentExpression
+      : null;
+  if (site === null) return false;
+  let symbol = checker.getSymbolAtLocation(site);
+  if (symbol === undefined) return false;
+  if ((symbol.flags & ts.SymbolFlags.Alias) !== 0) symbol = checker.getAliasedSymbol(symbol);
+  const decl = symbol.valueDeclaration ?? symbol.declarations?.[0];
+  if (decl === undefined) return false;
+  if (ts.isMethodDeclaration(decl)) return methodReturnsOwnValue(checker, decl);
+  if (ts.isPropertyAssignment(decl) && decl.initializer !== undefined) {
+    const type = checker.getTypeAtLocation(decl.initializer);
+    const signatures = checker.getSignaturesOfType(type, ts.SignatureKind.Call);
+    return (
+      signatures.length > 0 &&
+      signatures.every(
+        (signature) =>
+          (checker.getReturnTypeOfSignature(signature).flags & ts.TypeFlags.Void) === 0,
+      )
+    );
+  }
+  return false;
+}
+
+/** Whether a method's own returns carry values it produces: at least one
+ * return with a non-void expression, and none typed void or containing a
+ * void-typed call. A nested function's returns answer that function. */
+function methodReturnsOwnValue(checker: ts.TypeChecker, decl: ts.MethodDeclaration): boolean {
+  const body = decl.body;
+  if (body === undefined) return false;
+  const containsVoidCall = (node: ts.Node): boolean => {
+    if (
+      ts.isCallExpression(node) &&
+      (checker.getTypeAtLocation(node).flags & ts.TypeFlags.Void) !== 0
+    )
+      return true;
+    if (
+      ts.isFunctionDeclaration(node) ||
+      ts.isFunctionExpression(node) ||
+      ts.isArrowFunction(node) ||
+      ts.isMethodDeclaration(node) ||
+      ts.isClassDeclaration(node)
+    )
+      return false;
+    let hit = false;
+    ts.forEachChild(node, (child) => {
+      if (!hit && containsVoidCall(child)) hit = true;
+    });
+    return hit;
+  };
+  let found = false;
+  let bad = false;
+  const visit = (node: ts.Node): void => {
+    if (ts.isReturnStatement(node) && node.expression !== undefined) {
+      if (
+        (checker.getTypeAtLocation(node.expression).flags & ts.TypeFlags.Void) !== 0 ||
+        containsVoidCall(node.expression)
+      )
+        bad = true;
+      else found = true;
+      return;
+    }
+    if (
+      node !== body &&
+      (ts.isFunctionDeclaration(node) ||
+        ts.isFunctionExpression(node) ||
+        ts.isArrowFunction(node) ||
+        ts.isMethodDeclaration(node) ||
+        ts.isClassDeclaration(node))
+    )
+      return;
+    ts.forEachChild(node, visit);
+  };
+  ts.forEachChild(body, visit);
+  return found && !bad;
 }
 
 /** TS1345 where Node's ToBoolean of the operand is known: the boolean of a

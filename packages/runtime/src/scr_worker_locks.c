@@ -463,12 +463,26 @@ static void scr_locks_start_job(ScrClosure *clo) {
     wait->source = scr_promise_retain(result->v.promise);
     scr_promise_react(wait->source, &scr_locks_wait_reaction, wait);
     scr_dyn_release(result);
+  } else if (req->signal != NULL) {
+    /* Node's signal wrapper returns a native promise that adopts the
+     * callback's result, so a thenable holds the grant until it settles. */
+    ScrPromise *wrapper = scr_promise_new();
+    ScrDyn *value = result != NULL ? result : scr_dyn_retain(scr_dyn_undefined());
+    scr_dyn_promise_resolve_with(wrapper, value); /* borrowed */
+    scr_dyn_release(value);
+    ScrLocksWait *wait = malloc(sizeof *wait);
+    if (wait == NULL) scr_trap("out of memory");
+    wait->req = scr_locks_req_retain(req);
+    wait->source = wrapper; /* the creation reference moves in */
+    scr_promise_react(wait->source, &scr_locks_wait_reaction, wait);
   } else {
     scr_locks_unhold(entry, req);
     scr_locks_drain(entry);
-    /* settle_ref takes the value's reference. */
-    scr_promise_fulfill_ref(req->promise, result, scr_dyn_retain_v, scr_dyn_release_v,
-                            scr_dyn_trace_v);
+    /* Node resolves the request with the callback's result, which adopts a
+     * thenable the way promise resolution does. */
+    ScrDyn *value = result != NULL ? result : scr_dyn_retain(scr_dyn_undefined());
+    scr_dyn_promise_resolve_with(req->promise, value); /* borrowed */
+    scr_dyn_release(value);
   }
   scr_locks_req_release(req); /* this thunk's +1 */
 }
@@ -574,8 +588,9 @@ static void scr_locks_if_available_miss(ScrLockReq *req) {
     scr_promise_react(wait->source, &scr_locks_wait_reaction, wait);
     scr_dyn_release(result);
   } else {
-    scr_promise_fulfill_ref(req->promise, result, scr_dyn_retain_v, scr_dyn_release_v,
-                            scr_dyn_trace_v);
+    ScrDyn *value = result != NULL ? result : scr_dyn_retain(scr_dyn_undefined());
+    scr_dyn_promise_resolve_with(req->promise, value); /* borrowed */
+    scr_dyn_release(value);
   }
   scr_locks_req_release(req);
 }
@@ -704,6 +719,13 @@ ScrPromise *scr_worker_locks_request(ScrStr *name, const ScrDyn *options, const 
     }
     req->dispose = dispose;
   }
+  /* scr_promise_new and the signal registration run program hooks (an
+   * async_hooks init callback for the promise, the listener's owner for the
+   * signal) that can release another request on this name; a drain then
+   * frees the emptied entry. Look the name up again before this request
+   * joins it. */
+  entry = scr_locks_entry(name->data, name->len, true);
+  req->entry = entry;
   if (steal) {
     /* Node grants a steal ahead of the queue and marks every current holder
      * stolen: the name stops being held (a grant left behind by an earlier

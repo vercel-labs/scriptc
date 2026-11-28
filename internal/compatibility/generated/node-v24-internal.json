@@ -126122,6 +126122,7 @@
           "tests/corpus/worker-locks-caught-exception.mjs",
           "tests/corpus/worker-locks-errors.ts",
           "tests/corpus/worker-locks-if-available.mjs",
+          "tests/corpus/worker-locks-init-hook.mjs",
           "tests/corpus/worker-locks-nested-requests.mjs",
           "tests/corpus/worker-locks-option-errors.ts",
           "tests/corpus/worker-locks-query.ts",
@@ -126134,6 +126135,7 @@
           "tests/corpus/worker-locks-steal-bookkeeping.mjs",
           "tests/corpus/worker-locks-steal-option.ts",
           "tests/corpus/worker-locks-steal-signal.mjs",
+          "tests/corpus/worker-locks-thenable.mjs",
           "tests/corpus/worker-locks-thrown-value.mjs",
           "tests/corpus/worker-messageerror-events.ts",
           "tests/corpus/worker-messageerror-surface.ts",
@@ -128072,7 +128074,9 @@
           "tests/corpus/worker-locks-signal-throw.mjs",
           "tests/corpus/worker-locks-signal-thrown-value.mjs",
           "tests/corpus/worker-locks-steal-signal.mjs",
-          "tests/corpus/worker-locks-caught-exception.mjs"
+          "tests/corpus/worker-locks-caught-exception.mjs",
+          "tests/corpus/worker-locks-init-hook.mjs",
+          "tests/corpus/worker-locks-thenable.mjs"
         ]
       },
       "anchorSource": "exact"

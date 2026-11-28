@@ -2057,15 +2057,33 @@ static ScrStr *insp_cwd_to_file_url(const char *cwd, size_t len) {
 #if defined(_WIN32)
   if (len >= 2 && cwd[0] == '\\' && cwd[1] == '\\') {
     /* UNC path: \\server\share\resource, with an extended \\?\UNC\
-     * prefix ignored; the servername goes through the host parser's
-     * rules (TAB/LF/CR dropped, a URL delimiter ends it). */
+     * prefix ignored. The servername goes through the host parser's rules:
+     * TAB/LF/CR dropped, a URL delimiter ends it, an empty name is
+     * unrepresentable, ASCII letters lowercase, and a non-ASCII name is
+     * refused because this runtime has no IDNA unit (scr_url.c's
+     * parse_host). An unrepresentable name leaves the caller its raw-path
+     * coloring, as the URL path did. */
     size_t prefix = len >= 8 && memcmp(cwd, "\\\\?\\UNC\\", 8) == 0 ? 8 : 2;
     size_t host_end = prefix;
     while (host_end < len && cwd[host_end] != '\\') host_end++;
+    if (host_end == prefix) {
+      free(out.data);
+      return NULL;
+    }
+    bool host_usable = true;
     for (size_t i = prefix; i < host_end; i++) {
-      char c = cwd[i];
+      unsigned char c = (unsigned char)cwd[i];
       if (c == '/' || c == '?' || c == '#') break;
-      if (c != '\t' && c != '\n' && c != '\r') ib_char(&out, c);
+      if (c == '\t' || c == '\n' || c == '\r') continue;
+      if (c >= 0x80) {
+        host_usable = false;
+        break;
+      }
+      ib_char(&out, (char)(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c));
+    }
+    if (!host_usable) {
+      free(out.data);
+      return NULL;
     }
     start = host_end; /* its separator becomes the path's leading '/' */
   } else if (len == 0 || cwd[0] != '\\') {

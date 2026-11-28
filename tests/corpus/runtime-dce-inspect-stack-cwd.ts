@@ -16,7 +16,9 @@ const dirName = process.platform === "win32" ? "sub dir #% ü" : "sub dir #%? ü
 const root = mkdtempSync(join(tmpdir(), "runtime-dce-inspect-"));
 const dir = join(root, dirName);
 mkdirSync(dir);
-process.chdir(dir);
+// A relative chdir: getcwd still answers the absolute path the encoder sees.
+process.chdir(root);
+process.chdir(dirName);
 
 const href = pathToFileURL(process.cwd()).href;
 const error = new Error("boom");

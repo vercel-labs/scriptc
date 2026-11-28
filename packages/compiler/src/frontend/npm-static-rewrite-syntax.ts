@@ -1102,7 +1102,13 @@ export function rewriteBundlerCjsSyntax(
    * checker's default-import interop (an __esModule-stamped surface binds
    * `import def` to exports.default) away from Node's CJS answer — so it
    * is deliberately OMITTED from the canonical table. */
-  const spreadParts = [...starSpecs].reverse().map((s) => `...require(${JSON.stringify(s)}),`);
+  // A star module with no visible names exports nothing: spreading it would
+  // only widen the table (an untyped stub makes the whole object `any` and
+  // every alias a declaration-less property).
+  const spreadParts = [...starSpecs]
+    .reverse()
+    .filter((s) => host.starTargetNames(filePath, s).size > 0)
+    .map((s) => `...require(${JSON.stringify(s)}),`);
   const esModulePart = lexed.exports.has("__esModule") ? "__esModule: true," : "";
   const memberParts = starMembers.map(
     (m) =>

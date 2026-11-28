@@ -313,6 +313,8 @@ describe.skipIf(!zigOnPath() || !wasmPackInstalled())("wasm32-wasi differential"
     // An Array subclass instance keeps its class word in the ext struct, a
     // pointer field, and its base-typed dispatch reads the class at run time.
     "array-subclass-base-typed-overrides.ts",
+    // An own field shadowing an Array method is read off the class view.
+    "array-subclass-field-shadowing.ts",
     // Comparator sorts move 64-bit slots of 32-bit pointers.
     "5360-array-sort-comparator-calls.ts",
     "5363-array-sort-comparator-writes.ts",

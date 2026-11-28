@@ -12,7 +12,7 @@ import { type Lowerer } from "../lowerer.js";
 import { isJsSourceFile, locOf } from "../../program.js";
 import { keyedHelperName } from "../stable-names.js";
 import { dynUndefinedExpr, nodeThrowExpr } from "../../../ir/build.js";
-import { completeArgs } from "../call-arguments.js";
+import { completeArgs, completeFuncValueArgs } from "../call-arguments.js";
 import { lowerArrayFromCall, lowerArrayOfCall } from "../containers/array-construction.js";
 import { boundedArrayHofHelper } from "../containers/array-callbacks.js";
 import {
@@ -21,6 +21,7 @@ import {
   storedClassValueType,
   type ClassInfo,
 } from "../lower-classes.js";
+import { isClassCallback } from "../class-callbacks.js";
 import { isSafeToRepeat } from "../expressions/evaluation-safety.js";
 import { mapExprChildren, mapStmtChildren } from "../../../ir/traverse.js";
 import { ARRAY_METHODS } from "../surfaces.js";
@@ -834,6 +835,12 @@ export function programOverriddenArrayMethods(lowerer: Lowerer): ReadonlySet<str
       names.add(name);
     }
     for (const name of info.genericMethods?.keys() ?? []) names.add(name);
+    // An own field with an Array method's name shadows the prototype method
+    // on the instance, as a class field always does.
+    for (const name of info.fields.keys()) {
+      if (name.startsWith("#") || name.startsWith("%")) continue;
+      names.add(name);
+    }
   }
   return names;
 }
@@ -849,6 +856,7 @@ function arrayOverrideCandidates(lowerer: Lowerer, name: string): ClassInfo[] {
     const sig = info.methods.get(name);
     if (sig !== undefined && sig.abstract !== true) candidates.push(info);
     else if (info.genericMethods?.has(name)) candidates.push(info);
+    else if (info.fields.has(name)) candidates.push(info);
   }
   return candidates.sort((a, b) => (a.def.name < b.def.name ? -1 : 1));
 }
@@ -868,7 +876,58 @@ function arrayOverrideCall(
   const view = arrayClassView(info, ref, loc);
   const found = lowerer.findMethodOn(info, name);
   let direct: IrExpr;
-  if (found !== null && found.sig.abstract !== true) {
+  if (found === null && info.fields.has(name)) {
+    // An own field shadowing the Array method: Node calls the field's value
+    // (and throws its "is not a function" TypeError when it is not
+    // callable), so the field is read off the class view and called with the
+    // call's arguments.
+    const fieldType = info.fields.get(name)!;
+    const field: IrExpr = {
+      kind: "fieldGet",
+      obj: view,
+      className: info.def.name,
+      field: name,
+      type: fieldType,
+      loc,
+    };
+    if (fieldType.kind === "func") {
+      const args = completeFuncValueArgs(lowerer, call, fieldType, loc);
+      direct = {
+        kind: "callValue",
+        callee: field,
+        receiver: lowerer.receiverFreeCallbackFields.has(name)
+          ? undefined
+          : lowerer.coerceToExpected(view, DYN),
+        args,
+        type: fieldType.ret,
+        loc,
+      } as IrExpr;
+    } else
+      // A field whose value is not a compiled function (an untyped slot, a
+      // union, or data): Node calls whatever the field holds, which the
+      // builtin signature cannot report. Refuse the call by name instead of
+      // running the builtin.
+      lowerer.unsupported(
+        "SC1090",
+        access,
+        `calling '${name}' on an array where a class that extends Array declares a field named '${name}' that is not a compiled function (Node calls the field's value; the builtin would run instead)`,
+      );
+  } else if (found !== null && found.sig.abstract !== true) {
+    // A legacy method decorator wraps the override on the prototype, and a
+    // program that reads or replaces the method's prototype value may run
+    // another function there. The direct call would bypass both, so the
+    // base-typed call refuses instead of answering with the compiled body.
+    const decorated = info.legacyMemberDecorations?.some(
+      (d) => !d.static && d.kind === "method" && d.name === name,
+    );
+    if (decorated || isClassCallback(lowerer, info, name))
+      lowerer.unsupported(
+        "SC1090",
+        access,
+        decorated
+          ? `calling '${name}' on an array where a class that extends Array has a decorated '${name}' (Node calls the prototype's wrapped method; a compiled direct call would bypass the decorator)`
+          : `calling '${name}' on an array where a class that extends Array's '${name}' is read or replaced through its prototype (bind the receiver to the class's own type first)`,
+      );
     const args = completeArgs(lowerer, call.arguments.nodes, found.sig.params, loc, call);
     lowerer.noteEdge(`%${found.declarer.def.name}.${name}`);
     direct = {

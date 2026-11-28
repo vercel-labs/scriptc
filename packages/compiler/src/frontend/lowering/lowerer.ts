@@ -17429,7 +17429,7 @@ export class Lowerer {
       }
     }
     const declarations: UnitDeclarationFact[] = [];
-    const exportsOfModule: { module: string; names: readonly string[] }[] = [];
+    const exportsOfModule: { file: string; module: string; names: readonly string[] }[] = [];
     for (const sf of files) {
       const module = relativeOf.get(sf.fileName)!;
       for (const statement of sf.statements.nodes) {
@@ -17437,7 +17437,7 @@ export class Lowerer {
         if (kind === null) continue;
         const facts = this.declarationFacts(statement);
         for (const name of this.unitDeclarationNames(statement))
-          declarations.push({ module, name, kind, facts });
+          declarations.push({ file: sf.fileName, module, name, kind, facts });
       }
       const symbol = this.checker.getSymbolAtLocation(sf);
       const names =
@@ -17447,14 +17447,19 @@ export class Lowerer {
               .getExportsOfModule(symbol)
               .map((exported) => ts.symbolName(exported))
               .sort();
-      exportsOfModule.push({ module, names });
+      exportsOfModule.push({ file: sf.fileName, module, names });
     }
     const genericFunctions: UnitGenericDeclaration[] = [];
     for (const info of this.genericFnsBySymbol.values()) {
       const file = ts.getSourceFileOfNode(info.decl).fileName;
       const module = relativeOf.get(file);
       if (module === undefined) continue;
-      genericFunctions.push({ module, name: info.baseName, qualified: info.qualifiedName });
+      genericFunctions.push({
+        file,
+        module,
+        name: info.baseName,
+        qualified: info.qualifiedName,
+      });
     }
     const genericClasses: UnitGenericDeclaration[] = [];
     for (const sf of files) {
@@ -17469,6 +17474,7 @@ export class Lowerer {
         }
         if (!this.classes.has(qualified)) continue;
         genericClasses.push({
+          file: sf.fileName,
           module,
           name: statement.name?.text ?? "default",
           qualified,
@@ -17480,7 +17486,7 @@ export class Lowerer {
     for (const demand of this.unitGenericDemands) {
       const file = this.unitOwnerFile(demand.owner);
       const ownerModule = file === null ? null : (relativeOf.get(file) ?? null);
-      const key = `${demand.kind}\0${demand.generic}\0${demand.instance}\0${ownerModule ?? ""}`;
+      const key = `${demand.kind}\0${demand.generic}\0${demand.instance}\0${file ?? ""}`;
       if (demandKeys.has(key)) continue;
       demandKeys.add(key);
       demands.push({
@@ -17488,6 +17494,7 @@ export class Lowerer {
         generic: demand.generic,
         instance: demand.instance,
         ownerModule,
+        ownerFile: file,
       });
     }
     const initOrder = (sf: ts.SourceFile): number => {
@@ -17497,7 +17504,11 @@ export class Lowerer {
     const inits = files
       .filter((sf) => this.initNameOf.has(sf))
       .sort((a, b) => initOrder(a) - initOrder(b) || a.fileName.localeCompare(b.fileName))
-      .map((sf) => ({ module: relativeOf.get(sf.fileName)!, name: this.initNameOf.get(sf)! }));
+      .map((sf) => ({
+        file: sf.fileName,
+        module: relativeOf.get(sf.fileName)!,
+        name: this.initNameOf.get(sf)!,
+      }));
     const numbering = classNumbering(
       (module.classes ?? []).map((def) => ({
         name: def.name,

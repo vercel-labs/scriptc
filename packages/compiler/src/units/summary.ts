@@ -10,7 +10,7 @@
 import { canonicalJson, type CanonicalValue } from "./canonical.js";
 import type {
   UnitClassFact,
-  UnitDeclarationFact,
+  UnitDeclarationSummary,
   UnitFactValue,
   UnitGenericClassFact,
   UnitGenericDemand,
@@ -83,44 +83,60 @@ export function classNumbering(
   return out;
 }
 
-/** The modules one unit contains, as a set for fact filtering. */
-function moduleSet(node: UnitNode): Set<string> {
-  return new Set(node.files);
-}
-
-/** One unit's summary, from the graph node and the observation. */
+/** One unit's summary, from the graph node and the observation.
+ *
+ * Membership is the unit's ABSOLUTE files, not its package-relative module
+ * paths: two packages can both contain `index.ts`, and filtering by the
+ * relative path gave each unit the other package's declarations and exports.
+ * `unitOfFile` attributes a demanded instance to the unit that owns the file
+ * that demanded it. */
 export function buildUnitSummary(
   node: UnitNode,
   observation: UnitObservation,
-  unitsByModule: (module: string) => string | null,
+  members: ReadonlySet<string>,
+  unitOfFile: (file: string) => string | null,
 ): UnitSummary {
-  const modules = moduleSet(node);
   const lowering = observation.lowering;
-  const declarations: UnitDeclarationFact[] = lowering.declarations
-    .filter((declaration) => modules.has(declaration.module))
-    .map((declaration) => ({ ...declaration }))
+  const moduleOfFile = new Map(observation.files.map((file) => [file.file, file.relative]));
+  const declarations: UnitDeclarationSummary[] = lowering.declarations
+    .filter((declaration) => members.has(declaration.file))
+    .map((declaration) => ({
+      module: declaration.module,
+      name: declaration.name,
+      kind: declaration.kind,
+      facts: declaration.facts,
+    }))
     .sort(
       (a, b) =>
         a.module.localeCompare(b.module) ||
         a.name.localeCompare(b.name) ||
         a.kind.localeCompare(b.kind),
     );
-  const exportsOut: Record<string, readonly string[]> = {};
+  // Two files one unit holds can share a relative module path (a merged SCC
+  // of two copies); their export names join rather than overwrite.
+  const exportNames = new Map<string, Set<string>>();
   for (const entry of lowering.exports) {
-    if (modules.has(entry.module)) exportsOut[entry.module] = [...entry.names];
+    if (!members.has(entry.file)) continue;
+    const names = exportNames.get(entry.module) ?? new Set<string>();
+    for (const name of entry.names) names.add(name);
+    exportNames.set(entry.module, names);
   }
-  const generics = summaryGenerics(lowering, modules, unitsByModule);
+  const exportsOut: Record<string, readonly string[]> = {};
+  for (const module of [...exportNames.keys()].sort())
+    exportsOut[module] = [...(exportNames.get(module) ?? [])].sort();
+  const generics = summaryGenerics(lowering, members, unitOfFile);
   const classes: UnitClassFact[] = observation.classes
     .map((entry): UnitClassFact | null => {
-      const module = moduleOf(entry.file, observation);
-      if (module === null || !modules.has(module)) return null;
+      if (!members.has(entry.file)) return null;
+      const module = moduleOfFile.get(entry.file);
+      if (module === undefined) return null;
       return { module, name: entry.name, id: entry.id, slots: [...entry.slots] };
     })
     .filter((entry): entry is UnitClassFact => entry !== null)
     .sort((a, b) => a.module.localeCompare(b.module) || a.name.localeCompare(b.name));
   const inits = lowering.inits
-    .filter((entry) => modules.has(entry.module))
-    .map((entry) => ({ ...entry }));
+    .filter((entry) => members.has(entry.file))
+    .map((entry) => ({ module: entry.module, name: entry.name }));
   const facts: Record<string, UnitFactValue> = {};
   for (const name of Object.keys(lowering.facts).sort()) {
     const fact = lowering.facts[name]!;
@@ -148,17 +164,12 @@ export function buildUnitSummary(
   };
 }
 
-/** The observation's per-file module path for an absolute file. */
-function moduleOf(file: string, observation: UnitObservation): string | null {
-  return observation.files.find((entry) => entry.file === file)?.relative ?? null;
-}
-
 /** The generic families a unit declares, each with the instances the build
  * demanded of it (and which unit demanded them). */
 function summaryGenerics(
   lowering: UnitLoweringData,
-  modules: Set<string>,
-  unitsByModule: (module: string) => string | null,
+  members: ReadonlySet<string>,
+  unitOfFile: (file: string) => string | null,
 ): UnitGenericsFact {
   const demands = new Map<string, UnitGenericDemand[]>();
   for (const demand of lowering.generics.demands) {
@@ -174,7 +185,7 @@ function summaryGenerics(
     const seen = new Set<string>();
     const out: { instance: string; by: string | null; byModule: string | null }[] = [];
     for (const demand of list) {
-      const by = demand.ownerModule === null ? null : unitsByModule(demand.ownerModule);
+      const by = demand.ownerFile === null ? null : unitOfFile(demand.ownerFile);
       const key = `${demand.instance}\0${by ?? ""}`;
       if (seen.has(key)) continue;
       seen.add(key);
@@ -185,7 +196,7 @@ function summaryGenerics(
     );
   };
   const functions: UnitGenericFunctionFact[] = lowering.generics.functions
-    .filter((declaration) => modules.has(declaration.module))
+    .filter((declaration) => members.has(declaration.file))
     .map((declaration) => ({
       module: declaration.module,
       name: declaration.name,
@@ -194,7 +205,7 @@ function summaryGenerics(
     }))
     .sort((a, b) => a.module.localeCompare(b.module) || a.name.localeCompare(b.name));
   const classes: UnitGenericClassFact[] = lowering.generics.classes
-    .filter((declaration) => modules.has(declaration.module))
+    .filter((declaration) => members.has(declaration.file))
     .map((declaration) => ({
       module: declaration.module,
       name: declaration.name,

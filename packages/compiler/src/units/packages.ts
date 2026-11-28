@@ -28,10 +28,12 @@ export interface ManifestName {
 }
 
 /** The directory walk's cache: a directory's nearest package scope with a
- * name, or null when none above it has one. `undefined` marks an
- * unvisited directory (a Map cannot hold it, so absence is the visit
- * mark). */
-export type PackageScopeCache = Map<string, ManifestName | null>;
+ * name — the scope's OWN directory and its manifest — or null when none
+ * above it has one. The directory is the part that must be cached: every
+ * directory below a scope answers the same scope root, so caching only the
+ * manifest made the next walk treat the directory it started from as the
+ * package root. Absence from the map is the visit mark. */
+export type PackageScopeCache = Map<string, { dir: string; manifest: ManifestName } | null>;
 
 function forwardSlashes(path: string): string {
   return path.split("\\").join("/");
@@ -69,15 +71,13 @@ export function nearestNamedScope(
   let current = resolve(dir);
   for (;;) {
     const known = cache.get(current);
-    if (known !== undefined) {
-      if (known === null || known.name === null) return propagate(chain, cache, null);
-      return propagate(chain, cache, { dir: current, manifest: known });
-    }
+    if (known !== undefined) return propagate(chain, cache, known);
     const manifest = manifestAt(current);
     chain.push(current);
     if (manifest !== null && manifest.name !== null) {
-      cache.set(current, manifest);
-      return propagate(chain, cache, { dir: current, manifest });
+      const answer = { dir: current, manifest };
+      cache.set(current, answer);
+      return propagate(chain, cache, answer);
     }
     const parent = dirname(current);
     if (parent === current) return propagate(chain, cache, null);
@@ -92,7 +92,7 @@ function propagate(
   cache: PackageScopeCache,
   answer: { dir: string; manifest: ManifestName } | null,
 ): { dir: string; manifest: ManifestName } | null {
-  for (const dir of chain) cache.set(dir, answer === null ? null : answer.manifest);
+  for (const dir of chain) cache.set(dir, answer);
   return answer;
 }
 

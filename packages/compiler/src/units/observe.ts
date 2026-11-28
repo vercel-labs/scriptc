@@ -63,14 +63,23 @@ export interface UnitsReport {
   storeRoot: string | null;
 }
 
-/** The module → unit map the summary uses for demand attribution and file
- * filtering. A relative path two packages share resolves to the first unit
- * in graph order; the graph itself stays the authority for a unit's files. */
-function modulesByUnit(graph: UnitGraph): Map<string, string> {
-  const out = new Map<string, string>();
-  for (const node of graph.units)
-    for (const file of node.files) if (!out.has(file)) out.set(file, node.id);
-  return out;
+/** Which unit each absolute program file belongs to, and each unit's member
+ * files. Identity is the file path: two packages can both contain
+ * `index.ts`, so a relative module path cannot decide membership. */
+function unitMembers(
+  input: UnitObservationInput,
+  graph: UnitGraph,
+): { fileUnit: Map<string, string>; members: Map<string, Set<string>> } {
+  const fileUnit = unitIdByFile(input, graph);
+  const members = new Map<string, Set<string>>();
+  for (const file of input.files) {
+    const id = fileUnit.get(file.file);
+    if (id === undefined) continue;
+    const set = members.get(id) ?? new Set<string>();
+    set.add(file.file);
+    members.set(id, set);
+  }
+  return { fileUnit, members };
 }
 
 /** The files of each unit with their content digests, from the input records
@@ -78,9 +87,8 @@ function modulesByUnit(graph: UnitGraph): Map<string, string> {
  * sorted). */
 function filesOfUnits(
   input: UnitObservationInput,
-  graph: UnitGraph,
+  fileUnit: ReadonlyMap<string, string>,
 ): Map<string, [string, string][]> {
-  const fileUnit = unitIdByFile(input, graph);
   const out = new Map<string, [string, string][]>();
   for (const file of input.files) {
     const id = fileUnit.get(file.file);
@@ -109,20 +117,26 @@ export function observeUnits(
   };
   const graph = buildUnitGraph(input);
   const graphMs = performance.now() - started;
-  const unitOfModule = modulesByUnit(graph);
-  const byModule = (module: string): string | null => unitOfModule.get(module) ?? null;
+  const membership = unitMembers(input, graph);
+  const unitOfFile = (file: string): string | null => membership.fileUnit.get(file) ?? null;
 
   const summaryStarted = performance.now();
   const summaries = new Map<string, { summary: UnitSummary; text: string; digest: string }>();
+  const empty = new Set<string>();
   for (const node of graph.units) {
-    const summary = buildUnitSummary(node, observation, byModule);
+    const summary = buildUnitSummary(
+      node,
+      observation,
+      membership.members.get(node.id) ?? empty,
+      unitOfFile,
+    );
     const text = summaryText(summary);
     summaries.set(node.id, { summary, text, digest: digestOfText(text) });
   }
   const summaryMs = performance.now() - summaryStarted;
 
   const keyStarted = performance.now();
-  const filesByUnit = filesOfUnits(input, graph);
+  const filesByUnit = filesOfUnits(input, membership.fileUnit);
   const keys = new Map<string, string>();
   const keyInputs = new Map<string, UnitKeyInput>();
   const lowering = loweringKeyValue(context.lowering as Record<string, unknown>);

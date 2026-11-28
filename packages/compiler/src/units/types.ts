@@ -76,8 +76,12 @@ export interface UnitGraph {
   };
 }
 
-/** One top-level declaration's lowering facts. */
+/** One top-level declaration's lowering facts, as the lowering reports them.
+ * `file` is the absolute program file: the observer uses it to decide which
+ * unit the record belongs to, and never writes it. */
 export interface UnitDeclarationFact {
+  /** Absolute path of the module's source file. */
+  file: string;
   /** Package-relative module path. */
   module: string;
   name: string;
@@ -119,6 +123,10 @@ export interface UnitGenericDemand {
    * null when the demand came from outside any module (the entry's own
    * initialization, a synthetic root). */
   ownerModule: string | null;
+  /** The absolute file of that body, for attributing the demand to the
+   * unit that owns the file (module paths alone are ambiguous when two
+   * packages share one, such as `index.ts`). */
+  ownerFile: string | null;
 }
 
 /** A class's numbering as today's backend assigns it, so the leak report can
@@ -143,6 +151,8 @@ export interface UnitFactValue {
 
 /** A generic family declared in one module. */
 export interface UnitGenericDeclaration {
+  /** Absolute path of the declaring module's file (never written). */
+  file: string;
   module: string;
   name: string;
   qualified: string;
@@ -153,13 +163,13 @@ export interface UnitLoweringData {
   declarations: readonly UnitDeclarationFact[];
   /** Per module, the sorted export names (the text `exportsOf` computes for
    * unit reuse). */
-  exports: readonly { module: string; names: readonly string[] }[];
+  exports: readonly { file: string; module: string; names: readonly string[] }[];
   generics: {
     functions: readonly UnitGenericDeclaration[];
     classes: readonly UnitGenericDeclaration[];
     demands: readonly UnitGenericDemand[];
   };
-  inits: readonly { module: string; name: string }[];
+  inits: readonly { file: string; module: string; name: string }[];
   facts: Readonly<Record<string, UnitFactValue>>;
 }
 
@@ -186,7 +196,7 @@ export interface UnitSummary {
   };
   files: readonly string[];
   exports: Record<string, readonly string[]>;
-  declarations: readonly UnitDeclarationFact[];
+  declarations: readonly UnitDeclarationSummary[];
   generics: UnitGenericsFact;
   classes: readonly UnitClassFact[];
   runtimeFeatures: {
@@ -195,6 +205,15 @@ export interface UnitSummary {
   };
   inits: readonly { module: string; name: string }[];
   facts: Record<string, UnitFactValue>;
+}
+
+/** A declaration as one unit's summary writes it: the module path, never the
+ * absolute file the observer used to select it. */
+export interface UnitDeclarationSummary {
+  module: string;
+  name: string;
+  kind: string;
+  facts: string;
 }
 
 /** The metadata written beside a summary. */

@@ -1154,7 +1154,13 @@ function namedValuePreservingCallee(program: ts.Program, callee: ts.Node): boole
     let init = decl.initializer as ts.Expression;
     while (ts.isParenthesizedExpression(init) || ts.isAsExpression(init))
       init = (init as { expression: ts.Expression }).expression;
-    if (ts.isArrowFunction(init) || ts.isFunctionExpression(init)) return bodyReturnsValue(init);
+    // A function literal's own ABI is its slot's: a const annotated as
+    // returning void hands the literal that signature, so its body value is
+    // discarded and a dynamic call answers undefined (a denylist predicate
+    // typed `(req) => void` would let every request through). Until the
+    // binding widening lands, no literal is proof; only a declaration, or a
+    // const that names one, keeps the value.
+    if (ts.isArrowFunction(init) || ts.isFunctionExpression(init)) return false;
     node = init;
   }
 }

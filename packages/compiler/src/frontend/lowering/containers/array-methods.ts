@@ -1,5 +1,5 @@
 import { keyedHelperName } from "../stable-names.js";
-import { liftedFreshSpread } from "../coercions/fresh-spread.js";
+import { freshElementSpreadSource, liftedFreshSpread } from "../coercions/fresh-spread.js";
 import { lowerArrayIteratorValue } from "../iterator-adapters.js";
 import { identityPreservingWidening } from "../coercions/identity.js";
 import { arrayConcatHelper } from "./array-concat.js";
@@ -1163,6 +1163,30 @@ export function lowerArrayMethodCall(
       if (!typeEquals(src.type, receiverIr)) {
         // Fresh elements (an array literal) convert into the element layout.
         src = liftedFreshSpread(lowerer, spreadArg.expression, src, receiverIr, loc) ?? src;
+      }
+      // A same-family source whose element is COPIED into the receiver's
+      // slot (a record width lift — `{kind,index,error}` into
+      // `{kind,index,error,requested?: number}`): the interned width helper
+      // rebuilds the array element by element, exactly the array-literal
+      // spread rule. Only sources this evaluation FRESHLY built qualify: a
+      // named array spread repeatedly inserts the same elements, and copies
+      // would break JavaScript identity (fresh-spread-repeated).
+      if (
+        src.type.kind === "array" &&
+        !typeEquals(src.type, receiverIr) &&
+        freshElementSpreadSource(lowerer, spreadArg.expression)
+      ) {
+        const widened = lowerer.widthCoerce(src, receiverIr);
+        if (widened !== null) {
+          return {
+            kind: "arrIntrinsic",
+            method: name === "push" ? "pushSpread" : "unshiftSpread",
+            receiver,
+            args: [widened],
+            type: F64,
+            loc,
+          };
+        }
       }
       // A source the checker typed WIDER than the iterable it holds at run
       // time (an untyped value, a `T | undefined` local): Node iterates

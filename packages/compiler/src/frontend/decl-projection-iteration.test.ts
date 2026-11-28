@@ -131,3 +131,86 @@ test(
     expect(plan).not.toContain("__scriptc_iter_");
   },
 );
+
+test(
+  "non-data element arms (a class member and a method member) are projected",
+  { timeout: 600_000 },
+  async () => {
+    const dir = project(
+      {
+        types:
+          "export type PollItem =\n" +
+          '  | { _tag: "Timeout"; newInterval: number }\n' +
+          '  | { _tag: "Error"; error: Error }\n' +
+          '  | { _tag: "Response"; response: { text(): Promise<string> } };\n' +
+          "export declare function poll(): AsyncGenerator<PollItem, void, void>;\n",
+        js:
+          "export async function* poll() {\n" +
+          '  yield { _tag: "Timeout", newInterval: 1000 };\n' +
+          '  yield { _tag: "Error", error: new Error("boom") };\n' +
+          '  yield { _tag: "Response", response: { text: async () => "body" } };\n' +
+          "}\n",
+      },
+      'import { poll } from "sdk-pkg";\n' +
+        "async function main() {\n" +
+        "  for await (const event of poll()) {\n" +
+        "    switch (event._tag) {\n" +
+        '      case "Timeout":\n' +
+        "        console.log(1000 / event.newInterval);\n" +
+        "        break;\n" +
+        '      case "Error":\n' +
+        "        console.log(event.error.message);\n" +
+        "        break;\n" +
+        '      case "Response":\n' +
+        "        console.log(await event.response.text());\n" +
+        "        break;\n" +
+        "    }\n" +
+        "  }\n" +
+        "}\n" +
+        "main();\n",
+    );
+    const { result, plan } = await compileCapturingPlan(join(dir, "main.ts"), dir);
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    expect(plan).toContain("iterate poll() as __scriptc_decl_");
+    const { stdout } = await execFileAsync(result.binaryPath, [], { encoding: "utf8" });
+    expect(stdout).toBe("1\nboom\nbody\n");
+  },
+);
+
+test(
+  "a lying element fails the per-element check instead of passing through",
+  { timeout: 600_000 },
+  async () => {
+    const dir = project(
+      {
+        types:
+          "export type Item =\n" +
+          '  | { _tag: "Error"; error: Error }\n' +
+          '  | { _tag: "Response"; response: { text(): Promise<string> } };\n' +
+          "export declare function poll(): AsyncGenerator<Item, void, void>;\n",
+        js:
+          "export async function* poll() {\n" +
+          '  yield { _tag: "Error", error: JSON.parse(\'"nope"\') };\n' +
+          "}\n",
+      },
+      'import { poll } from "sdk-pkg";\n' +
+        "async function main() {\n" +
+        "  try {\n" +
+        "    for await (const event of poll()) {\n" +
+        '      if (event._tag === "Error") console.log(event.error.message);\n' +
+        "    }\n" +
+        "  } catch (error) {\n" +
+        "    console.log((error as Error).name, (error as Error).message);\n" +
+        "  }\n" +
+        "}\n" +
+        "main();\n",
+    );
+    const { result } = await compileCapturingPlan(join(dir, "main.ts"), dir);
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const { stdout } = await execFileAsync(result.binaryPath, [], { encoding: "utf8" });
+    console.log("NEG OUT:", JSON.stringify(stdout));
+    expect(stdout).toContain("TypeError");
+  },
+);

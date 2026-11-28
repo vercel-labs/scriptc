@@ -3721,7 +3721,10 @@ void scr_http2_stream_priority(ScrH2Stream *st /*borrowed, nullable*/,
   (void)opts;
   if (scr_h2_dep0194_emitted) return;
   scr_h2_dep0194_emitted = true;
-  scr_next_tick(scr_closure_new((void *)&scr_h2_dep0194_tick, 0));
+  /* The tick takes no closure argument: schedule it as a raw tick so it is
+   * called through its own type (the closure form calls it through a
+   * one-argument pointer, which UBSan reports). */
+  scr_next_tick_raw(&scr_h2_dep0194_tick);
 }
 
 void scr_http2_stream_on_error(ScrH2Stream *st, ScrClosure *cb /*moves*/, ScrChildErrFn fn, bool once) {

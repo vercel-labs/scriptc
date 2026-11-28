@@ -6,6 +6,7 @@ import {
   isModuleExportsAccess,
 } from "../program.js";
 import type { Lowerer } from "./lowerer.js";
+import { positionTag } from "./structural-positions.js";
 import type { IrType } from "../../ir/ir.js";
 
 export interface ClassSymbolKey {
@@ -68,7 +69,12 @@ function constantSymbolDescription(
 }
 
 export function symbolFieldDisplayName(field: string): string {
-  return field.slice(FIELD_PREFIX.length).replace(/^\d+:/, "");
+  // Drop the table ordinal and the identity tag: both exist to keep two
+  // slots apart, and Node prints neither.
+  return field
+    .slice(FIELD_PREFIX.length)
+    .replace(/^\d+:/, "")
+    .replace(/%[0-9a-f]+$/, "");
 }
 
 /** CopyDataProperties includes symbols, unlike the string-keyed view used
@@ -333,13 +339,25 @@ function symbolKeyOf(
   if (!identities) lowerer.symbolFieldIdentities.set(description, (identities = []));
   let ordinal = identities.indexOf(identity);
   if (ordinal < 0) ordinal = identities.push(identity) - 1;
+  // Two ordinary `Symbol()` calls may share a description and are still
+  // two symbols, so the description alone cannot name their slots: the
+  // tag of the declaring `const` keeps each identity's slot its own, which
+  // is what a subclass keyed by the other symbol reads. Registered
+  // (`Symbol.for`) symbols keep the plain description: they intern one
+  // identity per name, and a field name keyed by the description is exact
+  // for them. The tag is the identity's structural position (its file and
+  // declaration, relative to the entry), so it does not depend on lowering
+  // order or on where the checkout lives.
+  const identityDecl = identity.valueDeclaration ?? identity.declarations?.[0];
+  const identityTag =
+    registered || identityDecl === undefined ? "" : `%${positionTag(lowerer, identityDecl)}`;
   return {
     sym,
     identity,
     // Symbol slots are not string properties. The reserved prefix keeps
     // them out of the native class's string-keyed dynamic view, including
     // Object.keys/JSON serialization and string-property writeback.
-    fieldName: `${FIELD_PREFIX}${table && ordinal > 0 ? `${ordinal}:` : ""}Symbol(${description})`,
+    fieldName: `${FIELD_PREFIX}${table && ordinal > 0 ? `${ordinal}:` : ""}Symbol(${description})${identityTag}`,
   };
 }
 

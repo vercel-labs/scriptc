@@ -647,6 +647,7 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   // construction), and setHeader throws Node's name and value checks.
   "http.clientSetHeader",
   "http.clientSetHeaderDyn",
+  "http.clientSetHeaderArray",
   "http.clientAppendHeaderDyn",
   "http.clientRemoveHeader",
   "http.clientFlushHeaders",

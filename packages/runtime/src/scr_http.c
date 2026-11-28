@@ -7462,6 +7462,18 @@ ScrStr *scr_http_client_get_header(ScrHttpClientReq *c, ScrStr *name) {
   return NULL;
 }
 
+/* One element of an array-valued request header, as Node writes it: a hole
+ * or a present undefined is the text "undefined" (Node reads the array the
+ * way an iterator does), a present element is its string. */
+ScrStr *scr_http_header_array_element(ScrArr *values /*borrowed*/, double index) {
+  /* a hole and a present undefined both read as "undefined" (Node's
+   * iteration of the array yields undefined for each); only a slot holding a
+   * value takes the proven-presence accessor */
+  if (index < 0 || scr_arr_state(values, index) != (double)SCR_ARR_VALUE)
+    return scr_str_new("undefined", 9);
+  return (ScrStr *)scr_arr_get_ref(values, index);
+}
+
 /* getHeader(name): the value as set (case-insensitive), +1 — an array value
  * answers the array the record holds, a scalar its string, and the undefined
  * value when the header is absent (Node's getHeader). */
@@ -7592,6 +7604,31 @@ void scr_http_client_set_header_dyn(ScrHttpClientReq *c, ScrStr *name, ScrDyn *r
     scr_http_client_store_header(c, name, value, pos);
   }
   scr_dyn_release(value);
+}
+
+/* ClientRequest.setHeader(name, values) for a string array: the same value
+ * the dynamic form stores, built here so a hole or a present undefined reads
+ * as the text "undefined" (Node's iteration) instead of trapping on the way
+ * into the dynamic value. */
+void scr_http_client_set_header_array(ScrHttpClientReq *c, ScrStr *name /*borrowed*/,
+                                      ScrArr *values /*borrowed*/) {
+  ScrDyn *arr = scr_dyn_new_arr();
+  double n = scr_arr_len(values);
+  ScrStr *undefined_text = NULL;
+  for (double i = 0; i < n; i++) {
+    if (scr_arr_state(values, i) != (double)SCR_ARR_VALUE) {
+      if (undefined_text == NULL) undefined_text = scr_str_new("undefined", 9);
+      scr_dyn_arr_push(arr, scr_dyn_new_str(undefined_text));
+      continue;
+    }
+    /* the element read is +1; the dynamic value keeps its own reference */
+    ScrStr *element = (ScrStr *)scr_arr_get_ref(values, i);
+    scr_dyn_arr_push(arr, scr_dyn_new_str(element));
+    scr_str_release(element);
+  }
+  if (undefined_text != NULL) scr_str_release(undefined_text);
+  scr_http_client_set_header_dyn(c, name, arr);
+  scr_dyn_release(arr);
 }
 
 void scr_http_client_append_header_dyn(ScrHttpClientReq *c, ScrStr *name, ScrDyn *raw) {

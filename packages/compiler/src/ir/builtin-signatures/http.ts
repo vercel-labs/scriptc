@@ -466,6 +466,12 @@ export const httpSignatures = defineLibFnSignatures({
   /** setHeader / appendHeader with a string, number, null or array value;
    * the stored value keeps its type for getHeader/getHeaders. MAY THROW. */
   "http.clientSetHeaderDyn": { argTypes: [HTTPCLIENTREQ_T, STRING, DYN], result: VOID },
+  /** setHeader with a string array: elements that are holes or present
+   * undefined values read as the text "undefined", as Node writes them. */
+  "http.clientSetHeaderArray": {
+    argTypes: [HTTPCLIENTREQ_T, STRING, arrayOf(STRING)],
+    result: VOID,
+  },
   "http.clientAppendHeaderDyn": { argTypes: [HTTPCLIENTREQ_T, STRING, DYN], result: VOID },
   "http.clientGetHeader": { argTypes: [HTTPCLIENTREQ_T, STRING], result: VOID },
   /** getHeader as Node answers it: the number, string or string[] that was
@@ -476,6 +482,9 @@ export const httpSignatures = defineLibFnSignatures({
   "http.clientGetHeaderNames": { argTypes: [HTTPCLIENTREQ_T], result: arrayOf(STRING) },
   "http.clientGetRawHeaderNames": { argTypes: [HTTPCLIENTREQ_T], result: arrayOf(STRING) },
   "http.clientGetHeaders": { argTypes: [HTTPCLIENTREQ_T], result: DYN },
+  /** One element of an array-valued request header: a hole reads as the
+   * text "undefined", as Node writes it. */
+  "http.headerArrayElement": { argTypes: [arrayOf(STRING), F64], result: STRING },
   "http.clientWriteBytes": { argTypes: [HTTPCLIENTREQ_T, BYTES_U8], result: BOOL },
   "http.clientEnd": { argTypes: [HTTPCLIENTREQ_T], result: VOID },
   "http.clientEndStr": { argTypes: [HTTPCLIENTREQ_T, STRING], result: VOID },

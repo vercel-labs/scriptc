@@ -2767,7 +2767,12 @@ static int scr_tls_handshake(void *tctx) {
     r = MBEDTLS_ERR_SSL_WANT_READ;
   }
 #endif
-  if (r == 0 && t->cli != NULL && t->cli->check_identity != NULL) {
+  /* A resumed handshake exchanges no certificate, and Node does not run
+   * the caller's verifier for it (the session carries the verdict of the
+   * connection that established it): a pinning callback would otherwise be
+   * handed an empty certificate and reject a valid resumption. */
+  bool resumed = t->cli != NULL && t->cli->has_resume && !t->peer_cert_parsed;
+  if (r == 0 && t->cli != NULL && t->cli->check_identity != NULL && !resumed) {
     t->handshake_done = true; /* the peer certificate is readable now */
     if (!scr_tls_run_check_identity(t)) return -1;
   }

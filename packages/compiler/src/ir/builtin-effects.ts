@@ -163,6 +163,11 @@ const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
   "dyn.reflectSet",
   "dyn.reflectDefine",
   "dyn.abstractEq",
+  // ToNumber of a value that may be an object: the conversion runs the
+  // value's valueOf/toString, and a value that is not a number throws the
+  // checked TypeError.
+  "dyn.toNumberOrNaN",
+  "js.toNumberOrNaN",
   "text.decodeOptions",
   "text.decodeStream",
   "text.decodeLegacyOptions",

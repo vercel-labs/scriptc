@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/tls-resumed-check-server-identity.ts"
+ ],
+ "diags": []
+}

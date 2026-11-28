@@ -555,14 +555,17 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.webcrypto, "scr_webcrypto.c"),
   unit((u) => u.opts.webcrypto === true && u.opts.pki === true, "scr_webcrypto_pki.c"),
   unit((u) => u.opts.pki === true && u.opts.ed25519 === true, "scr_ed25519.c"),
-  unit((u) => u.opts.x509 === true, "scr_x509.c"),
+  // The X.509 unit builds the peer-certificate object the TLS unit reads
+  // for tls.connect's checkServerIdentity, so it rides the effective TLS
+  // gate too: a fetch program links TLS without naming crypto.x509.
+  unit((u) => u.opts.x509 === true || u.tls, "scr_x509.c"),
   // Argon2 (crypto.argon2 and crypto.argon2Sync) is self-contained.
   unit((u) => u.opts.argon2 === true, "scr_argon2.c"),
   // ML-KEM (node:crypto's encapsulate/decapsulate and WebCrypto): the
   // wrapper unit over the vendored mlkem-native archive.
   unit((u) => u.opts.mlkem === true, "scr_mlkem.c"),
   // The TLS socket certificate accessors read scr_tls.c and build with scr_x509.c.
-  unit((u) => u.tls && u.opts.x509 === true, "scr_tls_x509.c"),
+  unit((u) => u.tls, "scr_tls_x509.c"),
   // The crypto global's object extends scr_async_dyn.c's.
   unit((u) => u.opts.webcrypto && u.opts.dynAsync, "scr_webcrypto_object.c"),
   // The CA-store unit rides its own gate OR the tls one: scr_tls.c

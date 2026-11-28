@@ -10678,6 +10678,10 @@ export function withUndefinedArm(t: IrType, unions: UnionRegistry): IrType | nul
   return withUnitArm(t, "undefinedT", unions);
 }
 
+export function withNullArm(t: IrType, unions: UnionRegistry): IrType | null {
+  return withUnitArm(t, "nullT", unions);
+}
+
 /** A record property declared `?:` whose mapped type is the checked-dynamic
  * slot. Only such a field's shape carries an ABSENT state of its own (the
  * absent marker); every other optional property maps to an undefined-armed

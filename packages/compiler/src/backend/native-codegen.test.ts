@@ -20,8 +20,11 @@ import {
   validateNativeCodegenVersion,
 } from "./native-codegen.js";
 import {
+  cgroupReclaimableBytes,
   failureText,
+  generatedDispatchOptFor,
   nativeBuildPartitions,
+  nativeCodegenAvailableBytes,
   nativeCodegenJobs,
   nativeHelperFailureMessage,
   nativePartitionPaths,
@@ -49,6 +52,7 @@ async function fakePackage(
     missingOutput?: boolean;
     changePackageDuringEmit?: boolean;
     profileReport?: string;
+    features?: string[];
   } = {},
 ) {
   const root = await mkdtemp(join(tmpdir(), "scriptc-native-helper-test-"));
@@ -68,6 +72,7 @@ async function fakePackage(
     supported_targets: [MACOS_ARM64_TARGET.llvmTriple],
     default_target: MACOS_ARM64_TARGET.llvmTriple,
     data_layout: MACOS_ARM64_TARGET.dataLayout,
+    ...(options.features === undefined ? {} : { features: options.features }),
   });
   await writeFile(
     bin,
@@ -126,23 +131,127 @@ function request(
   };
 }
 
+test("the release posture asks for the light dispatch level", () => {
+  expect(generatedDispatchOptFor(undefined)).toBe("light");
+  expect(generatedDispatchOptFor("release")).toBe("light");
+  expect(generatedDispatchOptFor("dev")).toBeUndefined();
+  expect(generatedDispatchOptFor("speed")).toBeUndefined();
+});
+
+test("a dispatch level reaches a helper that advertises it and keys the cache", async () => {
+  const pkg = await fakePackage({ features: ["dispatch-opt"] });
+  await emitNativeArtifact({
+    ...request(pkg.root, pkg.packageJson),
+    dispatchOpt: generatedDispatchOptFor("release"),
+  });
+  expect(await readFile(pkg.log, "utf8")).toContain("--dispatch-opt light");
+
+  // A speed build asks for no level: the option is absent, and the artifact
+  // is not the release cache entry (the helper runs again).
+  await emitNativeArtifact({
+    ...request(pkg.root, pkg.packageJson, join(pkg.root, "speed.o")),
+    dispatchOpt: generatedDispatchOptFor("speed"),
+  });
+  const calls = (await readFile(pkg.log, "utf8")).trim().split("\n");
+  expect(calls).toHaveLength(2);
+  expect(calls[1]).not.toContain("--dispatch-opt");
+});
+
 test("caps codegen lanes by the memory available", () => {
   const bytes = 512 * 1024 * 1024;
-  // A partition lane parses a partition (a core's worth of the module) and
-  // may hold 16 times its text: 64 MB each, ample memory: every thread.
+  // A lane parses and optimizes one of the module's 64 partitions and may
+  // hold 16 times its 8 MB, or the 192 MB floor: 2 GB gives every thread a
+  // lane; dividing by the thread count instead would model 64 MB lanes and
+  // run a fraction of them.
   expect(nativeCodegenJobs(bytes, 64, { availableBytes: 64 * 2 ** 30, parallelism: 8 })).toBe(8);
-  // Eight lanes would take 8 GB: a smaller host runs fewer at once.
-  expect(nativeCodegenJobs(bytes, 64, { availableBytes: 2 * 2 ** 30, parallelism: 8 })).toBe(1);
-  expect(nativeCodegenJobs(bytes, 64, { availableBytes: 8 * 2 ** 30, parallelism: 8 })).toBe(6);
+  expect(nativeCodegenJobs(bytes, 64, { availableBytes: 2 * 2 ** 30, parallelism: 8 })).toBe(8);
+  // A few large partitions peak higher: two 256 MB partitions are 4 GB lanes,
+  // so a smaller host gives the build fewer of them.
+  expect(nativeCodegenJobs(bytes, 2, { availableBytes: 8 * 2 ** 30, parallelism: 8 })).toBe(1);
+  expect(nativeCodegenJobs(bytes, 2, { availableBytes: 16 * 2 ** 30, parallelism: 8 })).toBe(3);
+  expect(nativeCodegenJobs(bytes, 2, { availableBytes: 64 * 2 ** 30, parallelism: 8 })).toBe(8);
   // An unoptimized build's lanes peak lower, and one partition compiles alone.
   expect(
-    nativeCodegenJobs(bytes, 64, {
-      availableBytes: 6 * 2 ** 30,
+    nativeCodegenJobs(bytes, 2, {
+      availableBytes: 8 * 2 ** 30,
       parallelism: 8,
       unoptimized: true,
     }),
-  ).toBe(7);
+  ).toBe(2);
   expect(nativeCodegenJobs(bytes, 1, { availableBytes: 64 * 2 ** 30, parallelism: 8 })).toBe(1);
+});
+
+test("measures macOS memory by its physical memory", () => {
+  // macOS reports only free and inactive pages as available.
+  expect(nativeCodegenAvailableBytes(2 * 2 ** 30, 16 * 2 ** 30, "darwin")).toBe(16 * 2 ** 30);
+  // A host that reports more than its physical memory keeps that report.
+  expect(nativeCodegenAvailableBytes(32 * 2 ** 30, 16 * 2 ** 30, "darwin")).toBe(32 * 2 ** 30);
+  // Other hosts keep what the process measured: Linux without page cache its
+  // cgroup can reclaim, and any other platform.
+  expect(
+    nativeCodegenAvailableBytes(2 * 2 ** 30, 16 * 2 ** 30, "linux", { reclaimableBytes: 0 }),
+  ).toBe(2 * 2 ** 30);
+  expect(nativeCodegenAvailableBytes(2 * 2 ** 30, 16 * 2 ** 30, "win32")).toBe(2 * 2 ** 30);
+});
+
+test("counts the page cache a Linux cgroup can reclaim as available", () => {
+  const GB = 2 ** 30;
+  const measure = (measured: number, reclaimable: number, host: number) =>
+    nativeCodegenAvailableBytes(measured, 16 * GB, "linux", {
+      reclaimableBytes: reclaimable,
+      hostAvailableBytes: host,
+    });
+  // A warm cache inside a limited cgroup: the measured number leaves out the
+  // cache the kernel drops on demand, up to what the host has.
+  expect(measure(0.25 * GB, 5.5 * GB, 7.75 * GB)).toBe(5.75 * GB);
+  expect(measure(2 * GB, 9 * GB, 7.75 * GB)).toBe(7.75 * GB);
+  // Never less than what was measured.
+  expect(measure(8 * GB, 1 * GB, 7.75 * GB)).toBe(8 * GB);
+});
+
+test("reads the reclaimable page cache from the process's memory cgroup", () => {
+  const MB = 1024 * 1024;
+  const files = (entries: Record<string, string>) => (path: string) => entries[path];
+  // cgroup v2: inactive file pages, less those dirty or under writeback.
+  const v2 = files({
+    "/proc/self/cgroup": "0::/sandbox/task\n",
+    "/sys/fs/cgroup/sandbox/task/memory.stat": `anon ${8000 * MB}\nfile ${7000 * MB}\nactive_file ${2000 * MB}\ninactive_file ${5000 * MB}\nfile_dirty ${300 * MB}\nfile_writeback ${200 * MB}\n`,
+  });
+  expect(cgroupReclaimableBytes(v2)).toBe(4500 * MB);
+  // A container whose own path is hidden reads the root's.
+  const root = files({
+    "/proc/self/cgroup": "0::/\n",
+    "/sys/fs/cgroup/memory.stat": `inactive_file ${1000 * MB}\n`,
+  });
+  expect(cgroupReclaimableBytes(root)).toBe(1000 * MB);
+  // cgroup v1 names its totals.
+  const v1 = files({
+    "/proc/self/cgroup": "12:cpu,cpuacct:/a\n7:memory:/build\n",
+    "/sys/fs/cgroup/memory/build/memory.stat": `total_inactive_file ${3000 * MB}\ntotal_dirty ${500 * MB}\ntotal_writeback 0\n`,
+  });
+  expect(cgroupReclaimableBytes(v1)).toBe(2500 * MB);
+  // A hybrid host lists the v2 hierarchy (0::) beside v1 controllers; its
+  // memory is accounted by the v1 memory controller, whose stats count.
+  const hybrid = files({
+    "/proc/self/cgroup": "12:memory:/build\n4:cpu,cpuacct:/build\n0::/build\n",
+    "/sys/fs/cgroup/memory/build/memory.stat": `total_inactive_file ${3000 * MB}\ntotal_dirty ${500 * MB}\n`,
+  });
+  expect(cgroupReclaimableBytes(hybrid)).toBe(2500 * MB);
+  // A v1 memory controller whose stats cannot be read leaves the v2 hierarchy.
+  const unreadableV1 = files({
+    "/proc/self/cgroup": "12:memory:/build\n0::/build\n",
+    "/sys/fs/cgroup/build/memory.stat": `inactive_file ${800 * MB}\n`,
+  });
+  expect(cgroupReclaimableBytes(unreadableV1)).toBe(800 * MB);
+  // No cgroup, or files that cannot be read, reclaim nothing.
+  expect(cgroupReclaimableBytes(files({}))).toBe(0);
+  expect(cgroupReclaimableBytes(files({ "/proc/self/cgroup": "0::/x\n" }))).toBe(0);
+  // More dirty than inactive pages is no negative reclaim.
+  const dirty = files({
+    "/proc/self/cgroup": "0::/x\n",
+    "/sys/fs/cgroup/x/memory.stat": `inactive_file ${100 * MB}\nfile_dirty ${300 * MB}\n`,
+  });
+  expect(cgroupReclaimableBytes(dirty)).toBe(0);
 });
 
 test("reuses an artifact for the same module name from another directory", async () => {

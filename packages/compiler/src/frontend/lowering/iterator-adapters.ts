@@ -3,6 +3,7 @@ import { keyedHelperName } from "./stable-names.js";
 import { dynUndefinedExpr, varRef } from "../../ir/build.js";
 import {
   BOOL,
+  CAUGHT,
   DYN,
   F64,
   STRING,
@@ -350,6 +351,19 @@ function dynIteratorAdapter(
     };
     const resumedFlag = local("resumed.0", BOOL, true);
     const closer = local("closer.0", DYN);
+    /* A consumer's throw resumes into this adapter while it is suspended in
+     * the yield below. The source iterator is the one Node's pipeline would
+     * have thrown into, so the adapter forwards the error to its throw when
+     * it has one (letting the source's own catch run) and follows the result;
+     * a source without one rethrows, as the consumer sees the failure. */
+    local("caught.0", CAUGHT);
+    const caughtDyn = (): IrExpr => ({
+      kind: "caughtToDyn",
+      value: varRef("caught.0", CAUGHT, loc),
+      type: DYN,
+      loc,
+    });
+    local("thrower.0", DYN);
     const stepOnce = (): IrStmt => ({
       kind: "assign",
       localId: "step.0",
@@ -445,8 +459,72 @@ function dynIteratorAdapter(
           {
             kind: "tryCatch",
             tryBody: [suspend(), setResumed(true, loc)],
-            catchBody: null,
-            catchLocalId: null,
+            catchBody: [
+              { kind: "varDecl", localId: "thrower.0", init: get(iterator, "throw"), loc },
+              {
+                kind: "if",
+                cond: {
+                  kind: "unary",
+                  op: "!",
+                  operand: {
+                    kind: "dynTest",
+                    test: "nullish",
+                    value: varRef("thrower.0", DYN, loc),
+                    type: BOOL,
+                    loc,
+                  },
+                  type: BOOL,
+                  loc,
+                },
+                then: [
+                  {
+                    kind: "assign",
+                    localId: "step.0",
+                    value: {
+                      kind: "libCall",
+                      fn: "dyn.iteratorResult",
+                      args: [
+                        {
+                          kind: "dynCall",
+                          callee: varRef("thrower.0", DYN, loc),
+                          receiver: iterator,
+                          calleeName: "iterator.throw",
+                          args: [caughtDyn()],
+                          type: DYN,
+                          loc,
+                        },
+                      ],
+                      type: DYN,
+                      loc,
+                    },
+                    loc,
+                  },
+                  /* The source stepped itself to answer the throw, so the
+                   * finally must leave it alone: resumed marks the yield as
+                   * resolved and the source advanced, and a throw the source
+                   * handled is that resolution. Set before the done check,
+                   * whose return runs the finally too. */
+                  setResumed(true, loc),
+                  {
+                    kind: "if",
+                    cond: {
+                      kind: "dynTest",
+                      test: "truthy",
+                      value: get(step, "done"),
+                      type: BOOL,
+                      loc,
+                    },
+                    then: [finish],
+                    else_: null,
+                    loc,
+                  },
+                  { kind: "continue", loc },
+                ],
+                else_: [{ kind: "throw", value: caughtDyn(), loc }],
+                loc,
+              },
+            ],
+            catchLocalId: "caught.0",
             finallyBody: [closeOrPark],
             loc,
           },

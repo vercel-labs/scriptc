@@ -46,6 +46,7 @@ import {
   STRING,
   type SrcLoc,
   UNDEFINED_T,
+  VOID,
   arrayOf,
   funcOf,
 } from "../../../ir/ir.js";
@@ -55,6 +56,7 @@ import {
   createRequireProgramModuleOf,
   createRequireCalleeFileOf,
   createRequireFactoryBinding,
+  isCreateRequireImportValue,
   createRequireLoaderAnchorOf,
   createRequireRuntimeBaseOf,
 } from "./module-bindings.js";
@@ -207,6 +209,68 @@ function findPackageJsonBaseHref(lowerer: Lowerer, node: ts.Expression): string 
   return null;
 }
 
+/** node:module's source-map support calls and the runtime entry point of
+ * each (scr_lib.c). `params` is how many leading arguments the runtime
+ * reads; the rest are evaluated and dropped, as Node ignores them. */
+const SOURCE_MAP_CALLS = {
+  getSourceMapsSupport: { fn: "module.sourceMapsSupport", params: 0, result: DYN },
+  setSourceMapsSupport: { fn: "module.setSourceMapsSupport", params: 2, result: VOID },
+  findSourceMap: { fn: "module.findSourceMap", params: 1, result: DYN },
+} as const;
+type SourceMapMember = keyof typeof SOURCE_MAP_CALLS;
+
+/** getSourceMapsSupport(), setSourceMapsSupport(enabled[, options]) and
+ * findSourceMap(path): a compiled program registers no source map, so the
+ * support record answers the flags the program set exactly as Node's frozen
+ * { enabled, nodeModules, generatedCode } does, and findSourceMap answers
+ * undefined — what Node answers for a file whose map was never parsed. Every
+ * argument is evaluated in source order before the runtime validates any, and
+ * a trailing argument the call omits arrives as undefined (Node's own
+ * defaults). */
+function lowerSourceMapsCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  member: SourceMapMember,
+  loc: SrcLoc,
+): IrExpr {
+  const row = SOURCE_MAP_CALLS[member];
+  const args = expr.arguments.nodes;
+  if (args.some(ts.isSpreadElement)) {
+    lowerer.noLowering(
+      `module.${member} with spread arguments`,
+      expr,
+      "pass the arguments themselves; the runtime reads at most two",
+    );
+  }
+  const stmts: IrStmt[] = [];
+  const lowered: IrExpr[] = [];
+  args.forEach((arg, i) => {
+    const value = lowerer.lowerExpr(arg);
+    const argLoc = locOf(arg);
+    if (i >= row.params) {
+      stmts.push({ kind: "exprStmt", expr: value, loc: argLoc });
+      return;
+    }
+    const boxed = lowerer.coerceInto(arg, value, DYN);
+    if (i === args.length - 1 && stmts.length === 0) {
+      lowered.push(boxed);
+      return;
+    }
+    // Later arguments run before the runtime looks at this one.
+    const slot = lowerer.declareHiddenLocal(`%sourceMapsArg${i}`, DYN);
+    stmts.push({ kind: "varDecl", localId: slot.id, init: boxed, loc: argLoc });
+    lowered.push(varRef(slot.id, DYN, argLoc));
+  });
+  for (let i = args.length; i < row.params; i++) lowered.push(dynUndefinedExpr(loc));
+  const call: IrExpr = { kind: "libCall", fn: row.fn, args: lowered, type: row.result, loc };
+  const declared = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  const result =
+    declared === null || declared.kind === "dyn" || declared.kind === "void"
+      ? call
+      : lowerer.coerceToExpected(call, declared);
+  return stmts.length === 0 ? result : { kind: "seqExpr", stmts, result, type: result.type, loc };
+}
+
 /** node:module's two compiler-only calls. isBuiltin compares one evaluated
  * string against the pinned Node 24 list (bare builtins also accept their
  * node: spelling; prefix-only entries do not gain a bare alias).
@@ -225,6 +289,9 @@ export function lowerNodeModuleCall(
     return lowerCompileCacheCall(lowerer, expr, bi.member as CompileCacheMember, loc);
   }
   if (bi.member === "findPackageJSON") return lowerFindPackageJsonCall(lowerer, expr, loc);
+  if (Object.hasOwn(SOURCE_MAP_CALLS, bi.member)) {
+    return lowerSourceMapsCall(lowerer, expr, bi.member as SourceMapMember, loc);
+  }
   if (bi.member === "syncBuiltinESMExports") {
     if (expr.arguments.nodes.length !== 0 || expr.arguments.nodes.some(ts.isSpreadElement)) {
       lowerer.noLowering(
@@ -693,32 +760,39 @@ function createRequireFenceFunctionValue(
   };
 }
 
+/** One argument of a createRequire factory call as a statement. A spread
+ * consumes its iterator, which throws for an operand that is not
+ * iterable. */
+function createRequireArgumentStmt(lowerer: Lowerer, arg: ts.Expression): IrStmt {
+  const argLoc = locOf(arg);
+  return {
+    kind: "exprStmt",
+    expr: ts.isSpreadElement(arg)
+      ? checkedIterableSpread(
+          lowerer,
+          lowerer.lowerExpr(arg.expression),
+          ts.getTextOfNode(arg.expression),
+          argLoc,
+        )
+      : lowerer.lowerExpr(arg),
+    loc: argLoc,
+  };
+}
+
 /** The argument expressions of an inline factory call — `createRequire(base)`
  * or a destructured `cr(base)` — as statements in source order. Node
  * evaluates them when it makes the loader, before the loader value exists,
- * so side effects and throws happen there. A spread argument consumes its
- * iterator, which throws for an operand that is not iterable. */
+ * so side effects and throws happen there. A statically invalid base never
+ * makes a loader: the factory's own argument error stands in for them. */
 function createRequireBaseEffectStmts(lowerer: Lowerer, creator: ts.Expression): IrStmt[] {
   const e = withoutParenthesesTypeWrappers(creator);
   if (!ts.isCallExpression(e) || e.questionDotToken) return [];
   // An optional chain that hoisted this call into a local already ran the
   // base: the guarded read re-lowers the receiver, and must not repeat it.
   if (lowerer.chainRecvByNode.has(e)) return [];
-  return e.arguments.nodes.map((arg): IrStmt => {
-    const argLoc = locOf(arg);
-    return {
-      kind: "exprStmt",
-      expr: ts.isSpreadElement(arg)
-        ? checkedIterableSpread(
-            lowerer,
-            lowerer.lowerExpr(arg.expression),
-            ts.getTextOfNode(arg.expression),
-            argLoc,
-          )
-        : lowerer.lowerExpr(arg),
-      loc: argLoc,
-    };
-  });
+  const invalid = createRequireArgumentThrow(lowerer, e, locOf(e));
+  if (invalid !== null) return [{ kind: "exprStmt", expr: invalid, loc: locOf(e) }];
+  return e.arguments.nodes.map((arg) => createRequireArgumentStmt(lowerer, arg));
 }
 
 /** A createRequire use deferred to run time in JavaScript source: as in
@@ -760,6 +834,158 @@ function deferredCreateRequireThrow(
   };
 }
 
+/** What Node's argument check makes of a createRequire factory call:
+ * "valid" for a base the check accepts, "invalid" with the text
+ * util.inspect prints for a statically known base it rejects, "other" for a
+ * base computed at run time (or one whose printed form this check does not
+ * reproduce) and for a callee that is not the factory. */
+type CreateRequireBaseCheck =
+  | { kind: "valid" }
+  | { kind: "invalid"; received: string }
+  | { kind: "other" };
+
+/** The quoted form util.inspect prints for a string, or null when the text
+ * needs escaping this check does not reproduce (a backslash, a control
+ * character, or both quote characters). */
+function inspectStringText(text: string): string | null {
+  for (const ch of text) {
+    const code = ch.codePointAt(0)!;
+    if (ch === "\\" || code < 0x20 || code === 0x7f) return null;
+  }
+  const hasSingle = text.includes("'");
+  const hasDouble = text.includes('"');
+  if (!hasSingle) return `'${text}'`;
+  if (!hasDouble) return `"${text}"`;
+  return null;
+}
+
+/** The text util.inspect prints for a numeric literal: its value in the
+ * shortest round-tripping form, separators dropped, and negative zero kept
+ * as "-0". */
+function numericLiteralText(text: string): string {
+  const n = Number(text.replace(/_/g, ""));
+  return Object.is(n, -0) ? "-0" : String(n);
+}
+
+/** Node's argument check for a createRequire factory call — the named
+ * import, or a destructured factory binding: the base must be a file URL
+ * object, a file URL string, or an absolute path string. A statically known
+ * argument of any other shape is Node's ERR_INVALID_ARG_VALUE throw, where
+ * the factory call stands: the compiled loader fence would otherwise stand
+ * in for a loader Node never creates. A call with no argument passes
+ * undefined. */
+function createRequireBaseCheck(lowerer: Lowerer, call: ts.CallExpression): CreateRequireBaseCheck {
+  // Only the FACTORY call (`createRequire(<base>)`) takes a filename: a
+  // call through the loader it made takes a module id, which has its own
+  // lowering.
+  const callee = withoutParenthesesTypeWrappers(call.expression);
+  const factory =
+    ts.isIdentifier(callee) &&
+    (isCreateRequireImportValue(lowerer, callee) || createRequireFactoryBinding(lowerer, callee));
+  if (!factory) return { kind: "other" };
+  const args = call.arguments.nodes;
+  if (args.length === 0) return { kind: "invalid", received: "undefined" };
+  const arg = withoutParenthesesTypeWrappers(args[0]!);
+  const invalid = (received: string): CreateRequireBaseCheck => ({ kind: "invalid", received });
+  if (ts.isStringLiteralLike(arg)) {
+    const text = arg.text;
+    if (text.startsWith("file:") || isAbsoluteRuntimePath(text)) return { kind: "valid" };
+    const quoted = inspectStringText(text);
+    // A string this check cannot print faithfully still names no usable
+    // base, so it keeps the run-time fence rather than a wrong message.
+    return quoted === null ? { kind: "other" } : invalid(quoted);
+  }
+  if (ts.isNumericLiteral(arg)) return invalid(numericLiteralText(arg.text));
+  if (
+    ts.isPrefixUnaryExpression(arg) &&
+    arg.operator === ts.SyntaxKind.MinusToken &&
+    ts.isNumericLiteral(arg.operand)
+  )
+    return invalid(numericLiteralText(`-${arg.operand.text}`));
+  if (arg.kind === ts.SyntaxKind.TrueKeyword) return invalid("true");
+  if (arg.kind === ts.SyntaxKind.FalseKeyword) return invalid("false");
+  if (arg.kind === ts.SyntaxKind.NullKeyword) return invalid("null");
+  // `undefined` by itself: the global, through casts, or a local binding
+  // that holds undefined all pass Node's check the same value, so the
+  // static type decides. A local binding of another type (`const undefined
+  // = "/abs/x.cjs"`) is a base like any other and is left to run time.
+  if (
+    ts.isIdentifier(arg) &&
+    arg.text === "undefined" &&
+    lowerer.typeOf(arg).flags === ts.TypeFlags.Undefined
+  )
+    return invalid("undefined");
+  if (ts.isVoidExpression(arg)) return invalid("undefined");
+  if (ts.isObjectLiteralExpression(arg) && arg.properties.nodes.length === 0) return invalid("{}");
+  if (ts.isArrayLiteralExpression(arg) && arg.elements.nodes.length === 0) return invalid("[]");
+  return { kind: "other" };
+}
+
+/** Whether evaluating a `void` operand can do anything a program observes.
+ * The operands that only name a unit (null, undefined, another void) emit
+ * no code, so they need no statement of their own. */
+function voidOperandHasEffect(expr: ts.Expression): boolean {
+  const e = withoutParenthesesTypeWrappers(expr);
+  if (e.kind === ts.SyntaxKind.NullKeyword) return false;
+  if (ts.isIdentifier(e)) return e.text !== "undefined";
+  if (ts.isVoidExpression(e)) return voidOperandHasEffect(e.expression);
+  return true;
+}
+
+/** Node's argument error for a createRequire factory call whose base is
+ * statically invalid, or null. The arguments after the base still run in
+ * source order before the throw, as Node evaluates every argument before
+ * the factory body runs. */
+function createRequireArgumentThrow(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  loc: SrcLoc,
+): IrExpr | null {
+  const check = createRequireBaseCheck(lowerer, call);
+  if (check.kind !== "invalid") return null;
+  const thrown = nodeThrowExpr(
+    1,
+    "ERR_INVALID_ARG_VALUE",
+    "The argument 'filename' must be a file URL object, file URL string, " +
+      `or absolute path string. Received ${check.received}`,
+    DYN,
+    loc,
+  );
+  // Every argument runs before the factory body throws. The base itself is
+  // a literal with no effect — except `void <expr>`, whose operand Node
+  // evaluates and discards before the check.
+  const stmts: IrStmt[] = [];
+  const first = call.arguments.nodes[0];
+  const base = first === undefined ? undefined : withoutParenthesesTypeWrappers(first);
+  if (base !== undefined && ts.isVoidExpression(base) && voidOperandHasEffect(base.expression))
+    stmts.push(createRequireArgumentStmt(lowerer, base.expression));
+  for (const arg of call.arguments.nodes.slice(1))
+    stmts.push(createRequireArgumentStmt(lowerer, arg));
+  return stmts.length === 0
+    ? thrown
+    : { kind: "seqExpr", stmts, result: thrown, type: thrown.type, loc };
+}
+
+/** The throw a createRequire factory call with a statically invalid base
+ * makes where Node makes it, for the paths that evaluate a factory call
+ * without lowering it — a `const` binding over a run-time loader, whose
+ * declaration keeps the base. Null for a valid or run-time base, and off
+ * the factory-call shape. */
+export function createRequireCreatorThrow(
+  lowerer: Lowerer,
+  creator: ts.Expression | undefined,
+  loc: SrcLoc,
+): IrExpr | null {
+  if (creator === undefined) return null;
+  const e = withoutParenthesesTypeWrappers(creator);
+  if (!ts.isCallExpression(e) || e.questionDotToken) return null;
+  return createRequireArgumentThrow(lowerer, e, loc);
+}
+
+function isAbsoluteRuntimePath(text: string): boolean {
+  return text.startsWith("/") || /^[A-Za-z]:[\\/]/.test(text) || text.startsWith("\\\\");
+}
+
 export function lowerCreateRequireCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -771,6 +997,10 @@ export function lowerCreateRequireCall(
     // run-time require over a base the compiled graph cannot anchor.
     if (!isJsSourceFile(ts.getSourceFileOfNode(call))) return null;
     const callee = withoutParenthesesTypeWrappers(call.expression);
+    // A statically invalid base is Node's argument error, thrown where the
+    // factory call stands.
+    const invalid = createRequireArgumentThrow(lowerer, call, loc);
+    if (invalid !== null) return invalid;
     // The factory call itself over a run-time base — `createRequire(base)`
     // or a destructured `cr(base)`: Node evaluates the base arguments,
     // then the factory returns the loader. The compiled loader is the

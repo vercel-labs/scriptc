@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { CLASS_KEY_LEN_MIX, classKeyHash, classKeyTail } from "./class-key-index.js";
+import {
+  CLASS_KEY_LEN_MIX,
+  classKeyHash,
+  classKeyTail,
+  classValueSlot,
+} from "./class-key-index.js";
 
 describe("class key index", () => {
   it("reads the last four key bytes as a little-endian word", () => {
@@ -25,5 +30,17 @@ describe("class key index", () => {
 
   it("gives a key too short for a tail -1", () => {
     expect(classKeyHash("abc")).toBe(-1);
+  });
+
+  it("measures a key by its UTF-8 bytes, as the emitted code reads it", () => {
+    // A class name may hold non-ASCII characters. The stored key length and
+    // the tail the emitted code loads are byte measures, so the compiler has
+    // to fold the key's UTF-8 bytes: "classval:Émile" is 15 bytes, not the
+    // 14 UTF-16 code units a string length would count.
+    expect(classKeyTail("object:Ünï")).toBe(2948820636);
+    expect(classKeyHash("object:Ünï")).toBe(442311400);
+    expect(classKeyHash("classval:Émile")).toBe(715950796);
+    expect(classValueSlot("object:Ünï", 5)).toBe(2);
+    expect(classValueSlot("classval:Émile", 5)).toBe(28);
   });
 });

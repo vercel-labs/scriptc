@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/globals-eventsource-absent.cjs"
+ ],
+ "diags": []
+}

@@ -8,8 +8,9 @@ interface Tagged {
   tag: string;
 }
 
-// A narrower record parameter of a method is a field copy: the write is lost.
-// (A declared function called directly runs on the caller's record instead.)
+// A narrower record target the program can observe keeps one object: the
+// narrower name is a view of the original record, so this write reaches
+// `tagged` exactly as it does in Node.js, and nothing is reported.
 const labels = {
   relabel(target: Labeled): void {
     target.label = "renamed";
@@ -19,9 +20,15 @@ const tagged: Tagged = { label: "first", tag: "t" };
 labels.relabel(tagged);
 console.log(tagged.label);
 
-// A narrower binding is a copy too: identity comparison is false.
-const view: Labeled = tagged;
-console.log(view === tagged);
+// A target that ADDS an optional property has a different layout: the
+// conversion still copies, so the write is lost.
+interface Noted {
+  label: string;
+  note?: string;
+}
+const noted: Noted = tagged;
+noted.label = "copied";
+console.log(tagged.label);
 
 // Key order: values of one type are built in two orders, and a spread sets
 // an optional key its source lacks, so the values cannot record their own
@@ -37,7 +44,10 @@ const labeled: Point = { ...point, label: "p" };
 console.log(JSON.stringify(point), JSON.stringify(other), JSON.stringify(labeled));
 
 // Text outside the built-in collation compares by code point natively.
-console.log(["б", "а"].sort((p, q) => p.localeCompare(q)).join(","), "яблоко".localeCompare("груша"));
+console.log(
+  ["б", "а"].sort((p, q) => p.localeCompare(q)).join(","),
+  "яблоко".localeCompare("груша"),
+);
 
 // A call feeds an instance to a cast to an unrelated class.
 class Shape {
@@ -55,6 +65,10 @@ function sizeOf(s: Shape): number {
 console.log(sizeOf(new Circle()));
 
 // Date strings parse with V8's grammar natively, so none of these diverge.
-console.log(Date.parse("Jan 2, 2024"), new Date("2024/01/02").getTime(), Date.parse("2024-01-02T03:04:05Z"));
+console.log(
+  Date.parse("Jan 2, 2024"),
+  new Date("2024/01/02").getTime(),
+  Date.parse("2024-01-02T03:04:05Z"),
+);
 const stamps = ["2024-03-04T05:06:07Z", "March 4, 2024"];
 for (const stamp of stamps) console.log(Date.parse(stamp));

@@ -3,87 +3,24 @@ compat-absent-http2-members.ts:8:3 - error SC2020: 'stream.pushStream' is part o
   7 | server.on("stream", (stream) => {
   8 |   stream.pushStream({ ":path": "/pushed" }, () => {});
     |   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  9 |   stream.priority({ weight: 1 });
+  9 |   console.log(stream.pushAllowed, stream.state, stream.sentHeaders);
 
-  hint: respond/sendTrailers/additionalHeaders/write/end/close/destroy/setEncoding/resume/pause and on(...) are the lowered stream members
+  hint: respond/sendTrailers/additionalHeaders/write/end/close/destroy/setEncoding/resume/pause/setTimeout/priority and on(...) are the lowered stream members
 
-compat-absent-http2-members.ts:9:3 - error SC2020: 'stream.priority' is part of the standard library types but has no scriptc lowering yet
+compat-absent-http2-members.ts:9:15 - error SC2020: 'ServerHttp2Stream.pushAllowed' is part of the standard library types but has no scriptc lowering yet
 
    8 |   stream.pushStream({ ":path": "/pushed" }, () => {});
-   9 |   stream.priority({ weight: 1 });
-     |   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  10 |   stream.setTimeout(1000);
-
-  hint: respond/sendTrailers/additionalHeaders/write/end/close/destroy/setEncoding/resume/pause and on(...) are the lowered stream members
-
-compat-absent-http2-members.ts:10:3 - error SC2020: 'stream.setTimeout' is part of the standard library types but has no scriptc lowering yet
-
-   9 |   stream.priority({ weight: 1 });
-  10 |   stream.setTimeout(1000);
-     |   ^~~~~~~~~~~~~~~~~~~~~~~
-  11 |   console.log(stream.pushAllowed, stream.state, stream.sentHeaders);
-
-  hint: respond/sendTrailers/additionalHeaders/write/end/close/destroy/setEncoding/resume/pause and on(...) are the lowered stream members
-
-compat-absent-http2-members.ts:11:15 - error SC2020: 'ServerHttp2Stream.pushAllowed' is part of the standard library types but has no scriptc lowering yet
-
-  10 |   stream.setTimeout(1000);
-  11 |   console.log(stream.pushAllowed, stream.state, stream.sentHeaders);
+   9 |   console.log(stream.pushAllowed, stream.state, stream.sentHeaders);
      |               ^~~~~~~~~~~~~~~~~~
-  12 | });
+  10 | });
 
   hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
 
-compat-absent-http2-members.ts:14:1 - error SC2020: 'session.setTimeout' is part of the standard library types but has no scriptc lowering yet
+compat-absent-http2-members.ts:13:12 - error SC2020: 'stream.on("push", ...)' is part of the standard library types but has no scriptc lowering yet
 
-  13 | const client = http2.connect("http://127.0.0.1:1");
-  14 | client.setTimeout(1000);
-     | ^~~~~~~~~~~~~~~~~~~~~~~
-  15 | client.unref();
-
-  hint: close/destroy/request/settings/ping and on(...) are the lowered session members
-
-compat-absent-http2-members.ts:15:1 - error SC2020: 'session.unref' is part of the standard library types but has no scriptc lowering yet
-
-  14 | client.setTimeout(1000);
-  15 | client.unref();
-     | ^~~~~~~~~~~~~~
-  16 | client.goaway(0);
-
-  hint: close/destroy/request/settings/ping and on(...) are the lowered session members
-
-compat-absent-http2-members.ts:16:1 - error SC2020: 'session.goaway' is part of the standard library types but has no scriptc lowering yet
-
-  15 | client.unref();
-  16 | client.goaway(0);
-     | ^~~~~~~~~~~~~~~~
-  17 | client.on("timeout", () => {});
-
-  hint: close/destroy/request/settings/ping and on(...) are the lowered session members
-
-compat-absent-http2-members.ts:17:11 - error SC2020: 'session.on("timeout", ...)' is part of the standard library types but has no scriptc lowering yet
-
-  16 | client.goaway(0);
-  17 | client.on("timeout", () => {});
-     |           ^~~~~~~~~
-  18 | const request = client.request({ ":path": "/" });
-
-  hint: "close", "error", "connect", "stream", "goaway", "ping", "localSettings", and "remoteSettings" are the supported session events
-
-compat-absent-http2-members.ts:19:12 - error SC2020: 'stream.on("push", ...)' is part of the standard library types but has no scriptc lowering yet
-
-  18 | const request = client.request({ ":path": "/" });
-  19 | request.on("push", () => {});
+  12 | const request = client.request({ ":path": "/" });
+  13 | request.on("push", () => {});
      |            ^~~~~~
-  20 | request.on("ready", () => {});
+  14 | 
 
-  hint: "data", "end", "close", "aborted", "error", "response", "trailers", "wantTrailers", "headers", and "continue" are the supported stream events
-
-compat-absent-http2-members.ts:20:12 - error SC2020: 'stream.on("ready", ...)' is part of the standard library types but has no scriptc lowering yet
-
-  19 | request.on("push", () => {});
-  20 | request.on("ready", () => {});
-     |            ^~~~~~~
-  21 | 
-
-  hint: "data", "end", "close", "aborted", "error", "response", "trailers", "wantTrailers", "headers", and "continue" are the supported stream events
+  hint: "data", "end", "close", "aborted", "error", "response", "trailers", "wantTrailers", "headers", "continue", "ready", and "timeout" are the supported stream events

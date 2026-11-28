@@ -85,14 +85,29 @@ export const http2Signatures = defineLibFnSignatures({
    * :status rides separately as a number). */
   "http2.createServer": { argTypes: [], result: NETSERVER_T },
   "http2.createServerReq": { argTypes: [null], result: NETSERVER_T },
+  /** createServer(options...): only settings.enableConnectProtocol is
+   * honored (the RFC 8441 advertisement); the rest stay at defaults. */
+  "http2.createServerOpts": { argTypes: [BOOL], result: NETSERVER_T },
+  "http2.createServerReqOpts": { argTypes: [null, BOOL], result: NETSERVER_T },
   "http2.serverOnStream": { argTypes: [NETSERVER_T, null, BOOL], result: VOID },
   "http2.serverOnSession": { argTypes: [NETSERVER_T, null, BOOL], result: VOID },
+  /* The h2 server's own idle timeout: the listeners hear the session and
+   * setTimeout(ms, cb) adds one (Node's Http2Server). */
+  "http2.serverOnTimeout": { argTypes: [NETSERVER_T, null, BOOL], result: VOID },
+  "http2.serverSetTimeoutCb": { argTypes: [NETSERVER_T, F64, null], result: VOID },
   // connect(authority, reject, ca[, cb]): the TLS client knobs an https
   // authority reads (inert on http ones, exactly Node); ca is a PEM
   // string/Buffer ("" = the system anchors).
   /** connect(authority[, listener]) — h2c prior knowledge; the listener
    * closure (if any) is the 'connect' once-listener. */
   "http2.connect": { argTypes: [STRING, BOOL, null], result: HTTP2SESSION_T },
+  "http2.performServerHandshake": { argTypes: [NETSOCKET_T], result: HTTP2SESSION_T },
+  /** performServerHandshake(socket, options): the options literal still
+   * evaluates (its calls and spreads run); the value is inert here. */
+  "http2.performServerHandshakeOpts": {
+    argTypes: [NETSOCKET_T, DYN],
+    result: HTTP2SESSION_T,
+  },
   "http2.connectCb": { argTypes: [STRING, BOOL, null, null], result: HTTP2SESSION_T },
   /** session.request(pairs?, endStream) — endStream is a tri-state f64:
    * -1 the method's payload-meaningless default, 0/1 explicit. */
@@ -103,7 +118,17 @@ export const http2Signatures = defineLibFnSignatures({
   "http2.sessionClose": { argTypes: [HTTP2SESSION_T], result: VOID },
   "http2.sessionCloseCb": { argTypes: [HTTP2SESSION_T, null], result: VOID },
   "http2.sessionDestroy": { argTypes: [HTTP2SESSION_T], result: VOID },
+  "http2.sessionSetLocalWindowSize": { argTypes: [HTTP2SESSION_T, F64], result: VOID },
   "http2.sessionOnClose": { argTypes: [HTTP2SESSION_T, null, BOOL], result: VOID },
+  "http2.sessionOnTimeout": { argTypes: [HTTP2SESSION_T, null, BOOL], result: VOID },
+  /** goaway([code][, lastStreamID][, opaqueData]) — -1 is the default
+   * "last processed stream". */
+  "http2.sessionGoaway": { argTypes: [HTTP2SESSION_T, F64, F64], result: VOID },
+  "http2.sessionGoawayData": { argTypes: [HTTP2SESSION_T, F64, F64, BYTES_U8], result: VOID },
+  "http2.sessionSetTimeout": { argTypes: [HTTP2SESSION_T, F64], result: VOID },
+  "http2.sessionSetTimeoutCb": { argTypes: [HTTP2SESSION_T, F64, null], result: VOID },
+  "http2.sessionRef": { argTypes: [HTTP2SESSION_T], result: VOID },
+  "http2.sessionUnref": { argTypes: [HTTP2SESSION_T], result: VOID },
   "http2.sessionOnError": { argTypes: [HTTP2SESSION_T, null, BOOL], result: VOID },
   "http2.sessionOnConnect": { argTypes: [HTTP2SESSION_T, null, BOOL], result: VOID },
   "http2.sessionOnStream": { argTypes: [HTTP2SESSION_T, null, BOOL], result: VOID },
@@ -134,6 +159,14 @@ export const http2Signatures = defineLibFnSignatures({
   "http2.streamOnHeaders": { argTypes: [HTTP2STREAM_T, null, BOOL], result: VOID },
   "http2.streamOnWantTrailers": { argTypes: [HTTP2STREAM_T, null, BOOL], result: VOID },
   "http2.streamOnContinue": { argTypes: [HTTP2STREAM_T, null, BOOL], result: VOID },
+  "http2.streamOnReady": { argTypes: [HTTP2STREAM_T, null, BOOL], result: VOID },
+  "http2.streamOnTimeout": { argTypes: [HTTP2STREAM_T, null, BOOL], result: VOID },
+  /** setTimeout(msecs[, callback]) — the stream's own idle timer. */
+  "http2.streamSetTimeout": { argTypes: [HTTP2STREAM_T, F64], result: VOID },
+  "http2.streamSetTimeoutCb": { argTypes: [HTTP2STREAM_T, F64, null], result: VOID },
+  /** priority(options) — deprecated by RFC 9113; accepted and ignored. */
+  "http2.streamPriority": { argTypes: [HTTP2STREAM_T, DYN], result: VOID },
+  "http2.streamPriority0": { argTypes: [HTTP2STREAM_T], result: VOID },
   /** res.writeInformation(statusCode[, headers]) on a compat response. */
   "http2.responseWriteInformation": {
     argTypes: [HTTPRES_T, F64, arrayOf(STRING)],
@@ -193,6 +226,11 @@ export const http2Signatures = defineLibFnSignatures({
   "http2.streamHeadersSent": { argTypes: [HTTP2STREAM_T], result: BOOL },
   // Http2ServerRequest.complete: true once aborted, ended or closed.
   "http2.reqComplete": { argTypes: [HTTPREQ_T], result: BOOL },
+  /** Http2ServerRequest.url: the frame's :path, and Node's undefined when
+   * the block carries none (CONNECT). The VOID is the nullable-string
+   * sentinel (the interned `string | undefined` union; shape-checked in
+   * validate.ts like net.sockRemoteAddress). */
+  "http2.reqUrl": { argTypes: [HTTPREQ_T], result: VOID },
   // Every value a name has in a received [name, value, ...] pairs array:
   // the string[] a headers object holds for set-cookie.
   "http2.pairsValues": { argTypes: [arrayOf(STRING), STRING], result: arrayOf(STRING) },

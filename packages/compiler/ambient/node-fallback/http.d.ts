@@ -74,8 +74,11 @@ declare module "http" {
    * simple and spreads target the same string | undefined slot). */
   export type OutgoingHttpHeaders = { [name: string]: number | string | string[] | undefined };
   export interface IncomingMessage {
-    readonly url: string;
-    readonly method: string;
+    /* url, method and headers are own data properties Node assigns in its
+     * constructor and a program may assign again (a dev server builds a
+     * request this way); every later read answers the assigned value. */
+    url: string;
+    method: string;
     readonly httpVersion: string;
     readonly complete: boolean;
     readonly aborted: boolean;
@@ -87,7 +90,7 @@ declare module "http" {
     readonly statusMessage: string | undefined;
     readonly socket: Socket;
     readonly connection: Socket;
-    readonly headers: { [name: string]: string | undefined };
+    headers: { [name: string]: string | undefined };
     readonly headersDistinct: { [name: string]: string[] | undefined };
     readonly rawHeaders: string[];
     readonly trailers: { [name: string]: string | undefined };
@@ -110,6 +113,11 @@ declare module "http" {
     pipe(
       destination: ServerResponse | import("http2").Http2ServerResponse | ClientRequest | Socket,
     ): void;
+    /* unpipe(dest): that destination stops receiving the body; one the
+     * message is not piping to changes nothing. */
+    unpipe(
+      destination?: ServerResponse | import("http2").Http2ServerResponse | ClientRequest | Socket,
+    ): void;
     on(event: "data", listener: (chunk: any) => void): void;
     on(event: "end" | "close" | "aborted", listener: () => void): void;
     on(event: "error", listener: (err: Error) => void): void;
@@ -120,6 +128,14 @@ declare module "http" {
     once(event: "data", listener: (chunk: any) => void): void;
     once(event: "end" | "close" | "aborted", listener: () => void): void;
     once(event: "error", listener: (err: Error) => void): void;
+    /* off IS removeListener: the most recently registered listener standing
+     * for the same function leaves that event's list. */
+    off(event: "data", listener: (chunk: any) => void): void;
+    off(event: "end" | "close" | "aborted", listener: () => void): void;
+    off(event: "error", listener: (err: Error) => void): void;
+    removeListener(event: "data", listener: (chunk: any) => void): void;
+    removeListener(event: "end" | "close" | "aborted", listener: () => void): void;
+    removeListener(event: "error", listener: (err: Error) => void): void;
   }
   export interface ServerResponse {
     readonly headersSent: boolean;
@@ -169,13 +185,24 @@ declare module "http" {
     writeProcessing(callback?: () => void): void;
     /* Node's generic informational response: any 1xx status but 101,
      * answered with write()'s backpressure boolean. */
-    writeInformation(statusCode: number, headers?: OutgoingHttpHeaders): boolean;
+    writeInformation(
+      statusCode: number,
+      headers?: OutgoingHttpHeaders,
+      callback?: () => void,
+    ): boolean;
     writeEarlyHints(hints: Record<string, string | string[]>, callback?: () => void): void;
     /* Answers whether the buffer is still below its 64 KiB high-water
-     * mark; a false answer fires 'drain' once the bytes are out. */
+     * mark; a false answer fires 'drain' once the bytes are out. An
+     * encoding applies to a string chunk (a buffer carries its own bytes),
+     * and the callback runs once the chunk has been flushed. */
     write(data: string | Uint8Array): boolean;
-    write(data: string | Uint8Array, callback: () => void): boolean;
-    write(data: string | Uint8Array, encoding: string, callback?: () => void): boolean;
+    write(data: string | Uint8Array, encoding: string | undefined): boolean;
+    write(data: string | Uint8Array, callback?: (() => void) | undefined): boolean;
+    write(
+      data: string | Uint8Array,
+      encoding: string | undefined,
+      callback?: (() => void) | undefined,
+    ): boolean;
     flushHeaders(): void;
     cork(): void;
     uncork(): void;
@@ -183,7 +210,13 @@ declare module "http" {
     setTimeout(msecs: number, callback?: () => void): this;
     /* end's callback forms fire once the body went out (the 'finish'
      * emit, deferred past the handler's synchronous tail). */
-    end(data?: string | Uint8Array, callback?: () => void): void;
+    end(data?: string | Uint8Array | null, callback?: (() => void) | undefined): void;
+    end(data: string | Uint8Array | null | undefined, encoding: string | undefined): void;
+    end(
+      data: string | Uint8Array | null | undefined,
+      encoding: string | undefined,
+      callback?: (() => void) | undefined,
+    ): void;
     end(callback: () => void): void;
     destroy(): void;
     /* 'prefinish' fires inside end(), before 'finish'; 'drain' follows a
@@ -192,6 +225,10 @@ declare module "http" {
     /* addListener IS on (Node aliases them) — the suite spells both. */
     addListener(event: "close" | "finish" | "prefinish" | "drain", listener: () => void): void;
     once(event: "close" | "finish" | "prefinish" | "drain", listener: () => void): void;
+    /* off IS removeListener: the most recently registered matching
+     * listener leaves its event's list. */
+    off(event: "close" | "finish" | "prefinish" | "drain", listener: () => void): void;
+    removeListener(event: "close" | "finish" | "prefinish" | "drain", listener: () => void): void;
     /* OutgoingMessage.pipe(): an outgoing message is write-only, so Node
      * emits ERR_STREAM_CANNOT_PIPE whatever the arguments. */
     pipe(destination?: unknown, options?: unknown): void;
@@ -347,9 +384,26 @@ declare module "http" {
     setSocketKeepAlive(enable?: boolean, initialDelay?: number): void;
     setTimeout(timeout: number, callback?: () => void): this;
     /* Answers whether the buffer is still below its 64 KiB high-water
-     * mark; a false answer fires 'drain' once the bytes are out. */
+     * mark; a false answer fires 'drain' once the bytes are out. The
+     * encoding applies to a string chunk and the callback runs once the
+     * chunk has been flushed. */
     write(data: string | Uint8Array): boolean;
-    end(data?: string | Uint8Array): void;
+    write(data: string | Uint8Array, encoding: string | undefined): boolean;
+    write(data: string | Uint8Array, callback?: (() => void) | undefined): boolean;
+    write(
+      data: string | Uint8Array,
+      encoding: string | undefined,
+      callback?: (() => void) | undefined,
+    ): boolean;
+    end(data?: string | Uint8Array | null, callback?: (() => void) | undefined): void;
+    end(data: string | Uint8Array | null | undefined, encoding: string | undefined): void;
+    end(data: string | Uint8Array | null | undefined, callback: () => void): void;
+    end(
+      data: string | Uint8Array | null | undefined,
+      encoding: string | undefined,
+      callback?: (() => void) | undefined,
+    ): void;
+    end(callback: () => void): void;
     /* OutgoingMessage.pipe(): a request is write-only, so Node emits
      * ERR_STREAM_CANNOT_PIPE on the request's 'error' list, whatever the
      * arguments. */

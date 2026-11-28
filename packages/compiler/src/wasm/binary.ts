@@ -14,13 +14,17 @@
  * memories) still decode: the instructions that need the proposal are read
  * for their immediates but not type-checked, and the summary names the
  * proposal so that the module can be reported as not translatable rather
- * than as invalid. Only GC type definitions stop the decode, since their
- * layout would need the full GC type system.
+ * than as invalid. SIMD is the exception: its 0xfd instructions are fully
+ * typed and validated (simd.ts), because translation is the next step, but
+ * the proposal stays outside the translatable set until that translation
+ * lands. Only GC type definitions stop the decode, since their layout would
+ * need the full GC type system.
  *
  * The decoder never evaluates anything and keeps no module contents beyond
  * the counts and the feature set it reports. It is plain TypeScript that
  * the native compiler also compiles. */
 import { readMemargFlags } from "./module.js";
+import { simdOp } from "./simd.js";
 
 /** Proposals the summary can name, in report order. The first group is the
  * translatable set; the rest are reported as unsupported. */
@@ -33,6 +37,7 @@ export const WASM_FEATURES = [
   "reference-types",
   "extended-const",
   "simd",
+  "relaxed-simd",
   "threads",
   "exceptions",
   "tail-call",
@@ -69,6 +74,8 @@ export interface WasmModuleSummary {
   error: string | null;
   features: string[];
   unsupported: string[];
+  /** The 0xfd subopcodes the module's function bodies use, ascending. */
+  simdOps: number[];
   functions: number;
   imports: number;
   exports: number;
@@ -396,6 +403,7 @@ class ModuleDecoder {
   dataCount: number | null = null;
   dataSegments = 0;
   declaredRefs = new Set<number>();
+  simdOps = new Set<number>();
   exportNames = new Set<string>();
   importModules: string[] = [];
   customSections: string[] = [];
@@ -1102,11 +1110,9 @@ class FunctionValidator {
       total += n;
       if (total > MAX_LOCALS) r.malformed("too many locals");
       const t = this.m.valType(r);
-      if (t === V128) this.typed = false;
       if (isRef(t)) this.m.feature("reference-types");
       for (let k = 0; k < n; k++) this.locals.push(t);
     }
-    if (this.type.params.includes(V128) || this.type.results.includes(V128)) this.typed = false;
     if (this.m.memory64 || this.m.gcTypes) this.typed = false;
     this.pushCtrl(-1, [], this.type.results);
     while (this.ctrls.length > 0) {
@@ -1138,11 +1144,11 @@ class FunctionValidator {
     return actual;
   }
 
-  pushAll(types: number[]): void {
+  pushAll(types: readonly number[]): void {
     for (const t of types) this.push(t);
   }
 
-  popAll(types: number[]): number[] {
+  popAll(types: readonly number[]): number[] {
     const out: number[] = [];
     for (let i = types.length - 1; i >= 0; i--) out.unshift(this.popExpect(types[i]!));
     return out;
@@ -1500,8 +1506,7 @@ class FunctionValidator {
         this.prefixFC();
         return;
       case 0xfd:
-        this.untyped("simd");
-        this.scanSimd();
+        this.simd();
         return;
       case 0xfe:
         this.untyped("threads");
@@ -1860,9 +1865,50 @@ class FunctionValidator {
     }
   }
 
+  /** A SIMD instruction: its immediates, then its stack effect. */
+  simd(): void {
+    const r = this.r;
+    const sub = r.u32();
+    this.m.feature(sub >= 0x100 ? "relaxed-simd" : "simd");
+    const op = simdOp(sub);
+    if (op === undefined) return r.malformed(`illegal opcode 0xfd ${sub}`);
+    this.m.simdOps.add(sub);
+    switch (op.immediate) {
+      case 1:
+        r.skip(16);
+        break;
+      case 2:
+        for (let i = 0; i < 16; i++) {
+          if (r.u8() >= 32) this.invalid("invalid lane index");
+        }
+        break;
+      case 3:
+        if (r.u8() >= op.lanes) this.invalid("invalid lane index");
+        break;
+      case 4:
+        this.simdMemarg(op.memory);
+        break;
+      case 5:
+        this.simdMemarg(op.memory);
+        if (r.u8() >= op.lanes) this.invalid("invalid lane index");
+        break;
+    }
+    if (!this.typed) return;
+    this.popAll(op.params);
+    this.pushAll(op.results);
+  }
+
+  /** A SIMD memarg: its natural alignment is the access size. */
+  simdMemarg(bytes: number): void {
+    let align = 0;
+    while (1 << align < bytes) align++;
+    this.memarg(align);
+  }
+
   scanSimd(): void {
     const r = this.r;
     const sub = r.u32();
+    if (sub >= 0x100) this.m.feature("relaxed-simd");
     if (sub <= 11 || sub === 92 || sub === 93) {
       this.scanMemarg();
       return;
@@ -1921,6 +1967,7 @@ export function analyzeWasm(bytes: Uint8Array): WasmModuleSummary {
     error,
     features,
     unsupported,
+    simdOps: [...m.simdOps].sort((a, b) => a - b),
     functions: Math.max(0, m.funcs.length - m.importedFuncs),
     imports: m.imports,
     exports: m.exports,

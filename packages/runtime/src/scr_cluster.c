@@ -392,7 +392,41 @@ static ScrDyn *scr_cl_default_settings(void) {
   return settings;
 }
 
-/* Copies `source`'s own enumerable string-keyed entries onto `target`. */
+/* The own string keys a property copy snapshots: every own string key of an
+ * object, function, array, typed record view, or Proxy (Node's
+ * [[OwnPropertyKeys]]); a handle keeps its own enumerable names. */
+static ScrArr *scr_cl_settings_keys(const ScrDyn *source) {
+  if (source->kind == SCR_DYN_HANDLE) return scr_dyn_obj_key_strs(source);
+  return scr_dyn_own_key_strs_all(source);
+}
+
+/* Whether `source` still has `key` as an own enumerable property. Node's
+ * spread snapshots the own keys, then checks each key's descriptor before it
+ * reads the value, so a getter that deleted a later key or made it
+ * non-enumerable earlier in the merge leaves it out, and one that made it
+ * enumerable includes it. */
+static bool scr_cl_settings_enumerable(const ScrDyn *source, const char *key, size_t key_len) {
+  if (source->kind == SCR_DYN_OBJ) return scr_dyn_obj_enumerable(source, key, key_len);
+  ScrStr *name = scr_str_new(key, key_len);
+  ScrDyn *key_value = scr_dyn_new_str(name);
+  ScrDyn *descriptor = scr_dyn_get_own_property_descriptor((ScrDyn *)source, key_value);
+  scr_dyn_release(key_value);
+  scr_str_release(name);
+  if (descriptor == NULL) return false; /* exception pending */
+  bool enumerable = false;
+  if (descriptor->kind != SCR_DYN_UNDEF) {
+    ScrDyn *flag = scr_dyn_obj_get(descriptor, "enumerable", 10);
+    enumerable = flag != NULL && scr_dyn_truthy(flag);
+  }
+  scr_dyn_release(descriptor);
+  return enumerable;
+}
+
+/* Copies the parts of `source` an object spread copies onto `target`: the own
+ * enumerable string-keyed entries of an object, function, array, typed record
+ * view, Proxy, or handle. Each value is read through an ordinary property
+ * access, so an accessor entry runs its getter and the merged settings hold
+ * the value it answers; a Proxy source answers its ownKeys and its get trap. */
 static void scr_cl_object_assign(ScrDyn *target, const ScrDyn *source) {
   if (source == NULL) return;
   /* A typed settings record crosses as a capsule; its properties live on
@@ -406,17 +440,34 @@ static void scr_cl_object_assign(ScrDyn *target, const ScrDyn *source) {
     }
     source = view;
   }
-  if (source->kind != SCR_DYN_OBJ) {
+  switch (source->kind) {
+  case SCR_DYN_OBJ:
+  case SCR_DYN_FUNC:
+  case SCR_DYN_ARR:
+  case SCR_DYN_PROXY:
+  case SCR_DYN_HANDLE:
+    break;
+  default:
     scr_dyn_release(view);
     return;
   }
-  ScrArr *names = scr_dyn_obj_key_strs(source); /* +1 */
+  ScrArr *names = scr_cl_settings_keys(source); /* +1 */
+  if (names == NULL) {
+    scr_dyn_release(view);
+    return;
+  }
   size_t n = (size_t)scr_arr_len(names);
   for (size_t i = 0; i < n; i++) {
     ScrStr *key = scr_arr_get_ref(names, (double)i); /* +1 */
-    ScrDyn *value = scr_dyn_obj_get(source, key->data, key->len); /* borrowed */
-    if (value != NULL) scr_dyn_obj_set(target, key->data, key->len, scr_dyn_retain(value));
+    if (scr_cl_settings_enumerable(source, key->data, key->len)) {
+      ScrDyn *value = scr_dyn_obj_read(source, key->data, key->len); /* +1 */
+      if (value != NULL && !scr_exc_pending())
+        scr_dyn_obj_set(target, key->data, key->len, value);
+      else
+        scr_dyn_release(value);
+    }
     scr_str_release(key);
+    if (scr_exc_pending()) break;
   }
   scr_arr_release(names);
   scr_dyn_release(view);
@@ -444,15 +495,34 @@ static void scr_cl_schedule_setup(ScrDyn *settings) {
  * program left it (Node's `...cluster.settings`), then `options`. Node
  * assigns a fresh object and schedules a 'setup' emission per call, each
  * carrying that call's object. `options` is borrowed; NULL is the bare
- * call. */
+ * call. A settings getter can call setupPrimary or setupMaster again while
+ * the merge runs, so every value is read before the object is swapped in,
+ * and the object the merge reads from stays alive until the read is done. */
 static void scr_cl_setup_impl(const ScrDyn *options) {
-  ScrDyn *previous = scr_cl_settings;
+  /* A reentrant call releases the settings object it found, which can be the
+   * object this merge reads from; keep a reference of our own while the
+   * merge reads it. */
+  ScrDyn *previous = scr_cl_settings != NULL ? scr_dyn_retain(scr_cl_settings) : NULL;
   ScrDyn *settings = scr_cl_default_settings();
   if (previous != NULL) scr_cl_object_assign(settings, previous);
-  if (options != NULL) scr_cl_object_assign(settings, options);
-  scr_dyn_release(previous);
+  /* A getter on the previous settings that throws stops the spread before
+   * the options are read, so their getters do not run. */
+  if (!scr_exc_pending() && options != NULL) scr_cl_object_assign(settings, options);
+  /* A throwing getter makes Node's object spread throw, so the merge stops
+   * before the settings object replaces the previous one or is emitted. */
+  if (scr_exc_pending()) {
+    scr_dyn_release(settings);
+    scr_dyn_release(previous);
+    return;
+  }
+  /* A reentrant call has already swapped its settings in and released the
+   * object installed at that point. Release whatever the global holds now,
+   * so each settings object is released once. */
+  ScrDyn *replaced = scr_cl_settings;
   scr_cl_settings = settings;
+  if (replaced != NULL) scr_dyn_release(replaced);
   scr_cl_schedule_setup(settings);
+  scr_dyn_release(previous);
 }
 
 void scr_cluster_setup(const ScrDyn *options) {
@@ -602,10 +672,9 @@ static bool scr_cl_worker_connected(ScrClusterWorker *w) {
 /* Node's send callback is asynchronous and carries the write's outcome:
  * the channel's send entry reports a write that could not complete (the
  * broken pipe of a worker that is already gone) as well as a channel
- * closed first. The thunk below turns that outcome into a queued callback
- * pair — it does not box the channel's error, so nothing of the error
- * survives the send — and the drain calls the program's callback on the
- * next tick with null or the canonical ERR_IPC_CHANNEL_CLOSED. */
+ * closed first. The queue below serves the serialization-refusal path,
+ * which has no channel completion; a channel completion calls the
+ * program's callback directly when it lands. */
 typedef struct {
   ScrDyn *cb; /* +1 */
   bool failed;
@@ -650,16 +719,25 @@ static void scr_cl_send_cb_drain(void) {
 }
 
 /* The channel's completion entry: it runs once, with the send's error or
- * NULL, and hands the outcome to the callback queue. The channel owns the
- * closure and releases it after this call. */
+ * NULL, and calls the program's callback here — Node runs a send callback
+ * when the write completes, and a closed channel's send already queued
+ * its one nextTick. Queuing another tick would let a user nextTick
+ * scheduled between two sends run ahead of the first send's callback.
+ * The channel owns the closure and releases it after this call. */
 static void scr_cl_send_done_thunk(ScrClosure *cb, ScrError *error) {
   ScrDyn *dyn_cb = scr_box_get_ref(cb->caps[0]); /* +1 */
-  scr_cl_send_cb_queue(dyn_cb, error != NULL);
+  /* Node's success argument is null (not undefined): a typed
+   * (error: Error | null) parameter converts it. The channel's error is
+   * not boxed; the callback receives the canonical closed-channel error. */
+  ScrDyn *arg = error != NULL ? scr_cl_channel_closed_error() : scr_dyn_new_null();
+  ScrDyn *args[] = {arg};
+  ScrDyn *r = scr_dyn_call(dyn_cb, args, 1, "send callback");
+  scr_dyn_release(r);
+  scr_dyn_release(arg);
   scr_dyn_release(dyn_cb);
   /* The completion's error belongs to this callback (the channel releases
-   * it only when no callback runs); its outcome is all the queue keeps. */
+   * it only when no callback runs); its outcome is all the callback sees. */
   scr_error_release(error);
-  if (scr_cl_send_cbs_n == 1) scr_next_tick_raw(&scr_cl_send_cb_drain);
 }
 
 static ScrClosure *scr_cl_send_done_closure(ScrDyn *callback) {
@@ -902,14 +980,29 @@ static void scr_cl_child_disconnect_thunk(ScrClosure *cb) {
   scr_cl_defer_release(w);
 }
 
+/* A worker whose process could not start reports Node's error object, which
+ * the child unit leaves in the event payload while its listeners run; the
+ * worker and the cluster both answer 'error' with it. */
 static void scr_cl_child_error_thunk(ScrClosure *cb, ScrStr *msg) {
-  (void)cb;
-  (void)msg;
+  ScrClusterWorker *w = scr_cl_box_of(cb);
+  if (w == NULL) return;
+  ScrDyn *error = scr_event_error_payload != NULL ? scr_dyn_from_error(scr_event_error_payload)
+                                                  : scr_dyn_new_str(msg);
+  /* Node answers a launch that could not start on the worker alone: the
+   * cluster-level listener does not see it. */
+  ScrDyn *worker_args[] = {error};
+  scr_cl_ls_emit(&w->ls, "error", worker_args, 1);
+  scr_dyn_release(error);
+  scr_clw_release(w);
 }
 
 /* A cluster worker's channel starts armed: the raw listeners below hold
  * the reader and the exit/disconnect observation. */
 static void scr_cl_arm_child(ScrClusterWorker *w) {
+  /* The error listeners below are C callbacks, so the child unit's spawn
+   * failure payload (Node's error object) has to be installed here: the
+   * compiled listener path installs it for itself. */
+  scr_child_error_event_install();
   scr_child_ipc_on_message(w->child, scr_cl_closure(w, (void *)&scr_cl_child_message_thunk),
                            scr_cl_child_message_thunk, false);
   scr_child_on_exit(w->child, scr_cl_closure(w, (void *)&scr_cl_child_exit_thunk),
@@ -953,6 +1046,10 @@ ScrDyn *scr_cluster_fork(const ScrDyn *env) {
     return NULL;
   }
   scr_cl_setup_impl(NULL);
+  /* A settings getter that throws during the implicit merge leaves the
+   * exception pending; the fork does not start a worker, as Node's fork
+   * throws from its own setupPrimary call. */
+  if (scr_exc_pending()) return NULL;
 #if !defined(_WIN32) && !defined(__wasi__)
   /* A worker's credentials would have to be dropped before exec; this
    * runtime re-executes the artifact and would drop them in the child,
@@ -1030,11 +1127,17 @@ ScrDyn *scr_cluster_fork(const ScrDyn *env) {
   w->id = id;
   w->child = child;
   w->state = "none";
+  /* The arming below hands out references of its own, and a child that
+   * failed to spawn has no channel for them: the registrations release their
+   * closures at once, so the worker keeps a reference of its creator's while
+   * the other owners are put in place. */
+  scr_clw_retain(w);
   scr_cl_arm_child(w);
   scr_cl_register(w);
   w->all_next = scr_cl_all_workers;
   scr_cl_all_workers = scr_clw_retain(w);
   scr_cl_queue_fork(w);
+  scr_clw_release(w); /* the creator's reference: the owners above hold it now */
   return scr_cl_worker_handle(w);
 }
 

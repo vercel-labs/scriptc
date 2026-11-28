@@ -129,6 +129,10 @@ export const processSignatures = defineLibFnSignatures({
   "process.disconnect": { argTypes: [], result: VOID },
   "process.onMessage": { argTypes: [null, BOOL], result: VOID },
   "process.onDisconnect": { argTypes: [null, BOOL], result: VOID },
+  /** process.off / removeListener on those two events: the listener is a
+   * borrowed closure compared by value identity. */
+  "process.offMessage": { argTypes: [null], result: VOID },
+  "process.offDisconnect": { argTypes: [null], result: VOID },
   /** The Buffer overloads of the raw stream writes — same promptly
    * submitted streams as process.stdoutWrite/stderrWrite, constantly true.
    * The encoding arg is evaluated but ignored for bytes, like Node. The Cb
@@ -422,4 +426,6 @@ export const processSignatures = defineLibFnSignatures({
    * ("process.stdin.setRawMode is not a function") — the may-throw seed
    * carries it. */
   "process.stdinSetRawMode": { argTypes: [BOOL], result: VOID },
+  /** process.config: the frozen build-description object. */
+  "process.configValue": { argTypes: [], result: DYN },
 });

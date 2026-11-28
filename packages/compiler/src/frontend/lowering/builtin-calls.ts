@@ -2,6 +2,7 @@ import { lowerReadlineCursorCall } from "./builtins/readline.js";
 import {
   lowerFsPromisesWatchCall,
   lowerFsWatchFileCall,
+  lowerFsOpenAsBlobCall,
   lowerMkdtempDisposableCall,
 } from "./builtins/filesystem.js";
 import {
@@ -18,12 +19,12 @@ import {
   lowerUntransferable,
 } from "./builtins/workers.js";
 import * as ts from "../ts7/adapter.js";
-import { dynUndefinedExpr } from "../../ir/build.js";
-import { BOOL, DYN, type IrExpr, STRING, type SrcLoc } from "../../ir/ir.js";
+import { dynUndefinedExpr, strLit } from "../../ir/build.js";
+import { BOOL, DYN, type IrExpr, STRING, type SrcLoc, VOID } from "../../ir/ir.js";
 import { lowerEventsEmitterHelper, lowerEventsOn, lowerEventsOnce } from "./lower-event-emitter.js";
 import { lowerBase64Call } from "./lower-calls.js";
 import type { Lowerer } from "./lowerer.js";
-import { lowerTimersMemberCall } from "./lower-timers.js";
+import { checkedTimerStyleCallback, lowerTimersMemberCall } from "./lower-timers.js";
 import { lowerStreamModuleCall } from "./lower-stream.js";
 import { lowerCallbackPromisify } from "./builtins/promisify-callback.js";
 import { lowerNodeModuleCall } from "./builtins/module-resolution.js";
@@ -220,6 +221,32 @@ export function lowerBuiltinCall(
     const timersServed = lowerTimersMemberCall(lowerer, expr, bi.member, loc);
     if (timersServed) return timersServed;
   }
+  // `import { nextTick } from "node:process"`: the named import is the same
+  // scheduling call as process.nextTick (checkedTimerStyleCallback's path).
+  if (bi.module === "process" && bi.member === "nextTick") {
+    if (expr.arguments.nodes.length === 0) {
+      return {
+        kind: "libCall",
+        fn: "error.argTypeThrow",
+        args: [strLit("callback", loc), strLit("of type function", loc), dynUndefinedExpr(loc)],
+        type: VOID,
+        loc,
+      };
+    }
+    return checkedTimerStyleCallback(
+      lowerer,
+      expr.arguments.nodes,
+      "process.nextTick",
+      loc,
+      (cb) => ({
+        kind: "libCall",
+        fn: "process.nextTick",
+        args: [cb],
+        type: VOID,
+        loc,
+      }),
+    );
+  }
   const clusterServed = lowerer.lowerClusterModuleCall(expr, bi, loc);
   if (clusterServed) return clusterServed;
   const served = lowerer.lowerNetModuleCall(expr, bi, loc);
@@ -272,6 +299,10 @@ export function lowerBuiltinCall(
       expr,
       "the iterator is consumed by `for await (const info of fsPromises.watch(path, options))`, which is the only supported shape",
     );
+  }
+  // fs.openAsBlob: Node's Blob over a file's bytes, read on demand.
+  if (bi.module === "fs" && bi.member === "openAsBlob") {
+    return lowerFsOpenAsBlobCall(lowerer, expr, loc);
   }
   const fsLadder = lowerer.lowerFsLadderCall(expr, bi, loc);
   if (fsLadder) return fsLadder;

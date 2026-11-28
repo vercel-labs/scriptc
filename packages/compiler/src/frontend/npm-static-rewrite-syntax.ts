@@ -13,6 +13,11 @@ import { getTextOfNode, tokenStartOfNode } from "./ts7/node-functions.js";
 export interface CjsRewriteHost {
   requireTargetEsModuleStamped(fromFile: string, specifier: string): boolean;
   starTargetNames(fromFile: string, specifier: string): Set<string>;
+  /** Whether the star target is PROVABLY empty: it resolves, it is a
+   * JavaScript module the host can enumerate, and it has no names. Anything
+   * else (a JSON or .mjs target, an absolute path, an unresolved probe)
+   * knows nothing about its names and keeps its spread. */
+  starTargetProvablyEmpty?(fromFile: string, specifier: string): boolean;
   /** Told when the rewritten file's tail export table stands for a live
    * getter table the original installed before it could run another
    * module's code (liveExportTableFirst): a module of a require cycle that
@@ -1102,7 +1107,22 @@ export function rewriteBundlerCjsSyntax(
    * checker's default-import interop (an __esModule-stamped surface binds
    * `import def` to exports.default) away from Node's CJS answer — so it
    * is deliberately OMITTED from the canonical table. */
-  const spreadParts = [...starSpecs].reverse().map((s) => `...require(${JSON.stringify(s)}),`);
+  // A star module with no visible names exports nothing: spreading it would
+  // only widen the table (an untyped stub makes the whole object `any` and
+  // every alias a declaration-less property). The module is still LOADED at
+  // the table's position, in order, so its side effects run as Node's does.
+  // A bare specifier is not resolved by the relative probe, so its names are
+  // not known to be empty and it keeps its spread.
+  const spreadParts: string[] = [];
+  const staticallyEmpty = (spec: string): boolean =>
+    (spec.startsWith(".") || spec.startsWith("/")) &&
+    host.starTargetProvablyEmpty?.(filePath, spec) === true &&
+    host.starTargetNames(filePath, spec).size === 0;
+  for (const spec of [...starSpecs].reverse()) {
+    if (!staticallyEmpty(spec)) spreadParts.push(`...require(${JSON.stringify(spec)}),`);
+  }
+  for (const spec of starSpecs)
+    if (staticallyEmpty(spec)) lines.push(`require(${JSON.stringify(spec)});`);
   const esModulePart = lexed.exports.has("__esModule") ? "__esModule: true," : "";
   const memberParts = starMembers.map(
     (m) =>

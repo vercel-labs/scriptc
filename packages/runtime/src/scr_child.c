@@ -3766,6 +3766,10 @@ static void scr_child_settle_in(ScrChild *c) {
     if (!scr_exc_pending()) scr_child_stream_drain_now(c->out_stream);
     if (!scr_exc_pending()) scr_child_stream_drain_now(c->err_stream);
     if (!scr_exc_pending()) scr_ipc_settle(c->ipc);
+    /* The IPC drain can observe the channel's EOF and emit 'disconnect';
+     * its handler may queue a nextTick (Node drains it before the exit
+     * callback this settle is about to deliver). */
+    if (!scr_exc_pending() && scr_loop_has_ready()) (void)scr_loop_drain_checkpoint();
   }
   if (!scr_exc_pending()) {
     scr_child_writer_child_settled(c->in_stream);
@@ -3902,6 +3906,11 @@ void scr_children_poll(void) {
   ScrChild **link = &scr_children;
   while (*link) {
     ScrChild *c = *link;
+    /* Node drains the checkpoint after every callback: a tick a callback
+     * in this pass queued (an IPC 'disconnect' handler's late send) runs
+     * before this pass delivers a terminal event. Defer the sweep; the
+     * loop drains the queue and polls again. */
+    if (scr_loop_has_ready()) return;
     bool settle = false;
     if (c->state == SCR_CHILD_SPAWN_FAILED) {
       scr_children_unwatched--;
@@ -7974,6 +7983,10 @@ static void scr_child_settle_in(ScrChild *c) {
     if (!scr_exc_pending()) scr_child_stream_drain_now(c->out_stream);
     if (!scr_exc_pending()) scr_child_stream_drain_now(c->err_stream);
     if (!scr_exc_pending()) scr_ipc_settle(c->ipc);
+    /* The IPC drain can observe the channel's EOF and emit 'disconnect';
+     * its handler may queue a nextTick (Node drains it before the exit
+     * callback this settle is about to deliver). */
+    if (!scr_exc_pending() && scr_loop_has_ready()) (void)scr_loop_drain_checkpoint();
   }
   if (!scr_exc_pending()) {
     scr_child_writer_child_settled(c->in_stream);
@@ -8160,6 +8173,11 @@ void scr_children_poll(void) {
   ScrChild **link = &scr_children;
   while (*link) {
     ScrChild *c = *link;
+    /* Node drains the checkpoint after every callback: a tick a callback
+     * in this pass queued (an IPC 'disconnect' handler's late send) runs
+     * before this pass delivers a terminal event. Defer the sweep; the
+     * loop drains the queue and polls again. */
+    if (scr_loop_has_ready()) return;
     bool settle = false;
     if (c->state == SCR_CHILD_SPAWN_FAILED) {
       settle = true;
@@ -8684,20 +8702,26 @@ static bool scr_spawn_kill_signal(const ScrDyn *value, int *signo) {
  * gets its call, and a listener added now belongs to the next emit. Each
  * entry is retained for the snapshot, so removing it from the live
  * registry cannot end its lifetime before the call returns. */
-static void scr_child_emit_error_obj(ScrChild *c, ScrError *err) {
-  if (scr_exc_pending()) return;
-  size_t held = c->n_err;
-  if (held == 0) {
-    scr_throw_obj(scr_error_retain(err), &scr_error_retain_v, &scr_error_release_v,
-                  scr_error_trace_arg());
-    return;
-  }
-  ScrChildErrEntry *snapshot = malloc(held * sizeof *snapshot);
+/* The child's 'error' listeners, snapshotted with one reference each. The
+ * snapshot is what an emission delivers to: a listener that removes another
+ * (or the last) 'error' listener from its callback does not change who the
+ * already-decided emission reaches, exactly as Node's errorhandler and
+ * EventEmitter snapshot do. `*held` is the snapshot's length; NULL when the
+ * child has none. */
+static ScrChildErrEntry *scr_child_error_snapshot(ScrChild *c, size_t *held) {
+  *held = c->n_err;
+  if (*held == 0) return NULL;
+  ScrChildErrEntry *snapshot = malloc(*held * sizeof *snapshot);
   if (snapshot == NULL) scr_child_oom();
-  for (size_t i = 0; i < held; i++) {
+  for (size_t i = 0; i < *held; i++) {
     snapshot[i].cb = scr_closure_retain(c->err_cbs[i].cb);
     snapshot[i].fn = c->err_cbs[i].fn;
   }
+  return snapshot;
+}
+
+/* Delivers `err` to a snapshot from scr_child_error_snapshot and releases it. */
+static void scr_child_emit_error_snapshot(ScrChildErrEntry *snapshot, size_t held, ScrError *err) {
   ScrError *outer = scr_event_error_payload;
   scr_event_error_payload = err;
   for (size_t i = 0; i < held; i++) {
@@ -8707,6 +8731,18 @@ static void scr_child_emit_error_obj(ScrChild *c, ScrError *err) {
   scr_event_error_payload = outer;
   for (size_t i = 0; i < held; i++) scr_closure_release(snapshot[i].cb);
   free(snapshot);
+}
+
+static void scr_child_emit_error_obj(ScrChild *c, ScrError *err) {
+  if (scr_exc_pending()) return;
+  size_t held = 0;
+  ScrChildErrEntry *snapshot = scr_child_error_snapshot(c, &held);
+  if (held == 0) {
+    scr_throw_obj(scr_error_retain(err), &scr_error_retain_v, &scr_error_release_v,
+                  scr_error_trace_arg());
+    return;
+  }
+  scr_child_emit_error_snapshot(snapshot, held, err);
 }
 
 /* abortChildProcess: child.kill(killSignal), then 'error' with Node's
@@ -8731,15 +8767,19 @@ static void scr_exec_abort_deliver(ScrChild *c, ScrDyn *reason) {
   c->exec_fired = true;
   ScrError *error = scr_error_abort(reason);
   scr_child_error_cmd(error, c->exec_display->data);
-  /* The listeners see the same error after the callback; this reference
-   * keeps it alive across the callback's move. No listener is not an
-   * unhandled 'error' here: exec's listener is the callback that ran. */
-  ScrError *heard = c->n_err > 0 ? scr_error_retain(error) : NULL;
+  /* The listeners that exist at the abort are the ones that hear the error,
+   * even when the callback removes them: Node captures its 'error' listeners
+   * before the callback runs. This reference keeps the error alive across the
+   * callback's move; no listener means no emission (exec's callback is the
+   * one that ran). */
+  size_t heard_count = 0;
+  ScrChildErrEntry *heard_listeners = scr_child_error_snapshot(c, &heard_count);
+  ScrError *heard = heard_count > 0 ? scr_error_retain(error) : NULL;
   ScrStr *out = scr_exec_capture_text(c->out_stream);
   ScrStr *err = scr_exec_capture_text(c->err_stream);
   c->exec_fn(c->exec_cb, error, out, err); /* error/out/err move */
   if (heard != NULL) {
-    scr_child_emit_error_obj(c, heard);
+    scr_child_emit_error_snapshot(heard_listeners, heard_count, heard);
     scr_error_release(heard);
   }
 }
@@ -9486,6 +9526,7 @@ typedef struct {
   ScrClosure *cb;
   ScrIpcMessageFn fn;
   bool once;
+  uint64_t id; /* identifies the registration when a once entry leaves */
 } ScrIpcMessageEntry;
 
 typedef struct {
@@ -9519,6 +9560,11 @@ struct ScrIpc {
   size_t n_pending, cap_pending;
   ScrIpcMessageEntry *message_ls;
   size_t n_message, cap_message;
+  uint64_t next_message_id;
+  /* An explicit process.channel.ref()/unref() pins the ref state: listener
+   * additions and removals no longer move it, as in Node. */
+  bool explicit_ref;
+  bool explicit_state;
   ScrIpcDisconnectEntry *disconnect_ls;
   size_t n_disconnect, cap_disconnect;
   ScrIpcSendEntry *send_cbs;
@@ -9736,16 +9782,98 @@ static void scr_ipc_add_send(ScrIpc *ipc, ScrClosure *cb, ScrIpcSendFn fn) {
   ipc->send_cbs[ipc->n_send++] = (ScrIpcSendEntry){cb, fn, scr_als_capture()};
 }
 
+/* A send on a channel that is already closed. Node's send checks
+ * `connected` before touching the channel and, when it is false, answers
+ * false and calls the callback on the NEXT TICK with
+ * ERR_IPC_CHANNEL_CLOSED — the write queue never sees it. Queuing the
+ * completion behind a channel-service pass instead (the open channel's
+ * path) delays it past the disconnect handler's checkpoint, so a child's
+ * 'exit' can overtake it (cluster-primary-worker-messages.cjs). */
+typedef struct {
+  ScrClosure *cb;
+  ScrIpcSendFn fn;
+  ScrError *error; /* +1, the callback takes it */
+  ScrAlsCtx *ctx;
+} ScrIpcClosedSend;
+
+static SCR_TL ScrIpcClosedSend *scr_ipc_closed_sends = NULL;
+static SCR_TL size_t scr_ipc_closed_n = 0;
+
+/* One tick delivers one send's completion: Node's send queues a
+ * process.nextTick per callback, so a user nextTick scheduled between two
+ * sends runs between those callbacks. Draining the whole queue in the
+ * first send's tick would put both callbacks ahead of that user tick. */
+static void scr_ipc_closed_send_tick(void) {
+  if (scr_ipc_closed_n == 0) return;
+  ScrIpcClosedSend entry = scr_ipc_closed_sends[0];
+  memmove(scr_ipc_closed_sends, scr_ipc_closed_sends + 1,
+          (scr_ipc_closed_n - 1) * sizeof *scr_ipc_closed_sends);
+  scr_ipc_closed_n--;
+  if (!scr_exc_pending()) {
+    ScrAlsCtx *prev = scr_als_dispatch_enter(entry.ctx);
+    entry.fn(entry.cb, entry.error); /* takes the error */
+    scr_als_dispatch_leave(prev);
+  } else {
+    scr_error_release(entry.error);
+  }
+  scr_closure_release(entry.cb);
+  scr_als_ctx_release(entry.ctx);
+  if (scr_ipc_closed_n == 0) {
+    free(scr_ipc_closed_sends);
+    scr_ipc_closed_sends = NULL;
+  }
+}
+
+static void scr_ipc_closed_sends_teardown(void);
+
+static void scr_ipc_queue_closed_send(ScrStr *send_error, ScrClosure *cb,
+                                      ScrIpcSendFn fn) {
+  ScrIpcClosedSend *items =
+      realloc(scr_ipc_closed_sends, (scr_ipc_closed_n + 1) * sizeof *items);
+  if (!items) scr_trap("out of memory");
+  scr_ipc_closed_sends = items;
+  ScrStr *message = send_error != NULL
+                        ? scr_str_retain(send_error)
+                        : scr_str_new("Channel closed", sizeof("Channel closed") - 1);
+  ScrError *error = scr_error_new(0, message);
+  scr_str_release(message);
+  scr_error_set_code(error, "ERR_IPC_CHANNEL_CLOSED");
+  items[scr_ipc_closed_n++] = (ScrIpcClosedSend){cb, fn, error, scr_als_capture()};
+  /* The teardown hook registers on first use rather than from a unit
+   * constructor: a constructor is a link root, and it would keep this
+   * unit's closed-send queue reachable in every program that links the
+   * runtime pack (the tree-shaking contract). */
+  if (scr_raw_tick_teardown_hook == NULL) {
+    scr_raw_tick_teardown_hook = scr_ipc_closed_sends_teardown;
+  }
+  /* One tick per send, FIFO among the ticks the program queues itself. */
+  scr_next_tick_raw(&scr_ipc_closed_send_tick);
+}
+
+/* A thread that stops before its queued closed-send ticks run (a worker
+ * that exits from a disconnect handler) drops the markers; the queue the
+ * marker would have drained owns a callback, an error and an async context
+ * per entry, so release them here. */
+static void scr_ipc_closed_sends_teardown(void) {
+  for (size_t i = 0; i < scr_ipc_closed_n; i++) {
+    scr_closure_release(scr_ipc_closed_sends[i].cb);
+    scr_error_release(scr_ipc_closed_sends[i].error);
+    scr_als_ctx_release(scr_ipc_closed_sends[i].ctx);
+  }
+  scr_ipc_closed_n = 0;
+  free(scr_ipc_closed_sends);
+  scr_ipc_closed_sends = NULL;
+  if (scr_raw_tick_teardown_hook == scr_ipc_closed_sends_teardown) {
+    scr_raw_tick_teardown_hook = NULL;
+  }
+}
+
 static bool scr_ipc_send(ScrIpc *ipc, ScrStr *json, ScrClosure *cb,
                          ScrIpcSendFn fn) {
   if (!ipc || !ipc->connected) {
     if (cb) {
       if (ipc) {
-        scr_ipc_add_send(ipc, cb, fn);
-        if (ipc->send_error == NULL) {
-          ipc->send_error = scr_str_new("Channel closed", sizeof("Channel closed") - 1);
-        }
-        scr_ipc_register(ipc);
+        scr_ipc_queue_closed_send(ipc->send_error, cb, fn);
       } else {
         ScrStr *message = scr_str_new("Channel closed", sizeof("Channel closed") - 1);
         ScrError *error = scr_error_new(0, message);
@@ -9777,6 +9905,8 @@ static void scr_ipc_disconnect(ScrIpc *ipc) {
   scr_child_writer_end(ipc->writer);
 }
 
+static void scr_ipc_listener_balance(ScrIpc *ipc);
+
 static void scr_ipc_add_message(ScrIpc *ipc, ScrClosure *cb,
                                 ScrIpcMessageFn fn, bool once) {
   if (!ipc || ipc->disconnect_emitted) {
@@ -9788,8 +9918,9 @@ static void scr_ipc_add_message(ScrIpc *ipc, ScrClosure *cb,
     ipc->message_ls = realloc(ipc->message_ls, ipc->cap_message * sizeof(*ipc->message_ls));
     if (!ipc->message_ls) scr_trap("out of memory");
   }
-  ipc->message_ls[ipc->n_message++] = (ScrIpcMessageEntry){cb, fn, once};
+  ipc->message_ls[ipc->n_message++] = (ScrIpcMessageEntry){cb, fn, once, ++ipc->next_message_id};
   scr_ipc_arm(ipc);
+  scr_ipc_listener_balance(ipc);
 }
 
 static void scr_ipc_add_disconnect(ScrIpc *ipc, ScrClosure *cb, bool once) {
@@ -9805,15 +9936,62 @@ static void scr_ipc_add_disconnect(ScrIpc *ipc, ScrClosure *cb, bool once) {
   }
   ipc->disconnect_ls[ipc->n_disconnect++] = (ScrIpcDisconnectEntry){cb, once};
   scr_ipc_arm(ipc);
+  scr_ipc_listener_balance(ipc);
 }
 
-static void scr_ipc_remove_message_once(ScrIpc *ipc, ScrClosure *cb) {
+/* The process-level channel follows Node's listener ref counting: the
+ * channel is ref'd while any message or disconnect listener exists, and
+ * unref'd once the last one leaves, so a child whose listeners are all
+ * removed exits instead of waiting on the channel. */
+static void scr_ipc_listener_balance(ScrIpc *ipc) {
+  if (ipc != scr_process_ipc || !ipc->connected || ipc->reader == NULL) return;
+  if (ipc->explicit_ref) {
+    scr_child_stream_chan_state(ipc->reader, ipc->explicit_state);
+    return;
+  }
+  scr_child_stream_chan_state(ipc->reader, ipc->n_message + ipc->n_disconnect > 0);
+}
+
+/* A once registration leaves the list when its message is dispatched. The
+ * ID names that exact registration: a listener the program re-registers
+ * during the dispatch appends a new entry, which this removal must not
+ * take (Node removes the once wrapper it is running, not a later one). */
+static void scr_ipc_remove_message_once(ScrIpc *ipc, uint64_t id) {
   for (size_t i = 0; i < ipc->n_message; i++) {
-    if (ipc->message_ls[i].cb != cb || !ipc->message_ls[i].once) continue;
+    if (ipc->message_ls[i].id != id) continue;
     scr_closure_release(ipc->message_ls[i].cb);
     memmove(ipc->message_ls + i, ipc->message_ls + i + 1,
             (ipc->n_message - i - 1) * sizeof(*ipc->message_ls));
     ipc->n_message--;
+    scr_ipc_listener_balance(ipc);
+    return;
+  }
+}
+
+/* process.off / removeListener on the channel's message listeners. Node
+ * removes the most recently added listener that is the same function, so the
+ * scan runs from the end. The argument closure is borrowed: the caller keeps
+ * its reference, and only a matching registered entry is released. */
+static void scr_ipc_remove_message(ScrIpc *ipc, ScrClosure *cb) {
+  for (size_t i = ipc->n_message; i-- > 0;) {
+    if (!scr_closure_identity_equal(ipc->message_ls[i].cb, cb)) continue;
+    scr_closure_release(ipc->message_ls[i].cb);
+    memmove(ipc->message_ls + i, ipc->message_ls + i + 1,
+            (ipc->n_message - i - 1) * sizeof(*ipc->message_ls));
+    ipc->n_message--;
+    scr_ipc_listener_balance(ipc);
+    return;
+  }
+}
+
+static void scr_ipc_remove_disconnect(ScrIpc *ipc, ScrClosure *cb) {
+  for (size_t i = ipc->n_disconnect; i-- > 0;) {
+    if (!scr_closure_identity_equal(ipc->disconnect_ls[i].cb, cb)) continue;
+    scr_closure_release(ipc->disconnect_ls[i].cb);
+    memmove(ipc->disconnect_ls + i, ipc->disconnect_ls + i + 1,
+            (ipc->n_disconnect - i - 1) * sizeof(*ipc->disconnect_ls));
+    ipc->n_disconnect--;
+    scr_ipc_listener_balance(ipc);
     return;
   }
 }
@@ -9869,7 +10047,7 @@ static void scr_ipc_fire_messages_in(ScrIpc *ipc) {
       scr_closure_retain(snapshot[i].cb);
     }
     for (size_t i = 0; i < count; i++) {
-      if (snapshot[i].once) scr_ipc_remove_message_once(ipc, snapshot[i].cb);
+      if (snapshot[i].once) scr_ipc_remove_message_once(ipc, snapshot[i].id);
       if (!scr_exc_pending()) snapshot[i].fn(snapshot[i].cb, message);
       scr_closure_release(snapshot[i].cb);
     }
@@ -9967,20 +10145,32 @@ static void scr_ipc_service_one(ScrIpc *ipc) {
   if (!scr_exc_pending()) scr_ipc_fire_disconnect(ipc);
 }
 
+/* Unlink a channel by identity. A callback serviced in this pass can fork
+ * a replacement worker, whose channel is pushed at the head of scr_ipcs;
+ * writing the slot the iteration read would drop that new channel — its
+ * 'online', messages and close would never be serviced, and the
+ * registry's reference would leak. */
+static void scr_ipc_unregister(ScrIpc *ipc) {
+  for (ScrIpc **link = &scr_ipcs; *link != NULL; link = &(*link)->next) {
+    if (*link != ipc) continue;
+    *link = ipc->next;
+    ipc->next = NULL;
+    ipc->registered = false;
+    scr_ipc_release(ipc); /* service-registry reference */
+    return;
+  }
+}
+
 static void scr_ipc_service(void) {
-  ScrIpc **link = &scr_ipcs;
-  while (*link) {
-    ScrIpc *ipc = *link;
+  /* The callback may append at the head, so hold the next channel rather
+   * than a list slot across it. */
+  ScrIpc *ipc = scr_ipcs;
+  while (ipc != NULL) {
+    ScrIpc *next = ipc->next;
     scr_ipc_service_one(ipc);
-    if (ipc->disconnect_emitted && ipc->n_send == 0) {
-      *link = ipc->next;
-      ipc->next = NULL;
-      ipc->registered = false;
-      scr_ipc_release(ipc); /* service-registry reference */
-    } else {
-      link = &ipc->next;
-    }
+    if (ipc->disconnect_emitted && ipc->n_send == 0) scr_ipc_unregister(ipc);
     if (scr_exc_pending()) return;
+    ipc = next;
   }
 }
 
@@ -10206,6 +10396,19 @@ void scr_process_ipc_on_disconnect(ScrClosure *cb, bool once) {
   scr_ipc_add_disconnect(scr_process_ipc, cb, once);
 }
 
+/* process.off(event, listener) / removeListener: the listener is borrowed,
+ * and a process without a channel has no registry to remove from (Node
+ * answers the same: nothing was registered, so nothing is removed). */
+void scr_process_ipc_off_message(ScrClosure *cb) {
+  if (scr_process_ipc == NULL) return;
+  scr_ipc_remove_message(scr_process_ipc, cb);
+}
+
+void scr_process_ipc_off_disconnect(ScrClosure *cb) {
+  if (scr_process_ipc == NULL) return;
+  scr_ipc_remove_disconnect(scr_process_ipc, cb);
+}
+
 /* process.channel — Node's Control in a forked child: the cached object
  * with ref()/unref() while the channel is open, undefined in a process
  * that never had one, and null once it is gone (local or remote
@@ -10227,8 +10430,11 @@ static ScrDyn *scr_channel_ref_thunk(ScrClosure *clo, ScrDyn *const *args, size_
   /* A disconnected channel is closed: ref/unref on a captured object are
    * no-ops (uv_ref on a closed handle), and process.channel itself reads
    * null. */
-  if (scr_process_ipc != NULL && scr_process_ipc->connected)
+  if (scr_process_ipc != NULL && scr_process_ipc->connected) {
+    scr_process_ipc->explicit_ref = true;
+    scr_process_ipc->explicit_state = true;
     scr_child_stream_chan_state(scr_process_ipc->reader, true);
+  }
   return scr_dyn_undefined();
 }
 
@@ -10236,8 +10442,11 @@ static ScrDyn *scr_channel_unref_thunk(ScrClosure *clo, ScrDyn *const *args, siz
   (void)clo;
   (void)args;
   (void)argc;
-  if (scr_process_ipc != NULL && scr_process_ipc->connected)
+  if (scr_process_ipc != NULL && scr_process_ipc->connected) {
+    scr_process_ipc->explicit_ref = true;
+    scr_process_ipc->explicit_state = false;
     scr_child_stream_chan_state(scr_process_ipc->reader, false);
+  }
   return scr_dyn_undefined();
 }
 
@@ -10301,18 +10510,33 @@ static ScrDyn *scr_child_bridge_readable(ScrChildStream *reader, ScrDyn **cached
   }
   if (!*cached) {
     ScrStream *stream = scr_child_stream_ops->readable("Socket");
-    scr_child_stream_on_data(reader, scr_child_bridge_callback(stream, (void *)scr_child_bridge_data),
-        scr_child_bridge_data, false);
-    scr_child_stream_on_end(reader, scr_child_bridge_callback(stream, (void *)scr_child_bridge_end), false);
-    /* the child's 'close' waits for this stream to close */
-    reader->bridge = scr_child_stream_ops->retain(stream);
-    if (reader->child) {
-      /* Node's maybeClose runs the child's 'close' inside the stdio
-       * stream's 'close'; this listener comes before the program's. */
-      ScrClosure *closed = scr_closure_new((void *)scr_child_bridge_closed_inv, 1);
-      closed->caps[0] = scr_box_new_obj(&scr_child_retain_v, &scr_child_release_v, NULL);
-      scr_box_set_ref(closed->caps[0], scr_child_retain(reader->child));
-      scr_child_stream_ops->on_close(stream, closed);
+    if (reader->eof) {
+      /* The reader already reached EOF, so the data/end subscriptions below
+       * would be discarded. A bridge created now must not become the child's
+       * outstanding stdio stream: the child's 'close' would wait for a stream
+       * whose read side is gone, and the close listener below would hold the
+       * child in a cycle the collector cannot trace. The stream still reports
+       * Node's end for a child that is running (its close not yet fired); a
+       * child that already closed leaves the late stream inert, as Node's
+       * stdio does. */
+      if (reader->child != NULL && !reader->child->close_done)
+        scr_child_stream_ops->end(stream);
+    } else {
+      scr_child_stream_on_data(reader,
+          scr_child_bridge_callback(stream, (void *)scr_child_bridge_data),
+          scr_child_bridge_data, false);
+      scr_child_stream_on_end(reader,
+          scr_child_bridge_callback(stream, (void *)scr_child_bridge_end), false);
+      /* the child's 'close' waits for this stream to close */
+      reader->bridge = scr_child_stream_ops->retain(stream);
+      if (reader->child) {
+        /* Node's maybeClose runs the child's 'close' inside the stdio
+         * stream's 'close'; this listener comes before the program's. */
+        ScrClosure *closed = scr_closure_new((void *)scr_child_bridge_closed_inv, 1);
+        closed->caps[0] = scr_box_new_obj(&scr_child_retain_v, &scr_child_release_v, NULL);
+        scr_box_set_ref(closed->caps[0], scr_child_retain(reader->child));
+        scr_child_stream_ops->on_close(stream, closed);
+      }
     }
     *cached = scr_child_readable_box(stream);
     scr_child_stream_ops->release(stream);

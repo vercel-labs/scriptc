@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/module-require-cache-value/child.cjs",
+  "<repo>/tests/corpus/module-require-cache-value/broken.cjs",
+  "<repo>/tests/corpus/module-require-cache-value/main.cjs"
+ ],
+ "diags": []
+}

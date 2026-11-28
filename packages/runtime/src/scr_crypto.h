@@ -371,6 +371,13 @@ ScrPromise *scr_webcrypto_wrap(ScrDyn *args, ScrWebCryptoAesFn aes);
 ScrPromise *scr_webcrypto_unwrap(ScrDyn *args, ScrWebCryptoAesFn aes);
 ScrPromise *scr_webcrypto_wrap_key(ScrDyn *args);
 ScrPromise *scr_webcrypto_unwrap_key(ScrDyn *args);
+/* ML-KEM's encapsulateBits/encapsulateKey and decapsulateBits/decapsulateKey
+ * fulfill with { sharedKey, ciphertext } (the *Key forms import the shared
+ * secret as the requested key type) on a later loop turn. */
+ScrPromise *scr_webcrypto_encapsulate_bits(ScrDyn *args);
+ScrPromise *scr_webcrypto_encapsulate_key(ScrDyn *args);
+ScrPromise *scr_webcrypto_decapsulate_bits(ScrDyn *args);
+ScrPromise *scr_webcrypto_decapsulate_key(ScrDyn *args);
 /* deriveBits and deriveKey (PBKDF2 and HKDF) over node:crypto's KDF core:
  * deriveBits fulfills with an ArrayBuffer (at once for a zero length) and
  * deriveKey with a CryptoKey of the derived key type, on a later loop
@@ -395,6 +402,15 @@ ScrStr *scr_crypto_x509_valid_to_str(ScrStr *pem);
  * borrowed; results +1, or NULL with the error pending. */
 ScrDyn *scr_crypto_create_private_key(ScrDyn *key);
 ScrDyn *scr_crypto_create_public_key(ScrDyn *key);
+/* crypto.parsePKCS12(bundle, options): the parsed bundle as a three-part
+ * handle the frontend composes Node's result record from. The accessors
+ * answer the private key handle (or null), a certificate's DER (-1 the
+ * matching one, 0.. the additional ones; empty bytes for none), and the
+ * additional certificates' count. */
+ScrDyn *scr_crypto_parse_pkcs12(ScrDyn *bundle, ScrDyn *options);
+ScrDyn *scr_crypto_pkcs12_key(ScrDyn *parts);
+double scr_crypto_pkcs12_count(ScrDyn *parts);
+ScrBytes *scr_crypto_pkcs12_der(ScrDyn *parts, double which);
 ScrDyn *scr_crypto_generate_key_pair_sync(ScrDyn *type, ScrDyn *options);
 void scr_crypto_generate_key_pair_async(ScrDyn *type, ScrDyn *options, ScrDyn *callback);
 ScrDyn *scr_crypto_sign_oneshot(ScrDyn *algorithm, ScrDyn *data, ScrDyn *key);
@@ -438,6 +454,7 @@ const char *scr_crypto_asymmetric_key_type(const ScrDyn *value);
 ScrBytes *scr_crypto_x509_raw(ScrBytes *data);
 ScrBytes *scr_crypto_x509_raw_der(ScrBytes *der);
 ScrBytes *scr_crypto_x509_raw_str(ScrStr *pem);
+ScrBytes *scr_crypto_x509_raw_dyn(ScrDyn *data);
 ScrStr *scr_crypto_x509_subject(ScrBytes *der);
 ScrStr *scr_crypto_x509_issuer(ScrBytes *der);
 ScrStr *scr_crypto_x509_subject_alt_name(ScrBytes *der);

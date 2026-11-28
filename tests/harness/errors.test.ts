@@ -3854,7 +3854,7 @@ await attempt("unwrap an ecdsa key", () =>
     );
   });
 
-  test("a method outside the slice is a named fence where it runs", async () => {
+  test("a lowered method reaches Node's argument check", async () => {
     const r = await compileAndRun(
       "webcrypto-encapsulate-bits",
       `console.log("before");
@@ -3865,8 +3865,11 @@ await crypto.subtle.encapsulateBits("ML-KEM-768", key);
     );
     expect(r.exitCode).toBe(1);
     expect(r.stdout).toBe("before\n");
-    expect(r.stderr).toMatch(
-      /^Uncaught Error: 'crypto\.subtle\.encapsulateBits' is part of the standard library types but has no scriptc lowering yet.*\n$/,
+    // ML-KEM encapsulation is in the native slice, so this is no longer a
+    // compile-time fence: the call runs and Node's own argument check rejects
+    // an HMAC key for it.
+    expect(r.stderr).toBe(
+      "Uncaught TypeError [ERR_INVALID_ARG_TYPE]: Failed to execute 'encapsulateBits' on 'SubtleCrypto': 2nd argument is not of type CryptoKey.\n",
     );
   });
 });
@@ -4389,9 +4392,9 @@ console.log("still running");
   test("a member the value does not carry refuses the read", async () => {
     const r = await compileAndRun(
       "host-global-member-read",
-      `console.log(typeof globalThis.WebSocket.name);
+      `console.log(typeof globalThis.FormData.name);
 console.log("before");
-console.log(globalThis.WebSocket.OPEN);
+console.log(globalThis.FormData.OPEN);
 console.log("after");
 `,
       "cjs",
@@ -4401,7 +4404,7 @@ console.log("after");
     expect(r.exitCode).toBe(1);
     expect(r.stdout).toBe("string\nbefore\n");
     expect(r.stderr).toMatch(
-      /^Uncaught Error: 'WebSocket' is a Node global that native code does not provide \[SC2020 at .*host-global-member-read\.cjs:3\]\n$/,
+      /^Uncaught Error: 'FormData' is a Node global that native code does not provide \[SC2020 at .*host-global-member-read\.cjs:3\]\n$/,
     );
   });
 
@@ -4427,7 +4430,7 @@ console.log("after");
   test("a member read through a constant holding the value refuses at its own site", async () => {
     const r = await compileAndRun(
       "host-global-alias-member-read",
-      `const Ctor = globalThis.WebSocket;
+      `const Ctor = globalThis.FormData;
 console.log(Ctor.name);
 console.log("before");
 console.log(Ctor.OPEN);
@@ -4438,9 +4441,9 @@ console.log("after");
     // The constant holds the value the read answered, so its static member
     // is as unavailable as the direct read's.
     expect(r.exitCode).toBe(1);
-    expect(r.stdout).toBe("WebSocket\nbefore\n");
+    expect(r.stdout).toBe("FormData\nbefore\n");
     expect(r.stderr).toMatch(
-      /^Uncaught Error: 'WebSocket' is a Node global that native code does not provide \[SC2020 at .*host-global-alias-member-read\.cjs:4\]\n$/,
+      /^Uncaught Error: 'FormData' is a Node global that native code does not provide \[SC2020 at .*host-global-alias-member-read\.cjs:4\]\n$/,
     );
   });
 
@@ -4466,7 +4469,7 @@ console.log("after");
     const r = await compileAndRun(
       "host-global-construction-fence",
       `console.log("before");
-new globalThis.WebSocket("ws://localhost:8080");
+new globalThis.FormData();
 console.log("after");
 `,
       "cjs",
@@ -4474,7 +4477,7 @@ console.log("after");
     expect(r.exitCode).toBe(1);
     expect(r.stdout).toBe("before\n");
     expect(r.stderr).toMatch(
-      /^Uncaught Error: 'WebSocket' is a Node global that native code does not provide \[SC2020 at .*host-global-construction-fence\.cjs:2\]\n$/,
+      /^Uncaught Error: 'FormData' is a Node global that native code does not provide \[SC2020 at .*host-global-construction-fence\.cjs:2\]\n$/,
     );
   });
 });

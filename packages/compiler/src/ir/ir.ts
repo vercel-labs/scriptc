@@ -777,7 +777,15 @@ export function isIdentityCollectionKey(t: IrType): boolean {
     // (scr_bytes_retain/release_v, no trace).
     t.kind === "map" ||
     t.kind === "set" ||
-    t.kind === "bytes"
+    t.kind === "bytes" ||
+    // A spawned child handle is one object for its whole life (a Set of
+    // live children, a Map keyed by child): pointer identity is JS
+    // identity, and the runtime's scr_child_retain/release_v adapters
+    // serve the ref slot. The child drops its listener closures at its
+    // terminal event, so a held child cannot cycle through the
+    // collection for longer than the child lives (the same stance as a
+    // Map value).
+    t.kind === "child"
   );
 }
 
@@ -987,6 +995,30 @@ export function maybePromiseUnionArmsOk(arms: IrType[]): boolean {
  * Nested records/unions are represented by their (already interned, already
  * canonical) shapeId/unionId, so keys stay finite and comparable. Lives in
  * the IR (not the frontend) because both ends need it. */
+/** Value kinds a record view's source may hold without the pair being
+ * refused: a value of any other kind can reference an arbitrary object (a
+ * function, a class instance, an untyped value, a promise or a handle), so
+ * the record that holds it counts as holding every record type
+ * (backend/llvm/record-views.ts, the frontend's view eligibility in
+ * frontend/lowering/width-copies.ts). */
+export const RECORD_VIEW_LEAF_KINDS: ReadonlySet<IrType["kind"]> = new Set<IrType["kind"]>([
+  "f64",
+  "bool",
+  "string",
+  "bigint",
+  "date",
+  "regex",
+  "bytes",
+  "symbol",
+  "url",
+  "searchParams",
+  "stats",
+  "bigintStats",
+  "undefinedT",
+  "nullT",
+  "void",
+]);
+
 export function typeKey(t: IrType): string {
   if (HANDLE_KINDS.has(t.kind)) return t.kind;
   switch (t.kind) {
@@ -1349,6 +1381,11 @@ export interface IrModule {
    * modules keep their custom sections (otherwise they carry none, and
    * debug sections cost nothing). */
   wasmCustomSections?: boolean;
+  /** Element kinds (SCR_ELEM_* numbers) whose arrays the program can give a
+   * prototype: those arrays are allocated with the collector header, so a
+   * prototype whose closure captures the array forms a cycle the collector
+   * can reclaim. Only programs that prototype an array of the kind pay. */
+  prototypeOverrideArrayKinds?: number[];
 }
 
 /** A WebAssembly module whose bytes the build saw, validated within the
@@ -4658,6 +4695,11 @@ export type IrExpr =
       preserveRefs?: true;
       adopt?: true;
       shared?: true;
+      /** A collection key's conversion: the adoption must make the source
+       * one object with the built key, and a value it cannot adopt is
+       * refused (SC2020) instead of leaving a copy the collection and the
+       * program's other name do not share. */
+      keyIdentity?: true;
       exact?: true;
       partialView?: true;
       /** Shape inference's overlay: this conversion checks an
@@ -4670,6 +4712,10 @@ export type IrExpr =
        * path (`$[0]`), where a standalone check names only the root
        * (`$`). */
       pathIndex?: number;
+      /** The member a dynamic read validated: a failure names that member
+       * in its path (`$.projectId`), where a standalone check names only
+       * the root (`$`). */
+      pathKey?: string;
       type: IrType;
       loc: SrcLoc;
     };
@@ -4977,6 +5023,7 @@ function isJsonSafeAt(
 export const DYN_HANDLE_KINDS: ReadonlyMap<string, { tag: string; cls: string }> = new Map([
   ["child", { tag: "SCR_DYNH_CHILD", cls: "ChildProcess" }],
   ["fileHandle", { tag: "SCR_DYNH_FILE_HANDLE", cls: "FileHandle" }],
+  ["utf8Stream", { tag: "SCR_DYNH_UTF8_STREAM", cls: "Utf8Stream" }],
   ["httpReq", { tag: "SCR_DYNH_HTTP_REQ", cls: "IncomingMessage" }],
   ["httpRes", { tag: "SCR_DYNH_HTTP_RES", cls: "ServerResponse" }],
   ["netSocket", { tag: "SCR_DYNH_NET_SOCKET", cls: "Socket" }],
@@ -5234,6 +5281,12 @@ function canBoxDynCompositeAt(
     case "url":
     case "searchParams":
     case "date":
+      return true;
+    case "generator":
+      // A generator boxes by identity wherever the walker meets it, exactly
+      // as at the top level: a method whose result is a union with a
+      // generator arm (a promise settled with one, a record field holding
+      // one) still has a checked-dynamic form.
       return true;
     case "func":
       return canBoxFuncIntoDyn(t, getRecord, getUnion, visiting);

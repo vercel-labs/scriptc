@@ -31,6 +31,10 @@ const programs = [
   "tests/corpus/7441-tls-client-error.ts",
   "tests/corpus/7443-tls-final-flight.ts",
   "tests/corpus/tls-session-ticket-copies.ts",
+  "tests/corpus/tls-ticket-keys.ts",
+  "tests/corpus/tls-session-resumption.ts",
+  "tests/corpus/tls-session-resumption-checks.ts",
+  "tests/corpus/tls-session-verdict-at-secure-connect.ts",
 ];
 
 describe.skipIf(!sanitize || process.platform !== "linux")(

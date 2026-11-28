@@ -46,6 +46,7 @@ import {
   VAL_FUNCREF,
   VAL_I32,
   VAL_I64,
+  VAL_V128,
   WasmCursor,
   parseWasmModule,
   readMemargFlags,
@@ -54,6 +55,7 @@ import {
   type WasmModule,
   type WasmRange,
 } from "./module.js";
+import { simdOp } from "./simd.js";
 
 /** Trap codes (scr_wasm_abi.h SCR_WASM_TRAP_*). */
 export const TRAP_UNREACHABLE = 1;
@@ -67,9 +69,14 @@ export const TRAP_SIGNATURE = 8;
 export const TRAP_NULL = 9;
 /** scr_wasm_abi.h SCR_WASM_TRAP_EXHAUSTION. */
 export const TRAP_EXHAUSTION = 100;
+/** scr_wasm_abi.h SCR_WASM_TRAP_HOST: a JavaScript exception is pending. */
+export const TRAP_HOST = 101;
 
 /** The descriptor ABI version both sides agree on. */
-export const WASM_ABI_VERSION = 2;
+/** The descriptor version: 2 for scalar modules (unchanged), 3 when a
+ * module carries v128 in a signature or global. The runtime accepts both. */
+export const WASM_ABI_VERSION = 3;
+export const WASM_ABI_VERSION_SCALAR = 2;
 
 /** Instance slot offsets (bytes). */
 const OFF_MEMBASE = 8;
@@ -79,11 +86,42 @@ const OFF_TABLES = 32;
 /** sizeof(ScrWasmFuncRef). */
 const FUNCREF_SIZE = 24;
 
+/** The canonical LLVM type of a v128 value. Every lane shape is a bitcast of
+ * it. */
+const V4I32 = "<4 x i32>";
+const V16I8 = "<16 x i8>";
+const V8I16 = "<8 x i16>";
+const V2I64 = "<2 x i64>";
+const V4F32 = "<4 x float>";
+const V2F64 = "<2 x double>";
+
+/** One lane shape's LLVM type, lane type and lane count. */
+interface LaneShape {
+  type: string;
+  lane: string;
+  count: number;
+}
+
+const SHAPE_I8: LaneShape = { type: V16I8, lane: "i8", count: 16 };
+const SHAPE_I16: LaneShape = { type: V8I16, lane: "i16", count: 8 };
+const SHAPE_I32: LaneShape = { type: V4I32, lane: "i32", count: 4 };
+const SHAPE_I64: LaneShape = { type: V2I64, lane: "i64", count: 2 };
+const SHAPE_F32: LaneShape = { type: V4F32, lane: "float", count: 4 };
+const SHAPE_F64: LaneShape = { type: V2F64, lane: "double", count: 2 };
+
+function hasV128(types: readonly number[]): boolean {
+  for (const t of types) if (t === VAL_V128) return true;
+  return false;
+}
+
 export interface WasmTranslateOptions {
   /** Explicit bounds checks instead of guard pages. */
   boundsChecks: boolean;
   /** Keep the custom sections, for WebAssembly.Module.customSections. */
   customSections?: boolean;
+  /** Attributes every translated function carries besides the translator's
+   * own, such as the build's `"target-cpu"` level. */
+  targetAttributes?: string;
 }
 
 export interface WasmTranslation {
@@ -132,6 +170,8 @@ function llType(t: number): string {
       return "float";
     case VAL_F64:
       return "double";
+    case VAL_V128:
+      return V4I32;
     case VAL_FUNCREF:
     case VAL_EXTERNREF:
       return "ptr";
@@ -148,6 +188,8 @@ function zeroOf(t: number): string {
     case VAL_F32:
     case VAL_F64:
       return "0.0";
+    case VAL_V128:
+      return "zeroinitializer";
     default:
       return "null";
   }
@@ -164,6 +206,8 @@ function sigChar(t: number): string {
       return "f";
     case VAL_F64:
       return "F";
+    case VAL_V128:
+      return "V";
     case VAL_FUNCREF:
       return "r";
     case VAL_EXTERNREF:
@@ -296,15 +340,42 @@ class ModuleTranslator {
   stackChecked: Set<number>;
   typeHashes: string[];
   memoryCount: number;
+  /** Attributes on the functions a module defines. */
+  attrs: string;
+  /** Attributes on the boundary thunks and the init function, which the
+   * runtime calls directly. */
+  thunkAttrs: string;
+  /** The descriptor ABI version this module's descriptor carries. */
+  abiVersion: number;
+  /** Whether a v128 import needs scr_wasm_import_funcref. */
+  needsImportFuncref = false;
+
+  /** LLVM intrinsic declarations the translated code calls. */
+  intrinsics = new Set<string>();
+
+  /** Records an intrinsic declaration, once per module. */
+  intrinsic(decl: string): void {
+    this.intrinsics.add(decl);
+  }
 
   constructor(m: WasmModule, prefix: string, opts: WasmTranslateOptions) {
     this.m = m;
     this.p = prefix;
     this.opts = opts;
+    this.attrs = `${FUNC_ATTRS}${opts.targetAttributes ?? ""}`;
+    this.thunkAttrs = `nounwind${opts.targetAttributes ?? ""}`;
     this.refs = new Set(m.declaredRefs);
     this.typeHashes = m.types.map((t) => signatureHash(sigString(t)));
     this.memoryCount = m.memories.length;
     if (m.memories.length > 1) throw new WasmTranslateError("multiple memories are not supported");
+    let vectors = false;
+    for (const t of m.types) {
+      if (hasV128(t.params) || hasV128(t.results)) vectors = true;
+    }
+    for (const global of m.globals) {
+      if (global.type === VAL_V128) vectors = true;
+    }
+    this.abiVersion = vectors ? WASM_ABI_VERSION : WASM_ABI_VERSION_SCALAR;
     this.stackChecked = stackCheckedFunctions(m);
   }
 
@@ -342,8 +413,12 @@ class ModuleTranslator {
 
   importStub(index: number): void {
     const ft = this.funcType(index);
+    if (hasV128(ft.params) || hasV128(ft.results)) {
+      this.importVecStub(index, ft);
+      return;
+    }
     const out: string[] = [];
-    out.push(`define internal ${this.signature(ft, this.fn(index))} nounwind {`);
+    out.push(`define internal ${this.signature(ft, this.fn(index))} ${this.thunkAttrs} {`);
     out.push(`entry:`);
     const np = Math.max(1, ft.params.length);
     const nr = Math.max(1, ft.results.length);
@@ -361,12 +436,51 @@ class ModuleTranslator {
     this.text.push(out.join("\n"));
   }
 
+  /** A v128-carrying import: call the imported WebAssembly function's code
+   * directly, with the vectors in registers. The runtime resolves the
+   * import to its function reference and throws Node's TypeError when the
+   * import is a plain JavaScript function. */
+  importVecStub(index: number, ft: WasmFuncType): void {
+    this.needsImportFuncref = true;
+    const out: string[] = [];
+    out.push(`define internal ${this.signature(ft, this.fn(index))} ${this.thunkAttrs} {`);
+    out.push(`entry:`);
+    const args: string[] = [];
+    for (let i = 0; i < ft.params.length; i++) args.push(`${llType(ft.params[i]!)} %p${i}`);
+    out.push(`  %host = load ptr, ptr %inst`);
+    out.push(`  %ref = call ptr @scr_wasm_import_funcref(ptr %host, i32 ${index})`);
+    out.push(`  %missing = icmp eq ptr %ref, null`);
+    out.push(`  br i1 %missing, label %missing${index}, label %call${index}`);
+    out.push(`missing${index}:`);
+    out.push(`  call void @scr_wasm_trap(i32 ${TRAP_HOST})`);
+    out.push(`  unreachable`);
+    out.push(`call${index}:`);
+    out.push(`  %code.p = getelementptr inbounds i8, ptr %ref, i64 0`);
+    out.push(`  %code = load ptr, ptr %code.p, align 8`);
+    out.push(`  %cinst.p = getelementptr inbounds i8, ptr %ref, i64 16`);
+    out.push(`  %cinst = load ptr, ptr %cinst.p, align 8`);
+    const call = `%code(ptr %cinst${args.length > 0 ? ", " + args.join(", ") : ""})`;
+    const ret = retType(ft.results);
+    if (ft.results.length === 0) {
+      out.push(`  call void ${call}`);
+      out.push(`  ret void`);
+    } else {
+      out.push(`  %r = call ${ret} ${call}`);
+      out.push(`  ret ${ret} %r`);
+    }
+    out.push(`}`);
+    this.text.push(out.join("\n"));
+  }
+
   /** The thunk the runtime calls for exported function `index`. */
   exportThunk(index: number): string {
     const name = `@${this.p}_x${index}`;
     const ft = this.funcType(index);
+    if (hasV128(ft.params) || hasV128(ft.results)) {
+      throw new WasmTranslateError("v128 in an exported function signature is not supported yet");
+    }
     const out: string[] = [];
-    out.push(`define internal void ${name}(ptr %inst, ptr %a, ptr %r) nounwind {`);
+    out.push(`define internal void ${name}(ptr %inst, ptr %a, ptr %r) ${this.thunkAttrs} {`);
     out.push(`entry:`);
     const args: string[] = ["ptr %inst"];
     for (let i = 0; i < ft.params.length; i++) {
@@ -403,8 +517,13 @@ class ModuleTranslator {
   callThunk(type: number): string {
     const name = `@${this.p}_k${type}`;
     const ft = this.m.types[type]!;
+    if (hasV128(ft.params) || hasV128(ft.results)) {
+      throw new WasmTranslateError("v128 in a function reference's signature is not supported yet");
+    }
     const out: string[] = [];
-    out.push(`define internal void ${name}(ptr %code, ptr %inst, ptr %a, ptr %r) nounwind {`);
+    out.push(
+      `define internal void ${name}(ptr %code, ptr %inst, ptr %a, ptr %r) ${this.thunkAttrs} {`,
+    );
     out.push(`entry:`);
     const args: string[] = ["ptr %inst"];
     for (let i = 0; i < ft.params.length; i++) {
@@ -452,6 +571,8 @@ class ModuleTranslator {
         // A defined externref global starts as null or another global's
         // value; the runtime's setter retains it.
         body.add(`  call void @scr_wasm_global_set_ref(ptr ${cell}, ptr ${v})`);
+      } else if (global.type === VAL_V128) {
+        body.add(`  store ${llType(global.type)} ${v}, ptr ${cell}, align 8`);
       } else {
         body.add(`  store ${llType(global.type)} ${v}, ptr ${cell}`);
       }
@@ -488,7 +609,7 @@ class ModuleTranslator {
       body.add(`  call void @scr_wasm_data_drop(ptr %inst, i32 ${s})`);
     }
     body.add(`  ret void`);
-    const out = [`define internal void ${name}(ptr %inst) nounwind {`, `entry:`];
+    const out = [`define internal void ${name}(ptr %inst) ${this.thunkAttrs} {`, `entry:`];
     appendLines(out, f.entry.lines);
     appendLines(out, body.lines);
     out.push(`}`);
@@ -558,13 +679,18 @@ class ModuleTranslator {
       let type = "";
       let call = "null";
       if (ex.kind === KIND_FUNC) {
-        type = sigString(this.funcType(ex.index));
-        let thunk = thunks.get(ex.index);
-        if (thunk === undefined) {
-          thunk = this.exportThunk(ex.index);
-          thunks.set(ex.index, thunk);
+        const ft = this.funcType(ex.index);
+        type = sigString(ft);
+        // A v128 export has no 64-bit-slot thunk; the runtime's JavaScript
+        // wrapper rejects the call before converting anything.
+        if (!hasV128(ft.params) && !hasV128(ft.results)) {
+          let thunk = thunks.get(ex.index);
+          if (thunk === undefined) {
+            thunk = this.exportThunk(ex.index);
+            thunks.set(ex.index, thunk);
+          }
+          call = thunk;
         }
-        call = thunk;
       } else if (ex.kind === KIND_TABLE) {
         type = sigChar(m.tables[ex.index]!.elemType);
       } else if (ex.kind === KIND_GLOBAL) {
@@ -594,7 +720,13 @@ class ModuleTranslator {
       codes.push(referenced ? `ptr ${this.fn(f)}` : "ptr null");
       // Referenced functions the module does not export reach JavaScript
       // through their signature's call thunk.
-      if (referenced && !thunks.has(f)) {
+      const referencedFt = this.funcType(f);
+      if (
+        referenced &&
+        !thunks.has(f) &&
+        !hasV128(referencedFt.params) &&
+        !hasV128(referencedFt.results)
+      ) {
         const type = m.funcTypes[f]!;
         let thunk = callThunkSyms.get(type);
         if (thunk === undefined) {
@@ -718,7 +850,7 @@ class ModuleTranslator {
     const fields = [
       `[32 x i8] [${sha.join(", ")}]`,
       `i64 ${m.bytes.length}`,
-      `i64 ${WASM_ABI_VERSION}`,
+      `i64 ${this.abiVersion}`,
       `i64 ${this.opts.boundsChecks ? 1 : 0}`,
       `i64 ${m.imports.length}`,
       `ptr ${importsSym}`,
@@ -785,6 +917,8 @@ function toSlot(out: string[], t: number, v: string, tag: string): string {
     case VAL_F64:
       out.push(`  %${tag}z = bitcast double ${v} to i64`);
       return `%${tag}z`;
+    case VAL_V128:
+      throw new WasmTranslateError("v128 cannot cross the JavaScript boundary");
     default:
       out.push(`  %${tag}z = ptrtoint ptr ${v} to i64`);
       return `%${tag}z`;
@@ -805,6 +939,8 @@ function fromSlot(out: string[], t: number, slot: string, tag: string): string {
     case VAL_F64:
       out.push(`  %${tag}v = bitcast i64 ${slot} to double`);
       return `%${tag}v`;
+    case VAL_V128:
+      throw new WasmTranslateError("v128 cannot cross the JavaScript boundary");
     default:
       out.push(`  %${tag}v = inttoptr i64 ${slot} to ptr`);
       return `%${tag}v`;
@@ -911,6 +1047,12 @@ class FunctionTranslator {
     return v;
   }
 
+  /** Emits an intrinsic call and records its declaration once per module. */
+  intrinsic(decl: string, call: string): string {
+    this.mt.intrinsic(decl);
+    return this.emit(call);
+  }
+
   push(v: string, t: number): void {
     this.stack.push({ v, t });
   }
@@ -940,11 +1082,15 @@ class FunctionTranslator {
 
   /** The offset of a memarg over memory 0 (the only memory a translatable
    * module has). */
-  memargOffset(c: WasmCursor): number {
+  memarg(c: WasmCursor): { offset: number; align: number } {
     const flags = readMemargFlags(() => c.u32());
     if (flags.align < 0 || flags.memory !== 0)
       throw new WasmTranslateError(`memarg of memory ${flags.memory} is not supported`);
-    return c.u32();
+    return { offset: c.u32(), align: flags.align };
+  }
+
+  memargOffset(c: WasmCursor): number {
+    return this.memarg(c).offset;
   }
 
   /** A memory index immediate (memory.size, memory.grow and the bulk
@@ -1060,7 +1206,9 @@ class FunctionTranslator {
         case 0x23: {
           const g = c.u32();
           const cell = this.loadPtrSlot(this.mt.globalSlot(g));
-          stack.push(this.emit(`load ${llType(this.m.globals[g]!.type)}, ptr ${cell}`));
+          const t = this.m.globals[g]!.type;
+          const align = t === VAL_V128 ? ", align 8" : "";
+          stack.push(this.emit(`load ${llType(t)}, ptr ${cell}${align}`));
           break;
         }
         case 0xd0:
@@ -1070,6 +1218,15 @@ class FunctionTranslator {
         case 0xd2:
           stack.push(this.funcRef(c.u32()));
           break;
+        case 0xfd: {
+          // v128.const: four little-endian 32-bit words.
+          const sub = c.u32();
+          if (sub !== 12)
+            throw new WasmTranslateError(`constant expression opcode 0xfd ${sub} is not supported`);
+          const w = [c.u32le(), c.u32le(), c.u32le(), c.u32le()];
+          stack.push(`<i32 ${w[0]! | 0}, i32 ${w[1]! | 0}, i32 ${w[2]! | 0}, i32 ${w[3]! | 0}>`);
+          break;
+        }
         case 0x6a:
         case 0x6b:
         case 0x6c:
@@ -1242,7 +1399,7 @@ class FunctionTranslator {
     this.body(c, code.body.end);
     // Epilogue.
     const out: string[] = [];
-    out.push(`define internal ${this.mt.signature(ft, this.mt.fn(this.index))} ${FUNC_ATTRS} {`);
+    out.push(`define internal ${this.mt.signature(ft, this.mt.fn(this.index))} ${this.mt.attrs} {`);
     out.push(`entry:`);
     appendLines(out, this.entry.lines);
     if (!this.checked && this.baseValue !== null) {
@@ -1768,6 +1925,9 @@ class FunctionTranslator {
       case 0xfc:
         this.prefixed(c);
         return;
+      case 0xfd:
+        this.simd(c);
+        return;
       default:
         break;
     }
@@ -1799,6 +1959,1027 @@ class FunctionTranslator {
       return;
     }
     this.numeric(op);
+  }
+
+  // ── SIMD ────────────────────────────────────────────────────────────
+
+  /** A canonical v128 value viewed as `shape` (a no-op for <4 x i32>). */
+  view(v: string, shape: LaneShape): string {
+    if (shape.type === V4I32) return v;
+    return this.emit(`bitcast ${V4I32} ${v} to ${shape.type}`);
+  }
+
+  /** A shaped value back as the canonical v128. */
+  canon(v: string, shape: LaneShape): string {
+    if (shape.type === V4I32) return v;
+    return this.emit(`bitcast ${shape.type} ${v} to ${V4I32}`);
+  }
+
+  /** Every lane of `shape` set to `scalar`. */
+  splat(scalar: string, lane: string, shape: LaneShape): string {
+    const one = this.emit(`insertelement ${shape.type} undef, ${lane} ${scalar}, i32 0`);
+    return this.emit(
+      `shufflevector ${shape.type} ${one}, ${shape.type} undef, <${shape.count} x i32> zeroinitializer`,
+    );
+  }
+
+  /** Pops a v128 operand and views it as `shape`. */
+  popShape(shape: LaneShape, what: string): string {
+    return this.view(this.popType(VAL_V128, what).v, shape);
+  }
+
+  /** A v128 immediate and instruction. */
+  simd(c: WasmCursor): void {
+    const sub = c.u32();
+    const op = simdOp(sub);
+    if (op === undefined) throw new WasmTranslateError(`opcode 0xfd ${sub} is not supported`);
+    let offset = 0;
+    let lane = 0;
+    let shuffle: number[] | null = null;
+    switch (op.immediate) {
+      case 1: {
+        const bytes: number[] = [];
+        for (let i = 0; i < 16; i++) bytes.push(c.u8());
+        const lanes: number[] = [];
+        for (let i = 0; i < 16; i += 4) {
+          lanes.push(
+            bytes[i]! | (bytes[i + 1]! << 8) | (bytes[i + 2]! << 16) | (bytes[i + 3]! << 24) | 0,
+          );
+        }
+        this.push(`<i32 ${lanes[0]}, i32 ${lanes[1]}, i32 ${lanes[2]}, i32 ${lanes[3]}>`, VAL_V128);
+        return;
+      }
+      case 2:
+        shuffle = [];
+        for (let i = 0; i < 16; i++) shuffle.push(c.u8());
+        break;
+      case 3:
+        lane = c.u8();
+        break;
+      case 4:
+        offset = this.memarg(c).offset;
+        break;
+      case 5: {
+        offset = this.memarg(c).offset;
+        lane = c.u8();
+        break;
+      }
+    }
+    if (sub <= 11 || (sub >= 84 && sub <= 93)) {
+      this.simdMemory(sub, offset, lane);
+      return;
+    }
+    if (sub === 13) {
+      this.simdShuffle(shuffle!);
+      return;
+    }
+    if (sub === 14) {
+      this.simdSwizzle();
+      return;
+    }
+    if (sub >= 15 && sub <= 20) {
+      this.simdSplat(sub);
+      return;
+    }
+    if (sub >= 21 && sub <= 34) {
+      this.simdLane(sub, lane);
+      return;
+    }
+    if ((sub >= 35 && sub <= 76) || (sub >= 214 && sub <= 219)) {
+      this.simdCompare(sub);
+      return;
+    }
+    if (sub >= 77 && sub <= 83) {
+      this.simdBitwise(sub);
+      return;
+    }
+    if (sub === 94 || sub === 95 || (sub >= 248 && sub <= 255)) {
+      this.simdConvert(sub);
+      return;
+    }
+    if ((sub >= 103 && sub <= 106) || sub === 116 || sub === 117 || sub === 122 || sub === 148) {
+      this.simdFloat(sub);
+      return;
+    }
+    if (sub >= 224 && sub <= 247) {
+      this.simdFloat(sub);
+      return;
+    }
+    if (sub >= 96 && sub <= 223) {
+      this.simdInteger(sub);
+      return;
+    }
+    if (sub >= 0x100 && sub <= 0x113) {
+      this.simdRelaxed(sub);
+      return;
+    }
+    throw new WasmTranslateError(`SIMD instruction 0xfd ${sub} is not supported yet`);
+  }
+
+  /** The lane shape of a splat, extract/replace or load/store lane opcode. */
+  simdShape(sub: number): LaneShape {
+    if (sub >= 15 && sub <= 20) {
+      return [SHAPE_I8, SHAPE_I16, SHAPE_I32, SHAPE_I64, SHAPE_F32, SHAPE_F64][sub - 15]!;
+    }
+    if (sub === 21 || sub === 22 || sub === 23) return SHAPE_I8;
+    if (sub === 24 || sub === 25 || sub === 26) return SHAPE_I16;
+    if (sub === 27 || sub === 28) return SHAPE_I32;
+    if (sub === 29 || sub === 30) return SHAPE_I64;
+    if (sub === 31 || sub === 32) return SHAPE_F32;
+    if (sub === 33 || sub === 34) return SHAPE_F64;
+    throw new WasmTranslateError(`SIMD instruction 0xfd ${sub} is not supported yet`);
+  }
+
+  simdSplat(sub: number): void {
+    const shape = this.simdShape(sub);
+    const scalar = this.pop();
+    let value = scalar.v;
+    if (shape.lane === "i8" || shape.lane === "i16") {
+      value = this.emit(`trunc i32 ${value} to ${shape.lane}`);
+    }
+    this.push(this.canon(this.splat(value, shape.lane, shape), shape), VAL_V128);
+  }
+
+  simdLane(sub: number, lane: number): void {
+    const shape = this.simdShape(sub);
+    if (
+      sub === 21 ||
+      sub === 22 ||
+      sub === 24 ||
+      sub === 25 ||
+      sub === 27 ||
+      sub === 29 ||
+      sub === 31 ||
+      sub === 33
+    ) {
+      const x = this.popShape(shape, "extract_lane");
+      let value = this.emit(`extractelement ${shape.type} ${x}, i32 ${lane}`);
+      if (shape.lane === "i8" || shape.lane === "i16") {
+        const signed = sub === 21 || sub === 24;
+        value = this.emit(`${signed ? "sext" : "zext"} ${shape.lane} ${value} to i32`);
+      }
+      const result =
+        shape.lane === "i64"
+          ? VAL_I64
+          : shape.lane === "float"
+            ? VAL_F32
+            : shape.lane === "double"
+              ? VAL_F64
+              : VAL_I32;
+      this.push(value, result);
+      return;
+    }
+    const scalar = this.pop();
+    const x = this.popType(VAL_V128, "replace_lane");
+    let value = scalar.v;
+    if (shape.lane === "i8" || shape.lane === "i16") {
+      value = this.emit(`trunc i32 ${value} to ${shape.lane}`);
+    }
+    const inserted = this.emit(
+      `insertelement ${shape.type} ${this.view(x.v, shape)}, ${shape.lane} ${value}, i32 ${lane}`,
+    );
+    this.push(this.canon(inserted, shape), VAL_V128);
+  }
+
+  simdShuffle(mask: readonly number[]): void {
+    const b = this.popShape(SHAPE_I8, "shuffle");
+    const a = this.popShape(SHAPE_I8, "shuffle");
+    const lanes: string[] = [];
+    for (const lane of mask) lanes.push(`i32 ${lane}`);
+    const shuffled = this.emit(
+      `shufflevector ${V16I8} ${a}, ${V16I8} ${b}, <16 x i32> <${lanes.join(", ")}>`,
+    );
+    this.push(this.canon(shuffled, SHAPE_I8), VAL_V128);
+  }
+
+  simdCompare(sub: number): void {
+    if (sub >= 65 && sub <= 76) {
+      // Float comparisons: eq/ne are ordered/unordered so NaN compares as
+      // WebAssembly requires; the result is an all-ones lane mask.
+      const f32 = sub <= 70;
+      const operand = f32 ? SHAPE_F32 : SHAPE_F64;
+      const maskShape = f32 ? SHAPE_I32 : SHAPE_I64;
+      const pred = ["oeq", "une", "olt", "ogt", "ole", "oge"][(sub - 65) % 6]!;
+      const b = this.popShape(operand, "simd comparison");
+      const a = this.popShape(operand, "simd comparison");
+      const bits = this.emit(`fcmp ${pred} ${operand.type} ${a}, ${b}`);
+      const mask = this.emit(`sext <${operand.count} x i1> ${bits} to ${maskShape.type}`);
+      this.push(this.canon(mask, maskShape), VAL_V128);
+      return;
+    }
+    let shape: LaneShape;
+    let pred: string;
+    const signed = ["eq", "ne", "slt", "ult", "sgt", "ugt", "sle", "ule", "sge", "uge"];
+    if (sub >= 35 && sub <= 64) {
+      const group = Math.floor((sub - 35) / 10);
+      shape = group === 0 ? SHAPE_I8 : group === 1 ? SHAPE_I16 : SHAPE_I32;
+      pred = signed[(sub - 35) % 10]!;
+    } else {
+      shape = SHAPE_I64;
+      pred = ["eq", "ne", "slt", "sgt", "sle", "sge"][sub - 214]!;
+    }
+    const b = this.popShape(shape, "simd comparison");
+    const a = this.popShape(shape, "simd comparison");
+    const bits = this.emit(`icmp ${pred} ${shape.type} ${a}, ${b}`);
+    const mask = this.emit(`sext <${shape.count} x i1> ${bits} to ${shape.type}`);
+    this.push(this.canon(mask, shape), VAL_V128);
+  }
+
+  /** The all-ones value of the canonical vector. */
+  simdAllOnes(): string {
+    return "<i32 -1, i32 -1, i32 -1, i32 -1>";
+  }
+
+  simdBitwise(sub: number): void {
+    if (sub === 77) {
+      const a = this.popShape(SHAPE_I32, "v128.not");
+      this.push(this.emit(`xor ${V4I32} ${a}, ${this.simdAllOnes()}`), VAL_V128);
+      return;
+    }
+    if (sub === 82) {
+      const c = this.popShape(SHAPE_I32, "v128.bitselect");
+      const b = this.popShape(SHAPE_I32, "v128.bitselect");
+      const a = this.popShape(SHAPE_I32, "v128.bitselect");
+      const notC = this.emit(`xor ${V4I32} ${c}, ${this.simdAllOnes()}`);
+      const left = this.emit(`and ${V4I32} ${a}, ${c}`);
+      const right = this.emit(`and ${V4I32} ${b}, ${notC}`);
+      this.push(this.emit(`or ${V4I32} ${left}, ${right}`), VAL_V128);
+      return;
+    }
+    if (sub === 83) {
+      const a = this.popShape(SHAPE_I32, "v128.any_true");
+      const wide = this.emit(`bitcast ${V4I32} ${a} to i128`);
+      const any = this.emit(`icmp ne i128 ${wide}, 0`);
+      this.push(this.emit(`zext i1 ${any} to i32`), VAL_I32);
+      return;
+    }
+    const name = sub === 78 ? "and" : sub === 79 ? "andnot" : sub === 80 ? "or" : "xor";
+    const b = this.popShape(SHAPE_I32, `v128.${name}`);
+    const a = this.popShape(SHAPE_I32, `v128.${name}`);
+    if (name === "andnot") {
+      const notB = this.emit(`xor ${V4I32} ${b}, ${this.simdAllOnes()}`);
+      this.push(this.emit(`and ${V4I32} ${a}, ${notB}`), VAL_V128);
+      return;
+    }
+    this.push(this.emit(`${name} ${V4I32} ${a}, ${b}`), VAL_V128);
+  }
+
+  /** A SIMD memory instruction. Wasm's memarg alignment is a hint: the same
+   * instruction may run unaligned, so every access is emitted `align 1`
+   * (like the scalar loads and stores at `instruction`). */
+  simdMemory(sub: number, offset: number, lane: number): void {
+    const shape =
+      sub >= 7 && sub <= 10
+        ? [SHAPE_I8, SHAPE_I16, SHAPE_I32, SHAPE_I64][sub - 7]!
+        : sub >= 84 && sub <= 91
+          ? [SHAPE_I8, SHAPE_I16, SHAPE_I32, SHAPE_I64][(sub - 84) % 4]!
+          : SHAPE_I32;
+    const bytes = sub === 0 || sub === 11 ? 16 : sub === 92 ? 4 : sub === 93 ? 8 : 16 / shape.count;
+    if (sub === 0) {
+      const address = this.popType(VAL_I32, "load address");
+      const p = this.address(address.v, offset, 16);
+      const line = this.lines.lines.length;
+      const loaded = this.emit(`load ${V4I32}, ptr ${p}, align 1`);
+      this.stack.push({ v: loaded, t: VAL_V128, load: line });
+      return;
+    }
+    if (sub === 11) {
+      const value = this.popType(VAL_V128, "store");
+      const address = this.popType(VAL_I32, "store address");
+      const p = this.address(address.v, offset, 16);
+      this.add(`  store ${V4I32} ${value.v}, ptr ${p}, align 1`);
+      return;
+    }
+    if (sub >= 1 && sub <= 6) {
+      // load8x8/16x4/32x2: widen the eight bytes read from memory.
+      const dst = sub <= 2 ? SHAPE_I16 : sub <= 4 ? SHAPE_I32 : SHAPE_I64;
+      const signed = sub === 1 || sub === 3 || sub === 5;
+      const halfType = sub <= 2 ? "<8 x i8>" : sub <= 4 ? "<4 x i16>" : "<2 x i32>";
+      const address = this.popType(VAL_I32, "load address");
+      const p = this.address(address.v, offset, 8);
+      const line = this.lines.lines.length;
+      const loaded = this.emit(`load ${halfType}, ptr ${p}, align 1`);
+      const extended = this.emit(
+        `${signed ? "sext" : "zext"} ${halfType} ${loaded} to ${dst.type}`,
+      );
+      this.stack.push({ v: this.canon(extended, dst), t: VAL_V128, load: line });
+      return;
+    }
+    if (sub >= 7 && sub <= 10) {
+      const address = this.popType(VAL_I32, "load address");
+      const p = this.address(address.v, offset, bytes);
+      const line = this.lines.lines.length;
+      const scalar = this.emit(`load ${shape.lane}, ptr ${p}, align 1`);
+      this.stack.push({
+        v: this.canon(this.splat(scalar, shape.lane, shape), shape),
+        t: VAL_V128,
+        load: line,
+      });
+      return;
+    }
+    if (sub >= 84 && sub <= 87) {
+      const vector = this.popType(VAL_V128, "load lane");
+      const address = this.popType(VAL_I32, "load lane address");
+      const p = this.address(address.v, offset, bytes);
+      const line = this.lines.lines.length;
+      const scalar = this.emit(`load ${shape.lane}, ptr ${p}, align 1`);
+      const inserted = this.emit(
+        `insertelement ${shape.type} ${this.view(vector.v, shape)}, ${shape.lane} ${scalar}, i32 ${lane}`,
+      );
+      this.stack.push({ v: this.canon(inserted, shape), t: VAL_V128, load: line });
+      return;
+    }
+    if (sub >= 88 && sub <= 91) {
+      const vector = this.popType(VAL_V128, "store lane");
+      const address = this.popType(VAL_I32, "store lane address");
+      const p = this.address(address.v, offset, bytes);
+      const scalar = this.emit(
+        `extractelement ${shape.type} ${this.view(vector.v, shape)}, i32 ${lane}`,
+      );
+      this.add(`  store ${shape.lane} ${scalar}, ptr ${p}, align 1`);
+      return;
+    }
+    if (sub === 92 || sub === 93) {
+      const address = this.popType(VAL_I32, "load address");
+      const p = this.address(address.v, offset, bytes);
+      const line = this.lines.lines.length;
+      let value: string;
+      if (sub === 92) {
+        const loaded = this.emit(`load i32, ptr ${p}, align 1`);
+        value = this.emit(`zext i32 ${loaded} to i64`);
+      } else {
+        value = this.emit(`load i64, ptr ${p}, align 1`);
+      }
+      const inserted = this.emit(`insertelement ${V2I64} zeroinitializer, i64 ${value}, i32 0`);
+      this.stack.push({ v: this.canon(inserted, SHAPE_I64), t: VAL_V128, load: line });
+      return;
+    }
+    throw new WasmTranslateError(`SIMD instruction 0xfd ${sub} is not supported yet`);
+  }
+
+  /** A lane-wise integer instruction: comparisons, arithmetic, mask ops. */
+  simdInteger(sub: number): void {
+    let shape: LaneShape;
+    if (sub >= 96 && sub <= 123) shape = SHAPE_I8;
+    else if (sub >= 128 && sub <= 159) shape = SHAPE_I16;
+    else if (sub >= 160 && sub <= 191) shape = SHAPE_I32;
+    else shape = SHAPE_I64;
+    switch (sub) {
+      case 96:
+      case 128:
+      case 160:
+      case 192: {
+        // abs
+        const a = this.popShape(shape, "abs");
+        const zero = "zeroinitializer";
+        const negative = this.emit(`icmp slt ${shape.type} ${a}, ${zero}`);
+        const negated = this.emit(`sub ${shape.type} ${zero}, ${a}`);
+        const chosen = this.emit(
+          `select <${shape.count} x i1> ${negative}, ${shape.type} ${negated}, ${shape.type} ${a}`,
+        );
+        this.push(this.canon(chosen, shape), VAL_V128);
+        return;
+      }
+      case 97:
+      case 129:
+      case 161:
+      case 193: {
+        // neg
+        const a = this.popShape(shape, "neg");
+        const zero = "zeroinitializer";
+        this.push(this.canon(this.emit(`sub ${shape.type} ${zero}, ${a}`), shape), VAL_V128);
+        return;
+      }
+      case 99:
+      case 131:
+      case 163:
+      case 195: {
+        // all_true
+        const a = this.popShape(shape, "all_true");
+        const zero = "zeroinitializer";
+        const bits = this.emit(`icmp ne ${shape.type} ${a}, ${zero}`);
+        const packed = this.emit(`bitcast <${shape.count} x i1> ${bits} to i${shape.count}`);
+        const all = this.emit(`icmp eq i${shape.count} ${packed}, -1`);
+        this.push(this.emit(`zext i1 ${all} to i32`), VAL_I32);
+        return;
+      }
+      case 100:
+      case 132:
+      case 164:
+      case 196: {
+        // bitmask
+        const a = this.popShape(shape, "bitmask");
+        const zero = "zeroinitializer";
+        const bits = this.emit(`icmp slt ${shape.type} ${a}, ${zero}`);
+        const packed = this.emit(`bitcast <${shape.count} x i1> ${bits} to i${shape.count}`);
+        this.push(this.emit(`zext i${shape.count} ${packed} to i32`), VAL_I32);
+        return;
+      }
+      case 107:
+      case 108:
+      case 109:
+      case 139:
+      case 140:
+      case 141:
+      case 171:
+      case 172:
+      case 173:
+      case 203:
+      case 204:
+      case 205: {
+        // shifts: the count is a masked i32 splatted to the lanes.
+        const count = this.popType(VAL_I32, "shift");
+        const a = this.popShape(shape, "shift");
+        const laneBits =
+          shape.lane === "i8" ? 7 : shape.lane === "i16" ? 15 : shape.lane === "i32" ? 31 : 63;
+        let masked = this.emit(`and i32 ${count.v}, ${laneBits}`);
+        if (shape.lane === "i8" || shape.lane === "i16") {
+          masked = this.emit(`trunc i32 ${masked} to ${shape.lane}`);
+        } else if (shape.lane === "i64") {
+          masked = this.emit(`zext i32 ${masked} to i64`);
+        }
+        const amounts = this.splat(masked, shape.lane, shape);
+        const name =
+          sub === 107 || sub === 139 || sub === 171 || sub === 203
+            ? "shl"
+            : sub === 108 || sub === 140 || sub === 172 || sub === 204
+              ? "ashr"
+              : "lshr";
+        this.push(this.canon(this.emit(`${name} ${shape.type} ${a}, ${amounts}`), shape), VAL_V128);
+        return;
+      }
+      case 110:
+      case 113:
+      case 142:
+      case 145:
+      case 174:
+      case 177:
+      case 206:
+      case 209: {
+        const name = sub === 110 || sub === 142 || sub === 174 || sub === 206 ? "add" : "sub";
+        const b = this.popShape(shape, `i${shape.lane}.${name}`);
+        const a = this.popShape(shape, `i${shape.lane}.${name}`);
+        this.push(this.canon(this.emit(`${name} ${shape.type} ${a}, ${b}`), shape), VAL_V128);
+        return;
+      }
+      case 118:
+      case 119:
+      case 120:
+      case 121:
+      case 150:
+      case 151:
+      case 152:
+      case 153:
+      case 182:
+      case 183:
+      case 184:
+      case 185: {
+        const signed =
+          sub === 118 || sub === 120 || sub === 150 || sub === 152 || sub === 182 || sub === 184;
+        const max =
+          sub === 120 || sub === 121 || sub === 152 || sub === 153 || sub === 184 || sub === 185;
+        const b = this.popShape(shape, "min/max");
+        const a = this.popShape(shape, "min/max");
+        const pred = max ? (signed ? "sgt" : "ugt") : signed ? "slt" : "ult";
+        const bits = this.emit(`icmp ${pred} ${shape.type} ${a}, ${b}`);
+        const chosen = this.emit(
+          `select <${shape.count} x i1> ${bits}, ${shape.type} ${a}, ${shape.type} ${b}`,
+        );
+        this.push(this.canon(chosen, shape), VAL_V128);
+        return;
+      }
+      case 98: {
+        const a = this.popShape(SHAPE_I8, "popcnt");
+        const decl = `declare ${V16I8} @llvm.ctpop.v16i8(${V16I8})`;
+        const call = `call ${V16I8} @llvm.ctpop.v16i8(${V16I8} ${a})`;
+        this.push(this.canon(this.intrinsic(decl, call), SHAPE_I8), VAL_V128);
+        return;
+      }
+      case 101:
+      case 102:
+      case 133:
+      case 134:
+        this.simdNarrow(sub);
+        return;
+      case 111:
+        this.simdSat("sadd.sat", SHAPE_I8);
+        return;
+      case 112:
+        this.simdSat("uadd.sat", SHAPE_I8);
+        return;
+      case 114:
+        this.simdSat("ssub.sat", SHAPE_I8);
+        return;
+      case 115:
+        this.simdSat("usub.sat", SHAPE_I8);
+        return;
+      case 123:
+        this.simdAvgr(SHAPE_I8);
+        return;
+      case 124:
+      case 125:
+      case 126:
+      case 127:
+        this.simdExtadd(sub);
+        return;
+      case 130:
+        this.simdQ15();
+        return;
+      case 135:
+      case 136:
+      case 137:
+      case 138:
+      case 167:
+      case 168:
+      case 169:
+      case 170:
+      case 199:
+      case 200:
+      case 201:
+      case 202:
+        this.simdExtend(sub);
+        return;
+      case 143:
+        this.simdSat("sadd.sat", SHAPE_I16);
+        return;
+      case 144:
+        this.simdSat("uadd.sat", SHAPE_I16);
+        return;
+      case 146:
+        this.simdSat("ssub.sat", SHAPE_I16);
+        return;
+      case 147:
+        this.simdSat("usub.sat", SHAPE_I16);
+        return;
+      case 149:
+        this.simdMul(SHAPE_I16);
+        return;
+      case 155:
+        this.simdAvgr(SHAPE_I16);
+        return;
+      case 156:
+      case 157:
+      case 158:
+      case 159:
+      case 188:
+      case 189:
+      case 190:
+      case 191:
+      case 220:
+      case 221:
+      case 222:
+      case 223:
+        this.simdExtmul(sub);
+        return;
+      case 181:
+        this.simdMul(SHAPE_I32);
+        return;
+      case 186:
+        this.simdDot();
+        return;
+      case 213:
+        this.simdMul(SHAPE_I64);
+        return;
+      case 214:
+      case 215:
+      case 216:
+      case 217:
+      case 218:
+      case 219:
+        this.simdCompare(sub);
+        return;
+      default:
+        throw new WasmTranslateError(`SIMD instruction 0xfd ${sub} is not supported yet`);
+    }
+  }
+
+  /** add_sat/sub_sat through LLVM's saturating vector intrinsics. */
+  simdSat(name: string, shape: LaneShape): void {
+    const suffix = `v${shape.count}${shape.lane}`;
+    const decl = `declare ${shape.type} @llvm.${name}.${suffix}(${shape.type}, ${shape.type})`;
+    const b = this.popShape(shape, name);
+    const a = this.popShape(shape, name);
+    const call = `call ${shape.type} @llvm.${name}.${suffix}(${shape.type} ${a}, ${shape.type} ${b})`;
+    this.push(this.canon(this.intrinsic(decl, call), shape), VAL_V128);
+  }
+
+  simdMul(shape: LaneShape): void {
+    const b = this.popShape(shape, "mul");
+    const a = this.popShape(shape, "mul");
+    this.push(this.canon(this.emit(`mul ${shape.type} ${a}, ${b}`), shape), VAL_V128);
+  }
+
+  /** avgr_u: (a + b + 1) >> 1 in one wider lane. */
+  simdAvgr(shape: LaneShape): void {
+    const wide: LaneShape =
+      shape === SHAPE_I8
+        ? { type: "<16 x i16>", lane: "i16", count: 16 }
+        : { type: "<8 x i32>", lane: "i32", count: 8 };
+    const b = this.popShape(shape, "avgr_u");
+    const a = this.popShape(shape, "avgr_u");
+    const aw = this.emit(`zext ${shape.type} ${a} to ${wide.type}`);
+    const bw = this.emit(`zext ${shape.type} ${b} to ${wide.type}`);
+    const sum = this.emit(`add ${wide.type} ${aw}, ${bw}`);
+    const plus = this.emit(`add ${wide.type} ${sum}, ${this.splat("1", wide.lane, wide)}`);
+    const half = this.emit(`lshr ${wide.type} ${plus}, ${this.splat("1", wide.lane, wide)}`);
+    this.push(
+      this.canon(this.emit(`trunc ${wide.type} ${half} to ${shape.type}`), shape),
+      VAL_V128,
+    );
+  }
+
+  /** i16x8.q15mulr_sat_s: (a*b + 0x4000) >> 15, saturated to i16. */
+  simdQ15(): void {
+    const b = this.popShape(SHAPE_I16, "q15mulr");
+    const a = this.popShape(SHAPE_I16, "q15mulr");
+    const wide = "<8 x i32>";
+    const wideShape: LaneShape = { type: wide, lane: "i32", count: 8 };
+    const aw = this.emit(`sext ${V8I16} ${a} to ${wide}`);
+    const bw = this.emit(`sext ${V8I16} ${b} to ${wide}`);
+    const product = this.emit(`mul ${wide} ${aw}, ${bw}`);
+    const rounded = this.emit(`add ${wide} ${product}, ${this.splat("16384", "i32", wideShape)}`);
+    const scaled = this.emit(`ashr ${wide} ${rounded}, ${this.splat("15", "i32", wideShape)}`);
+    const max = this.splat("32767", "i32", wideShape);
+    const over = this.emit(`icmp sgt ${wide} ${scaled}, ${max}`);
+    const clamped = this.emit(`select <8 x i1> ${over}, ${wide} ${max}, ${wide} ${scaled}`);
+    this.push(this.canon(this.emit(`trunc ${wide} ${clamped} to ${V8I16}`), SHAPE_I16), VAL_V128);
+  }
+
+  /** One half (low or high) of `value` extended to the wider lane shape. */
+  extendHalf(
+    value: string,
+    src: LaneShape,
+    dst: LaneShape,
+    signed: boolean,
+    high: boolean,
+  ): string {
+    const half = src.count / 2;
+    const lanes: string[] = [];
+    for (let i = 0; i < half; i++) lanes.push(`i32 ${high ? i + half : i}`);
+    const shuffled = this.emit(
+      `shufflevector ${src.type} ${value}, ${src.type} undef, <${half} x i32> <${lanes.join(", ")}>`,
+    );
+    const halfType = `<${half} x ${src.lane}>`;
+    return this.emit(`${signed ? "sext" : "zext"} ${halfType} ${shuffled} to ${dst.type}`);
+  }
+
+  /** extend_low/high_s/u for every shape. */
+  simdExtend(sub: number): void {
+    let src: LaneShape;
+    let dst: LaneShape;
+    let signed: boolean;
+    let high: boolean;
+    if (sub >= 135 && sub <= 138) {
+      src = SHAPE_I8;
+      dst = SHAPE_I16;
+      signed = sub <= 136;
+      high = sub === 136 || sub === 138;
+    } else if (sub >= 167 && sub <= 170) {
+      src = SHAPE_I16;
+      dst = SHAPE_I32;
+      signed = sub <= 168;
+      high = sub === 168 || sub === 170;
+    } else {
+      src = SHAPE_I32;
+      dst = SHAPE_I64;
+      signed = sub <= 200;
+      high = sub === 200 || sub === 202;
+    }
+    const a = this.popShape(src, "extend");
+    const extended = this.extendHalf(a, src, dst, signed, high);
+    this.push(this.canon(extended, dst), VAL_V128);
+  }
+
+  /** extmul_low/high_s/u: widen both operands, then multiply. */
+  simdExtmul(sub: number): void {
+    let src: LaneShape;
+    let dst: LaneShape;
+    let signed: boolean;
+    let high: boolean;
+    if (sub >= 156 && sub <= 159) {
+      src = SHAPE_I8;
+      dst = SHAPE_I16;
+      signed = sub <= 157;
+      high = sub === 157 || sub === 159;
+    } else if (sub >= 188 && sub <= 191) {
+      src = SHAPE_I16;
+      dst = SHAPE_I32;
+      signed = sub <= 189;
+      high = sub === 189 || sub === 191;
+    } else {
+      src = SHAPE_I32;
+      dst = SHAPE_I64;
+      signed = sub <= 221;
+      high = sub === 221 || sub === 223;
+    }
+    const b = this.popShape(src, "extmul");
+    const a = this.popShape(src, "extmul");
+    const aw = this.extendHalf(a, src, dst, signed, high);
+    const bw = this.extendHalf(b, src, dst, signed, high);
+    this.push(this.canon(this.emit(`mul ${dst.type} ${aw}, ${bw}`), dst), VAL_V128);
+  }
+
+  /** extadd_pairwise_s/u: extend the even and odd lanes and add them. */
+  simdExtadd(sub: number): void {
+    const from8 = sub <= 125;
+    const src = from8 ? SHAPE_I8 : SHAPE_I16;
+    const dst = from8 ? SHAPE_I16 : SHAPE_I32;
+    const signed = sub === 124 || sub === 126;
+    const a = this.popShape(src, "extadd_pairwise");
+    const even: string[] = [];
+    const odd: string[] = [];
+    for (let i = 0; i < dst.count; i++) {
+      even.push(`i32 ${2 * i}`);
+      odd.push(`i32 ${2 * i + 1}`);
+    }
+    const evens = this.emit(
+      `shufflevector ${src.type} ${a}, ${src.type} undef, <${dst.count} x i32> <${even.join(", ")}>`,
+    );
+    const odds = this.emit(
+      `shufflevector ${src.type} ${a}, ${src.type} undef, <${dst.count} x i32> <${odd.join(", ")}>`,
+    );
+    const halfType = `<${dst.count} x ${src.lane}>`;
+    const ev = this.emit(`${signed ? "sext" : "zext"} ${halfType} ${evens} to ${dst.type}`);
+    const od = this.emit(`${signed ? "sext" : "zext"} ${halfType} ${odds} to ${dst.type}`);
+    this.push(this.canon(this.emit(`add ${dst.type} ${ev}, ${od}`), dst), VAL_V128);
+  }
+
+  /** i32x4.dot_i16x8_s: widen, multiply, add adjacent products. */
+  simdDot(): void {
+    const b = this.popShape(SHAPE_I16, "dot");
+    const a = this.popShape(SHAPE_I16, "dot");
+    const wide = "<8 x i32>";
+    const aw = this.emit(`sext ${V8I16} ${a} to ${wide}`);
+    const bw = this.emit(`sext ${V8I16} ${b} to ${wide}`);
+    const product = this.emit(`mul ${wide} ${aw}, ${bw}`);
+    const evens = this.emit(
+      `shufflevector ${wide} ${product}, ${wide} undef, <4 x i32> <i32 0, i32 2, i32 4, i32 6>`,
+    );
+    const odds = this.emit(
+      `shufflevector ${wide} ${product}, ${wide} undef, <4 x i32> <i32 1, i32 3, i32 5, i32 7>`,
+    );
+    this.push(this.emit(`add ${V4I32} ${evens}, ${odds}`), VAL_V128);
+  }
+
+  /** narrow_iNxM_s/u: concatenate, clamp, truncate. The unsigned form's
+   * inputs are signed, so it clamps to 0 first. */
+  simdNarrow(sub: number): void {
+    const from16 = sub === 101 || sub === 102;
+    const src = from16 ? SHAPE_I16 : SHAPE_I32;
+    const dst = from16 ? SHAPE_I8 : SHAPE_I16;
+    const signed = sub === 101 || sub === 133;
+    const b = this.popShape(src, "narrow");
+    const a = this.popShape(src, "narrow");
+    const joinedShape: LaneShape = {
+      type: `<${src.count * 2} x ${src.lane}>`,
+      lane: src.lane,
+      count: src.count * 2,
+    };
+    const lanes: string[] = [];
+    for (let i = 0; i < src.count * 2; i++) lanes.push(`i32 ${i}`);
+    const joined = this.emit(
+      `shufflevector ${src.type} ${a}, ${src.type} ${b}, <${src.count * 2} x i32> <${lanes.join(", ")}>`,
+    );
+    const bits = from16 ? 8 : 16;
+    const low = signed ? -(1 << (bits - 1)) : 0;
+    const high = signed ? (1 << (bits - 1)) - 1 : (1 << bits) - 1;
+    const lowSplat = this.splat(String(low), src.lane, joinedShape);
+    const highSplat = this.splat(String(high), src.lane, joinedShape);
+    const below = this.emit(`icmp slt ${joinedShape.type} ${joined}, ${lowSplat}`);
+    const clampedLow = this.emit(
+      `select <${joinedShape.count} x i1> ${below}, ${joinedShape.type} ${lowSplat}, ${joinedShape.type} ${joined}`,
+    );
+    const above = this.emit(`icmp sgt ${joinedShape.type} ${clampedLow}, ${highSplat}`);
+    const clamped = this.emit(
+      `select <${joinedShape.count} x i1> ${above}, ${joinedShape.type} ${highSplat}, ${joinedShape.type} ${clampedLow}`,
+    );
+    const narrowed = this.emit(`trunc ${joinedShape.type} ${clamped} to ${dst.type}`);
+    this.push(this.canon(narrowed, dst), VAL_V128);
+  }
+
+  /** i8x16.swizzle: each lane selects source[idx] or zero when idx > 15.
+   * Sixteen vector compare/select steps, no scalar loop; a target with
+   * pshufb/tbl1 can fold this, which the target-cpu attribute enables. */
+  simdSwizzle(): void {
+    const indices = this.popShape(SHAPE_I8, "swizzle");
+    const source = this.popShape(SHAPE_I8, "swizzle");
+    let result = this.emit(`bitcast ${V4I32} zeroinitializer to ${V16I8}`);
+    for (let lane = 0; lane < 16; lane++) {
+      const wanted = this.splat(String(lane), "i8", SHAPE_I8);
+      const match = this.emit(`icmp eq ${V16I8} ${indices}, ${wanted}`);
+      const value = this.splat(
+        this.emit(`extractelement ${V16I8} ${source}, i32 ${lane}`),
+        "i8",
+        SHAPE_I8,
+      );
+      result = this.emit(`select <16 x i1> ${match}, ${V16I8} ${value}, ${V16I8} ${result}`);
+    }
+    this.push(this.canon(result, SHAPE_I8), VAL_V128);
+  }
+
+  /** The float arithmetic and rounding instructions. `min`/`max` are IEEE
+   * minimum/maximum (NaN-propagating, -0 < +0); `pmin`/`pmax` are the
+   * WebAssembly pseudo-forms b < a ? b : a and a < b ? b : a. */
+  simdFloat(sub: number): void {
+    const rounding = new Map<number, [string, string]>([
+      [103, ["llvm.ceil", "ceil"]],
+      [104, ["llvm.floor", "floor"]],
+      [105, ["llvm.trunc", "trunc"]],
+      [106, ["llvm.roundeven", "roundeven"]],
+      [116, ["llvm.ceil", "ceil"]],
+      [117, ["llvm.floor", "floor"]],
+      [122, ["llvm.trunc", "trunc"]],
+      [148, ["llvm.roundeven", "roundeven"]],
+    ]);
+    const f32 = (sub >= 103 && sub <= 106) || (sub >= 224 && sub <= 235);
+    const shape = f32 ? SHAPE_F32 : SHAPE_F64;
+    const mangle = f32 ? "v4f32" : "v2f64";
+    const round = rounding.get(sub);
+    if (round !== undefined) {
+      const a = this.popShape(shape, round[1]);
+      const decl = `declare ${shape.type} @${round[0]}.${mangle}(${shape.type})`;
+      const call = `call ${shape.type} @${round[0]}.${mangle}(${shape.type} ${a})`;
+      this.push(this.canon(this.intrinsic(decl, call), shape), VAL_V128);
+      return;
+    }
+    const kind = sub >= 236 ? sub - 12 : sub;
+    if (kind === 224 || kind === 225 || kind === 227) {
+      const a = this.popShape(shape, kind === 224 ? "abs" : kind === 225 ? "neg" : "sqrt");
+      if (kind === 225) {
+        this.push(this.canon(this.emit(`fneg ${shape.type} ${a}`), shape), VAL_V128);
+        return;
+      }
+      const name = kind === 224 ? "llvm.fabs" : "llvm.sqrt";
+      const decl = `declare ${shape.type} @${name}.${mangle}(${shape.type})`;
+      const call = `call ${shape.type} @${name}.${mangle}(${shape.type} ${a})`;
+      this.push(this.canon(this.intrinsic(decl, call), shape), VAL_V128);
+      return;
+    }
+    if (kind >= 228 && kind <= 235) {
+      const b = this.popShape(shape, "simd arithmetic");
+      const a = this.popShape(shape, "simd arithmetic");
+      if (kind <= 231) {
+        const name = ["fadd", "fsub", "fmul", "fdiv"][kind - 228]!;
+        this.push(this.canon(this.emit(`${name} ${shape.type} ${a}, ${b}`), shape), VAL_V128);
+        return;
+      }
+      if (kind === 232 || kind === 233) {
+        const name = kind === 232 ? "llvm.minimum" : "llvm.maximum";
+        const decl = `declare ${shape.type} @${name}.${mangle}(${shape.type}, ${shape.type})`;
+        const call = `call ${shape.type} @${name}.${mangle}(${shape.type} ${a}, ${shape.type} ${b})`;
+        this.push(this.canon(this.intrinsic(decl, call), shape), VAL_V128);
+        return;
+      }
+      // pmin(a, b) = b < a ? b : a; pmax(a, b) = a < b ? b : a.
+      const test = this.emit(
+        kind === 234 ? `fcmp olt ${shape.type} ${b}, ${a}` : `fcmp olt ${shape.type} ${a}, ${b}`,
+      );
+      const chosen = this.emit(
+        `select <${shape.count} x i1> ${test}, ${shape.type} ${b}, ${shape.type} ${a}`,
+      );
+      this.push(this.canon(chosen, shape), VAL_V128);
+      return;
+    }
+    throw new WasmTranslateError(`SIMD instruction 0xfd ${sub} is not supported yet`);
+  }
+
+  /** Relaxed SIMD. Each instruction lowers to one deterministic outcome of
+   * the spec's allowed set, so native and Node agree on ordinary inputs. */
+  simdRelaxed(sub: number): void {
+    if (sub === 256) {
+      this.simdSwizzle();
+      return;
+    }
+    if (sub === 257 || sub === 258) {
+      this.simdConvert(sub === 257 ? 248 : 249);
+      return;
+    }
+    if (sub === 259 || sub === 260) {
+      this.simdConvert(sub === 259 ? 252 : 253);
+      return;
+    }
+    if (sub >= 261 && sub <= 264) {
+      // relaxed_madd/nmadd: a*b + c, or -(a*b) + c, with two roundings.
+      const shape = sub <= 262 ? SHAPE_F32 : SHAPE_F64;
+      const negate = sub === 262 || sub === 264;
+      const c = this.popShape(shape, "relaxed_madd");
+      const b = this.popShape(shape, "relaxed_madd");
+      const a = this.popShape(shape, "relaxed_madd");
+      const product = this.emit(`fmul ${shape.type} ${a}, ${b}`);
+      const sum = this.emit(
+        negate ? `fsub ${shape.type} ${c}, ${product}` : `fadd ${shape.type} ${product}, ${c}`,
+      );
+      this.push(this.canon(sum, shape), VAL_V128);
+      return;
+    }
+    if (sub >= 265 && sub <= 268) {
+      this.simdBitwise(82); // relaxed_laneselect is bitselect
+      return;
+    }
+    if (sub >= 269 && sub <= 272) {
+      const mapped = sub === 269 ? 234 : sub === 270 ? 235 : sub === 271 ? 246 : 247;
+      this.simdFloat(mapped); // relaxed_min/max as pmin/pmax
+      return;
+    }
+    if (sub === 273) {
+      this.simdQ15(); // relaxed q15mulr as the saturating rounding form
+      return;
+    }
+    if (sub === 274) {
+      this.push(this.canon(this.relaxedDot(), SHAPE_I16), VAL_V128);
+      return;
+    }
+    if (sub === 275) {
+      const c = this.popType(VAL_V128, "relaxed_dot_add");
+      const dot = this.relaxedDot();
+      const widened = this.emit(`sext ${V8I16} ${dot} to <8 x i32>`);
+      const evens = this.emit(
+        `shufflevector <8 x i32> ${widened}, <8 x i32> undef, <4 x i32> <i32 0, i32 2, i32 4, i32 6>`,
+      );
+      const odds = this.emit(
+        `shufflevector <8 x i32> ${widened}, <8 x i32> undef, <4 x i32> <i32 1, i32 3, i32 5, i32 7>`,
+      );
+      const sums = this.emit(`add ${V4I32} ${evens}, ${odds}`);
+      this.push(this.emit(`add ${V4I32} ${sums}, ${c.v}`), VAL_V128);
+      return;
+    }
+    throw new WasmTranslateError(`SIMD instruction 0xfd ${sub} is not supported yet`);
+  }
+
+  /** The i8x16 x i7x16 dot product, both operands sign-extended, pairwise
+   * summed into eight i16 lanes. */
+  relaxedDot(): string {
+    const b = this.popShape(SHAPE_I8, "relaxed_dot");
+    const a = this.popShape(SHAPE_I8, "relaxed_dot");
+    const wa = this.emit(`sext ${V16I8} ${a} to <16 x i16>`);
+    const wb = this.emit(`sext ${V16I8} ${b} to <16 x i16>`);
+    const product = this.emit(`mul <16 x i16> ${wa}, ${wb}`);
+    const evens = this.emit(
+      `shufflevector <16 x i16> ${product}, <16 x i16> undef, <8 x i32> <i32 0, i32 2, i32 4, i32 6, i32 8, i32 10, i32 12, i32 14>`,
+    );
+    const odds = this.emit(
+      `shufflevector <16 x i16> ${product}, <16 x i16> undef, <8 x i32> <i32 1, i32 3, i32 5, i32 7, i32 9, i32 11, i32 13, i32 15>`,
+    );
+    return this.emit(`add ${V8I16} ${evens}, ${odds}`);
+  }
+
+  /** Float/integer conversions, including the saturating truncations. */
+  simdConvert(sub: number): void {
+    if (sub === 94) {
+      // f32x4.demote_f64x2_zero
+      const a = this.popShape(SHAPE_F64, "demote");
+      const low = this.emit(`fptrunc ${V2F64} ${a} to <2 x float>`);
+      const joined = this.emit(
+        `shufflevector <2 x float> ${low}, <2 x float> zeroinitializer, <4 x i32> <i32 0, i32 1, i32 2, i32 3>`,
+      );
+      this.push(this.canon(joined, SHAPE_F32), VAL_V128);
+      return;
+    }
+    if (sub === 95) {
+      // f64x2.promote_low_f32x4
+      const a = this.popShape(SHAPE_F32, "promote");
+      const low = this.emit(
+        `shufflevector ${V4F32} ${a}, ${V4F32} undef, <2 x i32> <i32 0, i32 1>`,
+      );
+      this.push(this.canon(this.emit(`fpext <2 x float> ${low} to ${V2F64}`), SHAPE_F64), VAL_V128);
+      return;
+    }
+    if (sub === 248 || sub === 249) {
+      const a = this.popShape(SHAPE_F32, "trunc_sat");
+      const name = sub === 248 ? "llvm.fptosi.sat.v4i32.v4f32" : "llvm.fptoui.sat.v4i32.v4f32";
+      const decl = `declare <4 x i32> @${name}(${V4F32})`;
+      const call = `call <4 x i32> @${name}(${V4F32} ${a})`;
+      this.push(this.intrinsic(decl, call), VAL_V128);
+      return;
+    }
+    if (sub === 250 || sub === 251) {
+      const a = this.popShape(SHAPE_I32, "convert");
+      const name = sub === 250 ? "sitofp" : "uitofp";
+      this.push(this.canon(this.emit(`${name} ${V4I32} ${a} to ${V4F32}`), SHAPE_F32), VAL_V128);
+      return;
+    }
+    if (sub === 252 || sub === 253) {
+      const a = this.popShape(SHAPE_F64, "trunc_sat");
+      const name = sub === 252 ? "llvm.fptosi.sat.v2i32.v2f64" : "llvm.fptoui.sat.v2i32.v2f64";
+      const decl = `declare <2 x i32> @${name}(${V2F64})`;
+      const call = `call <2 x i32> @${name}(${V2F64} ${a})`;
+      const low = this.intrinsic(decl, call);
+      const joined = this.emit(
+        `shufflevector <2 x i32> ${low}, <2 x i32> zeroinitializer, <4 x i32> <i32 0, i32 1, i32 2, i32 3>`,
+      );
+      this.push(joined, VAL_V128);
+      return;
+    }
+    if (sub === 254 || sub === 255) {
+      const a = this.popShape(SHAPE_I32, "convert");
+      const low = this.emit(
+        `shufflevector ${V4I32} ${a}, ${V4I32} undef, <2 x i32> <i32 0, i32 1>`,
+      );
+      const name = sub === 254 ? "sitofp" : "uitofp";
+      this.push(this.canon(this.emit(`${name} <2 x i32> ${low} to ${V2F64}`), SHAPE_F64), VAL_V128);
+      return;
+    }
+    throw new WasmTranslateError(`SIMD instruction 0xfd ${sub} is not supported yet`);
   }
 
   numeric(op: number): void {
@@ -2294,6 +3475,8 @@ export function translateWasmModule(
   mt.translate();
   const descriptor = mt.descriptor(sha256);
   const decls = RUNTIME_DECLS.slice();
+  for (const decl of mt.intrinsics) decls.push(decl);
+  if (mt.needsImportFuncref) decls.push("declare ptr @scr_wasm_import_funcref(ptr, i32)");
   // Initial-exec: executables and their static runtime define it, so the
   // check is one thread-pointer-relative load, not a TLS lookup call.
   if (opts.boundsChecks)

@@ -24,10 +24,15 @@ typedef struct ScrDyn ScrDyn; /* full definition in scr_dyn.h (C11 repeat) */
 ScrStr *scr_intl_num_format_default(double x);
 
 /* process.config.variables.v8_enable_i18n_support: Node's own answer is the
- * number 1 (it bundles ICU). A compiled binary answers the same 1, and the
- * read is what links ICU — so the flag is true of the binary that reports
- * it, and no binary that reports it can lack ICU. */
+ * number 1 (it bundles ICU). A compiled binary answers 1 when this unit is
+ * linked and 0 otherwise. The pointer lives in the always-linked process
+ * core (scr_lib.c) and this unit installs it from a constructor, so a
+ * binary without ICU never holds an undefined reference to it. */
 double scr_intl_i18n_support(void);
+/* A process-wide constant (the unit's presence is a property of the binary),
+ * not thread-local: a worker would otherwise see a NULL copy of the slot and
+ * report 0 while ICU is linked. */
+extern double (*scr_intl_i18n_support_fn)(void);
 
 /* Date.prototype.toLocaleString() and toLocaleTimeString() at the default
  * locale: ICU's best pattern for the skeleton V8 asks for ("yMdjms" /
@@ -42,6 +47,14 @@ ScrStr *scr_intl_date_locale_time_string(double ms);
  * `isWordLike`, as Node's word segments do. +1 handle. */
 ScrDyn *scr_intl_segmenter_word_new(ScrStr *locale);
 
+/* A locales argument the program computed (a checked-dynamic value): the
+ * tag the formatter builds at. Undefined and a value without a locale-list
+ * length name the empty list, which selects the default locale; a string
+ * is its own tag; null is Node's TypeError; a non-empty list is locale
+ * negotiation and is refused by name. +1 string; NULL with the exception
+ * pending. */
+ScrStr *scr_intl_locale_value(ScrDyn *value);
+
 /* Intl.NumberFormat: `new Intl.NumberFormat(locale, options)` (and the
  * call without `new`), `format(x)` on its result, and
  * Number.prototype.toLocaleString(locale, options), which constructs the
@@ -53,6 +66,8 @@ ScrDyn *scr_intl_segmenter_word_new(ScrStr *locale);
  * checked-dynamic value (a number, or undefined). +1 results; NULL with the
  * exception pending. */
 ScrDyn *scr_intl_number_format_new(ScrStr *locale, ScrDyn *options);
+ScrDyn *scr_intl_list_format_new(ScrStr *locale, ScrDyn *options);
+ScrStr *scr_intl_list_format_format(ScrDyn *format, ScrDyn *list);
 ScrStr *scr_intl_number_format_format(ScrDyn *format, double x);
 ScrStr *scr_intl_number_format_format_dyn(ScrDyn *format, ScrDyn *value);
 ScrStr *scr_intl_number_to_locale_string(double x, ScrStr *locale, ScrDyn *options);
@@ -66,5 +81,8 @@ ScrDyn *scr_intl_date_time_format_new(ScrStr *locale, ScrDyn *options);
 ScrStr *scr_intl_date_time_format_format(ScrDyn *format, double ms);
 ScrStr *scr_intl_date_time_format_format_dyn(ScrDyn *format, ScrDyn *value);
 ScrStr *scr_intl_date_to_locale(double ms, double kind, ScrStr *locale, ScrDyn *options);
+/* The same with a computed locales value: the invalid-time check comes
+ * first, so an invalid Date answers "Invalid Date" without resolving it. */
+ScrStr *scr_intl_date_to_locale_dyn(double ms, double kind, ScrDyn *locale, ScrDyn *options);
 
 #endif /* SCR_INTL_H */

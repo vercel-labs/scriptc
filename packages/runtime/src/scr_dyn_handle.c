@@ -87,6 +87,15 @@ static ScrClosure *scr_dyn_listener_closure(const ScrDyn *cb, void *fire) {
   ScrBox *box = scr_box_new_obj(&scr_dyn_retain_v, &scr_dyn_release_v, &scr_dyn_trace_v);
   scr_box_set_ref(box, scr_dyn_retain((ScrDyn *)cb));
   clo->caps[0] = box;
+  /* Two listeners registered from the same function value are one function
+   * (Node's removeListener/off matches it): both share the function's
+   * identity root, exactly as the typed adapters do. The box keeps the
+   * function (and through it the root) alive for as long as those closures
+   * are registered. */
+  if (cb->kind == SCR_DYN_FUNC && cb->v.fn.clo != NULL) {
+    clo->identity = scr_closure_identity(cb->v.fn.clo);
+    clo->identity_length = cb->v.fn.clo->identity != NULL ? cb->v.fn.clo->identity_length : 0;
+  }
   return clo;
 }
 

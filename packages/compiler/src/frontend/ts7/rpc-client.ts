@@ -5,6 +5,7 @@ import {
   TS7_ERROR,
   TS7_REQUEST,
   TS7_RESPONSE,
+  Ts7FrameLimitError,
   Ts7ProtocolError,
   Ts7Wire,
 } from "./rpc-wire.js";
@@ -42,6 +43,11 @@ export class Ts7RpcClient {
     if (this.closed) throw new Ts7ProtocolError("client is closed");
     if (this.requesting) throw new Ts7ProtocolError("cannot replace callbacks during a request");
     this.callbacks.set(name, { invoke: callback });
+  }
+
+  /** The server process's ID, when the transport knows it. */
+  get pid(): number | undefined {
+    return this.wire.pid;
   }
 
   timing(): Ts7RpcTiming {
@@ -120,7 +126,9 @@ export class Ts7RpcClient {
         return message.payload;
       }
     } catch (error) {
-      if (this.requesting) {
+      // A frame the wire read and dropped leaves the channel usable: the
+      // caller can ask again in smaller pieces.
+      if (this.requesting && !(error instanceof Ts7FrameLimitError)) {
         try {
           this.close();
         } catch {

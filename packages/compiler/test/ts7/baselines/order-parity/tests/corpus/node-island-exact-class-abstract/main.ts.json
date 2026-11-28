@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/node-island-exact-class-abstract/classes.ts",
+  "<repo>/tests/corpus/node-island-exact-class-abstract/main.ts"
+ ],
+ "diags": []
+}

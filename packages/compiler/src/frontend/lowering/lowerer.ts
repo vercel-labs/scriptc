@@ -5337,6 +5337,11 @@ export class Lowerer {
    * reads `this` or `super`: each checks its receiver on every call, even
    * when no read of the receiver is left in the method's lowered body. */
   readonly receiverReadingMethodValues = new Set<string>();
+  /** The method value adapters built for an island's method table with the
+   * exact-return variant (`%method.value:…exact`). Their name carries a
+   * `.exact` suffix, which a method the source names `exact` also produces
+   * without being a variant: the name alone does not say which it is. */
+  readonly exactReturnMethodValues = new Set<string>();
   /** Reflected class methods whose lambda is lowering right now (null
    * until lowerLambda named it), with the closure it will produce: a
    * method that reads itself as a value inside its own body
@@ -6495,6 +6500,7 @@ export class Lowerer {
       mapTable("inspectHelpers", this.inspectHelpers),
       setTable("classMethodValueHelpers", this.classMethodValueHelpers),
       setTable("receiverReadingMethodValues", this.receiverReadingMethodValues),
+      setTable("exactReturnMethodValues", this.exactReturnMethodValues),
       setTable("freshClosureAdapters", this.freshClosureAdapters),
       setTable("islandResultLambdas", this.islandResultLambdas),
       setTable("notedVariadicStores", this.notedVariadicStores),

@@ -1611,7 +1611,22 @@ export function lowerFieldCompoundValue(
       type: STRING,
       loc,
     };
+    // The growth check runs before the field gives up its value: Node
+    // evaluates the right-hand side (here, the concatenation) before the
+    // assignment's write check, so a result past the maximum string length
+    // throws its RangeError before a frozen or published write's TypeError.
     body.push(
+      {
+        kind: "exprStmt",
+        expr: {
+          kind: "libCall",
+          fn: "str.growthCheck",
+          args: [oldRef(), suffix],
+          type: VOID,
+          loc,
+        },
+        loc,
+      },
       lowerer.fieldSetStmt(target, { kind: "strLit", value: "", type: STRING, loc }, loc, access),
       { kind: "assign", localId: oldId, value: concat, loc },
       lowerer.fieldSetStmt(target, oldRef(), loc, access),

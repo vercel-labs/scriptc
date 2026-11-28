@@ -1988,6 +1988,7 @@ const MAY_THROW_LIB_FNS_PART_6: readonly IrLibFn[] = [
   // call site runs the pending check.
   "str.replaceLiteral",
   "str.replaceChars",
+  "str.growthCheck",
   "string.raw",
 ];
 

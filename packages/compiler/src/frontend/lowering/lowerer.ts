@@ -92,7 +92,7 @@ import {
   lowerLifetimeRegionCall,
   lowerLifetimeRegionNew,
 } from "./lifetime-regions.js";
-import type { ConstructorReturnPlan } from "./constructor-returns.js";
+import { classReturnsForeignObject, type ConstructorReturnPlan } from "./constructor-returns.js";
 import { internTableType, lowerInternTableCall, lowerInternTableNew } from "./intern-tables.js";
 import { lowerThreadSlotsCall, lowerThreadSlotsNew, threadSlotsType } from "./thread-slots.js";
 import { lowerParallelCall } from "./parallel-loops.js";
@@ -6207,6 +6207,21 @@ export class Lowerer {
   /** Each class's constructor return plan by class name
    * (constructor-returns.ts); null when no return can yield an object. */
   readonly constructorReturnPlans = new Map<string, ConstructorReturnPlan | null>();
+  /** Whether a class's constructor can answer a foreign object, by class
+   * name (constructor-returns.ts's classReturnsForeignObject, which never
+   * consults mapTypeOf). The type mapper asks this per class instance. */
+  readonly foreignReturnClasses = new Map<string, boolean>();
+  classReturnsForeign(className: string): boolean {
+    const known = this.foreignReturnClasses.get(className);
+    if (known !== undefined) return known;
+    // A class the collection has not registered yet answers false and is
+    // not cached: the question is asked again once it is registered.
+    const info = this.classes.get(className);
+    if (info === undefined) return false;
+    const answer = classReturnsForeignObject(this, info);
+    this.foreignReturnClasses.set(className, answer);
+    return answer;
+  }
   /** Pointer-guarded (`tdz`) module bindings declared without an
    * initializer (`let f: T;`): an initialization flag tracks their
    * declaration (markCycleEarlyBindings). */
@@ -8085,6 +8100,8 @@ export class Lowerer {
     const shadow = canonShadowHook(this.checker);
     this.typeCtx = {
       ...(islands !== null ? { foreignType: (t: ts.Type) => this.foreignType(t) } : {}),
+      foreignReturnClass: (className: string) => this.classReturnsForeign(className),
+      ownClass: () => this.currentClass?.def.name ?? null,
       checker: this.checker,
       untypedArrayPropertyType: (decl) => untypedArrayPropertyType(this, decl),
       positionOf: (node) => this.positions.of(node),

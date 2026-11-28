@@ -2157,6 +2157,12 @@ export interface TypeMapperCtx {
    * handles, which map to the `foreign` type (a dyn value). Absent in
    * programs without islands. */
   foreignType?: (type: ts.Type) => boolean;
+  /** Whether the class (by IR name) has a constructor that can answer a
+   * foreign object (constructor-returns.ts). */
+  foreignReturnClass?: (className: string) => boolean;
+  /** The class whose own body, initializers or static block is being
+   * lowered, by IR name; its instance representation stays. */
+  ownClass?: () => string | null;
   /** Set only while a union maps an arm that is the type inferred from an
    * empty object literal, beside another non-nullish arm: that arm holds
    * only the literal's objects, so it maps to the empty record (see the
@@ -4894,7 +4900,16 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       if (instance !== null) contextResolutions++;
       return instance;
     }
-    return { kind: "object", className: classNamer(classDecl) };
+    // A class whose constructor can answer a foreign object has no static
+    // instance representation outside its own members: the export is
+    // whatever the constructor returned (a function, often), so every
+    // value of the class is checked-dynamic there (Node's own object).
+    // Inside the class's own body the instance is still what `this` is.
+    {
+      const name = classNamer(classDecl);
+      if (ctx.foreignReturnClass?.(name) === true && ctx.ownClass?.() !== name) return DYN;
+      return { kind: "object", className: name };
+    }
   }
   // A runtime-provided class's static side (`typeof EventEmitter`,
   // `typeof Readable`, `ErrorConstructor`): that class's value.

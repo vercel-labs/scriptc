@@ -4447,7 +4447,11 @@ function validateFunction(
       e.fn === "http.serverListeners" ||
       // The typed encodeInto answers the call site's own { read, written }
       // record shape.
-      e.fn === "text.encodeIntoStr";
+      e.fn === "text.encodeIntoStr" ||
+      // fs.promises.stat/lstat(path, options) answer the call's own promise:
+      // Stats, BigIntStats, or either with undefined for a suppressed miss.
+      e.fn === "fsp.statOpts" ||
+      e.fn === "fsp.lstatOpts";
     if (!variableResult && !typeEquals(e.type, sig.result)) {
       // The stat calls answer the SAME snapshot under either member table:
       // their `bigint` option picks BigIntStats' reads over Stats'. The

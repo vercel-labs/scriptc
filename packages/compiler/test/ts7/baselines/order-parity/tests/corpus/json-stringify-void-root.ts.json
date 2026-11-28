@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/json-stringify-void-root.ts"
+ ],
+ "diags": []
+}

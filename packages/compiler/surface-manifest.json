@@ -1777,6 +1777,13 @@
       "note": "removes one listener, or every listener, from a resolved path's poller"
     },
     {
+      "id": "node-builtin.fs.utf8Stream",
+      "kind": "node-builtin",
+      "name": "fs.Utf8Stream",
+      "status": "static",
+      "note": "Node's buffered file writer: write/end/flush/flushSync/destroy/reopen, the ready/write/drop/drain/finish/close events, and its option and property surface"
+    },
+    {
       "id": "node-builtin.fs.utimesSync",
       "kind": "node-builtin",
       "name": "fs.utimesSync",

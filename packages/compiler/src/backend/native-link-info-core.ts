@@ -35,7 +35,11 @@ export interface NativeLinkFeatures {
   streamSymbol?: boolean;
   /** filehandle.readableWebStream: scr_fs_web_stream.c. */
   fsWebStream?: boolean;
+  /** fs.Utf8Stream: scr_fs_utf8_stream.c, the buffered file writer. */
+  fsUtf8Stream?: boolean;
   fetch: boolean;
+  /** The WebSocket client (the global WebSocket class): scr_websocket.c. */
+  webSocket?: boolean;
   eventTarget?: boolean;
   /** The WebAssembly API (scr_wasm.c). Absent when unused, so programs
    * without it keep their link identity. */
@@ -502,6 +506,14 @@ export const LINK_FEATURE_REQUIREMENTS: readonly LinkFeatureRequirement[] = [
   { feature: "eventTarget", requires: ["emitter", "symbol"] },
   { feature: "abortSignal", requires: ["emitter", "symbol"] },
   { feature: "fetch", requires: ["emitter", "symbol"] },
+  // scr_websocket.c dials through scr_net.c and sc_http.c's client, wraps
+  // wss connections with scr_tls.c, and dispatches its events through
+  // scr_event_target.c (with the emitter and symbol units that unit needs).
+  { feature: "webSocket", requires: ["net", "http", "tls", "emitter", "symbol", "dynAsync"] },
+  // A Blob (built, or produced by a body read) is a native handle of the
+  // blob unit, which the checked-dynamic tier links; the fetch unit's
+  // SCR_WEB_BODIES build reads its bytes through that unit.
+  { feature: "webBodies", requires: ["dynAsync"] },
   // scr_sqlite.c interns DatabaseSync's Symbol(sqlite-type) brand through
   // the symbol unit's registry, and reflection and util.inspect show it
   // whatever the program does with symbols.
@@ -525,6 +537,7 @@ export const LINK_FEATURE_REQUIREMENTS: readonly LinkFeatureRequirement[] = [
   { feature: "pki", requires: ["mlkem"] },
   { feature: "mlkem", requires: ["pki"] },
   { feature: "fsWebStream", requires: ["fileHandle"] },
+  { feature: "fsUtf8Stream", requires: ["fileHandle", "dynAsync"] },
   // scr_stream_dyn.c tests values and calls JavaScript stream members through
   // the dyn-invoke unit (the checked-dynamic stream slots).
   { feature: "streamDyn", requires: ["dynInvoke"] },
@@ -532,6 +545,12 @@ export const LINK_FEATURE_REQUIREMENTS: readonly LinkFeatureRequirement[] = [
   // inspect unit's console entries, and colorMode 'auto' reads the
   // environment's color depth (scr_tty_colors.c).
   { feature: "consoleOptions", requires: ["inspect"] },
+  // scr_webstreams.c runs its stream algorithms through the checked-dynamic
+  // async unit (promise reactions, scratch streams) and calls the program's
+  // callbacks through the dyn-invoke unit; the compression streams'
+  // webstream.compressClass reaches the unit without any other call that
+  // would select them, so the requirement is stated here.
+  { feature: "webStreams", requires: ["dynAsync", "dynInvoke"] },
   { feature: "fsOpenAsBlob", requires: ["fileHandle", "dynAsync"] },
   // A stream's Symbol.asyncIterator member answers the iterator unit's own
   // iterator; the unit's promises are the checked-dynamic async unit's.

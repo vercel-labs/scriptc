@@ -1470,18 +1470,7 @@ class ModuleScanner {
   }
 
   private visitIdentifier(node: ts.Identifier): void {
-    const name = node.text;
     this.collectGlobalRead(node);
-    if (name !== "FinalizationRegistry") return;
-    if (this.declared.has(name)) return;
-    const parent = node.parent;
-    if (parent === undefined) return;
-    // Only value uses: not a property name, declaration name or typeof probe.
-    if (ts.isPropertyAccessExpression(parent) && parent.name === node) return;
-    if (ts.isTypeOfExpression(parent)) return;
-    if ((ts.isPropertyAssignment(parent) || ts.isMethodDeclaration(parent)) && parent.name === node)
-      return;
-    this.add("R1.6", "weak-ref", `'${name}'`, node);
   }
 
   /** Records a read of a name the file declares nowhere and no builtin

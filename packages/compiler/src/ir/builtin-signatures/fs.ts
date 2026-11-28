@@ -191,6 +191,7 @@ export const fsSignatures = defineLibFnSignatures({
    * provided); an open watcher keeps the loop alive until watcher.close()
    * (idempotent, receiver borrowed, statement position only). */
   "fs.watch": { argTypes: [STRING, BOOL, BOOL], result: FSWATCHER_T },
+  "fs.utf8StreamNew": { argTypes: [DYN], result: DYN },
   "fs.watchCb": { argTypes: [STRING, null, BOOL, BOOL], result: FSWATCHER_T },
   /** fs.watchFile(path, interval, persistent, listener) → void
    * (scr_watch_file.c — its own gated unit; moduleUsesFsWatchFile is the

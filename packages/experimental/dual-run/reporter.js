@@ -13,10 +13,11 @@
 // file whose Node output itself differs between two runs is reported as
 // flaky instead: the Node run, not the program, is what varies.
 //
-// The report is one line per file, plus the failing tests' messages and,
-// on a difference, a diff. Node's own results come from the event stream
-// (name, counts and message per test), so a test that fails in both lanes
-// is reported as the test failure it is.
+// The report is one line per file that states the comparison — both lanes
+// ran and whether their output matched — plus the failing tests' messages
+// and, on a difference, a short diff. Node's own results come from the event
+// stream (name, counts and message per test), so a test that fails in both
+// lanes is reported as the test failure it is.
 
 import { relative } from "node:path";
 import {
@@ -140,7 +141,12 @@ async function compareOne(file, shown, fileState, cwd, state) {
   if (compareLanes(first.node, again) !== null)
     return `ℹ ${shown}: the Node run differs between two runs (flaky), not compared`;
   state.diverged = true;
-  return `✖ ${describeDifferences(shown, differences)}`;
+  const difference = differences[0];
+  if (difference.stream === "exit code")
+    return `✖ ${shown}  node ✓  compiled ✖  exit code: node ${difference.node}, compiled ${difference.native}`;
+  // The heading names the failing test and the line where the lanes differ,
+  // so the diff stays attributable when it starts below its own context.
+  return `✖ ${shown}  node ✓  compiled ✖  output differs\n${describeDifferences(shown, differences)}`;
 }
 
 /** What Node's own run of the file reported: a line per file and a line per
@@ -154,7 +160,9 @@ function nodeResult(shown, summary, failures) {
   if (counts.skipped) parts.push(`${counts.skipped} skipped`);
   if (counts.todo) parts.push(`${counts.todo} todo`);
   const countsText = summary === null ? "" : ` (${parts.join(", ")})`;
-  const head = `${summary?.success ? "✔" : "✖"} ${shown}${countsText}`;
+  // Both lanes ran to completion and their output matched; the counts are
+  // Node's own test results for the file.
+  const head = `${summary?.success ? "✔" : "✖"} ${shown}  node ✓  compiled ✓  same output${countsText}`;
   if (failures.length === 0) return head;
   const lines = failures.map((failure) => {
     const message = firstLine(failure.details?.error?.message);

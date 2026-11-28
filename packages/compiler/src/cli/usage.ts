@@ -334,8 +334,9 @@ export const CLI_OPTION_DOCS: Readonly<Record<string, CliOptionDoc>> = {
       {
         term: "--profile-generate <pattern>",
         help: [
-          "Linux: instrument the executable for profile-guided",
-          "optimization. Each run writes a raw profile to the",
+          "Linux and macOS: instrument the executable for",
+          "profile-guided optimization. Each run writes a raw",
+          "profile to the",
           "pattern (%p expands to the process id; the",
           "LLVM_PROFILE_FILE environment variable overrides it).",
           "Instrumented programs run slower (--emit=exe only)",
@@ -566,9 +567,10 @@ export const CLI_OPTION_DOCS: Readonly<Record<string, CliOptionDoc>> = {
         help: [
           "Node island policy (default: auto): npm packages outside",
           "the native subset run in Node automatically; explicit",
-          "allows only marked islands; off allows none. REPORT-ONLY",
-          "in this version: coverage reports the islands a build",
-          "would choose; builds compile as before",
+          "allows only marked islands; off allows none, and a package",
+          "outside the native subset then fails the build (SC8002).",
+          "REPORT-ONLY in this version: coverage reports the islands a",
+          "build would choose; builds compile as before",
         ],
       },
     ],

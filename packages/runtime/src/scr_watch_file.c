@@ -9,8 +9,10 @@
  *
  * Semantics, matched against Node (libuv's poll_cb + Node's StatWatcher)
  * and pinned by corpus:
- * - The FIRST poll only records the baseline: a successful first stat
- *   emits nothing (libuv's busy_polling == 0), a failing first stat emits
+ * - The baseline is the file at registration (Node's StatWatcher start), so
+ *   a change written after watchFile returns but before the first poll
+ *   still reports (current, previous-at-registration). A path that cannot
+ *   be stat'ed at registration keeps no baseline, and its first poll emits
  *   ONE change with both sides all-zero (Node's kZeroStats).
  * - Thereafter a stat failure emits once per distinct errno; a success
  *   after a failure, or a success whose snapshot differs (ctime, mtime,
@@ -377,6 +379,18 @@ ScrStatWatcher *scr_fs_watch_file(ScrStr *path, double interval, bool persistent
   p->ls = NULL;
   p->n = p->cap = 0;
   p->timer = 0;
+  /* Node's StatWatcher takes its baseline at start: a change written after
+   * watchFile returns, before the first poll, still reports (current,
+   * previous-at-registration). A path that cannot be stat'ed keeps state 0
+   * so the first poll reports Node's zero-stats change. */
+  {
+    int err = 0;
+    ScrStats *baseline = scr_stats_poll_path(p->path, &err);
+    if (baseline != NULL) {
+      p->last = baseline; /* +1 moves in */
+      p->state = 1;
+    }
+  }
   /* The poll closure captures the poller through a box, which retains it
    * from here on (the cycle scr_watch_file_stop breaks). */
   p->pollCb = scr_closure_new((void *)scr_watch_file_poll, 1);

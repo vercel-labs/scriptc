@@ -92,3 +92,22 @@ await new Promise((resolve) => setTimeout(resolve, 10));
 source.unpipe(destination);
 await new Promise((resolve) => setTimeout(resolve, 10));
 destinationDone();
+
+// A listener attached through an untyped value reads the source stream
+// itself: the comparison against the program's source holds, and a reference
+// kept past the event reads the source's current state rather than a
+// snapshot of it.
+const piped = Readable.from(["i", "j"]);
+/** @type {any} */
+const untypedDestination = new PassThrough();
+const sourceView = [];
+untypedDestination.on("pipe", (s) => {
+  sourceView.push(`identity:${s === piped}`);
+  setTimeout(() => sourceView.push(`destroyed:${s.destroyed}`), 20);
+});
+untypedDestination.on("unpipe", (s) => sourceView.push(`unpipe:${s === piped}`));
+piped.pipe(untypedDestination);
+setTimeout(() => piped.destroy(), 10);
+await new Promise((resolve) => setTimeout(resolve, 60));
+console.log("source-view", sourceView.join(" "));
+untypedDestination.destroy();

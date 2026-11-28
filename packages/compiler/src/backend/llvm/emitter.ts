@@ -3,6 +3,7 @@ import { loopEntryInlines } from "./loop-entry-versions.js";
 import { alignFunctionEntries } from "./function-alignment.js";
 import type { FunctionLayout } from "./function-layout.js";
 import type { CompilationTiming } from "../../timing.js";
+import { bytesOfText, type TextPart, textOfPart } from "../../text-parts.js";
 import { relieveHeapPressure } from "../../heap-pressure.js";
 import { analyzeFrameEscapes, type FrameEscapes } from "./frame-escapes.js";
 import { wasmBoundsChecks } from "./wasm-modules.js";
@@ -628,6 +629,10 @@ export interface LlvmTargetOptions {
    * processes at a time (emit-module.ts), forked with `forkPrimitives`. The
    * output is the same as one emitter's. */
   functionWorkers?: number;
+  /** The function-text characters a module may hold as strings before each
+   * function's text is kept as UTF-8 bytes, off the V8 heap (emit-module.ts).
+   * Tests use 0 to exercise the byte path on small modules. */
+  offHeapTextChars?: number;
   /** The host's process primitives, where it can fork (the native
    * compiler's). */
   forkPrimitives?: ForkPrimitives | undefined;
@@ -644,6 +649,10 @@ export interface LlvmTargetOptions {
   timing?: CompilationTiming;
   /** Exact frontend sources for dev-build locations and variable metadata. */
   debugSources?: ReadonlyMap<string, string>;
+  /** The name a source location EMITS as (a library profile's
+   * `file_prefix_map`): debug info, stack frames and conversion traces use
+   * it, while diagnostics keep the path scriptc read. */
+  sourcePathMap?: (file: string) => string;
   /** Exact frontend sources for release-build stack positions (line and
    * column constants): the sources stay in the compiler, only the numbers
    * reach the executable. */
@@ -1056,7 +1065,7 @@ function verifyInt32Selection(
  * shows: a body that tests the flag without raising, or a raising
  * function's address in text the emitter generates. Each emission that
  * ends this way marks `llvm-emit-unwind-retry`. */
-function emitModuleText(input: IrModule, options: LlvmTargetOptions): string[] {
+function emitModuleText(input: IrModule, options: LlvmTargetOptions): TextPart[] {
   const prepared = prepareModule(input, options);
   const given = options.unwindExcluded ?? new Set<string>();
   for (let excluded = given, retry = 1; ; retry++) {
@@ -1128,16 +1137,17 @@ function verifyRetriedEmission(
   input: IrModule,
   options: LlvmTargetOptions,
   excluded: ReadonlySet<string>,
-  parts: readonly string[],
+  parts: readonly TextPart[],
 ): void {
   const { timing: _timing, ...quiet } = options;
   const once = { ...quiet, unwindExcluded: excluded };
-  const expected = moduleEmitter(prepareModule(input, once), once).emitParts();
+  const expected = moduleEmitter(prepareModule(input, once), once).emitParts().map(textOfPart);
+  const actual = parts.map(textOfPart);
   let part = 0;
-  while (part < expected.length && part < parts.length && expected[part] === parts[part]) part++;
-  if (part === expected.length && part === parts.length) return;
+  while (part < expected.length && part < actual.length && expected[part] === actual[part]) part++;
+  if (part === expected.length && part === actual.length) return;
   const want = expected[part] ?? "";
-  const got = parts[part] ?? "";
+  const got = actual[part] ?? "";
   let at = 0;
   while (at < want.length && want.charCodeAt(at) === got.charCodeAt(at)) at++;
   const line = want.lastIndexOf("\n", at) + 1;
@@ -1147,14 +1157,14 @@ function verifyRetriedEmission(
 }
 
 export function emitLlvmModule(input: IrModule, options: LlvmTargetOptions = {}): string {
-  return emitModuleText(input, options).join("\n");
+  return emitModuleText(input, options).map(textOfPart).join("\n");
 }
 
 /** emitLlvmModule's text as parts that concatenate to it, without the copy
  * that joining them makes: a large program's text is 150 MB. */
 export function emitLlvmModuleParts(input: IrModule, options: LlvmTargetOptions = {}): string[] {
   return emitModuleText(input, options).flatMap((part, index) =>
-    index === 0 ? [part] : ["\n", part],
+    index === 0 ? [textOfPart(part)] : ["\n", textOfPart(part)],
   );
 }
 
@@ -1162,13 +1172,18 @@ export function emitLlvmModuleParts(input: IrModule, options: LlvmTargetOptions 
 export function emitLlvmModuleSource(
   input: IrModule,
   options: LlvmTargetOptions = {},
-): string | readonly string[] {
+): string | readonly TextPart[] {
   // IR validation, contracts and the frontend's disposal run after lowering without checks.
   relieveHeapPressure(true);
   const parts = emitModuleText(input, options);
-  const length = parts.reduce((total, part) => total + part.length, Math.max(0, parts.length - 1));
-  if (length <= 256 * 1024 * 1024) return parts.join("\n");
-  return parts.flatMap((part, index) => (index === 0 ? [part] : ["\n", part]));
+  // A large build's function texts are byte parts: they stay off the V8 heap
+  // and the file writer takes them as they are.
+  if (parts.some((part) => typeof part !== "string"))
+    return parts.flatMap((part, index) => (index === 0 ? [part] : ["\n", part]));
+  const texts = parts as readonly string[];
+  const length = texts.reduce((total, part) => total + part.length, Math.max(0, texts.length - 1));
+  if (length <= 256 * 1024 * 1024) return texts.join("\n");
+  return texts.flatMap((part, index) => (index === 0 ? [part] : ["\n", part]));
 }
 
 export function llStrBytes(text: string): string {
@@ -1845,8 +1860,9 @@ export class LlEmitter {
   /** Empty literals that construct with inline slots (appended-array-literals.ts). */
   appendedArrayLiterals: ReadonlySet<IrExpr> = new Set();
   /** Emitted LLVM text of every IR function body, by function name: the
-   * fiberless-async analysis scans it for suspension entry points. */
-  readonly fnDefText = new Map<string, string>();
+   * fiberless-async analysis scans it for suspension entry points. A build of
+   * a large program keeps it as UTF-8 bytes, off the V8 heap. */
+  readonly fnDefText = new Map<string, TextPart>();
   readonly referenceEffects: ReferenceEffects;
   /** Field-sensitive reference writes (null in debug builds). */
   referenceWrites: ReferenceWrites | null = null;
@@ -2519,6 +2535,12 @@ export class LlEmitter {
    * reports the failure when the program is run with
    * SCRIPTC_CONVERSION_TRACE (conversionTraceAt). */
   readonly conversionTrace: boolean;
+  /** The profile's emitted-name mapping for source locations (sourcePathMap). */
+  private readonly sourcePathMap: ((file: string) => string) | undefined;
+  /** The name a source file EMITS as (sourcePathMap), or the path read. */
+  emittedSourceFile(file: string): string {
+    return this.sourcePathMap === undefined ? file : this.sourcePathMap(file);
+  }
   /** The frame name of the function being emitted (frameNameOf). */
   currentFrameName: string | undefined = undefined;
   /** The positions of the frame of the function being emitted, when it has
@@ -2601,6 +2623,7 @@ export class LlEmitter {
     // output is linked some other way must not call what the link lacks. A
     // sanitized build reports too: it is one call on a path that runs only
     // when a conversion fails. Library archives link a fixed runtime set.
+    this.sourcePathMap = options.sourcePathMap;
     this.conversionTrace =
       options.conversionTrace === true &&
       options.debugSources !== undefined &&
@@ -2624,6 +2647,7 @@ export class LlEmitter {
             options.pointerBits,
             mod.unions,
             this.nullableUnions.armTypes(),
+            options.sourcePathMap,
           );
     this.constantNumericTables = findConstantNumericTables(mod);
     this.staticArrayTables = findStaticArrayTables(mod);
@@ -3147,6 +3171,21 @@ export class LlEmitter {
       });
       this.shapeHost.recordViews = views;
       this.recordViewTargets = views.targets as Set<string>;
+      // A view aliases its source: a write through either name replaces a
+      // field the other reads, so neither shape's fields keep their values
+      // while the object lives. Without this a read of the wider name is
+      // lent to a call whose other argument (or the callee) writes the field
+      // through the narrower name and frees the string while it is borrowed.
+      if (this.immutableFields !== null) {
+        const aliases = new Set<string>();
+        for (const target of views.targets) {
+          aliases.add(target);
+          for (const source of views.sources(target)) aliases.add(source);
+        }
+        for (const target of views.partialTargets) aliases.add(target);
+        for (const source of views.partialSources) aliases.add(source);
+        this.immutableFields.markViewAliases(aliases);
+      }
       // A partial record assertion without a view would compile into a
       // checked conversion that throws every time it runs: name it instead.
       const refused = views.declinedPartials.map(
@@ -3505,21 +3544,26 @@ export class LlEmitter {
   }
 
   emit(): string {
-    return this.emitParts().join("\n");
+    return this.emitParts().map(textOfPart).join("\n");
   }
-  emitParts(): string[] {
+  emitParts(): TextPart[] {
     const parts = emitParts(this);
     const bridged = this.unwindAbi.size > 0 ? bridgePlainUnwindCalls(parts) : parts;
-    const profiled = this.keepCopyBodiesOutOfLine ? keepCopiedBodiesOutOfLine(bridged) : bridged;
+    // The CPU-copy passes read whole functions across a part, so a build that
+    // copies code (`--cpu-dispatch`) decodes its text as it always did;
+    // other builds keep the function texts as bytes when they are large.
     const out =
       this.cpuCopies === null
-        ? profiled
+        ? this.keepCopyBodiesOutOfLine
+          ? keepCopiedBodiesOutOfLine(bridged.map(textOfPart))
+          : bridged
         : cloneForCpuDispatch(
-            profiled,
+            bridged.map(textOfPart),
             this.cpuCopies,
             this.cpuCopies === "dispatch" ? this.copySelection() : undefined,
           );
-    const all = this.heapCensus === null ? out : [...out, this.heapCensus.definitions().join("\n")];
+    const all: TextPart[] =
+      this.heapCensus === null ? out : [...out, this.heapCensus.definitions().join("\n")];
     return alignFunctionEntries(all);
   }
 
@@ -3645,7 +3689,7 @@ export class LlEmitter {
       ``,
     ];
   }
-  emitModuleParts(): string[] {
+  emitModuleParts(): TextPart[] {
     return emitModuleParts(this);
   }
   emitLibDefs(
@@ -3823,7 +3867,7 @@ export class LlEmitter {
    * through the resolution procedure, which never parks the body: a promise
    * it holds is adopted by a reaction on it (scr_promise_resolve_dyn). The
    * runtime traps if a stackless body ever parks. */
-  selectStacklessAsync(fnDefs: string[]): void {
+  selectStacklessAsync(fnDefs: TextPart[]): void {
     if (!this.stacklessAsyncAllowed) return;
     const parks = this.parkingFunctions();
     if (parks === null) return;
@@ -3841,7 +3885,7 @@ export class LlEmitter {
       if (fn.asyncCacheGlobal !== undefined || fn.asyncCycleCacheGlobal !== undefined) return;
       if (!parks.has(fn.name)) return;
       // An async generator's body also suspends at its own yields.
-      let fiberText = fnDefs[index]!.replace(AWAIT_SUSPENSIONS, "");
+      let fiberText = textOfPart(fnDefs[index]!).replace(AWAIT_SUSPENSIONS, "");
       if (fn.generator !== undefined) fiberText = fiberText.replace(YIELD_SUSPENSIONS, "");
       if (!qualifies(fn, fiberText, SUSPENDS)) return;
       this.stacklessAsync.add(fn.name);
@@ -3850,8 +3894,9 @@ export class LlEmitter {
         this.stacklessAsync.delete(fn.name);
         return;
       }
-      fnDefs[index] = coroText;
-      this.fnDefText.set(fn.name, coroText);
+      const part = bytesOfText(coroText);
+      fnDefs[index] = part;
+      this.fnDefText.set(fn.name, part);
     });
   }
 
@@ -4145,12 +4190,16 @@ export class LlEmitter {
     if (!this.conversionTrace || debug === null) return undefined;
     const name = this.currentFrameName;
     const pos = debug.position(loc);
+    const emitPath = this.sourcePathMap;
     const text =
       pos !== null
-        ? positionedFrameText(name, pos)
+        ? positionedFrameText(
+            name,
+            emitPath === undefined ? pos : { ...pos, file: emitPath(pos.file) },
+          )
         : name === undefined
-          ? `    at ${loc.file}`
-          : frameText(name, loc.file);
+          ? `    at ${emitPath === undefined ? loc.file : emitPath(loc.file)}`
+          : frameText(name, emitPath === undefined ? loc.file : emitPath(loc.file));
     return () => {
       this.declare("declare void @scr_conversion_trace(ptr)");
       this.B.line(`call void @scr_conversion_trace(ptr ${this.cstr(text)})`);
@@ -4172,9 +4221,13 @@ export class LlEmitter {
     if (this.frameCaptures.constructors.has(fn.name)) return null;
     const name = this.frameNameOf(fn);
     if (name === undefined && !fn.name.startsWith("%init.")) return null;
+    const emitPath = this.sourcePathMap;
     return new FramePositions(
       name,
-      (loc) => debug.position(loc),
+      (loc) => {
+        const pos = debug.position(loc);
+        return pos === null || emitPath === undefined ? pos : { ...pos, file: emitPath(pos.file) };
+      },
       (text) => {
         // The slot's address is computed at each store: unoptimized code
         // folds it into the store, and would keep a shared one on the stack.

@@ -81,6 +81,8 @@ export interface CcOptions {
    * target the socket units reach: hosts, linux cross, win32 cross.
    * Fetch-free builds keep their exact link line. */
   fetch?: boolean;
+  /** The WebSocket client (scr_websocket.c): the global WebSocket class. */
+  webSocket?: boolean;
   /** The program uses zlib (index.ts detects zlib.* libCalls on the IR):
    * compiles scr_zlib.c — the regex gating precedent, so zlib-free
    * binaries keep their exact link line. Every driver compiles the vendored
@@ -459,6 +461,7 @@ export interface CcOptions {
   /** The program uses filehandle.readableWebStream: compiles
    * scr_fs_web_stream.c into the binary, and scr_webstreams.c with it. */
   fsWebStream?: boolean;
+  fsUtf8Stream?: boolean;
   /** The executable manifest has a format-5 foreign callback descriptor:
    * compiles the MPSC queue/self-pipe unit. Other FFI and non-FFI binaries
    * keep their existing runtime size class. */

@@ -2478,7 +2478,10 @@ static void scr_next_tick_raw_first(void (*fn)(void)) {
   if (scr_nt_tail == NULL) scr_nt_tail = t;
 }
 
-void (*scr_raw_tick_teardown_hook)(void) = NULL;
+/* Thread-local like every other piece of a script thread's loop state: the
+ * queues a hook releases belong to the exiting thread, so one thread's
+ * teardown must not disarm another's registration. */
+SCR_TL void (*scr_raw_tick_teardown_hook)(void) = NULL;
 
 void scr_nticks_teardown(void) {
   while (scr_nt_head != NULL) {
@@ -2704,16 +2707,15 @@ static SCR_TL void *scr_main_fake_stack; /* fake-stack slot for the main context
  * single-threaded, so one lazy conversion covers the process). Also the
  * loop-home keeper: whenever main is the caller this IS scr_loop_ctx's
  * value — assigned at the conversion so parked fibers can always switch
- * back to it. */
+ * back to it. The island runtime converts the same thread for Node's stack
+ * (scr_node_island.c), so the thread may already be a fiber. */
 static void *scr_win_self(void) {
-  static bool converted = false;
-  if (!converted) {
-    scr_loop_ctx = ConvertThreadToFiber(NULL);
+  if (scr_loop_ctx == NULL) {
+    scr_loop_ctx = IsThreadAFiber() ? GetCurrentFiber() : ConvertThreadToFiber(NULL);
     if (scr_loop_ctx == NULL) {
       fputs("scriptc: ConvertThreadToFiber failed\n", stderr);
       abort();
     }
-    converted = true;
   }
   return GetCurrentFiber();
 }
@@ -2948,6 +2950,10 @@ static void scr_promise_cb_run(struct ScrPromiseCbWaiter *cb, ScrPromise *src) {
   if (async_tracked) async_scope = scr_async_prom_scope_enter(src);
   if (SCR_PROMISE_IS_REACTION(cb)) {
     scr_promise_reaction_run(cb, src);
+    /* The scope this waiter entered closes with it, as every other branch
+     * here does: an early return left one async-hook scope open per
+     * reaction. */
+    if (async_tracked) scr_async_prom_scope_leave(async_scope);
     return;
   }
   if (cb->all) {
@@ -4663,6 +4669,21 @@ ScrPromise *scr_fsp_realpath(ScrStr *path) {
 
 ScrPromise *scr_fsp_lstat(ScrStr *path) {
   ScrStats *st = scr_fs_lstat(path);
+  return scr_promise_settled_ref(st, &scr_stats_retain_v, &scr_stats_release_v, NULL);
+}
+
+/* fs.promises.stat/lstat(path, options): the options ladder from the
+ * synchronous forms, with a pending exception or a real error becoming the
+ * rejection and a suppressed miss fulfilling undefined. Only stat honors
+ * throwIfNoEntry; lstat always rejects a missing entry, as Node's binding
+ * does (it never reads the member). */
+ScrPromise *scr_fsp_stat_opts(ScrStr *path, const ScrDyn *options) {
+  ScrStats *st = scr_fs_stat_opts(path, options, false);
+  return scr_promise_settled_ref(st, &scr_stats_retain_v, &scr_stats_release_v, NULL);
+}
+
+ScrPromise *scr_fsp_lstat_opts(ScrStr *path, const ScrDyn *options) {
+  ScrStats *st = scr_fs_stat_opts(path, options, true);
   return scr_promise_settled_ref(st, &scr_stats_retain_v, &scr_stats_release_v, NULL);
 }
 

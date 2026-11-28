@@ -3405,8 +3405,36 @@ function lowerVarDeclarator(
   if (numericIterator) return numericIterator;
   const drained = lowerMatchAllDrainDecl(lowerer, decl, isConst);
   if (drained) return drained;
+  /* TypeScript's `void` says a value is not meant to be used, not that it is
+   * undefined: a void-declared method of a checked-dynamic receiver keeps
+   * its runtime answer (MessagePort.postMessage answers true), so the
+   * binding takes dynamic storage rather than a checked cast to
+   * null | undefined that would throw on the real value. */
+  if (
+    decl.initializer !== undefined &&
+    ts.isIdentifier(decl.name) &&
+    voidDeclaredDynCall(lowerer, decl.initializer)
+  ) {
+    const symbol = lowerer.resolveValueSymbol(decl.name);
+    if (symbol !== null) lowerer.runtimeOptionalBindingTypes.set(symbol, DYN);
+  }
   const lowered = lowerer.lowerVarDecl(decl, isLet);
   return lowered ? [lowered] : [];
+}
+
+/** Whether `expr` is a call through a checked-dynamic receiver whose
+ * declared type is void: the callee's runtime value is checked-dynamic, so a
+ * void-declared result may still be a real value. */
+function voidDeclaredDynCall(lowerer: Lowerer, expr: ts.Expression): boolean {
+  let e: ts.Expression = expr;
+  while (ts.isParenthesizedExpression(e) || ts.isNonNullExpression(e)) e = e.expression;
+  if (!ts.isCallExpression(e) || !ts.isPropertyAccessExpression(e.expression)) return false;
+  if ((lowerer.typeOf(e).flags & ts.TypeFlags.Void) === 0) return false;
+  let receiver: ts.Expression = e.expression.expression;
+  while (ts.isParenthesizedExpression(receiver) || ts.isNonNullExpression(receiver))
+    receiver = receiver.expression;
+  const mapped = lowerer.mapTypeOf(lowerer.typeOf(receiver));
+  return mapped !== null && mapped.kind === "dyn";
 }
 
 function lowerCjsBindingSnapshot(

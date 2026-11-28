@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/http-write-end-undefined-arguments.ts"
+ ],
+ "diags": []
+}

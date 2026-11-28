@@ -10,6 +10,7 @@ import type { Lowerer } from "./lowerer.js";
 import type { FileParts } from "./lower-modules.js";
 import { lowerCjsExportsObjectValue } from "./cjs-exports-object.js";
 import { isCjsJsFile, isNodeEsmFile, locOf } from "../program.js";
+import { isSourceValueBinding } from "../require-callee.js";
 import { runtimePathForTarget } from "../runtime-resolve.js";
 import {
   BOOL,
@@ -47,18 +48,9 @@ function cjsGlobal(lowerer: Lowerer, node: ts.Expression, name: "module" | "requ
   if (lowerer.isStdlibGlobal(node, name)) return true;
   const symbol = lowerer.checker.getSymbolAtLocation(node);
   const decls = symbol ? symbol.declarations : [];
-  const sourceShadow = decls.some(
-    (decl) =>
-      !ts.getSourceFileOfNode(decl).isDeclarationFile &&
-      (ts.isVariableDeclaration(decl) ||
-        ts.isParameter(decl) ||
-        ts.isBindingElement(decl) ||
-        ts.isFunctionDeclaration(decl) ||
-        ts.isClassDeclaration(decl) ||
-        ts.isImportSpecifier(decl) ||
-        ts.isNamespaceImport(decl) ||
-        ts.isImportEqualsDeclaration(decl)),
-  );
+  // Every binding form shadows the global, an import in any of its spellings
+  // included (a default import's declaration is its ImportClause).
+  const sourceShadow = decls.some(isSourceValueBinding);
   return !sourceShadow && !isNodeEsmFile(ts.getSourceFileOfNode(node), lowerer.program);
 }
 

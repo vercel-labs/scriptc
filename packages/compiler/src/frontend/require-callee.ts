@@ -14,27 +14,43 @@
  * candidates before a bound decision is made. */
 import * as ts from "./ts7/adapter.js";
 
+/** True when `decl` is a binding form the program author wrote in a source
+ * file, so a use of the name resolves to that binding and never to the
+ * standard library's global. EVERY binding form counts: a default import's
+ * declaration is its ImportClause (there is no ImportDefaultSpecifier node
+ * to match), an enum or namespace name binds a value too, and a named
+ * function or class expression names itself inside its own body. */
+export function isSourceValueBinding(decl: ts.Node): boolean {
+  if (ts.getSourceFileOfNode(decl).isDeclarationFile) return false;
+  return (
+    ts.isVariableDeclaration(decl) ||
+    ts.isParameter(decl) ||
+    ts.isBindingElement(decl) ||
+    ts.isFunctionDeclaration(decl) ||
+    ts.isFunctionExpression(decl) ||
+    ts.isClassDeclaration(decl) ||
+    ts.isClassExpression(decl) ||
+    ts.isEnumDeclaration(decl) ||
+    ts.isModuleDeclaration(decl) ||
+    ts.isImportClause(decl) ||
+    ts.isImportSpecifier(decl) ||
+    ts.isNamespaceImport(decl) ||
+    ts.isImportEqualsDeclaration(decl)
+  );
+}
+
 export function isCjsModuleReceiver(expr: ts.Expression, checker?: ts.TypeChecker): boolean {
   if (!ts.isIdentifier(expr) || expr.text !== "module") return false;
   if (checker === undefined) return true;
   const symbol = checker.getSymbolAtLocation(expr);
   if (symbol === undefined) return true;
-  // A SOURCE shadow is a declaration a program author wrote (a parameter, a
-  // local, an import, a class, a function). Any other declaration — the
-  // standard library's global, or a wrapper declaration the frontend
-  // synthesizes in a source file — keeps the CommonJS module object.
-  return !symbol.declarations.some(
-    (decl) =>
-      !ts.getSourceFileOfNode(decl).isDeclarationFile &&
-      (ts.isVariableDeclaration(decl) ||
-        ts.isParameter(decl) ||
-        ts.isBindingElement(decl) ||
-        ts.isFunctionDeclaration(decl) ||
-        ts.isClassDeclaration(decl) ||
-        ts.isImportSpecifier(decl) ||
-        ts.isNamespaceImport(decl) ||
-        ts.isImportEqualsDeclaration(decl)),
-  );
+  // Any source binding of the name — a parameter, a local, a class, a
+  // function, an enum, a namespace, or an import in any of its forms
+  // (default import included: `import module from "./policy.js"` hands the
+  // program its own loader) — keeps its own method call. Only the standard
+  // library's global, declared in a declaration file, is the CommonJS
+  // module object.
+  return !symbol.declarations.some(isSourceValueBinding);
 }
 
 export function isRequireCallee(expr: ts.Expression, checker?: ts.TypeChecker): boolean {

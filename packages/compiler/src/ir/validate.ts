@@ -3916,8 +3916,18 @@ function validateFunction(
         // non-unit arms have no keyed read at all. Number keys read ARRAY
         // arms; string keys read RECORD arms.
         const resultUnion = e.type.kind === "union" ? unions.get(e.type.unionId) : undefined;
+        // A checked-dynamic result absorbs every unit answer (dyn
+        // represents undefined and null directly) and every answer that
+        // already is a checked-dynamic value; it never absorbs a static
+        // answer, which would have to be copied into a fresh dyn tree.
+        const dynResult = e.type.kind === "dyn";
         const surfaces = (t: IrType): boolean =>
           typeEquals(t, e.type) ||
+          (dynResult &&
+            (t.kind === "dyn" ||
+              t.kind === "undefinedT" ||
+              t.kind === "nullT" ||
+              (t.kind === "union" && (unions.get(t.unionId)?.arms ?? []).every((a) => a.kind === "undefinedT" || a.kind === "nullT")))) ||
           !!resultUnion?.arms.some((a) => typeEquals(a, t)) ||
           (t.kind === "union" &&
             !!resultUnion &&
@@ -3927,6 +3937,7 @@ function validateFunction(
             })());
         def.arms.forEach((arm, i) => {
           if (arm.kind === "undefinedT" || arm.kind === "nullT") {
+            if (dynResult) return;
             if (!resultUnion?.arms.some((a) => a.kind === "undefinedT")) {
               err(
                 `unionKeyGet: unit arm ${i} of ${e.unionId} needs an undefined arm in the result`,
@@ -3962,7 +3973,7 @@ function validateFunction(
                 arm.kind === "f64" ||
                 arm.kind === "bool" ||
                 arm.kind === "bigint") &&
-              resultUnion?.arms.some((a) => a.kind === "undefinedT")
+              (dynResult || resultUnion?.arms.some((a) => a.kind === "undefinedT"))
             ) {
               return;
             }
@@ -3991,7 +4002,7 @@ function validateFunction(
           if (
             literal !== null &&
             !shape.indexValue &&
-            resultUnion?.arms.some((a) => a.kind === "undefinedT")
+            (dynResult || resultUnion?.arms.some((a) => a.kind === "undefinedT"))
           )
             return;
           if (!shape.indexValue && !(literal === null && shape.fields.length > 0)) {

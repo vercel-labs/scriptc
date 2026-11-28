@@ -543,6 +543,36 @@ export function emitDynamicExpr(
       const slot = B.slot();
       B.entryAllocas.push(`${slot} = alloca ${ty}`);
       const join = B.newLabel("ukg.j");
+      // A dyn-typed join: unit and missing-key answers are the dyn unit
+      // values, and every static answer keeps the field's own box or
+      // converts into a fresh one. The frontend admits only answers that
+      // need no copy (a dyn field, a units-only value), so a record answer
+      // here is a lowering bug.
+      const storeDynUnit = (): void => {
+        host.declare(`declare ptr @scr_dyn_undefined()`);
+        host.declare(`declare ptr @scr_dyn_retain_v(ptr)`);
+        const un = B.tmp();
+        const r = B.tmp();
+        B.line(`${un} = call ptr @scr_dyn_undefined()`);
+        B.line(`${r} = call ptr @scr_dyn_retain_v(ptr ${un})`);
+        B.line(`store ptr ${r}, ptr ${slot}`);
+      };
+      const storeDynOf = (ft: IrType, value: string): void => {
+        if (ft.kind === "dyn") {
+          host.declare(`declare ptr @scr_dyn_retain_v(ptr)`);
+          const r = B.tmp();
+          B.line(`${r} = call ptr @scr_dyn_retain_v(ptr ${value})`);
+          B.line(`store ptr ${r}, ptr ${slot}`);
+          return;
+        }
+        if (ft.kind === "void") {
+          storeDynUnit();
+          return;
+        }
+        const conv = B.tmp();
+        B.line(`${conv} = call ptr @${host.dyn.toDynHelper(ft)}(${host.llType(ft)} ${value})`);
+        B.line(`store ptr ${conv}, ptr ${slot}`);
+      };
       host.unionTagSwitch(u.name, def, (arm) => {
         if (isUnitType(arm)) {
           if (e.type.kind === "dyn") {
@@ -618,6 +648,11 @@ export function emitDynamicExpr(
             arm.kind === "bool" ||
             arm.kind === "bigint")
         ) {
+          if (e.type.kind === "dyn") {
+            storeDynUnit();
+            B.br(join);
+            return;
+          }
           const tag = resultDef?.arms.findIndex((a) => a.kind === "undefinedT") ?? -1;
           if (tag < 0 || e.type.kind !== "union") {
             throw new InternalCompilerError(
@@ -640,6 +675,11 @@ export function emitDynamicExpr(
             inline,
           } = host.recordFieldPtr(payload, arm.shapeId, declared.name);
           const v = host.loadRecordField(ptr, ft, inline);
+          if (e.type.kind === "dyn") {
+            storeDynOf(ft, v);
+            B.br(join);
+            return;
+          }
           if (typeEquals(ft, e.type)) {
             // An inline union field's stack box is copied into a heap box.
             const owned = inline
@@ -677,6 +717,11 @@ export function emitDynamicExpr(
         // A declared-only arm without the literal key: the object has no
         // such own property, so the read answers undefined.
         if (literal !== null && !shape.indexValue) {
+          if (e.type.kind === "dyn") {
+            storeDynUnit();
+            B.br(join);
+            return;
+          }
           const tag = resultDef?.arms.findIndex((a) => a.kind === "undefinedT") ?? -1;
           if (tag < 0 || e.type.kind !== "union") {
             throw new InternalCompilerError(

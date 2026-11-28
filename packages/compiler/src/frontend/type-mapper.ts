@@ -8727,7 +8727,9 @@ function mapCallSignature(sig: ts.Signature, ctx: TypeMapperCtx): IrType | null 
   const params: IrType[] = [];
   let typedRest = false;
   let dynRest = false;
-  for (const p of sig.getParameters()) {
+  const signatureParams = sig.getParameters();
+  for (let paramIndex = 0; paramIndex < signatureParams.length; paramIndex++) {
+    const p = signatureParams[paramIndex]!;
     const decl = p.valueDeclaration;
     const rest = decl !== undefined && ts.isParameter(decl) && decl.dotDotDotToken !== undefined;
 
@@ -8893,9 +8895,21 @@ function mapCallSignature(sig: ts.Signature, ctx: TypeMapperCtx): IrType | null 
       if (pt.kind !== "array") return null;
       typedRest = true;
     }
-    // `(value: void) => void` (Promise<void>'s resolve) is callable with
-    // no arguments — a void param is dropped, not a mapping failure.
-    if (pt.kind === "void") continue;
+    // A TRAILING void parameter (`(value: void) => void`, Promise<void>'s
+    // resolve) is callable with no argument, so it is dropped. A void
+    // parameter before another one keeps its slot: callers still pass it,
+    // and dropping it would shift every later argument into the wrong
+    // position (a generic `A` instantiated with `void`). Its slot is the
+    // checked-dynamic one, which admits the unit value and matches how the
+    // implementation's own parameter maps.
+    if (pt.kind === "void") {
+      const trailing = signatureParams
+        .slice(paramIndex + 1)
+        .every((later) => isUnitOnlyTsType(checker.getTypeOfSymbol(later)));
+      if (trailing) continue;
+      params.push(DYN);
+      continue;
+    }
     params.push(pt);
   }
   const retT = checker.getReturnTypeOfSignature(sig);

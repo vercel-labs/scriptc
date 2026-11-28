@@ -2633,7 +2633,7 @@ export function lowerProcessMethodCall(
     }
     const evT = lowerer.typeOf(call.arguments.nodes[0]!);
     const event = evT.isStringLiteralType() ? evT.value : null;
-    if ((event === "message" || event === "disconnect") && !isOff) {
+    if (event === "message" || event === "disconnect") {
       if (isPrepend) {
         lowerer.noLowering(
           `process.prependListener("${event}", ...)`,
@@ -2647,6 +2647,29 @@ export function lowerProcessMethodCall(
           call,
           "chaining process IPC listener registration (register each listener as its own statement)",
         );
+      }
+      // off / removeListener removes the listener the program registered, by
+      // the value it holds: the same compiled function value must reach both
+      // calls, so a listener that is not one of this shape (an untyped value,
+      // or a listener the registration itself would refuse) is refused here.
+      if (isOff) {
+        const listener = lowerer.lowerExpr(call.arguments.nodes[1]!);
+        const params = event === "message" ? 2 : 0;
+        if (listener.type.kind !== "func" || listener.type.params.length > params) {
+          lowerer.unsupported(
+            "SC1090",
+            call.arguments.nodes[1]!,
+            `process.${member}("${event}", ...) with a listener that is not a compiled function of the shape the registration accepts ` +
+              `(bind the listener to a const and pass the same value to both calls)`,
+          );
+        }
+        return {
+          kind: "libCall",
+          fn: event === "message" ? "process.offMessage" : "process.offDisconnect",
+          args: [listener],
+          type: VOID,
+          loc,
+        };
       }
       const callback =
         event === "message"

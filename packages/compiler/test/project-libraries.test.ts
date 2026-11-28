@@ -69,7 +69,11 @@ test("a name only the project's libraries declare compiles; without the library 
     "SC0001: Cannot find name 'window'.",
     "SC0001: Element implicitly has an 'any' type because type 'typeof globalThis' has no index signature.",
   ]);
-  expect(await build(null, source)).toHaveLength(4);
+  // A project that names no `lib` gets tsc's default for its target, which
+  // includes dom: the same program type-checks there, as `tsc -p` on
+  // typescript 7.1.0-beta reports (no diagnostics), and the DOM names are
+  // admitted as values that throw at run time.
+  expect(await build(null, source)).toEqual([]);
 });
 
 test("a global Node defines is never treated as absent", async () => {

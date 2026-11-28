@@ -5,7 +5,10 @@ import { expect, test } from "vitest";
 import { checkPreflight, loadProgram } from "./program-node.js";
 
 /** A project directory holding `tsconfig.json` and `main.ts`. */
-function project(tsconfig: Record<string, unknown>, source: string): { directory: string; file: string } {
+function project(
+  tsconfig: Record<string, unknown>,
+  source: string,
+): { directory: string; file: string } {
   const directory = mkdtempSync(join(tmpdir(), "scriptc-type-world-"));
   writeFileSync(join(directory, "package.json"), '{"type":"module"}');
   writeFileSync(join(directory, "tsconfig.json"), JSON.stringify({ compilerOptions: tsconfig }));

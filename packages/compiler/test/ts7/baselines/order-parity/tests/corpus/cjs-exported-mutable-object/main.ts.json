@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/cjs-exported-mutable-object/main.ts"
+ ],
+ "diags": []
+}

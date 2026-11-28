@@ -2063,6 +2063,43 @@ export function cjsExportIsRuntimeOptional(
   return g !== undefined && lowerer.isRuntimeOptionalGlobal(g);
 }
 
+/** The storage of a CommonJS module member whose value is a checked-dynamic
+ * object (a JS object other modules may write), read through a require or
+ * default-import binding (`m.name`, `require("./m").name`). A binding that
+ * copies that read must hold the same dynamic value, or its writes would
+ * be checked against the checker's static shape. Null for every other
+ * member read. */
+export function cjsDynamicExportStorage(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (lowerer.cjsInFileExportMemberGlobals.size === 0) return null;
+  const recv = access.expression;
+  let dep: ts.SourceFile | null = null;
+  if (ts.isCallExpression(recv)) {
+    const req = inlineProgramRequireOf(lowerer, recv);
+    dep = req === null ? null : req.dep;
+  } else if (ts.isIdentifier(recv)) {
+    dep = lowerer.cjsModuleBindingDepOf(recv);
+  } else if (ts.isPropertyAccessExpression(recv)) {
+    dep = lowerer.cjsModuleRefDepOf(recv);
+  }
+  if (dep === null) return null;
+  const target = cjsNamespaceTargetOf(lowerer, dep) ?? dep;
+  const symbol = lowerer.cjsModuleExportSymbol(target, access.name.text);
+  const g =
+    lowerer.cjsInFileExportMemberGlobals.get(target)?.get(access.name.text) ??
+    (symbol === undefined ? undefined : lowerer.globalsBySymbol.get(symbol));
+  if (g === undefined || g.type.kind !== "dyn") return null;
+  const storage: IrExpr = { kind: "varRef", localId: g.id, type: g.type, loc: locOf(access) };
+  if (ts.isCallExpression(access.expression)) {
+    const req = inlineProgramRequireOf(lowerer, access.expression);
+    if (req !== null && !lowerer.inlineRequireInitDone.has(req.call))
+      return withRequireInit(lowerer, req, storage);
+  }
+  return storage;
+}
+
 /** The storage of a CommonJS module member the module may leave unassigned
  * (a runtime-optional export global), read through a require or
  * default-import binding (`m.name`, `require("./m").name`). Null for every

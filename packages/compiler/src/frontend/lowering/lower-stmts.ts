@@ -147,6 +147,7 @@ import {
   inlineProgramRequireOf,
   requireNestedPatternsOf,
   requireRestElementsOf,
+  cjsDynamicExportStorage,
   splitRequireAssignmentOf,
   splitRequireBindingOf,
   splitRequireBindingOfIdent,
@@ -1783,6 +1784,16 @@ function lowerJsVarFromExisting(
  * initializer (jsOpenObjectType, jsObjectBindingExpands) or carries
  * methods, so only the checked-dynamic representation holds it.
  * `inferred` is the declaration's mapped checker type. */
+/** Whether `access` reads a member on a binding whose storage is a
+ * checked-dynamic value (React's internals bag): the read yields the stored
+ * value, so a binding initialized by it holds the dynamic value. */
+function dynamicStorageReceiver(lowerer: Lowerer, access: ts.PropertyAccessExpression): boolean {
+  const recv = access.expression;
+  if (!ts.isIdentifier(recv)) return false;
+  const storage = lowerer.peekLocal(recv)?.type ?? lowerer.globalOf(recv)?.type;
+  return storage?.kind === "dyn";
+}
+
 function jsDeclarationExpandsObject(
   lowerer: Lowerer,
   decl: ts.VariableDeclaration,
@@ -1795,6 +1806,11 @@ function jsDeclarationExpandsObject(
         ? [inferred]
         : [];
   return (
+    (isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
+      decl.initializer !== undefined &&
+      ts.isPropertyAccessExpression(decl.initializer) &&
+      (cjsDynamicExportStorage(lowerer, decl.initializer) !== null ||
+        dynamicStorageReceiver(lowerer, decl.initializer))) ||
     (!decl.type &&
       !hasJsTypeAnnotation(decl) &&
       inferred !== null &&

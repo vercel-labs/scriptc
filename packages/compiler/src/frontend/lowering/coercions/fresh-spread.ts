@@ -95,3 +95,39 @@ export function liftedFreshSpread(
   const lift = lowerer.widthLiftPlan(source.type, arrType);
   return lift ? lowerer.applyWidthLift(lift, source, arrType, loc) : null;
 }
+
+/** Whether spreading `node` inserts elements this very evaluation built: a
+ * fresh-spread source, or a `.map(cb)` result whose callback builds a fresh
+ * object or array per element. The mapped array and its elements are then
+ * temporaries no other reference can alias, so copying them into the
+ * destination's element layout is unobservable. A named array (repeated or
+ * exported spreads) and `filter`-style subsets of a binding's elements stay
+ * false: copying those would break JavaScript identity. */
+export function freshElementSpreadSource(lowerer: Lowerer, node: ts.Expression): boolean {
+  let e = node;
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  if (freshSpreadSource(lowerer, e)) return true;
+  if (!ts.isCallExpression(e) || !ts.isPropertyAccessExpression(e.expression)) return false;
+  if (e.expression.name.text !== "map" || e.questionDotToken !== undefined) return false;
+  // The NAME alone proves nothing: a user-defined `map` (an object literal,
+  // a class method, a subclass override) may return elements it keeps and
+  // hands out again, so copying them would break the identity JavaScript
+  // keeps. Only the builtin Array.prototype.map builds a fresh array from
+  // the callback's results.
+  const method = lowerer.checker.getSymbolAtLocation(e.expression.name);
+  if (method === undefined || !lowerer.isStdlibSymbol(method)) return false;
+  const callback = e.arguments.nodes[0];
+  if (!callback || !(ts.isArrowFunction(callback) || ts.isFunctionExpression(callback)))
+    return false;
+  const freshValue = (value: ts.Expression | undefined): boolean => {
+    if (value === undefined) return false;
+    let v = value;
+    while (ts.isParenthesizedExpression(v)) v = v.expression;
+    return ts.isObjectLiteralExpression(v) || ts.isArrayLiteralExpression(v);
+  };
+  const body = callback.body;
+  if (!ts.isBlock(body)) return freshValue(body as ts.Expression);
+  const statements = body.statements.nodes;
+  if (statements.length === 0) return false;
+  return statements.every((s) => ts.isReturnStatement(s) && freshValue(s.expression));
+}

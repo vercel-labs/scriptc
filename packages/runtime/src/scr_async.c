@@ -4471,6 +4471,21 @@ ScrPromise *scr_promise_settled_ref(void *v, void *(*retain)(void *), void (*rel
  * PromiseResolve, and the dynamic resolve path does not model that adoption
  * yet, so the entry REFUSES by name rather than settling the race with the
  * thenable object as if it were the winner. */
+/* A dynamic race entry whose reads throw. Node's PromiseResolve rejects the
+ * promise it makes for the entry with the thrown value, so the race joins
+ * that rejection (a handler on the race promise runs); the throw must not
+ * escape the Promise.race call. The pending exception becomes the entry
+ * promise's reason. */
+static ScrPromise *scr_promise_race_entry_rejected(void) {
+  ScrPromise *rejected = scr_promise_settled_common();
+  if (rejected != NULL) return rejected;
+  /* No pending exception: no such path exists today; answer a fulfilled
+   * undefined entry rather than a NULL the caller would crash on. */
+  ScrPromise *p = scr_promise_new();
+  scr_promise_fulfill_void(p);
+  return p;
+}
+
 ScrPromise *scr_promise_race_dyn_entry(ScrDyn *value) {
   /* PromiseResolve reads `then` only from an OBJECT: a primitive fulfills as
    * itself without a property read. A typed capsule answers through its
@@ -4479,7 +4494,7 @@ ScrPromise *scr_promise_race_dyn_entry(ScrDyn *value) {
   ScrDyn *view = NULL;
   if (value->kind == SCR_DYN_TYPED_REF) {
     view = scr_dyn_typed_ref_materialize(value);
-    if (view == NULL) return NULL;
+    if (view == NULL) return scr_promise_race_entry_rejected();
     subject = view;
   }
   bool objectLike = subject->kind == SCR_DYN_OBJ || subject->kind == SCR_DYN_ARR ||
@@ -4494,7 +4509,7 @@ ScrPromise *scr_promise_race_dyn_entry(ScrDyn *value) {
     scr_dyn_release(boxed);
     if (thenValue == NULL) {
       if (view != NULL) scr_dyn_release(view);
-      return NULL; /* the get threw */
+      return scr_promise_race_entry_rejected();
     }
     thenable = thenValue->kind != SCR_DYN_UNDEF && thenValue->kind != SCR_DYN_NULL &&
                scr_dyn_is_callable(thenValue);

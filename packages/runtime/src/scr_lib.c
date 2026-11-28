@@ -18653,3 +18653,4 @@ ScrDyn *scr_crypto_get_random_values_dyn(ScrDyn *value) {
  * a constructor. */
 const ScrEventTargetOps *scr_optional_event_target = NULL;
 const ScrDcOps *scr_optional_dc = NULL;
+const ScrInspectOps *scr_optional_inspect = NULL;

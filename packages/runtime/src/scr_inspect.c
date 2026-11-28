@@ -28,6 +28,7 @@
  * Ownership: ScrStr/ScrBytes/ScrDyn/ScrError arguments are BORROWED;
  * ScrStr results return +1. Nothing here throws; OOM aborts. */
 #include "scr_runtime.h"
+#include "scr_optional.h"
 #include "scr_util_style.h"
 
 #include <math.h>
@@ -4907,6 +4908,14 @@ static ScrStr *scr_insp_search_params(ScrSearchParams *sp, double recurse, doubl
   }
   scr_str_release(text);
   return ib_take(&indented);
+}
+
+/* assert.ifError reaches util.inspect's defaults through scr_optional.h
+ * (a program links this unit only when one of its features needs it). */
+static const ScrInspectOps scr_inspect_ops = {scr_insp_dyn};
+
+__attribute__((constructor)) static void scr_inspect_install(void) {
+  scr_optional_inspect = &scr_inspect_ops;
 }
 
 ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {

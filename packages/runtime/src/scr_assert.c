@@ -25,6 +25,7 @@
  * DEL escaped) — exotic C1/Unicode escapes are out of scope
  * (SEMANTICS.md 106). */
 #include "scr_runtime.h"
+#include "scr_optional.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -3486,8 +3487,12 @@ void scr_assert_iferror_dyn(const ScrDyn *v) {
     scr_dyn_release(message);
   }
   /* Node's ifError renders any other value with util.inspect's defaults
-   * (compact, depth 2), so a short object or array stays on one line. */
-  ScrStr *q = scr_insp_dyn((ScrDyn *)v, 0, 2);
+   * (compact, depth 2), so a short object or array stays on one line. The
+   * unit is reached through scr_optional.h: a program links it for this
+   * call (the assert.ifErrorDyn feature), and the local renderer answers
+   * if it is not linked. */
+  ScrStr *q = scr_optional_inspect != NULL ? scr_optional_inspect->dyn((ScrDyn *)v, 0, 2)
+                                           : scr_assert_cf_inspect(v);
   scr_assert_iferror_fail(q->data, q->len, scr_dyn_retain((ScrDyn *)v));
   scr_str_release(q);
 }

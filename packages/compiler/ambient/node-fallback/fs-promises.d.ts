@@ -232,6 +232,26 @@ declare module "fs/promises" {
     options: { recursive?: boolean; force?: boolean; maxRetries?: number; retryDelay?: number },
   ): Promise<void>;
   export function stat(path: string | URL): Promise<import("node:fs").Stats>;
+  export function stat(
+    path: string | URL,
+    options: import("node:fs").StatPromiseOptions & { bigint?: false; throwIfNoEntry: false },
+  ): Promise<import("node:fs").Stats | undefined>;
+  export function stat(
+    path: string | URL,
+    options: import("node:fs").StatPromiseOptions & { bigint: true; throwIfNoEntry: false },
+  ): Promise<import("node:fs").BigIntStats | undefined>;
+  export function stat(
+    path: string | URL,
+    options?: import("node:fs").StatPromiseOptions & { bigint?: false },
+  ): Promise<import("node:fs").Stats>;
+  export function stat(
+    path: string | URL,
+    options: import("node:fs").StatPromiseOptions & { bigint: true },
+  ): Promise<import("node:fs").BigIntStats>;
+  export function stat(
+    path: string | URL,
+    options?: import("node:fs").StatPromiseOptions,
+  ): Promise<import("node:fs").Stats | import("node:fs").BigIntStats | undefined>;
   export function statfs(
     path: string | Uint8Array | URL,
     options?: import("node:fs").StatFsOptions & { bigint?: false },
@@ -246,6 +266,26 @@ declare module "fs/promises" {
   ): Promise<import("node:fs").StatsFs | import("node:fs").BigIntStatsFs>;
   export function realpath(path: string | URL): Promise<string>;
   export function lstat(path: string | URL): Promise<import("node:fs").Stats>;
+  export function lstat(
+    path: string | URL,
+    options: import("node:fs").StatPromiseOptions & { bigint?: false; throwIfNoEntry: false },
+  ): Promise<import("node:fs").Stats | undefined>;
+  export function lstat(
+    path: string | URL,
+    options: import("node:fs").StatPromiseOptions & { bigint: true; throwIfNoEntry: false },
+  ): Promise<import("node:fs").BigIntStats | undefined>;
+  export function lstat(
+    path: string | URL,
+    options?: import("node:fs").StatPromiseOptions & { bigint?: false },
+  ): Promise<import("node:fs").Stats>;
+  export function lstat(
+    path: string | URL,
+    options: import("node:fs").StatPromiseOptions & { bigint: true },
+  ): Promise<import("node:fs").BigIntStats>;
+  export function lstat(
+    path: string | URL,
+    options?: import("node:fs").StatPromiseOptions,
+  ): Promise<import("node:fs").Stats | import("node:fs").BigIntStats | undefined>;
   export function unlink(path: string | URL): Promise<void>;
   export function chmod(path: string | URL, mode: number): Promise<void>;
   export function chown(path: string | URL, uid: number, gid: number): Promise<void>;

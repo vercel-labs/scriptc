@@ -2833,6 +2833,37 @@ export function lowerFsStatOptionsCall(
  * result is Stats or BigIntStats, never undefined. A descriptor or options
  * value the compiler did not pin down takes the run-time ladder: Node reads
  * options.bigint before the binding validates the descriptor. */
+/** fs.promises.stat / fs.promises.lstat(path, options): the promise form of
+ * the same options. Node reads bigint and throwIfNoEntry at the call, so the
+ * runtime ladder reads them off the lowered options; the snapshot handle is
+ * the same either way and the call's own type names the member table and
+ * whether a suppressed miss answers undefined. */
+export function lowerFspStatOptionsCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  loc: SrcLoc,
+  noFollow: boolean,
+): IrExpr {
+  const spelling = noFollow ? "lstat" : "stat";
+  const path = lowerFsPath(lowerer, call.arguments.nodes[0]!);
+  const options = lowerer.lowerExprExpecting(call.arguments.nodes[1]!, DYN);
+  const callType = lowerer.mapTypeOf(lowerer.typeOf(call));
+  if (callType?.kind !== "promise") {
+    lowerer.noLowering(
+      `fs.promises.${spelling} at this result type`,
+      call,
+      "the promise form answers a Promise: annotate the call or its binding",
+    );
+  }
+  return {
+    kind: "libCall",
+    fn: noFollow ? "fsp.lstatOpts" : "fsp.statOpts",
+    args: [path, options],
+    type: callType,
+    loc,
+  };
+}
+
 export function lowerFsStatFdOptionsCall(
   lowerer: Lowerer,
   call: ts.CallExpression,

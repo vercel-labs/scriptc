@@ -9561,6 +9561,10 @@ struct ScrIpc {
   ScrIpcMessageEntry *message_ls;
   size_t n_message, cap_message;
   uint64_t next_message_id;
+  /* An explicit process.channel.ref()/unref() pins the ref state: listener
+   * additions and removals no longer move it, as in Node. */
+  bool explicit_ref;
+  bool explicit_state;
   ScrIpcDisconnectEntry *disconnect_ls;
   size_t n_disconnect, cap_disconnect;
   ScrIpcSendEntry *send_cbs;
@@ -9933,6 +9937,10 @@ static void scr_ipc_add_disconnect(ScrIpc *ipc, ScrClosure *cb, bool once) {
  * removed exits instead of waiting on the channel. */
 static void scr_ipc_listener_balance(ScrIpc *ipc) {
   if (ipc != scr_process_ipc || !ipc->connected || ipc->reader == NULL) return;
+  if (ipc->explicit_ref) {
+    scr_child_stream_chan_state(ipc->reader, ipc->explicit_state);
+    return;
+  }
   scr_child_stream_chan_state(ipc->reader, ipc->n_message + ipc->n_disconnect > 0);
 }
 
@@ -10414,8 +10422,11 @@ static ScrDyn *scr_channel_ref_thunk(ScrClosure *clo, ScrDyn *const *args, size_
   /* A disconnected channel is closed: ref/unref on a captured object are
    * no-ops (uv_ref on a closed handle), and process.channel itself reads
    * null. */
-  if (scr_process_ipc != NULL && scr_process_ipc->connected)
+  if (scr_process_ipc != NULL && scr_process_ipc->connected) {
+    scr_process_ipc->explicit_ref = true;
+    scr_process_ipc->explicit_state = true;
     scr_child_stream_chan_state(scr_process_ipc->reader, true);
+  }
   return scr_dyn_undefined();
 }
 
@@ -10423,8 +10434,11 @@ static ScrDyn *scr_channel_unref_thunk(ScrClosure *clo, ScrDyn *const *args, siz
   (void)clo;
   (void)args;
   (void)argc;
-  if (scr_process_ipc != NULL && scr_process_ipc->connected)
+  if (scr_process_ipc != NULL && scr_process_ipc->connected) {
+    scr_process_ipc->explicit_ref = true;
+    scr_process_ipc->explicit_state = false;
     scr_child_stream_chan_state(scr_process_ipc->reader, false);
+  }
   return scr_dyn_undefined();
 }
 

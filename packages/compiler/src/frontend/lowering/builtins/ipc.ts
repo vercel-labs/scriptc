@@ -7,6 +7,7 @@ import {
   type IrExpr,
   type IrStmt,
   type IrType,
+  isLiveDynRefType,
   STRING,
   type SrcLoc,
   UNDEFINED_T,
@@ -60,7 +61,21 @@ function ipcJsonStringify(
     // serializer: it runs toJSON, drops undefined members and answers a
     // real undefined for a dropped root, which the channel writes as the
     // text "undefined" exactly as Node does.
-    const boxed: IrExpr = type.kind === "dyn" ? value : { kind: "dynFrom", value, type: DYN, loc };
+    // Keep the original containers live while the runtime visits them, as
+    // JSON.stringify does: a toJSON hook can mutate a later field (the
+    // sent bytes must see the mutation), and a shared or cyclic graph must
+    // keep its identities so the walker raises Node's catchable cycle
+    // TypeError instead of aborting on an eager copy.
+    const boxed: IrExpr =
+      type.kind === "dyn"
+        ? value
+        : {
+            kind: "dynFrom",
+            value,
+            ...(isLiveDynRefType(type, (id) => lowerer.unions.get(id)) ? { liveRef: true } : {}),
+            type: DYN,
+            loc,
+          };
     const raw: IrExpr = {
       kind: "libCall",
       fn: "json.stringifyReplacer",

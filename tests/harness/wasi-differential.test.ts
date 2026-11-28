@@ -218,6 +218,13 @@ describe.skipIf(!zigOnPath() || !wasmPackInstalled())("wasm32-wasi differential"
     "buffer-codec-boundaries.ts",
     "text-encode-into-boundaries.ts",
     "object-key-indexes.js",
+    // A private-name write through an untyped receiver keeps the brand check.
+    "dyn-private-write-brand.js",
+    // A file-scope binding from a checked-dynamic CommonJS export.
+    "cjs-dynamic-export-file-binding/main.cjs",
+    // A narrowed dynamic receiver's member read converts to the dynamic ABI.
+    "dyn-member-call-narrowed-string.js",
+    "dyn-member-call-narrowed-bytes.js",
     // A private name never answers through a string key.
     "private-name-string-key.js",
     // The FinalizationRegistry loader shape.

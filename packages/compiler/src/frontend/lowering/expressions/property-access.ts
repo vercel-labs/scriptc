@@ -3,7 +3,7 @@ import { reboundRequireBindingOf } from "../rebindable-requires.js";
 import { reprototypedGuard } from "../reprototyped-reads.js";
 import { lowerIteratorMemberValue } from "../iterator-prototype.js";
 import { widensReducedRecords } from "../function-returns.js";
-import { nullishReadTypeError, throwAfterEach } from "../primitive-throws.js";
+import { isPrimitiveValueType, nullishReadTypeError, throwAfterEach } from "../primitive-throws.js";
 import { lowerStaticPrivateRead } from "../private-statics.js";
 import { widthNarrowHelper } from "../coercions/unions.js";
 /* Property reads (`a.b`): lowerExprInner's property-access branch, intrinsic and union properties, field reads and targets, and match-group reads. */
@@ -136,6 +136,7 @@ import {
   inlineNamespaceRequireOf,
   lowerWithInlineRequireInit,
   wholeExportValue,
+  cjsDynamicExportStorage,
 } from "../cjs-inline-require.js";
 import {
   type FieldTarget,
@@ -566,6 +567,49 @@ export function lowerPropertyAccessExpr(
   expr: ts.PropertyAccessExpression,
   loc: SrcLoc,
 ): IrExpr {
+  // A JavaScript read of a CommonJS member the exporting module holds as a
+  // checked-dynamic value (a JS object other modules write): the read IS
+  // that object's storage, so a later write lands on the same object. A
+  // require() receiver runs the module first.
+  if (
+    !expr.questionDotToken &&
+    !ts.isPrivateIdentifier(expr.name) &&
+    isJsSourceFile(ts.getSourceFileOfNode(expr))
+  ) {
+    const storage = cjsDynamicExportStorage(lowerer, expr);
+    if (storage !== null) return storage;
+  }
+  // A JavaScript read of a member on a checked-dynamic storage: the value a
+  // JS binding widened to holds whatever was stored (React's internals bag,
+  // whose fields other modules write), so the read is the object's own
+  // property, whatever static shape the checker gives it.
+  if (
+    !expr.questionDotToken &&
+    !ts.isPrivateIdentifier(expr.name) &&
+    ts.isIdentifier(expr.expression) &&
+    isJsSourceFile(ts.getSourceFileOfNode(expr))
+  ) {
+    const storage =
+      lowerer.peekLocal(expr.expression)?.type ?? lowerer.globalOf(expr.expression)?.type;
+    if (storage?.kind === "dyn") {
+      const value = lowerer.lowerExpr(expr.expression);
+      // A narrowed use gives the binding a static type (a typeof or
+      // instanceof guard, a checked assertion). A primitive value's
+      // members are its own, so the static lowering below answers the
+      // read exactly and never reaches the dynamic helper with a typed
+      // argument; anything wider keeps the own-property read, with a
+      // checked value converted into the dynamic ABI the read takes.
+      if (!isPrimitiveValueType(value.type)) {
+        return {
+          kind: "dynKeyGet",
+          value: value.type.kind === "dyn" ? value : lowerer.coerceToExpected(value, DYN),
+          key: { kind: "strLit", value: expr.name.text, type: STRING, loc },
+          type: DYN,
+          loc,
+        };
+      }
+    }
+  }
   // `require.cache[file].member` (and the same read through a binding): the
   // Module view's live member, from the registry — Node's view is the
   // module's own object, so `exports` is the module's exports object.
@@ -6341,6 +6385,19 @@ export function fieldTarget(
   if (isEnumMemberRead(lowerer, access)) return null;
   // `module.exports` / `module.id`: CommonJS module surface, never a field.
   if (isCjsModuleGlobal(lowerer, access.expression)) return null;
+  // A write to a member of a checked-dynamic value: Node writes the own
+  // property on the object itself, whatever static shape the checker gives
+  // the receiver. The receiver is lowered once here and used only on this
+  // path, so a typed store below keeps its own evaluation. A private name
+  // is not a property key: it keeps the brand-checked write below, which
+  // throws Node's TypeError on a wrong brand instead of writing a public
+  // string-key property.
+  if (!readOnlyAccess(access) && !ts.isPrivateIdentifier(access.name)) {
+    const represented = lowerer.lowerExpr(access.expression);
+    if (represented.type.kind === "dyn") {
+      return { container: "dynamic", obj: represented, field: access.name.text, fieldType: DYN };
+    }
+  }
   if (isCjsExportsIdentifier(lowerer, access.expression)) return null;
   if (lowerer.chainBlocked(access)) return null;
   if (
@@ -6443,20 +6500,24 @@ export function fieldTarget(
   }
   const stored = ts.isIdentifier(access.expression)
     ? (lowerer.peekLocal(access.expression)?.type ?? lowerer.globalOf(access.expression)?.type)
-    : undefined;
+    : ts.isPropertyAccessExpression(access.expression)
+      ? cjsDynamicExportStorage(lowerer, access.expression)?.type
+      : undefined;
   const narrowed = lowerer.mapTypeOf(lowerer.typeOf(access.expression));
   // Structural record views retain their storage layout, while a nominal
   // subclass guard proves a more specific layout of the same object.
   const receiverIr =
-    stored?.kind === "record"
+    stored?.kind === "dyn"
       ? stored
-      : stored?.kind === "object" &&
-          !(
-            narrowed?.kind === "object" &&
-            lowerer.isSubclassOf(narrowed.className, stored.className)
-          )
+      : stored?.kind === "record"
         ? stored
-        : narrowed;
+        : stored?.kind === "object" &&
+            !(
+              narrowed?.kind === "object" &&
+              lowerer.isSubclassOf(narrowed.className, stored.className)
+            )
+          ? stored
+          : narrowed;
   if (receiverIr?.kind === "object") {
     const target = classFieldTarget(lowerer, access.expression, receiverIr, access.name.text);
     if (target) return target;

@@ -87,6 +87,7 @@ import {
   splitRequireBindingOf,
   splitRequireBindingOfIdent,
   wholeExportSymbolOfModule,
+  cjsDynamicExportStorage,
 } from "./cjs-inline-require.js";
 import {
   isCjsExportsIdentifier,
@@ -4390,6 +4391,16 @@ export function collectGlobals(
               "initialize let or const TextEncoder/TextDecoder bindings at their declaration",
             );
           }
+          // A JS binding that copies a CommonJS member the exporter holds as
+          // a checked-dynamic value takes that same value: its own writes
+          // must land on the exporter's object.
+          if (
+            isJsSourceFile(sf) &&
+            decl.initializer !== undefined &&
+            ts.isPropertyAccessExpression(decl.initializer) &&
+            cjsDynamicExportStorage(lowerer, decl.initializer, true) !== null
+          )
+            type = DYN;
           const symbol = lowerer.checker.getSymbolAtLocation(nameNode);
           // Merged `var` redeclarations (`var y = 1; ...; var y = 2;` —
           // one symbol) register exactly one global; later declarations

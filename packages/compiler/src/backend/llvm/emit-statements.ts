@@ -105,8 +105,13 @@ import {
   speculativeWriteTarget,
 } from "./speculative-integers.js";
 import {
+  emitConcatAddCheck,
+  emitConcatCheck,
   emitConcatInputs,
-  emitMixedConcat,
+  emitMixedConcatCall,
+  emitMixedConcatCheck,
+  emitMixedConcatInputs,
+  type MixedConcatSlots,
   numberPart,
   stringParts,
 } from "./string-construction.js";
@@ -3541,6 +3546,18 @@ export function emitStringSelfConcatAssign(
   const right = mixed || charCode !== null ? null : emitStringInputs(emitter, [suffix])[0]!;
   const b = emitter.binding(localId);
   const B = emitter.B;
+  // The length check runs before the binding's reference goes (the unlink
+  // below is what lets the concat write in place): a result past Node's
+  // maximum string length throws its RangeError with the binding unchanged.
+  let slots: MixedConcatSlots | null = null;
+  if (charCode !== null) {
+    emitConcatAddCheck(emitter, snapshot.name);
+  } else if (right === null) {
+    slots = emitMixedConcatInputs(emitter, inputs);
+    emitMixedConcatCheck(emitter, snapshot.name, slots);
+  } else {
+    emitConcatCheck(emitter, snapshot.name, right.name);
+  }
   if (b.kind === "boxed") {
     // set_ref(NULL) unlinks then releases the binding's post-suffix value.
     emitter.boxSet(emitter.loadBox(b.slot), b.type, "null");
@@ -3561,7 +3578,7 @@ export function emitStringSelfConcatAssign(
       `${raw} = call ptr @scr_str_concat_move_char_code(ptr ${snapshot.name}, double ${charCode.name})`,
     );
   } else if (right === null) {
-    raw = emitMixedConcat(emitter, snapshot.name, inputs);
+    raw = emitMixedConcatCall(emitter, snapshot.name, slots!);
   } else {
     emitter.declare(`declare ptr @scr_str_concat(ptr, ptr)`);
     raw = B.tmp();
@@ -3581,6 +3598,8 @@ export function emitStringSelfConcatAssign(
     if (b.kind === "boxed") emitter.boxSet(emitter.loadBox(b.slot), b.type, result.name);
     else B.line(`store ptr ${result.name}, ptr ${b.slot}`);
   }
+  // The binding owns the result before the mixed concat's pending check runs.
+  if (slots !== null) emitter.emitPendingCheck();
   return result;
 }
 

@@ -1,4 +1,4 @@
-import { arrayOf, BOOL, DYN, F64, STRING } from "../ir.js";
+import { arrayOf, BOOL, DYN, F64, STRING, VOID } from "../ir.js";
 import { defineLibFnSignatures } from "./shared.js";
 
 /** The str builtin call slots. */
@@ -6,6 +6,9 @@ export const strSignatures = defineLibFnSignatures({
   /** `a.localeCompare(b)`: -1/0/1 in Node's root-locale collation for
    * Latin-script text (scr_str_locale_compare). Never throws. */
   "str.localeCompare": { argTypes: [STRING, STRING], result: F64 },
+  // Node's maximum string length, checked before a write that follows the
+  // concatenation (compound field assignment keeps its in-place append).
+  "str.growthCheck": { argTypes: [STRING, STRING], result: VOID },
   /** Annex B substr(start, length) with start ToNumber'd and length's
    * presence; never throws. */
   "str.substr": { argTypes: [STRING, F64, F64, BOOL], result: STRING },

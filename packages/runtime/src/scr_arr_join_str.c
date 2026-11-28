@@ -86,6 +86,26 @@ ScrStr *scr_arr_join_str(ScrArr *a, ScrStr *sep) {
     }
   }
   if (carries || total > limit) scr_trap("scriptc: out of memory\n");
+  /* Node's maximum length counts UTF-16 units, and the byte length bounds
+   * that count from above: only a result past the limit needs the pieces
+   * counted (a proven-ASCII piece is its byte length; any other is scanned
+   * once), so an ordinary join still never scans. */
+  if (__builtin_expect(total > SCR_STR_MAX_UNITS, 0)) {
+    size_t sep_units = n > 1 ? scr_str_units_count(sep) : 0;
+    bool over = n > 1 && sep_units > SCR_STR_MAX_UNITS / (n - 1);
+    size_t units = over ? SCR_STR_MAX_UNITS : (n - 1) * sep_units;
+    for (size_t i = 0; i < n && !over; i++) {
+      const ScrStr *s = scr_join_slot(slots[i]);
+      if (s == NULL) continue;
+      size_t piece = scr_str_units_count(s);
+      over = piece > SCR_STR_MAX_UNITS - units;
+      units += over ? 0 : piece;
+    }
+    if (over) {
+      scr_str_throw_too_long();
+      return scr_str_empty_value();
+    }
+  }
   bool ascii = (facts & SCR_STR_ASCII_BIT) != 0, lead_low = false;
   if (!ascii && __builtin_expect(scr_wtf8_any(), 0)) {
     lead_low = n > 1 && scr_wtf8_low_at(sep->data);

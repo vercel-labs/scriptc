@@ -337,22 +337,22 @@ export function emitSerializationExpr(
         const t = B.tmp();
         B.line(`${t} = call ptr @scr_jb_finish(ptr ${buf})`);
         compact = host.own({ name: t, type: e.type });
-        // A cycle-capable root can throw the circular-structure
-        // TypeError mid-walk, and a record serialized through its kept
-        // checked source can throw from the dyn walker: finish still runs
-        // (frees the buffer, the partial string joins the frame and
-        // releases on unwind), then the pending check unwinds — the
-        // runtime ABI’s contract exactly. Under %j the runtime first turns
-        // a circular-structure TypeError into the text "[Circular]".
-        if (host.walkers.jsonWriteMayThrow(e.value.type)) {
-          if (e.circular) {
-            host.declare(`declare ptr @scr_util_format_j_text(ptr)`);
-            const shown = B.tmp();
-            B.line(`${shown} = call ptr @scr_util_format_j_text(ptr ${t})`);
-            compact = host.own({ name: shown, type: e.type });
-          }
-          host.emitPendingCheck();
+        // A result past Node's maximum string length throws its catchable
+        // RangeError from scr_jb_finish, and a cycle-capable root can
+        // throw the circular-structure TypeError mid-walk (a record
+        // serialized through its kept checked source can throw from the
+        // dyn walker): finish still runs (frees the buffer, the partial
+        // string joins the frame and releases on unwind), then the
+        // pending check unwinds — the runtime ABI’s contract exactly.
+        // Under %j the runtime first turns a circular-structure TypeError
+        // into the text "[Circular]".
+        if (e.circular && host.walkers.jsonWriteMayThrow(e.value.type)) {
+          host.declare(`declare ptr @scr_util_format_j_text(ptr)`);
+          const shown = B.tmp();
+          B.line(`${shown} = call ptr @scr_util_format_j_text(ptr ${t})`);
+          compact = host.own({ name: shown, type: e.type });
         }
+        host.emitPendingCheck();
       }
       // A pretty-print form (`stringify(v, null, 2)`): the frontend
       // resolved the space to a compile-time indent string (Node's
@@ -366,7 +366,12 @@ export function emitSerializationExpr(
       B.line(
         `${t2} = call ptr @${rewriter}(ptr ${compact.name}, ptr ${host.cstr(indent)}, ${host.sizeType} ${Buffer.byteLength(indent, "utf8")})`,
       );
-      return host.own({ name: t2, type: e.type });
+      // The re-indenter builds the document through the same builder: a
+      // result past the maximum string length throws there, so the poll runs
+      // once the frame owns the result.
+      const pretty = host.own({ name: t2, type: e.type });
+      host.emitPendingCheck();
+      return pretty;
     }
     case "dynCheck": {
       // The dynamic boundary: validate the checked-dynamic tree against the target type

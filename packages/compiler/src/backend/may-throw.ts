@@ -332,15 +332,19 @@ export function computeMayThrow(
           }
           break;
         }
+        case "strConcat":
+          // A concatenation (operator +, a template literal, a self-append)
+          // whose result passes the maximum string length throws Node's
+          // RangeError from scr_str_concat and its parts/mixed forms.
+          f.throws = true;
+          break;
         case "jsonStringify": {
-          // Composite roots can throw: dyn (a runtime handle inside the
-          // dyn), and record/array/union roots whose types are recursive
-          // (the circular-structure TypeError). Kind-level conservatism —
-          // the emitters place the pending check only for cycle-capable
-          // types, and a never-taken caller-side check costs one flag
-          // read.
-          const vt = rec.value.type.kind;
-          if (vt === "dyn" || vt === "record" || vt === "array" || vt === "union") f.throws = true;
+          // Every root can throw: dyn (a runtime handle inside the dyn), a
+          // record/array/union root whose type is recursive (the
+          // circular-structure TypeError), and any result past the maximum
+          // string length (the RangeError scr_jb_finish throws). The poll
+          // costs one flag read where nothing throws.
+          f.throws = true;
           break;
         }
         case "toString":
@@ -389,12 +393,24 @@ export function computeMayThrow(
           f.throws = true;
           break;
         case "strIntrinsic":
-          if (rec.method === "normalize" || rec.method === "repeat") f.throws = true;
+          // normalize and repeat validate their form/count; padStart,
+          // padEnd and the case mappings can pass the maximum string length
+          // (a target past it, or a mapping that grows: ß to SS).
+          if (
+            rec.method === "normalize" ||
+            rec.method === "repeat" ||
+            rec.method === "padStart" ||
+            rec.method === "padEnd" ||
+            rec.method === "toLowerCase" ||
+            rec.method === "toUpperCase"
+          )
+            f.throws = true;
           break;
         case "regexIntrinsic":
           // Keep the conservative exception check for these operations;
           // replaceAll and matchAll without /g throw Node's TypeError.
           if (
+            rec.method === "replace" ||
             rec.method === "replaceAll" ||
             rec.method === "split" ||
             rec.method === "matchAll" ||

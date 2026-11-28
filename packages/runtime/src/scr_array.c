@@ -4160,18 +4160,28 @@ static size_t scr_join_size(size_t len, size_t extra) {
 /* The builder owns the final string allocation throughout construction.
  * It has no aliases or index-cache entries, and no user callbacks run while
  * appending primitive array values. Finish by publishing the terminator. */
-static void scr_join_append(ScrStr **out, const char *bytes, size_t n) {
+/* Appends one piece, first adding its UTF-16 length to the running count:
+ * false when the result would pass Node's maximum string length (the caller
+ * throws its RangeError). `piece_units` is the piece's UTF-16 length
+ * (scr_str_units_count for a string, the byte length for formatted text). */
+static bool scr_join_append(ScrStr **out, size_t *units, const char *bytes, size_t n,
+                            size_t piece_units) {
   ScrStr *s = *out;
   size_t need = scr_join_size(s->len, n);
+  if (!scr_str_units_fit(*units + piece_units)) return false;
+  *units += piece_units;
   if (need > s->cap) {
     const size_t limit = SIZE_MAX - sizeof(ScrStr) - 1;
     size_t cap = s->cap;
-    while (cap < need) cap = cap > limit / 2 ? need : cap * 2;
+    /* A doubling that would pass the capacity field's 31 bits takes the
+     * exact length instead (the length check above keeps it inside). */
+    while (cap < need) cap = cap > limit / 2 || cap > SCR_STR_MAX_CAP / 2 ? need : cap * 2;
     s = scr_str_regrow(s, cap);
     *out = s;
   }
   memcpy(s->data + s->len, bytes, n);
   s->len = need;
+  return true;
 }
 
 /* `a.slice(start?, end?)` — a fresh shallow copy of the index range,
@@ -6358,11 +6368,15 @@ ScrStr *scr_arr_join(ScrArr *a, ScrStr *sep) {
    * across its seam; the finished string then needs fusing. */
   bool lone = scr_wtf8_any();
   bool lead_low = lone && a->len > 1 && scr_wtf8_low_at(sep->data);
+  /* The result's UTF-16 length against Node's maximum, accumulated as the
+   * pieces are appended (scr_join_append). */
+  size_t units = 0, sep_units = scr_str_units_count(sep);
   /* The length is read once: a conversion that shortens the array leaves
    * the indices past its new end empty. */
   size_t length = a->len;
   for (size_t i = 0; i < length; i++) {
-    if (i > 0) scr_join_append(&out, sep->data, sep->len);
+    if (i > 0 && !scr_join_append(&out, &units, sep->data, sep->len, sep_units))
+      goto too_long;
     if (i >= a->len) continue;
     uint64_t slot;
     uint8_t state = scr_arr_state_at(a, i, &slot);
@@ -6376,7 +6390,10 @@ ScrStr *scr_arr_join(ScrArr *a, ScrStr *sep) {
       ScrStr *text = scr_arr_foreign_conversions()->to_string(value);
       scr_dyn_release(value);
       if (!text) break;
-      scr_join_append(&out, text->data, text->len);
+      if (!scr_join_append(&out, &units, text->data, text->len, scr_str_units_count(text))) {
+        scr_str_release(text);
+        goto too_long;
+      }
       scr_str_release(text);
       continue;
     }
@@ -6385,18 +6402,20 @@ ScrStr *scr_arr_join(ScrArr *a, ScrStr *sep) {
       case SCR_ELEM_F64: {
         char nb[32];
         size_t n = scr_f64_to_str(scr_slot_to_f64(slot), nb);
-        scr_join_append(&out, nb, n);
+        if (!scr_join_append(&out, &units, nb, n, n)) goto too_long; /* ASCII digits */
         break;
       }
       case SCR_ELEM_BOOL:
-        if (slot != 0) scr_join_append(&out, "true", 4);
-        else scr_join_append(&out, "false", 5);
+        if (!scr_join_append(&out, &units, slot != 0 ? "true" : "false", slot != 0 ? 4 : 5,
+                             slot != 0 ? 4 : 5))
+          goto too_long;
         break;
       case SCR_ELEM_STR: {
         const ScrStr *s = (const ScrStr *)scr_slot_to_ptr(slot);
         if (!s) break;
         if (lone) lead_low |= scr_wtf8_low_at(s->data);
-        scr_join_append(&out, s->data, s->len);
+        if (!scr_join_append(&out, &units, s->data, s->len, scr_str_units_count(s)))
+          goto too_long;
         break;
       }
       case SCR_ELEM_ARR:
@@ -6410,32 +6429,44 @@ ScrStr *scr_arr_join(ScrArr *a, ScrStr *sep) {
   out->data[out->len] = '\0';
   if (lead_low) scr_str_fuse_surrogates(out);
   return out;
+too_long:
+  scr_str_release(out);
+  scr_str_throw_too_long();
+  return scr_str_empty_value();
 }
 
 /* String.raw over the template's raw literals and PRE-STRINGIFIED
  * substitutions (the frontend applies the static ToString per value):
  * raw[0] sub[0] raw[1] sub[1] ... — substitutions beyond raw.len-1 drop,
  * missing ones skip, exactly the spec's loop. Both arrays are
- * SCR_ELEM_STR; borrows both; +1 result. Never throws. */
+ * SCR_ELEM_STR; borrows both; +1 result. A result past Node's maximum
+ * string length throws its RangeError. */
 ScrStr *scr_str_raw(ScrArr *raw, ScrArr *subs) {
   ScrStr *out = scr_str_alloc_raw(0, 64);
+  size_t units = 0;
   for (size_t i = 0; i < raw->len; i++) {
     uint64_t raw_slot;
     if (scr_arr_slot_at(raw, i, &raw_slot)) {
       const ScrStr *s = (const ScrStr *)scr_slot_to_ptr(raw_slot);
-      if (s) scr_join_append(&out, s->data, s->len);
+      if (s && !scr_join_append(&out, &units, s->data, s->len, scr_str_units_count(s)))
+        goto too_long;
     }
     if (i + 1 < raw->len && i < subs->len) {
       uint64_t sub_slot;
       if (scr_arr_slot_at(subs, i, &sub_slot)) {
         const ScrStr *v = (const ScrStr *)scr_slot_to_ptr(sub_slot);
-        if (v) scr_join_append(&out, v->data, v->len);
+        if (v && !scr_join_append(&out, &units, v->data, v->len, scr_str_units_count(v)))
+          goto too_long;
       }
     }
   }
   out->data[out->len] = '\0';
   scr_str_fuse_surrogates(out); /* pieces may complete surrogate pairs */
   return out;
+too_long:
+  scr_str_release(out);
+  scr_str_throw_too_long();
+  return scr_str_empty_value();
 }
 
 bool scr_arr_numeric_key(const char *key, size_t len, double *out) {

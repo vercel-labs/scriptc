@@ -27,6 +27,87 @@ static void scr_oom(void) {
   scr_trap("scriptc: out of memory\n");
 }
 
+static ScrStr *scr_str_empty(void);
+
+void scr_str_throw_too_long(void) {
+  static const char message[] = "Invalid string length";
+  scr_throw_error_msg(SCR_ERR_RANGE, message, sizeof message - 1);
+}
+
+/* The UTF-16 length of s: a proven-ASCII string is its byte length, and a
+ * long non-ASCII string is counted once and remembered
+ * (scr_str_utf16_len). */
+size_t scr_str_units_count(const ScrStr *s) {
+  return s->ascii ? s->len : (size_t)scr_str_utf16_len((ScrStr *)s);
+}
+
+static size_t scr_str_units_of(ScrStr *s) { return scr_str_units_count(s); }
+
+/* Whether a string of `units` UTF-16 code units would pass Node's maximum
+ * length. Callers run it only once the result's byte length, which bounds
+ * the unit count from above, is past the limit, so the common growth paths
+ * pay one comparison and never count. */
+static bool scr_str_too_many_units(size_t units) { return !scr_str_units_fit(units); }
+
+/* `a` + `b` code units, clamped one past the maximum length: every caller
+ * only compares the sum against it, and part counts that would wrap a
+ * 32-bit size_t stop at the clamp. */
+static size_t scr_str_units_sum(size_t a, size_t b) {
+  return a > SCR_STR_MAX_UNITS || b > SCR_STR_MAX_UNITS - a ? SCR_STR_MAX_UNITS + 1 : a + b;
+}
+
+/* The UTF-16 length of a concatenation of `parts` (numbers at the NULL
+ * entries, formatted ASCII), after a head. */
+static size_t scr_str_joined_units(ScrStr *head, ScrStr *const *parts, const double *nums,
+                                   size_t count) {
+  size_t units = head ? scr_str_units_of(head) : 0;
+  for (size_t i = 0; i < count; i++) {
+    if (parts[i]) {
+      units = scr_str_units_sum(units, scr_str_units_of(parts[i]));
+    } else {
+      char text[32]; /* scr_f64_to_str's worst case (SCR_F64_TEXT_MAX) */
+      units = scr_str_units_sum(units, scr_f64_to_str(nums[i], text));
+    }
+  }
+  return units;
+}
+
+void scr_str_growth_check2(const ScrStr *a, const ScrStr *b) {
+  if (__builtin_expect(a->len + b->len > SCR_STR_MAX_UNITS, 0) &&
+      scr_str_too_many_units(scr_str_units_count(a) + scr_str_units_count(b)))
+    scr_str_throw_too_long();
+}
+
+void scr_str_growth_check_add(const ScrStr *a, size_t units) {
+  if (__builtin_expect(a->len + units > SCR_STR_MAX_UNITS, 0) &&
+      scr_str_too_many_units(scr_str_units_count(a) + units))
+    scr_str_throw_too_long();
+}
+
+void scr_str_growth_check_parts(const ScrStr *head, ScrStr *const *parts, const double *nums,
+                                size_t count) {
+  const size_t bound = SCR_STR_MAX_UNITS * 3; /* a UTF-16 unit costs at most 3 bytes */
+  size_t bytes = head ? head->len : 0;
+  bool ascii = !head || head->ascii, over = bytes > bound;
+  for (size_t i = 0; i < count; i++) {
+    size_t n;
+    if (parts[i]) {
+      n = parts[i]->len;
+      ascii &= parts[i]->ascii;
+    } else {
+      char text[32];
+      n = scr_f64_to_str(nums[i], text);
+    }
+    /* The sum is clamped: only the comparison against the bound matters. */
+    if (!over && n > bound - bytes) over = true;
+    else if (!over) bytes += n;
+  }
+  if (!over && bytes <= SCR_STR_MAX_UNITS) return;
+  if (ascii || over ||
+      scr_str_too_many_units(scr_str_joined_units((ScrStr *)head, parts, nums, count)))
+    scr_str_throw_too_long();
+}
+
 /* Weak, bounded interning for tiny slices (including non-ASCII characters).
  * Unlike an owning cache, this never keeps a string alive: its last release
  * removes the entry. Collisions simply replace the weak pointer. A unique
@@ -403,7 +484,9 @@ static void scr_sidx_concat_append(const ScrStr *s, size_t oldlen) {
 
 static ScrStr *scr_str_alloc(size_t len, size_t cap) {
   if (len > cap || cap > SCR_STR_MAX_CAP) scr_oom();
-  ScrStr *s = scr_mem_alloc_ref(sizeof(ScrStr) + cap + 1);
+  /* A string is a soft reference block: the window serves it when it can,
+   * the system allocator when it cannot (scr_mem_alloc_soft_ref). */
+  ScrStr *s = scr_mem_alloc_soft_ref(sizeof(ScrStr) + cap + 1);
   if (!s) scr_oom();
   s->rc = 1;
   s->len = len;
@@ -544,7 +627,7 @@ ScrStr *scr_str_regrow(ScrStr *s, size_t newcap) {
   scr_short_forget(s);
   scr_str_hash_forget(s);
   scr_sidx_purge(s); /* realloc may move; the old address may be recycled */
-  ScrStr *r = scr_mem_realloc_ref(s, sizeof(ScrStr) + newcap + 1);
+  ScrStr *r = scr_mem_realloc_soft_ref(s, sizeof(ScrStr) + newcap + 1);
   if (!r) scr_oom();
   r->cap = newcap;
   return r;
@@ -576,6 +659,11 @@ void scr_str_release(ScrStr *s) {
  * low one: the two units become one 4-byte character (scr_runtime.h). */
 static __attribute__((noinline, cold)) ScrStr *scr_str_concat_joined(ScrStr *a, ScrStr *b) {
   size_t newlen = a->len + b->len;
+  if (__builtin_expect(newlen > SCR_STR_MAX_UNITS, 0) &&
+      scr_str_too_many_units(scr_str_units_of(a) + scr_str_units_of(b))) {
+    scr_str_throw_too_long();
+    return scr_str_empty();
+  }
   ScrStr *s = scr_str_alloc(newlen, newlen);
   memcpy(s->data, a->data, a->len);
   memcpy(s->data + a->len, b->data, b->len + 1);
@@ -586,12 +674,22 @@ static __attribute__((noinline, cold)) ScrStr *scr_str_concat_joined(ScrStr *a, 
 ScrStr *scr_str_concat(ScrStr *a, ScrStr *b) {
   if (a->len == 0) return scr_str_retain(b);
   if (b->len == 0) return scr_str_retain(a);
-  if (a->len > SIZE_MAX - b->len - sizeof(ScrStr) - 1) scr_oom();
+  if (a->len > SIZE_MAX - b->len - sizeof(ScrStr) - 1) {
+    scr_str_throw_too_long();
+    return scr_str_empty();
+  }
   /* Only two strings that are not proven ASCII can complete a pair. */
   if (__builtin_expect(scr_wtf8_any(), 0) && !a->ascii && !b->ascii &&
       scr_wtf8_joins(a->data, a->len, b->data, b->len))
     return scr_str_concat_joined(a, b);
   size_t newlen = a->len + b->len;
+  /* Node's maximum length: the byte length bounds the unit count from
+   * above, so only a result past that bound needs the strings counted. */
+  if (__builtin_expect(newlen > SCR_STR_MAX_UNITS, 0) &&
+      scr_str_too_many_units(scr_str_units_of(a) + scr_str_units_of(b))) {
+    scr_str_throw_too_long();
+    return scr_str_empty();
+  }
   /* In-place append: a is uniquely owned by the caller's borrow (rc == 1 —
    * never an interned literal, those are SIZE_MAX) and has room. Fires on
    * concat chains (`a + b + c`, template literals), where each intermediate
@@ -692,12 +790,25 @@ scr_str_concat_mixed_bytes(ScrStr *head, ScrStr *const *parts, const double *num
     } else {
       lens[i] = scr_f64_to_str(nums[i], text[i]);
     }
-    if (lens[i] > limit - extra) scr_oom();
+    if (lens[i] > limit - extra) {
+      /* More bytes than the capacity field holds is past Node's maximum
+       * length whatever the text. */
+      scr_str_throw_too_long();
+      return scr_str_empty();
+    }
     extra += lens[i];
   }
   size_t base = head ? head->len : 0;
-  if (extra > limit - base) scr_oom();
+  if (extra > limit - base) {
+    scr_str_throw_too_long();
+    return scr_str_empty();
+  }
   size_t newlen = base + extra;
+  if (__builtin_expect(newlen > SCR_STR_MAX_UNITS, 0) &&
+      scr_str_too_many_units(scr_str_joined_units(head, parts, nums, count))) {
+    scr_str_throw_too_long();
+    return scr_str_empty();
+  }
   if (head && extra == 0) return scr_str_retain(head);
   ScrStr *out;
   size_t at;
@@ -803,8 +914,16 @@ static __attribute__((noinline)) ScrStr *scr_str_concat_fresh(ScrStr *const *par
       text_len[i] = n;
       used += n;
     }
-    if (n > SCR_STR_MAX_CAP - len) scr_oom();
+    if (n > SCR_STR_MAX_CAP - len) {
+      scr_str_throw_too_long();
+      return scr_str_empty();
+    }
     len += n;
+  }
+  if (__builtin_expect(len > SCR_STR_MAX_UNITS, 0) &&
+      scr_str_too_many_units(scr_str_joined_units(NULL, parts, nums, count))) {
+    scr_str_throw_too_long();
+    return scr_str_empty();
   }
   ScrStr *out = scr_str_take_spare(len);
   if (!out) out = scr_str_alloc(len, len);
@@ -878,7 +997,10 @@ static inline void scr_copy_piece(char *dst, const char *src, size_t n) {
  * holds no more memory than one built there. The bytes do not change, so a
  * proven-ASCII fact survives the regrow's reset. */
 static ScrStr *scr_str_grow_owned(ScrStr *a, size_t more) {
-  if (more > SCR_STR_MAX_CAP - a->len) scr_oom();
+  if (more > SCR_STR_MAX_CAP - a->len) {
+    scr_str_throw_too_long();
+    return scr_str_empty();
+  }
   size_t need = a->len + more;
   size_t grown = (size_t)a->cap + (a->cap >> 1) + 16;
   if (grown > SCR_STR_MAX_CAP) grown = SCR_STR_MAX_CAP;
@@ -931,6 +1053,14 @@ static __attribute__((noinline)) ScrStr *scr_str_concat_move_full(ScrStr *a, Scr
 }
 
 ScrStr *scr_str_concat_move(ScrStr *a, ScrStr *b) {
+  /* The moved reference is released on the way out of a refused append, as
+   * every other path does (scr_str_concat_release). */
+  if (__builtin_expect(a->len + b->len > SCR_STR_MAX_UNITS, 0) &&
+      scr_str_too_many_units(scr_str_units_of(a) + scr_str_units_of(b))) {
+    scr_str_release(a);
+    scr_str_throw_too_long();
+    return scr_str_empty();
+  }
   /* A shared or immortal text is never appended to, and a full block
    * below the size that grows itself is copied with slack: both are what
    * this function was before the in-place paths, a test or two later. */
@@ -963,6 +1093,12 @@ ScrStr *scr_str_concat_move(ScrStr *a, ScrStr *b) {
 }
 
 ScrStr *scr_str_concat_move_char_code(ScrStr *a, double code) {
+  if (__builtin_expect(a->len >= SCR_STR_MAX_UNITS, 0) &&
+      scr_str_too_many_units(scr_str_units_of(a) + 1)) {
+    scr_str_release(a);
+    scr_str_throw_too_long();
+    return scr_str_empty();
+  }
   uint32_t cp = scr_to_uint32(code) & 0xFFFFu;
   if (cp < 0x80 && a->rc == 1 && a->cap > a->len) {
     /* scr_str_concat's in-place append of one ASCII byte: the string stays
@@ -1005,8 +1141,16 @@ ScrStr *scr_str_concat_f64(ScrStr *a, double x) {
   if (a->rc != 1) {
     char text[SCR_F64_TEXT_MAX];
     size_t n = scr_f64_to_str(x, text);
-    if (a->len > SCR_STR_MAX_CAP - n) scr_oom();
+    if (a->len > SCR_STR_MAX_CAP - n) {
+      scr_str_throw_too_long();
+      return scr_str_empty();
+    }
     size_t len = a->len + n;
+    if (__builtin_expect(len > SCR_STR_MAX_UNITS, 0) &&
+        scr_str_too_many_units(scr_str_units_of(a) + n)) {
+      scr_str_throw_too_long();
+      return scr_str_empty();
+    }
     ScrStr *out = scr_str_alloc(len, len);
     scr_copy_bytes(out->data, a->data, a->len);
     scr_copy_bytes(out->data + a->len, text, n);
@@ -1025,7 +1169,10 @@ ScrStr *scr_str_concat_parts(ScrStr *const *parts, size_t count) {
   size_t nonempty = 0;
   for (size_t i = 0; i < count; i++) {
     const size_t n = parts[i]->len;
-    if (n > limit - len) scr_oom();
+    if (n > limit - len) {
+      scr_str_throw_too_long();
+      return scr_str_empty();
+    }
     len += n;
     if (n != 0) {
       only = parts[i];
@@ -1033,6 +1180,11 @@ ScrStr *scr_str_concat_parts(ScrStr *const *parts, size_t count) {
     }
   }
   if (nonempty == 1) return scr_str_retain(only);
+  if (__builtin_expect(len > SCR_STR_MAX_UNITS, 0) &&
+      scr_str_too_many_units(scr_str_joined_units(NULL, parts, NULL, count))) {
+    scr_str_throw_too_long();
+    return scr_str_empty();
+  }
   ScrStr *out = scr_str_alloc_raw(len, len);
   size_t offset = 0;
   bool ascii = true;
@@ -2863,8 +3015,15 @@ ScrStr *scr_str_repeat(ScrStr *s, double count) {
     return scr_str_empty();
   }
   if (n == 0 || s->len == 0) return scr_str_empty();
-  /* n is a finite non-negative integer here. Reject sizes malloc could not
-   * satisfy anyway before the double→size_t conversion can overflow. */
+  /* n is a finite non-negative integer here. Node's maximum length counts
+   * UTF-16 units, so the refusal compares n times the source's unit length;
+   * every n a legal result admits keeps the product exact in a double. */
+  if (n * (double)scr_str_units_of(s) > (double)SCR_STR_MAX_UNITS) {
+    scr_str_throw_too_long();
+    return scr_str_empty();
+  }
+  /* Reject sizes malloc could not satisfy anyway before the double→size_t
+   * conversion can overflow (unreachable once the length check passed). */
   if (n > (double)((SIZE_MAX - sizeof(ScrStr) - 1) / s->len)) scr_oom();
   size_t total = (size_t)n * s->len;
   ScrStr *r = scr_str_alloc(total, total);
@@ -3204,6 +3363,9 @@ ScrStr *scr_str_replace_bytes(ScrStr *s, const char *pat, size_t plen, ScrStr *r
   for (;;) {
     size_t gap = hit ? (size_t)(hit - from) : (size_t)(end - from);
     size_t need = gap + (hit ? rep->len : 0);
+    /* Three bytes is the most a UTF-16 unit costs here, so a byte length
+     * past three times Node's maximum is past the maximum itself. */
+    if (used > SCR_STR_MAX_UNITS * 3 || need > SCR_STR_MAX_UNITS * 3 - used) goto too_long;
     if (need > cap - used) {
       if (need > SCR_STR_MAX_CAP - used) scr_oom();
       size_t want = cap * 2 < used + need + (size_t)(end - from) ? used + need + (size_t)(end - from)
@@ -3224,12 +3386,20 @@ ScrStr *scr_str_replace_bytes(ScrStr *s, const char *pat, size_t plen, ScrStr *r
     hit = all ? scr_byte_find(from, (size_t)(end - from), pat, plen) : NULL;
   }
   out->len = used;
+  /* Inside the byte bound the exact UTF-16 length decides. */
+  if (__builtin_expect(used > SCR_STR_MAX_UNITS, 0) &&
+      !scr_str_units_fit(scr_str_units_count(out)))
+    goto too_long;
   if (cap - used > used / 4 + 64) out = scr_str_regrow(out, used);
   out->data[used] = '\0';
   scr_str_hash_forget(out);
   if (joins && scr_wtf8_any()) scr_str_fuse_surrogates(out);
   else if (s->ascii && rep->ascii) scr_str_note_ascii(out);
   return out;
+too_long:
+  scr_str_release(out);
+  scr_str_throw_too_long();
+  return scr_str_empty();
 }
 
 /* replaceAll of single characters (scr_str_replace_chars): a mask of the
@@ -3445,6 +3615,12 @@ static ScrStr *scr_str_replace_byte(ScrStr *s, const char *hit, char c, ScrStr *
     for (const char *p = hit + 1; (p = memchr(p, c, (size_t)(end - p))) != NULL; p++) count++;
   if (count > (SCR_STR_MAX_CAP - s->len) / rl) scr_oom();
   size_t len = s->len - count + count * rl;
+  /* Three bytes is the most a UTF-16 unit costs, so a longer result is
+   * past Node's maximum length before it is built. */
+  if (len > SCR_STR_MAX_UNITS * 3) {
+    scr_str_throw_too_long();
+    return scr_str_empty();
+  }
   ScrStr *out = scr_str_alloc_raw(len, len);
   char *to = out->data;
   const char *from = s->data;
@@ -3460,6 +3636,13 @@ static ScrStr *scr_str_replace_byte(ScrStr *s, const char *hit, char c, ScrStr *
   }
   scr_copy_bytes(to, from, (size_t)(end - from));
   out->len = len;
+  /* Inside the byte bound the exact UTF-16 length decides. */
+  if (__builtin_expect(len > SCR_STR_MAX_UNITS, 0) &&
+      !scr_str_units_fit(scr_str_units_count(out))) {
+    scr_str_release(out);
+    scr_str_throw_too_long();
+    return scr_str_empty();
+  }
   /* A spare block may be far larger than the result (as in
    * scr_str_replace_bytes). */
   if (out->cap - len > len / 4 + 64) out = scr_str_regrow(out, len);
@@ -3524,17 +3707,23 @@ static __attribute__((noinline)) ScrStr *scr_str_replace_literal_long(ScrStr *s,
  * filler built from whole repetitions of `fill` plus a truncated prefix.
  * A target at or below the length (or an empty fill) returns the receiver
  * unchanged. A truncation that would split an astral char in the fill
- * keeps its high half as a lone surrogate, as JS does. Sizes beyond what malloc can satisfy abort (the
- * repeat() policy; JS's RangeError fires around 2^29 units). Borrows both;
- * returns +1. */
+ * keeps its high half as a lone surrogate, as JS does. A target past
+ * Node's maximum length throws its RangeError. Borrows both; returns +1. */
 static ScrStr *scr_pad_impl(ScrStr *s, double maxLength, ScrStr *fill,
                              bool at_start) {
   double target = scr_to_integer_or_infinity(maxLength);
   size_t len16 = scr_str_len16(s);
   if (!(target > (double)len16) || fill->len == 0) return scr_str_retain(s);
+  /* The target length IS the result's UTF-16 length: past Node's maximum
+   * it throws, and a target it admits keeps every size below exact. */
+  if (target > (double)SCR_STR_MAX_UNITS) {
+    scr_str_throw_too_long();
+    return scr_str_empty();
+  }
   /* Reject pad sizes malloc could not satisfy before the double→size_t
    * conversion can overflow (each unit is at most 3 bytes here: BMP chars
-   * and lone surrogates; astral chars are 4 bytes for 2 units). */
+   * and lone surrogates; astral chars are 4 bytes for 2 units; a target
+   * the length check admitted never reaches this). */
   if (target > (double)((SIZE_MAX - sizeof(ScrStr) - 1) / 4)) scr_oom();
   size_t pad16 = (size_t)target - len16;
   size_t fill16 = scr_str_len16(fill);

@@ -1990,6 +1990,14 @@ const MAY_THROW_LIB_FNS_PART_6: readonly IrLibFn[] = [
   // ReadableStreamTee's argument TypeError and a locked stream's state
   // error, which Node raises from the call itself.
   "webstream.tee",
+  // String builders whose result can pass Node's maximum string length:
+  // replace, replaceAll and String.raw raise its catchable RangeError
+  // "Invalid string length" (the runtime checks the UTF-16 length), so the
+  // call site runs the pending check.
+  "str.replaceLiteral",
+  "str.replaceChars",
+  "str.growthCheck",
+  "string.raw",
 ];
 
 /** The may-throw seed: libCall members that can raise. Every fs.* member

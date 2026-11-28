@@ -64,7 +64,9 @@ test.each([32, 64] as const)("concat uses a borrowed stack vector with %i-bit si
   expect(body).toContain("alloca [3 x ptr]");
   expect(body).toMatch(new RegExp(`call ptr @scr_str_concat_parts\\(ptr %[^,]+, i${bits} 3\\)`));
   expect(body).not.toContain("@scr_str_retain_v");
-  expect(body).not.toContain("@scr_str_release");
+  // A result past the maximum string length leaves the RangeError pending,
+  // so the unwind path releases the owned result.
+  expect(body.slice(body.indexOf("@scr_str_concat_parts"))).toContain("@scr_str_release");
 });
 
 test("later writes preserve an owned snapshot of earlier string parts", () => {

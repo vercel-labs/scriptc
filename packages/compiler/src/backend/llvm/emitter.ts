@@ -463,8 +463,13 @@ import { classUnionHeaders, emitClassUnionHelpers } from "./class-unions.js";
 export const DYN_ABSENT = "@sc_dyn_absent";
 import { emitNullablePresent, emitUnionPeek, emitUnionTag } from "./union-repr.js";
 import {
+  emitConcatAddCheck,
+  emitConcatCheck,
   emitConcatInputs,
-  emitMixedConcat,
+  emitMixedConcatCall,
+  emitMixedConcatCheck,
+  emitMixedConcatInputs,
+  type MixedConcatSlots,
   numberPart,
   stringParts,
 } from "./string-construction.js";
@@ -8781,33 +8786,49 @@ export class LlEmitter {
     const mixed = parts.length > 1 || numberPart(parts[0]!) !== null;
     const inputs = mixed ? emitConcatInputs(this, parts) : [];
     const right = mixed ? null : this.emitExpr(suffix);
-    if (s.kind === "fieldSet") this.emitStoreGuard(obj.name, s);
-    else if (this.publishedTypes?.recordGuarded(s.shapeId) === true)
-      this.emitPublishedFieldGuard(obj.name, null, s.field);
     const { ptr } =
       s.kind === "fieldSet"
         ? this.classFieldPtr(obj.name, s.className, s.field)
         : this.recordFieldPtr(obj.name, s.shapeId, s.field);
-    // Unlink, then release: nothing between here and the store below can
-    // run user code or observe the field (the concat only traps on OOM).
-    // Only an owned snapshot may survive the field's release.
+    // Node evaluates the right-hand side before the assignment's write check,
+    // so the length check runs before the field's write guard: a result past
+    // the maximum string length throws its RangeError, not the write's
+    // TypeError. The unlink below is what lets the concat write in place, so
+    // it follows both. Nothing between the unlink and the store can throw.
     const owned = this.ownsSnapshot(snapshot.name);
+    let slots: MixedConcatSlots | null = null;
+    if (right === null) {
+      slots = emitMixedConcatInputs(this, inputs);
+      emitMixedConcatCheck(this, snapshot.name, slots);
+    } else {
+      emitConcatCheck(this, snapshot.name, right.name);
+    }
+    if (s.kind === "fieldSet") this.emitStoreGuard(obj.name, s);
+    else if (this.publishedTypes?.recordGuarded(s.shapeId) === true)
+      this.emitPublishedFieldGuard(obj.name, null, s.field);
+    // Unlink, then release: nothing between here and the store below can
+    // run user code or observe the field. Only an owned snapshot may
+    // survive the field's release.
     if (owned) {
       const old = this.loadField(ptr, fieldType, false);
       this.storeField(ptr, fieldType, "null", false);
       this.releaseHeap(old, fieldType);
     }
     let raw: string;
-    if (right === null) {
-      raw = emitMixedConcat(this, snapshot.name, inputs);
+    if (slots !== null) {
+      raw = emitMixedConcatCall(this, snapshot.name, slots);
     } else {
       this.declare(`declare ptr @scr_str_concat(ptr, ptr)`);
       raw = B.tmp();
-      B.line(`${raw} = call ptr @scr_str_concat(ptr ${snapshot.name}, ptr ${right.name})`);
+      B.line(`${raw} = call ptr @scr_str_concat(ptr ${snapshot.name}, ptr ${right!.name})`);
     }
     // The +1 result moves straight into the (now empty) field.
     if (owned) this.storeField(ptr, fieldType, raw, false);
     else this.replaceField(ptr, fieldType, false, this.own({ name: raw, type: fieldType }));
+    // The mixed concat is the only form that can leave an exception pending:
+    // poll once the field owns the result, so an unwind releases a reference
+    // the runtime has not already taken.
+    if (slots !== null) this.emitPendingCheck();
     return true;
   }
 
@@ -8849,6 +8870,18 @@ export class LlEmitter {
     const mixed = parts.length > 1 || numberPart(parts[0]!) !== null;
     const inputs = mixed ? emitConcatInputs(this, parts) : [];
     const right = mixed ? null : this.emitExpr(value.right);
+    // Node evaluates the right-hand side before the assignment's write check,
+    // so the length check runs before the frozen or published array guard: a
+    // result past the maximum string length throws its RangeError, not the
+    // write's TypeError. The unlink below is what lets the concat write in
+    // place, so it follows both.
+    let slots: MixedConcatSlots | null = null;
+    if (right === null) {
+      slots = emitMixedConcatInputs(this, inputs);
+      emitMixedConcatCheck(this, snapshot.name, slots);
+    } else {
+      emitConcatCheck(this, snapshot.name, right.name);
+    }
     this.emitPublishedArrayGuard(arr.name, s.arr.type, 0, idx.name);
     if (this.ownsSnapshot(snapshot.name))
       emitDenseSlotUnlink(
@@ -8861,14 +8894,16 @@ export class LlEmitter {
         elem,
       );
     let raw: string;
-    if (right === null) {
-      raw = emitMixedConcat(this, snapshot.name, inputs);
+    if (slots !== null) {
+      raw = emitMixedConcatCall(this, snapshot.name, slots);
     } else {
       this.declare(`declare ptr @scr_str_concat(ptr, ptr)`);
       raw = B.tmp();
-      B.line(`${raw} = call ptr @scr_str_concat(ptr ${snapshot.name}, ptr ${right.name})`);
+      B.line(`${raw} = call ptr @scr_str_concat(ptr ${snapshot.name}, ptr ${right!.name})`);
     }
     emitDenseArraySet(this, arr.name, idx, s.index, "ref", elem, raw);
+    // As in the field self-append: poll after the slot owns the result.
+    if (slots !== null) this.emitPendingCheck();
     return true;
   }
 
@@ -8906,6 +8941,18 @@ export class LlEmitter {
     const B = this.B;
     const head = B.tmp();
     B.line(`${head} = load ptr, ptr ${b.slot}`);
+    // The length check runs before the reference moves into the concat: a
+    // result past Node's maximum string length throws its RangeError with
+    // the binding unchanged.
+    let slots: MixedConcatSlots | null = null;
+    if (charCode !== null) {
+      emitConcatAddCheck(this, head);
+    } else if (right === null) {
+      slots = emitMixedConcatInputs(this, inputs);
+      emitMixedConcatCheck(this, head, slots);
+    } else {
+      emitConcatCheck(this, head, right.name);
+    }
     let raw: string;
     if (charCode !== null) {
       this.declare(`declare ptr @scr_str_concat_move_char_code(ptr, double)`);
@@ -8913,14 +8960,17 @@ export class LlEmitter {
       B.line(
         `${raw} = call ptr @scr_str_concat_move_char_code(ptr ${head}, double ${charCode.name})`,
       );
-    } else if (right === null) {
-      raw = emitMixedConcat(this, head, inputs, true);
+    } else if (slots !== null) {
+      raw = emitMixedConcatCall(this, head, slots, true);
     } else {
       this.declare(`declare ptr @scr_str_concat_move(ptr, ptr)`);
       raw = B.tmp();
-      B.line(`${raw} = call ptr @scr_str_concat_move(ptr ${head}, ptr ${right.name})`);
+      B.line(`${raw} = call ptr @scr_str_concat_move(ptr ${head}, ptr ${right!.name})`);
     }
     B.line(`store ptr ${raw}, ptr ${b.slot}`);
+    // The moved mixed concat may leave an exception pending; the binding owns
+    // the result before the poll runs.
+    if (slots !== null) this.emitPendingCheck();
     return { name: raw, type: left.type }; // moved into the binding
   }
 

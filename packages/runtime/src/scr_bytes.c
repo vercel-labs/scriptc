@@ -169,6 +169,15 @@ static void scr_bytes_oom(void) {
   scr_trap("scriptc: out of memory\n");
 }
 
+/* Node's Buffer#toString refusal for a result past the maximum string
+ * length: an Error stamped ERR_STRING_TOO_LONG, not a RangeError. The
+ * caller returns the empty string; the pending check unwinds it. */
+static ScrStr *scr_bytes_too_long(void) {
+  static const char message[] = "Cannot create a string longer than 0x1fffffe8 characters";
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "ERR_STRING_TOO_LONG");
+  return scr_str_empty_value();
+}
+
 uint16_t scr_f16_from_f64(double value) {
   uint64_t bits;
   memcpy(&bits, &value, sizeof bits);
@@ -3408,14 +3417,30 @@ static ScrStr *scr_bytes_latin1_text(const uint8_t *in, size_t n) {
   return s;
 }
 
+/* The UTF-8 decoder with Node's Buffer#toString length rule: a result past
+ * the maximum string length is the ERR_STRING_TOO_LONG Error. The byte
+ * length bounds the unit count from above, so only a buffer past the limit
+ * is decoded and then counted. */
+static ScrStr *scr_bytes_utf8_text(const uint8_t *in, size_t n) {
+  if (__builtin_expect(n > SCR_STR_MAX_UNITS * 3, 0)) return scr_bytes_too_long();
+  ScrStr *s = scr_bytes_decode_utf8(in, n);
+  if (__builtin_expect(n > SCR_STR_MAX_UNITS, 0) && !scr_str_units_fit(scr_str_units_count(s))) {
+    scr_str_release(s);
+    return scr_bytes_too_long();
+  }
+  return s;
+}
+
 ScrStr *scr_bytes_to_str(const ScrBytes *b, const ScrStr *enc) {
   SCR_BYTES_SNAPSHOT(b);
   const uint8_t *in = b->data;
   size_t n = b->len; /* u8: len == byte length */
   /* Implicit native string/number coercions have no encoding argument. */
-  if (!enc) return scr_bytes_decode_utf8(in, n);
+  if (!enc) return scr_bytes_utf8_text(in, n);
   if (scr_enc_is(enc, "hex")) {
     if (n > SIZE_MAX / 2) scr_bytes_oom();
+    /* Two ASCII characters per byte. */
+    if (!scr_str_units_fit(n * 2)) return scr_bytes_too_long();
     ScrStr *s = scr_str_alloc_raw(n * 2, n * 2);
     char *out = s->data;
     for (size_t i = 0; i < n; i++) {
@@ -3426,19 +3451,31 @@ ScrStr *scr_bytes_to_str(const ScrBytes *b, const ScrStr *enc) {
     scr_str_note_ascii(s);
     return s;
   }
-  if (scr_enc_is(enc, "base64")) return scr_bytes_encode_b64(in, n, false);
-  if (scr_enc_is(enc, "base64url")) return scr_bytes_encode_b64(in, n, true);
-  if (scr_enc_is(enc, "latin1")) return scr_bytes_latin1_text(in, n);
+  if (scr_enc_is(enc, "base64") || scr_enc_is(enc, "base64url")) {
+    bool url = scr_enc_is(enc, "base64url");
+    /* Four characters per three bytes, less the padding base64url drops. */
+    size_t chars = (n + 2) / 3 * 4 - (url ? (3 - n % 3) % 3 : 0);
+    if (!scr_str_units_fit(chars)) return scr_bytes_too_long();
+    return scr_bytes_encode_b64(in, n, url);
+  }
+  if (scr_enc_is(enc, "latin1")) {
+    if (!scr_str_units_fit(n)) return scr_bytes_too_long();
+    return scr_bytes_latin1_text(in, n);
+  }
   if (scr_enc_is(enc, "ascii")) {
     /* Node's ascii decode masks the high bit: byte & 0x7f. */
+    if (!scr_str_units_fit(n)) return scr_bytes_too_long();
     ScrStr *s = scr_str_alloc_raw(n, n);
     for (size_t i = 0; i < n; i++) s->data[i] = (char)(in[i] & 0x7f);
     s->data[n] = '\0';
     return s;
   }
-  if (scr_enc_is(enc, "utf16le")) return scr_bytes_decode_utf16le(in, n);
+  if (scr_enc_is(enc, "utf16le")) {
+    if (!scr_str_units_fit(n / 2)) return scr_bytes_too_long();
+    return scr_bytes_decode_utf16le(in, n);
+  }
   /* utf8 (the compiler completes an omitted encoding to "utf8") */
-  return scr_bytes_decode_utf8(in, n);
+  return scr_bytes_utf8_text(in, n);
 }
 
 /* Buffer.toString with a runtime-valued encoding. Literal call sites fold

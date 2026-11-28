@@ -9945,6 +9945,21 @@ ScrDyn *scr_stream_dyn_view(ScrStream *stream) {
       scr_dyn_release(fn);
     }
   }
+  /* A stream answers its class through `constructor`, as Node's instances
+   * do: a checked-dynamic box of a 'pipe' payload, or of any member that
+   * hands the stream on, names the class the stream was built from. It is
+   * inherited from the prototype and non-enumerable there, as Node's is, so
+   * it stays out of Object.keys and object spreads. */
+  if (stream->cls != NULL) {
+    ScrClosure *cb = scr_closure_new((void *)scr_stream_view_call, 2);
+    cb->caps[0] = scr_box_new_obj(scr_stream_retain_v, scr_stream_release_v, scr_stream_trace);
+    cb->caps[1] = scr_box_new(SCR_BOX_STR);
+    scr_box_set_ref(cb->caps[0], scr_stream_retain(stream));
+    scr_box_set_ref(cb->caps[1], scr_str_new("constructor", 11));
+    scr_dyn_obj_set(prototype, "constructor", 11,
+                    scr_dyn_new_func(cb, scr_stream_view_call, 0, "()", stream->cls));
+    scr_dyn_obj_dict_entries(prototype)[prototype->v.obj.len - 1].enumerable = false;
+  }
   ScrDyn *attached = scr_dyn_set_prototype(view, prototype);
   scr_dyn_release(attached);
   scr_dyn_release(prototype);

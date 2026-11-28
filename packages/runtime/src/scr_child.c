@@ -9526,6 +9526,7 @@ typedef struct {
   ScrClosure *cb;
   ScrIpcMessageFn fn;
   bool once;
+  uint64_t id; /* identifies the registration when a once entry leaves */
 } ScrIpcMessageEntry;
 
 typedef struct {
@@ -9559,6 +9560,7 @@ struct ScrIpc {
   size_t n_pending, cap_pending;
   ScrIpcMessageEntry *message_ls;
   size_t n_message, cap_message;
+  uint64_t next_message_id;
   ScrIpcDisconnectEntry *disconnect_ls;
   size_t n_disconnect, cap_disconnect;
   ScrIpcSendEntry *send_cbs;
@@ -9891,6 +9893,8 @@ static void scr_ipc_disconnect(ScrIpc *ipc) {
   scr_child_writer_end(ipc->writer);
 }
 
+static void scr_ipc_listener_balance(ScrIpc *ipc);
+
 static void scr_ipc_add_message(ScrIpc *ipc, ScrClosure *cb,
                                 ScrIpcMessageFn fn, bool once) {
   if (!ipc || ipc->disconnect_emitted) {
@@ -9902,8 +9906,9 @@ static void scr_ipc_add_message(ScrIpc *ipc, ScrClosure *cb,
     ipc->message_ls = realloc(ipc->message_ls, ipc->cap_message * sizeof(*ipc->message_ls));
     if (!ipc->message_ls) scr_trap("out of memory");
   }
-  ipc->message_ls[ipc->n_message++] = (ScrIpcMessageEntry){cb, fn, once};
+  ipc->message_ls[ipc->n_message++] = (ScrIpcMessageEntry){cb, fn, once, ++ipc->next_message_id};
   scr_ipc_arm(ipc);
+  scr_ipc_listener_balance(ipc);
 }
 
 static void scr_ipc_add_disconnect(ScrIpc *ipc, ScrClosure *cb, bool once) {
@@ -9919,15 +9924,30 @@ static void scr_ipc_add_disconnect(ScrIpc *ipc, ScrClosure *cb, bool once) {
   }
   ipc->disconnect_ls[ipc->n_disconnect++] = (ScrIpcDisconnectEntry){cb, once};
   scr_ipc_arm(ipc);
+  scr_ipc_listener_balance(ipc);
 }
 
-static void scr_ipc_remove_message_once(ScrIpc *ipc, ScrClosure *cb) {
+/* The process-level channel follows Node's listener ref counting: the
+ * channel is ref'd while any message or disconnect listener exists, and
+ * unref'd once the last one leaves, so a child whose listeners are all
+ * removed exits instead of waiting on the channel. */
+static void scr_ipc_listener_balance(ScrIpc *ipc) {
+  if (ipc != scr_process_ipc || !ipc->connected || ipc->reader == NULL) return;
+  scr_child_stream_chan_state(ipc->reader, ipc->n_message + ipc->n_disconnect > 0);
+}
+
+/* A once registration leaves the list when its message is dispatched. The
+ * ID names that exact registration: a listener the program re-registers
+ * during the dispatch appends a new entry, which this removal must not
+ * take (Node removes the once wrapper it is running, not a later one). */
+static void scr_ipc_remove_message_once(ScrIpc *ipc, uint64_t id) {
   for (size_t i = 0; i < ipc->n_message; i++) {
-    if (ipc->message_ls[i].cb != cb || !ipc->message_ls[i].once) continue;
+    if (ipc->message_ls[i].id != id) continue;
     scr_closure_release(ipc->message_ls[i].cb);
     memmove(ipc->message_ls + i, ipc->message_ls + i + 1,
             (ipc->n_message - i - 1) * sizeof(*ipc->message_ls));
     ipc->n_message--;
+    scr_ipc_listener_balance(ipc);
     return;
   }
 }
@@ -9943,6 +9963,7 @@ static void scr_ipc_remove_message(ScrIpc *ipc, ScrClosure *cb) {
     memmove(ipc->message_ls + i, ipc->message_ls + i + 1,
             (ipc->n_message - i - 1) * sizeof(*ipc->message_ls));
     ipc->n_message--;
+    scr_ipc_listener_balance(ipc);
     return;
   }
 }
@@ -9954,6 +9975,7 @@ static void scr_ipc_remove_disconnect(ScrIpc *ipc, ScrClosure *cb) {
     memmove(ipc->disconnect_ls + i, ipc->disconnect_ls + i + 1,
             (ipc->n_disconnect - i - 1) * sizeof(*ipc->disconnect_ls));
     ipc->n_disconnect--;
+    scr_ipc_listener_balance(ipc);
     return;
   }
 }
@@ -10009,7 +10031,7 @@ static void scr_ipc_fire_messages_in(ScrIpc *ipc) {
       scr_closure_retain(snapshot[i].cb);
     }
     for (size_t i = 0; i < count; i++) {
-      if (snapshot[i].once) scr_ipc_remove_message_once(ipc, snapshot[i].cb);
+      if (snapshot[i].once) scr_ipc_remove_message_once(ipc, snapshot[i].id);
       if (!scr_exc_pending()) snapshot[i].fn(snapshot[i].cb, message);
       scr_closure_release(snapshot[i].cb);
     }

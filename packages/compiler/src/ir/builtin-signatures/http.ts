@@ -476,6 +476,9 @@ export const httpSignatures = defineLibFnSignatures({
   "http.clientGetHeaderNames": { argTypes: [HTTPCLIENTREQ_T], result: arrayOf(STRING) },
   "http.clientGetRawHeaderNames": { argTypes: [HTTPCLIENTREQ_T], result: arrayOf(STRING) },
   "http.clientGetHeaders": { argTypes: [HTTPCLIENTREQ_T], result: DYN },
+  /** One element of an array-valued request header: a hole reads as the
+   * text "undefined", as Node writes it. */
+  "http.headerArrayElement": { argTypes: [arrayOf(STRING), F64], result: STRING },
   "http.clientWriteBytes": { argTypes: [HTTPCLIENTREQ_T, BYTES_U8], result: BOOL },
   "http.clientEnd": { argTypes: [HTTPCLIENTREQ_T], result: VOID },
   "http.clientEndStr": { argTypes: [HTTPCLIENTREQ_T, STRING], result: VOID },

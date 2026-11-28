@@ -2192,6 +2192,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "http.clientGetRawHeaderNames": "scr_http_client_get_raw_header_names",
   "http.clientGetHeaderDyn": "scr_http_client_get_header_dyn",
   "http.clientGetHeaders": "scr_http_client_get_headers",
+  "http.headerArrayElement": "scr_http_header_array_element",
   "http.clientWriteBytes": "scr_http_client_write_bytes",
   "http.clientEnd": "scr_http_client_end",
   "http.clientEndStr": "scr_http_client_end_str",

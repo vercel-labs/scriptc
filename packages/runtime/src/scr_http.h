@@ -422,6 +422,7 @@ void scr_http_client_set_header_dyn(ScrHttpClientReq *c, ScrStr *name /*borrowed
                                     ScrDyn *raw /*borrowed*/);
 void scr_http_client_append_header_dyn(ScrHttpClientReq *c, ScrStr *name /*borrowed*/,
                                        ScrDyn *raw /*borrowed*/);
+ScrStr *scr_http_header_array_element(ScrArr *values /*borrowed*/, double index); /* +1 */
 ScrStr *scr_http_client_get_header(ScrHttpClientReq *c, ScrStr *name /*borrowed*/); /* +1 or NULL */
 ScrDyn *scr_http_client_get_header_dyn(ScrHttpClientReq *c, ScrStr *name /*borrowed*/); /* +1 */
 bool scr_http_client_has_header_named(ScrHttpClientReq *c, ScrStr *name /*borrowed*/);

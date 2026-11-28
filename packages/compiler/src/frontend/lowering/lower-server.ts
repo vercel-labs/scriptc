@@ -10593,13 +10593,23 @@ function lowerClientHeadersOption(
           body: [
             push(nameLit),
             push(
-              elemText({
-                kind: "arrayGet",
-                arr: arrRef(),
-                index: idxRef,
-                type: raw.type.elem,
-                loc,
-              }),
+              raw.type.elem.kind === "string"
+                ? {
+                    kind: "libCall",
+                    /* a hole or a present undefined writes "undefined", as
+                     * Node's iteration of the array produces */
+                    fn: "http.headerArrayElement",
+                    args: [arrRef(), idxRef],
+                    type: STRING,
+                    loc,
+                  }
+                : elemText({
+                    kind: "arrayGet",
+                    arr: arrRef(),
+                    index: idxRef,
+                    type: raw.type.elem,
+                    loc,
+                  }),
             ),
             {
               kind: "assign",

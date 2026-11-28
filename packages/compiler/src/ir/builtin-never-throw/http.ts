@@ -5,6 +5,7 @@ export const httpNeverThrow: readonly IrLibFn[] = [
   // Reads the stored client request header record and answers the value as
   // set; no program code runs.
   "http.clientGetHeaderDyn",
+  "http.headerArrayElement",
   // The OutgoingMessage write-buffer readers compare and sum stored byte
   // counts (the corked buffer's length, the held head's, the socket's
   // pending bytes) and a boolean flag; registering a 'drain' listener

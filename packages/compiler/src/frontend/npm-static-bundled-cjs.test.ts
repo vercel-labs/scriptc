@@ -121,3 +121,16 @@ __exportStar(require("dep-kit"), exports);
 `;
   expect(rewritten(source)).toContain('...require("dep-kit")');
 });
+
+test("an unresolved star target keeps its spread", () => {
+  // Only a target that RESOLVES and has no names is statically empty; a
+  // JSON, .mjs or absolute target the probe cannot follow keeps its spread.
+  for (const spec of ["./data.json", "./mod.mjs", "/abs/data.cjs"]) {
+    const source = `"use strict";
+var __exportStar = (m, exports2) => { for (var p in m) if (p !== "default" && !Object.prototype.hasOwnProperty.call(exports2, p)) Object.defineProperty(exports2, p, { enumerable: true, get: function () { return m[p]; } }); };
+Object.defineProperty(exports, "__esModule", { value: true });
+__exportStar(require(${JSON.stringify(spec)}), exports);
+`;
+    expect(rewritten(source), spec).toContain(`...require(${JSON.stringify(spec)})`);
+  }
+});

@@ -192,6 +192,11 @@ export function rewriteBundlerCjsWithParser(
     lexerVisibleNames,
     requireOnly: isVirtualSource,
     requireTargetEsModuleStamped: (from, spec) => requireTargetEsModuleStamped(parser, from, spec),
+    starTargetProvablyEmpty: (from, spec) => {
+      const target = resolveRelativeCjs(from, spec);
+      if (target === null || !/\.(c|m)?js$/.test(target)) return false;
+      return starTargetNames(parser, target).size === 0;
+    },
     starTargetNames: (from, spec) => {
       const target = resolveRelativeCjs(from, spec);
       return target === null ? new Set<string>() : starTargetNames(parser, target);

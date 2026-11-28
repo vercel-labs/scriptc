@@ -13,6 +13,11 @@ import { getTextOfNode, tokenStartOfNode } from "./ts7/node-functions.js";
 export interface CjsRewriteHost {
   requireTargetEsModuleStamped(fromFile: string, specifier: string): boolean;
   starTargetNames(fromFile: string, specifier: string): Set<string>;
+  /** Whether the star target is PROVABLY empty: it resolves, it is a
+   * JavaScript module the host can enumerate, and it has no names. Anything
+   * else (a JSON or .mjs target, an absolute path, an unresolved probe)
+   * knows nothing about its names and keeps its spread. */
+  starTargetProvablyEmpty?(fromFile: string, specifier: string): boolean;
   /** Told when the rewritten file's tail export table stands for a live
    * getter table the original installed before it could run another
    * module's code (liveExportTableFirst): a module of a require cycle that
@@ -1111,6 +1116,7 @@ export function rewriteBundlerCjsSyntax(
   const spreadParts: string[] = [];
   const staticallyEmpty = (spec: string): boolean =>
     (spec.startsWith(".") || spec.startsWith("/")) &&
+    host.starTargetProvablyEmpty?.(filePath, spec) === true &&
     host.starTargetNames(filePath, spec).size === 0;
   for (const spec of [...starSpecs].reverse()) {
     if (!staticallyEmpty(spec)) spreadParts.push(`...require(${JSON.stringify(spec)}),`);

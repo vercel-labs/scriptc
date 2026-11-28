@@ -18,8 +18,7 @@ const outDir = join(
 );
 const sanitize = process.env["SCRIPTC_SAN"] === "1";
 
-const REFUSAL =
-  "Promise.race over a dynamic entry that holds a thenable is not supported yet";
+const REFUSAL = "Promise.race over a dynamic entry that holds a thenable is not supported yet";
 
 interface Run {
   stdout: string;
@@ -91,4 +90,32 @@ main();
   );
   expect(result.exitCode).toBe(0);
   expect(result.stdout.trim()).toBe("from-value");
+});
+
+test("a raced value that holds a cycle keeps it and leaves nothing live at exit", async () => {
+  /* The wrapper promise the race settles with carries the dyn trace callback
+   * (it used to pass NULL where the intrinsic it replaced passed
+   * scr_dyn_trace_v). A cycle THROUGH a dyn-boxed promise is documented as
+   * never collected (SCR_DYN_PROMISE in scr_dyn.h), so this cannot tell the
+   * two wrappers apart; it guards the payload path itself: the value keeps its
+   * self reference and the sanitized lane's RC audit, which prints whatever
+   * is still live at exit, reports nothing. */
+  const result = await buildAndRun(
+    "cycle",
+    `async function main(): Promise<void> {
+  const box = JSON.parse('{"name":"box"}') as Record<string, unknown>;
+  box["self"] = box;
+  const value: unknown = box;
+  const winner = (await Promise.race([
+    value,
+    Promise.resolve("other"),
+  ])) as Record<string, unknown>;
+  console.log("winner", winner["name"], winner["self"] === value);
+}
+main();
+`,
+  );
+  expect(result.exitCode).toBe(0);
+  expect(result.stdout.trim()).toBe("winner box true");
+  if (sanitize) expect(result.stderr).toBe("");
 });

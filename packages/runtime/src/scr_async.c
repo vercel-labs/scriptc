@@ -4508,7 +4508,8 @@ ScrPromise *scr_promise_race_dyn_entry(ScrDyn *value) {
     return NULL;
   }
   ScrPromise *p = scr_promise_new();
-  scr_promise_fulfill_ref(p, scr_dyn_retain(value), scr_dyn_retain_v, scr_dyn_release_v, NULL);
+  scr_promise_fulfill_ref(p, scr_dyn_retain(value), scr_dyn_retain_v, scr_dyn_release_v,
+                          scr_dyn_trace_v);
   return p;
 }
 

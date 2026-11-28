@@ -2228,6 +2228,8 @@ export class LlEmitter {
   readonly liveViewsReadOnly: boolean;
   /** IrModule.sloppyDynWrites: untyped writes in sloppy-mode code. */
   readonly sloppyDynWrites: ReadonlySet<string>;
+  /** IrModule.sloppyArrayWrites: array element writes in sloppy-mode code. */
+  readonly sloppyArrayWrites: ReadonlySet<string>;
   /** IrModule.foreignElementKeys: element keys whose arrays can hold
    * SCR_ARR_FOREIGN elements. */
   readonly foreignElementKeys: ReadonlySet<string>;
@@ -2653,6 +2655,7 @@ export class LlEmitter {
     this.staticArrayTables = findStaticArrayTables(mod);
     this.untypedIntegrity = mod.untypedIntegrity === true;
     this.sloppyDynWrites = new Set(mod.sloppyDynWrites ?? []);
+    this.sloppyArrayWrites = new Set(mod.sloppyArrayWrites ?? []);
     this.liveViewsReadOnly =
       mod.lib === undefined &&
       !this.untypedIntegrity &&
@@ -9424,6 +9427,7 @@ export class LlEmitter {
     index = f64Lit(0),
     count = f64Lit(0),
     third: string | null = null,
+    sloppy = false,
   ): string | null {
     const published = this.publishedTypes;
     if (published?.containerGuarded(arrType) !== true) return null;
@@ -9431,7 +9435,10 @@ export class LlEmitter {
     // The cold block below holds the answer; the join must see it through a
     // slot that the entry block dominates. Only the ops whose walk can end
     // with no write at all need it.
-    const answered = op === 7 || op === 8 || op === 9 || op === 11;
+    // A sloppy element write can be an ignored no-op too (an element of a
+    // frozen array), so the caller must skip the store when it is.
+    const answered =
+      op === 7 || op === 8 || op === 9 || op === 11 || (sloppy && (op === 0 || op === 3));
     const noOpSlot = answered ? B.slot() : null;
     if (noOpSlot !== null) {
       B.entryAllocas.push(`${noOpSlot} = alloca i1`);
@@ -9442,10 +9449,13 @@ export class LlEmitter {
       ? this.emitFrozenArrayTest(arr, guards.published)
       : this.emitPublishedTest(arr);
     const code = B.tmp();
+    // Sloppy-mode element writes and deletes answer like Node's [[Set]]:
+    // an ignored write, not a TypeError (the sloppy guard decides).
+    const direct = sloppy ? "scr_throw_published_array_sloppy" : "scr_throw_published_array";
     if (third === null) {
-      this.declare(`declare i32 @scr_throw_published_array(i32, ptr, double, double)`);
+      this.declare(`declare i32 @${direct}(i32, ptr, double, double)`);
       B.line(
-        `${code} = call i32 @scr_throw_published_array(i32 ${op}, ptr ${arr}, double ${index}, double ${count})`,
+        `${code} = call i32 @${direct}(i32 ${op}, ptr ${arr}, double ${index}, double ${count})`,
       );
     } else {
       this.declare(

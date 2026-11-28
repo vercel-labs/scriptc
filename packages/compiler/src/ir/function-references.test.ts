@@ -253,6 +253,7 @@ const MODULE_FIELDS: Record<StringFields<Omit<IrModule, "functions">>, Role> = {
   "nodeIsland.modules.links[].path": "other",
   "nodeIsland.modules.links[].target": "other",
   "sloppyDynWrites[]": "other",
+  "sloppyArrayWrites[]": "other",
   "inferredFactFiles[].file": "other",
   "inferredFactFiles[].pkg": "other",
   "declOrigins[]": "other",

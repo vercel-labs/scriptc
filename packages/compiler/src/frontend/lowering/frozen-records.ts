@@ -575,6 +575,30 @@ export function sloppyDynamicWrites(
   return [...keys].sort();
 }
 
+/** The `arraySet` statements of sloppy-mode code (IrModule.sloppyArrayWrites):
+ * a write to a frozen array is ignored there, where strict code throws. */
+export function sloppyArrayWrites(lowerer: Lowerer, functions: readonly IrFunction[]): string[] {
+  const keys = new Set<string>();
+  const strictness = new Map<string, boolean>();
+  for (const fn of functions) {
+    everyStmtList(fn.body, {
+      stmt: (s) => {
+        if (s.kind !== "arraySet" && s.kind !== "arraySetLength") return true;
+        const key = writeKey(s.loc);
+        let sloppy = strictness.get(key);
+        if (sloppy === undefined) {
+          sloppy = isSloppyAt(lowerer, s.loc);
+          strictness.set(key, sloppy);
+        }
+        if (sloppy) keys.add(key);
+        return true;
+      },
+      expr: () => true,
+    });
+  }
+  return [...keys].sort();
+}
+
 /** Whether the source at `loc` is sloppy-mode code (isStrictCode). */
 export function isSloppyAt(lowerer: Lowerer, loc: SrcLoc): boolean {
   const node = lowerer.nodeAtLoc(loc);

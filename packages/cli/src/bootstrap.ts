@@ -38,6 +38,34 @@ function requireText(path: string): string {
   return readFileSync(path, "utf8");
 }
 
+/** `"scriptc": { "strict": true }` in the entry's nearest package.json. The
+ * full compiler validates the file; here the answer only decides whether a
+ * cached answer must enforce strict mode too. */
+function strictFromConfig(input: string): boolean {
+  // The nearest package.json is the project configuration; readProjectConfig
+  // stops there, so an ancestor's setting never applies. A malformed
+  // manifest is the full CLI's to report, and is not strict here.
+  for (let dir = dirname(resolve(input)); ;) {
+    let text: string | null = null;
+    try {
+      text = requireText(join(dir, "package.json"));
+    } catch {
+      text = null;
+    }
+    if (text !== null) {
+      try {
+        const manifest = JSON.parse(text) as { scriptc?: { strict?: unknown } };
+        return manifest.scriptc?.strict === true;
+      } catch {
+        return false;
+      }
+    }
+    const parent = dirname(dir);
+    if (parent === dir) return false;
+    dir = parent;
+  }
+}
+
 async function tryFastPath(): Promise<number | null> {
   let parsed: ReturnType<
     typeof parseArgs<{ options: typeof CLI_OPTIONS; allowPositionals: true; allowNegative: true }>
@@ -61,6 +89,7 @@ async function tryFastPath(): Promise<number | null> {
   // SCRIPTC_UNITS=observe reports from the lowering, which the routed
   // executable cache below can skip; the full compiler owns it.
   if ((process.env["SCRIPTC_UNITS"] ?? "") !== "") return null;
+  const strict = values.strict === true || (inputArg !== undefined && strictFromConfig(inputArg));
   // Computed-access sites emit different code by default; an explicit value
   // other than "1" is an opt-out or one the full compiler validates
   // (backend/llvm/js-ic.ts).
@@ -75,6 +104,9 @@ async function tryFastPath(): Promise<number | null> {
     // A --libnode=beside build places the pack and the island modules next
     // to the executable, which a routed hit does not do.
     values.libnode === "beside" ||
+    // Strict mode checks the warnings those flags leave out: let the full
+    // CLI refuse the pair with its wording.
+    (strict && (values["copy-warning"] === false || values["dynamic-tier-warning"] === false)) ||
     // The full compiler writes the representation report and keys the heap
     // census build (backend/llvm/repr-report.ts, heap-census.ts).
     (process.env["SCRIPTC_REPR_REPORT"] ?? "") !== "" ||
@@ -188,25 +220,49 @@ async function tryFastPath(): Promise<number | null> {
   // restores the same executable and installs that file.
   if (hit.native.intl === true) return null;
   if (!values["keep-llvm"]) await rm(hit.llvmPath, { force: true });
+  const cachedWarnings = hit.warnings ?? [];
+  const warningTexts = startup.warningSourceTexts(cachedWarnings, hit.warningSources);
+  if (strict) {
+    const warnings = startup.buildWarnings(cachedWarnings, {
+      dynamicTier: values["dynamic-tier-warning"] !== false,
+      strict: true,
+    });
+    const islands = hit.islands;
+    // A stored SC8001 note carries the import site, so its allow comment
+    // applies; the entry-line fallback only covers a hit without notes.
+    const islandDiags =
+      islands === undefined ||
+      islands.packages.length + islands.modules.length === 0 ||
+      warnings.some((warning) => warning.code === "SC8001")
+        ? []
+        : [
+            startup.strictIslandError({ file: input, start: 0, end: 0 }, [
+              ...islands.packages,
+              ...islands.modules,
+            ]),
+          ];
+    const promoted = startup.strictErrors([...warnings, ...islandDiags], warningTexts);
+    if (promoted.length > 0) {
+      const color = process.stderr.isTTY ?? false;
+      process.stderr.write(
+        startup.renderDiagnostics(promoted, warningTexts, { color }) +
+          `\n\n${promoted.length} error${promoted.length === 1 ? "" : "s"}: strict mode requires optimal code; fix the findings above or add a // scriptc-allow <code> comment on the line.\n`,
+      );
+      return 1;
+    }
+  }
   if (command === "build") {
     // A cached build repeats every warning it reported, rendered by the same
     // function the full compiler uses, from the same entry: the warnings and,
     // for a file the build edited before locating a warning in it, the text
     // the entry kept. The fast path answers only the options that drop a
     // warning; every other warning option takes the full CLI.
-    const cachedWarnings = hit.warnings ?? [];
     const warnings = startup.buildWarnings(cachedWarnings, {
       dynamicTier: values["dynamic-tier-warning"] !== false,
     });
     if (warnings.length > 0) {
       const color = process.stderr.isTTY ?? false;
-      process.stderr.write(
-        startup.renderBuildWarnings(
-          warnings,
-          startup.warningSourceTexts(cachedWarnings, hit.warningSources),
-          { color },
-        ) + "\n",
-      );
+      process.stderr.write(startup.renderBuildWarnings(warnings, warningTexts, { color }) + "\n");
     }
     process.stdout.write(`${outPath}\n`);
     return 0;
@@ -236,6 +292,8 @@ async function coverageFastPath(
 ): Promise<number | null> {
   const print = values.print;
   const failOn = values["fail-on"];
+  const strict =
+    values.strict === true || (inputArg !== undefined && strictFromConfig(resolve(inputArg)));
   if (
     inputArg === undefined ||
     positionalCount !== 2 ||
@@ -254,7 +312,10 @@ async function coverageFastPath(
     // --no-key-order-warning leave out: the full CLI refuses either pair,
     // and a replayed verdict must not pass it.
     (failOn === "divergences" &&
-      (values["copy-warning"] === false || values["key-order-warning"] === false))
+      (values["copy-warning"] === false || values["key-order-warning"] === false)) ||
+    // Strict mode checks the warnings those flags leave out: let the full
+    // CLI refuse the pair with its wording.
+    (strict && (values["copy-warning"] === false || values["dynamic-tier-warning"] === false))
   )
     return null;
   let startup: typeof import("@scriptc/compiler/startup-cache");
@@ -276,6 +337,53 @@ async function coverageFastPath(
     coverage.divergences = coverage.divergences.filter((d) => d.code !== "SC6001");
   if (values["key-order-warning"] === false && coverage.divergences !== undefined)
     coverage.divergences = coverage.divergences.filter((d) => d.code !== "SC6014");
+  let strictFailed = false;
+  if (strict) {
+    const islandDiags = [
+      ...(coverage.nodeIslands?.islands ?? []).map((island) =>
+        startup.strictIslandError(
+          island.importedFrom[0] ?? { file: resolve(inputArg), start: 0, end: 0 },
+          [island.package],
+          island.reason,
+        ),
+      ),
+      ...(coverage.nodeIslands?.userModules ?? []).map((module) =>
+        startup.strictIslandError(
+          { file: module.file, start: 0, end: 0 },
+          [module.file],
+          `user module, marked by ${module.source}`,
+        ),
+      ),
+    ];
+    const promoted = startup.strictErrors(
+      [
+        ...(coverage.divergences ?? []),
+        ...(coverage.performance ?? []),
+        ...(coverage.strictDynamic === undefined ? [] : [coverage.strictDynamic]),
+        ...islandDiags,
+      ],
+      sourceTexts,
+    );
+    if (promoted.length > 0) {
+      strictFailed = true;
+      const lifted = new Set(promoted.map((d) => `${d.code}\0${d.loc.file}\0${d.loc.start}`));
+      coverage.divergences = (coverage.divergences ?? []).filter(
+        (d) => !lifted.has(`${d.code}\0${d.loc.file}\0${d.loc.start}`),
+      );
+      coverage.performance = (coverage.performance ?? []).filter(
+        (d) => !lifted.has(`${d.code}\0${d.loc.file}\0${d.loc.start}`),
+      );
+      coverage.diagnostics = [...coverage.diagnostics, ...promoted];
+    }
+    // The cached replay keeps the same visible warning for a finding every
+    // function of which is allowed (see command.ts): a performance note, not
+    // a diagnostic the blocker gates fail on.
+    if (coverage.strictDynamic !== undefined && !promoted.some((d) => d.code === "SC6107"))
+      coverage.performance = [
+        ...(coverage.performance ?? []),
+        { ...coverage.strictDynamic, severity: "warning" },
+      ];
+  }
   if (print === "diagnostics") {
     const envelope = startup.coverageEnvelope(coverage, {
       compilerVersion: packageVersion(),
@@ -289,7 +397,7 @@ async function coverageFastPath(
       startup.renderCoverage(coverage, { color, sourceTexts, root: process.cwd() }) + "\n",
     );
   }
-  return startup.coveragePasses(coverage, failOn) ? 0 : 1;
+  return startup.coveragePasses(coverage, failOn) && !strictFailed ? 0 : 1;
 }
 
 const fastExit = await tryFastPath();

@@ -6,12 +6,12 @@
   },
   "targets": {
     "linux-x64-gnu": {
-      "hello": 63312,
-      "n-body": 179488,
-      "dynamic-properties": 998616,
-      "http-signal": 1181832,
-      "abort-controller": 1530856,
-      "inspect-stack": 717280
+      "hello": 49888,
+      "n-body": 179040,
+      "dynamic-properties": 970360,
+      "http-signal": 1178040,
+      "abort-controller": 1503272,
+      "inspect-stack": 816272
     }
   }
 }

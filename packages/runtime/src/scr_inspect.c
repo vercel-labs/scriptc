@@ -2032,6 +2032,86 @@ static bool insp_mark_cwd_into(InspBuf *b, const char *line, size_t len, const c
   return true;
 }
 
+/* The working directory's pathToFileURL(cwd).href, encoded here so the
+ * inspect unit does not link scr_url.c and scr_path.c for it. The bytes
+ * are scr_url_encode_file_path's: WHATWG's path percent-encode set (C0,
+ * DEL, non-ASCII, '"', '#', '<', '>', '?', '`', '{', '}', and the space)
+ * plus the file-path arm's pre-encoded '%', '[', ']', '^', '|', '~' and a
+ * path byte '\', in uppercase hex. An absolute cwd has no dot segments
+ * for path.resolve to rewrite. A trailing run of C0 controls (except TAB,
+ * LF and CR) is dropped, as the URL parser drops it. win32 flips
+ * separators, keeps the drive colon, and routes a UNC prefix's server
+ * into the host. +1. */
+static ScrStr *insp_cwd_to_file_url(const char *cwd, size_t len) {
+  while (len > 0) {
+    unsigned char c = (unsigned char)cwd[len - 1];
+    if (c >= 0x01 && c <= 0x1F && c != '\t' && c != '\n' && c != '\r') {
+      len--;
+    } else {
+      break;
+    }
+  }
+  InspBuf out = {0};
+  ib_bytes(&out, "file://", 7);
+  size_t start = 0;
+#if defined(_WIN32)
+  if (len >= 2 && cwd[0] == '\\' && cwd[1] == '\\') {
+    /* UNC path: \\server\share\resource, with an extended \\?\UNC\
+     * prefix ignored. The servername goes through the host parser's rules:
+     * TAB/LF/CR dropped, a URL delimiter ends it, an empty name is
+     * unrepresentable, ASCII letters lowercase, and a non-ASCII name is
+     * refused because this runtime has no IDNA unit (scr_url.c's
+     * parse_host). An unrepresentable name leaves the caller its raw-path
+     * coloring, as the URL path did. */
+    size_t prefix = len >= 8 && memcmp(cwd, "\\\\?\\UNC\\", 8) == 0 ? 8 : 2;
+    size_t host_end = prefix;
+    while (host_end < len && cwd[host_end] != '\\') host_end++;
+    if (host_end == prefix) {
+      free(out.data);
+      return NULL;
+    }
+    bool host_usable = true;
+    for (size_t i = prefix; i < host_end; i++) {
+      unsigned char c = (unsigned char)cwd[i];
+      if (c == '/' || c == '?' || c == '#') break;
+      if (c == '\t' || c == '\n' || c == '\r') continue;
+      if (c >= 0x80) {
+        host_usable = false;
+        break;
+      }
+      ib_char(&out, (char)(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c));
+    }
+    if (!host_usable) {
+      free(out.data);
+      return NULL;
+    }
+    start = host_end; /* its separator becomes the path's leading '/' */
+  } else if (len == 0 || cwd[0] != '\\') {
+    ib_char(&out, '/'); /* file:///C:/...: the rooted path's leading '/' */
+  }
+#endif
+  for (size_t i = start; i < len; i++) {
+    unsigned char c = (unsigned char)cwd[i];
+#if defined(_WIN32)
+    if (c == '\\') {
+      ib_char(&out, '/');
+      continue;
+    }
+#endif
+    if (c < 0x20 || c == 0x7f || c >= 0x80 || c == ' ' || c == '"' || c == '#' ||
+        c == '<' || c == '>' || c == '?' || c == '^' || c == '`' || c == '{' ||
+        c == '}' || c == '%' || c == '[' || c == ']' || c == '|' || c == '~' ||
+        c == '\\') {
+      static const char hex[] = "0123456789ABCDEF";
+      char esc[3] = {'%', hex[c >> 4], hex[c & 0x0F]};
+      ib_bytes(&out, esc, 3);
+    } else {
+      ib_char(&out, (char)c);
+    }
+  }
+  return ib_take(&out);
+}
+
 /* formatError's colored stack: the "Name: message" header stays plain, and
  * each frame line is dim when it names a builtin module, else marked by
  * markNodeModules and markCwd (retried with the working directory's
@@ -2054,23 +2134,8 @@ static ScrStr *insp_colored_stack(const ScrStr *stack) {
   const char *cwd = getcwd(cwd_buf, sizeof cwd_buf);
   size_t cwd_len = cwd ? strlen(cwd) : 0;
   /* Node retries with pathToFileURL(cwd).href, which percent-encodes the
-   * directory (a space, '#', '%' and the rest of the path set). Building
-   * the href from scr_url_from_path answers the same string; the raw
-   * "file://" + cwd spelling only matches a directory needing no escapes. */
-  ScrStr *href = NULL;
-  if (cwd) {
-    ScrStr *cwd_value = scr_str_new(cwd, cwd_len);
-    ScrUrl *cwd_url = scr_url_from_path(cwd_value);
-    scr_str_release(cwd_value);
-    if (cwd_url) {
-      href = scr_url_href(cwd_url);
-      scr_url_release(cwd_url);
-    } else {
-      /* pathToFileURL throws only for a win32 UNC malformation, which a
-       * cwd cannot be: drop the cell nothing will observe. */
-      scr_exc_clear();
-    }
-  }
+   * directory (a space, '#', '%' and the rest of the path set). */
+  ScrStr *href = cwd ? insp_cwd_to_file_url(cwd, cwd_len) : NULL;
   size_t pos = start + 1;
   for (;;) {
     size_t line_end = pos;

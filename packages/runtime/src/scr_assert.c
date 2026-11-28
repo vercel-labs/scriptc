@@ -704,6 +704,30 @@ static const ScrDyn *scr_assert_loose_error_prop(const ScrDyn *d, const char *ke
 /* Node's error arm under the strict walk (defined with the loose helpers). */
 static bool scr_assert_dyn_error(const ScrDyn *a, const ScrDyn *b);
 
+/* Node's strict prototype test for two error views: an error's observable
+ * prototype (Error.prototype, a subclass's own class prototype) compares
+ * by identity. A builtin error view other than a plain Error answers a
+ * synthesized prototype per view, so the class its `constructor` read
+ * names answers in that case. A read that throws leaves the exception
+ * pending and answers false. */
+static bool scr_assert_same_error_class(const ScrDyn *a, const ScrDyn *b) {
+  ScrDyn *pa = scr_dyn_get_prototype((ScrDyn *)a);
+  ScrDyn *pb = pa != NULL ? scr_dyn_get_prototype((ScrDyn *)b) : NULL;
+  bool same = pa != NULL && pb != NULL && pa == pb;
+  scr_dyn_release(pa);
+  scr_dyn_release(pb);
+  if (same) return true;
+  if (scr_exc_pending()) return false;
+  ScrDyn *ca = scr_dyn_obj_read(a, "constructor", 11);
+  if (ca == NULL) return false;
+  ScrDyn *cb = scr_dyn_obj_read(b, "constructor", 11);
+  same = cb != NULL && scr_dyn_strict_eq(ca, cb);
+  scr_dyn_release(ca);
+  scr_dyn_release(cb);
+  if (scr_exc_pending()) return false;
+  return same;
+}
+
 /* The value a deep comparison reads for own property `ent` of `owner`. Node
  * reads `owner[key]`, so an accessor answers what its getter returns
  * (undefined without one). +1; NULL with the getter's exception pending. */
@@ -747,6 +771,19 @@ static bool scr_assert_dyn_deep_eq(const ScrDyn *a, const ScrDyn *b) {
                      ? scr_dyn_typed_ref_materialize(b)
                      : scr_dyn_retain((ScrDyn *)b);
     bool same = scr_assert_dyn_deep_eq(ma, mb);
+    /* Two program class instances of error classes stay distinguishable
+     * only through their typed references: both materialized views answer
+     * the builtin Error constructor and a subclass view's synthesized
+     * prototype is per view. Node's strict pass compares the class before
+     * its error arm, so the class key answers here. */
+    if (same && a->kind == SCR_DYN_TYPED_REF && b->kind == SCR_DYN_TYPED_REF &&
+        !scr_assert_skip_prototype() && ma != NULL && mb != NULL && ma->kind == SCR_DYN_OBJ &&
+        mb->kind == SCR_DYN_OBJ && scr_dyn_obj_get(ma, "%error", 6) != NULL &&
+        scr_dyn_obj_get(mb, "%error", 6) != NULL &&
+        (a->v.typed_ref.type_key_len != b->v.typed_ref.type_key_len ||
+         memcmp(a->v.typed_ref.type_key, b->v.typed_ref.type_key,
+                a->v.typed_ref.type_key_len) != 0))
+      same = false;
     scr_dyn_release(ma);
     scr_dyn_release(mb);
     return same;
@@ -809,11 +846,13 @@ static bool scr_assert_dyn_deep_eq(const ScrDyn *a, const ScrDyn *b) {
       const bool error_b = scr_dyn_obj_get(b, "%error", 6) != NULL;
       if (error_a || error_b) {
         if (error_a != error_b) return false;
+        /* Node's strict pass compares the two errors' class before its
+         * error arm (comparisons.js compares `constructor`), so a subclass
+         * instance never equals the base class's error; skipPrototype
+         * asserts skip it. */
+        if (!scr_assert_skip_prototype() && !scr_assert_same_error_class(a, b)) return false;
         /* Node's error arm: name, message, cause and `errors` are compared
-         * whatever their enumerability and the stack never is. The
-         * runtime's error view carries a synthesized per-error prototype
-         * for a default name or message, which is not Node's shared
-         * Error.prototype, so no prototype check applies. */
+         * whatever their enumerability and the stack never is. */
         if (!scr_assert_dyn_error(a, b)) return false;
       } else if (!scr_assert_skip_prototype() &&
                  (a->null_proto != b->null_proto || a->prototype != b->prototype)) {

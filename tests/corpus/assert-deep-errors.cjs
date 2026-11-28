@@ -86,3 +86,27 @@ show("getter-diff", () => assert.deepStrictEqual(withCause(1), withCause(2)));
 show("getter-throws", () => assert.deepStrictEqual(throwingCause(), throwingCause()));
 show("loose-getter-diff", () => assert.deepEqual(withCause(1), withCause(2)));
 show("loose-getter-throws", () => assert.deepEqual(throwingCause(), throwingCause()));
+
+// The class a strict comparison sees: a subclass instance never equals the
+// base class's error, and two classes never equal each other, whatever
+// their name and message. Only the verdict is pinned: the failure text of
+// two subclass errors names both sides "Error" in the diff (the
+// materialized view carries the class only through its typed reference).
+class MyError extends Error {}
+class OtherError extends Error {}
+const hold = (v) => v;
+const verdict = (label, f) => {
+  try {
+    f();
+    console.log(label, "ok");
+  } catch (e) {
+    console.log(label, e.name);
+  }
+};
+verdict("subclass-same", () => assert.deepStrictEqual(new MyError("x"), new MyError("x")));
+verdict("subclass-vs-base", () => assert.deepStrictEqual(new MyError("x"), new Error("x")));
+verdict("subclass-other", () => assert.deepStrictEqual(new MyError("x"), new OtherError("x")));
+verdict("dyn-subclass-other", () =>
+  assert.deepStrictEqual(hold(new MyError("x")), hold(new OtherError("x"))),
+);
+verdict("loose-subclass-vs-base", () => assert.deepEqual(new MyError("x"), new Error("x")));

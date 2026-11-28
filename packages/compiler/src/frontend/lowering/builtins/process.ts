@@ -992,6 +992,7 @@ export const PROCESS_STREAM_VALUE_MEMBERS: readonly string[] = [
   "writableLength",
   "writableHighWaterMark",
   "writableNeedDrain",
+  "destroyed",
 ];
 
 /** The members of a process output stream that do not depend on the stream:
@@ -1031,7 +1032,10 @@ export function processStreamValueMember(
       type: DYN,
       loc,
     },
-    lowerer.withUndefinedArm(member === "isTTY" ? BOOL : F64),
+    // `destroyed` is declared boolean and always answers one (Node's special
+    // stdout/stderr streams keep false even after destroy); the other
+    // members have no value off a terminal.
+    member === "destroyed" ? BOOL : lowerer.withUndefinedArm(member === "isTTY" ? BOOL : F64),
   );
 }
 
@@ -1127,7 +1131,8 @@ export function lowerProcessStreamProperty(
     member !== "fd" &&
     member !== "isRaw" &&
     member !== "writableHighWaterMark" &&
-    member !== "writableNeedDrain"
+    member !== "writableNeedDrain" &&
+    member !== "destroyed"
   )
     return null;
   let recv: ts.Expression = expr.expression;

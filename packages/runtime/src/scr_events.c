@@ -1408,7 +1408,9 @@ static void scr_stdio_close_emit(ScrStdio *stream) {
       /* A once-listener leaves after it runs; on-listeners stay, so a
        * second destroy() emits again exactly as Node does. */
       for (size_t j = 0; j < stream->ncloses; j++) {
-        if (stream->closes[j] == snap[i]) {
+        /* The once flag matters: the same function may also be registered
+         * with on(), and that persistent registration must stay. */
+        if (stream->closes[j] == snap[i] && stream->close_once[j]) {
           scr_dyn_release(stream->closes[j]);
           memmove(stream->closes + j, stream->closes + j + 1, (stream->ncloses - j - 1) * sizeof *stream->closes);
           memmove(stream->close_once + j, stream->close_once + j + 1, (stream->ncloses - j - 1) * sizeof *stream->close_once);
@@ -1707,8 +1709,10 @@ static ScrDyn *scr_stdio_get(void *ptr, const char *key, size_t length) {
     return scr_dyn_new_num(scr_stdin_readable_length());
   if (stream->fd == 0 && length == 5 && memcmp(key, "isRaw", 5) == 0)
     return scr_process_is_tty(0) ? scr_dyn_new_bool(scr_process_stdin_raw()) : scr_dyn_retain(scr_dyn_undefined());
+  /* Node's special stdout/stderr streams answer destroyed=false even after
+   * destroy() (the stdin socket flips its own flag). */
   if (length == 9 && memcmp(key, "destroyed", 9) == 0)
-    return scr_dyn_new_bool(stream->fd == 0 ? scr_stdin_destroyed : stream->destroyed);
+    return scr_dyn_new_bool(stream->fd == 0 && scr_stdin_destroyed);
   if (length == 3 && memcmp(key, "off", 3) == 0) return scr_dyn_retain(scr_stdio_methods[STDIO_OFF]);
   if (length == 11 && memcmp(key, "addListener", 11) == 0) return scr_dyn_retain(scr_stdio_methods[STDIO_ON]);
   for (int i = 0; i < STDIO_METHOD_COUNT; i++) {

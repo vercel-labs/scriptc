@@ -67,6 +67,24 @@ class TableKeeps extends NativeBase {
 }
 console.log('override:', NativeBase[first], TableOverride[first], TableKeeps[first]);
 
+// A class value held by an untyped parameter dispatches on the runtime class:
+// a subclass's own getter answers the read.
+const gate = Symbol.for('same-gate');
+class Gate {
+  static get [gate]() {
+    return true;
+  }
+}
+class Deny extends Gate {
+  static get [gate]() {
+    return false;
+  }
+}
+function check(C) {
+  return C[gate];
+}
+console.log('dispatch:', check(Gate), check(Deny));
+
 // Instance slots key by identity too: two equal descriptions are two fields.
 class Holder {
   constructor() {

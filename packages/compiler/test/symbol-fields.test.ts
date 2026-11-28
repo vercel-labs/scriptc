@@ -54,6 +54,31 @@ test.each([
   }
 });
 
+test("refuses a symbol getter read through a class value a subclass overrides", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scriptc-symbol-fields-"));
+  try {
+    // A `typeof Base` parameter can hold `Deny`: the runtime class decides
+    // which getter answers, so an exact-class read would ignore the override.
+    const entry = join(dir, "main.ts");
+    writeFileSync(
+      entry,
+      `const gate = Symbol();
+class Base { static get [gate](): boolean { return true; } }
+class Deny extends Base { static get [gate](): boolean { return false; } }
+function check(ctor: typeof Base): boolean { return ctor[gate]; }
+console.log(check(Base), check(Deny));\n`,
+    );
+    const { coverage } = analyze(entry);
+    const diagnostics = [...coverage.diagnostics, ...(coverage.runtimeFences ?? [])];
+    expect(
+      diagnostics.some((d) => d.code === "SC1090" && /class value/.test(d.message)),
+      JSON.stringify(coverage, null, 2),
+    ).toBe(true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test.each([
   [
     "constant registry name",

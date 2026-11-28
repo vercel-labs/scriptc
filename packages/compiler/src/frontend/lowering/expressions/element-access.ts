@@ -87,6 +87,8 @@ import {
   classMemberNameOf,
   classValueRef,
   lowerClassStaticRead,
+  staticReceiverClass,
+  staticShadowBelow,
   type ClassInfo,
 } from "../lower-classes.js";
 import { classSymbolKeyOf, symbolFieldDisplayName } from "../symbol-fields.js";
@@ -450,26 +452,37 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
     }
     const classInfo =
       receiver.type.kind === "classval" ? lowerer.classes.get(receiver.type.className) : undefined;
-    // A symbol-keyed STATIC member read through an exact class value
+    // A symbol-keyed STATIC member read through a class value
     // (`C[kError]`): the nearest declaration decides where the value lives —
     // the lowering's own module global or function, or a runtime-statics
     // class's constructor property table — and a subclass's declaration
-    // overrides an inherited one in either storage.
+    // overrides an inherited one in either storage. A class-value BINDING can
+    // hold a subclass, so a redeclaration below it is dispatched by the
+    // runtime class exactly as a named static read through a value is.
     if (classInfo !== undefined) {
       const keyInfo = classSymbolKeyOf(lowerer, expr.argumentExpression);
       if (keyInfo !== null) {
         const name = keyInfo.fieldName;
+        const exactReceiver = staticReceiverClass(lowerer, expr.expression) !== null;
+        if (!exactReceiver && staticShadowBelow(classInfo, name))
+          lowerer.unsupported(
+            "SC1090",
+            expr,
+            `reading the symbol-keyed static '${symbolFieldDisplayName(name)}' through a class value (a subclass of '${classInfo.def.name.replace(/^%|^%m\d+\./, "")}' redeclares it, so the runtime class decides which declaration answers)`,
+          );
         let storage: "module" | "table" | "declared" | null = null;
+        let accessor = false;
         for (let owner: ClassInfo | null = classInfo; owner !== null; owner = owner.base) {
-          const accessor =
+          const ownerAccessor =
             owner.staticMethods?.has(`get:${name}`) === true ||
             owner.staticMethods?.has(`set:${name}`) === true;
           if (
             owner.staticFields.some((field) => field.name === name) ||
             owner.staticMethods?.has(name) === true ||
-            accessor
+            ownerAccessor
           ) {
             storage = "module";
+            accessor = ownerAccessor;
             break;
           }
           const inTable = (owner.runtimeStatics ?? []).some((member) => {
@@ -488,14 +501,32 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
             break;
           }
         }
+        if (storage === "module" && !exactReceiver && accessor)
+          lowerer.unsupported(
+            "SC1090",
+            expr,
+            "receiver-dependent symbol-keyed static accessors through a polymorphic class value",
+          );
         if (storage === "module") {
           const staticRead = lowerClassStaticRead(lowerer, classInfo, name, expr.expression, expr);
           if (staticRead !== null) return lowerer.maybeNarrow(staticRead, expr);
         }
-        // The property table keys the member by the SYMBOL, so the read is a
-        // symbol-keyed lookup of the class value; the hidden spelling names
-        // no property there.
-        if (storage === "table") {
+        // Declared, but the lowering has no storage for it: refuse by name
+        // rather than answer a value Node does not.
+        if (storage === "declared")
+          lowerer.unsupported(
+            "SC1090",
+            expr,
+            `reading the symbol-keyed static '${symbolFieldDisplayName(name)}' the class declares but the lowering cannot represent (the read would answer a value Node does not)`,
+          );
+        // A class that keeps its statics in the constructor's property table
+        // keys the member by the SYMBOL; and a key no class DECLARES may
+        // still be installed at run time (`Object.defineProperty(A, k, …)`).
+        // Both answers come from the class value's own property table, which
+        // answers undefined for a key nobody installed — Node's answer. A
+        // class value that could carry properties set outside the
+        // declaration (a callable base) keeps its fence instead of guessing.
+        if (storage === "table" || (storage === null && !classInfo.callableBase)) {
           return lowerer.maybeNarrow(
             {
               kind: "dynKeyGet",
@@ -510,20 +541,6 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
             expr,
           );
         }
-        // Declared, but the lowering has no storage for it: refuse by name
-        // rather than answer a value Node does not.
-        if (storage === "declared")
-          lowerer.unsupported(
-            "SC1090",
-            expr,
-            `reading the symbol-keyed static '${symbolFieldDisplayName(name)}' the class declares but the lowering cannot represent (the read would answer a value Node does not)`,
-          );
-        // No class in the chain declares the key: `C[k]` reads a property
-        // the class object does not have, and Node answers undefined. A
-        // class value that could carry properties set outside the
-        // declaration (a callable base) keeps its fence instead of guessing.
-        if (storage === null && !classInfo.callableBase)
-          return lowerer.maybeNarrow(dynUndefinedExpr(locOf(expr)), expr);
       }
     }
     if (

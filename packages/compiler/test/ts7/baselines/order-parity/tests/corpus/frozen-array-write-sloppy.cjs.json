@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/frozen-array-write-sloppy.cjs"
+ ],
+ "diags": []
+}

@@ -3399,9 +3399,13 @@ ScrDyn *scr_dyn_symbol_get(const ScrDyn *value, const ScrStr *key) {
 /* Small integers are immutable primitives, just like the boolean and null
  * singletons. The table is process-wide, like those: a published graph
  * (scr_message.c, scr_publish.c) may hold these nodes after the thread that
- * created them has exited. It is filled before main, so no thread writes it
- * later, and it neither grows nor owns heap references. */
+ * created them has exited. It is filled on first use instead of before main,
+ * so a program that never boxes a number does not root the dynamic tier's
+ * unit from a constructor; the fill publishes with a release store and a
+ * thread that finds it in progress makes its own box, which the language
+ * cannot tell apart from the shared one. 0 empty, 1 being filled, 2 done. */
 static ScrDyn scr_dyn_small_ints[384];
+static int scr_dyn_small_ints_state;
 
 /* Single-character ASCII strings are primitives with one value each, so
  * their boxes are shared the way the small integers are. The character
@@ -3434,19 +3438,31 @@ static ScrDyn *scr_dyn_ascii_fill(unsigned char c) {
 
 const char *(*scr_gen_tag_reader)(const ScrGen *g) = NULL;
 
-__attribute__((constructor)) static void scr_dyn_small_ints_init(void) {
+/* Fills the small-integer table on first use, so the fast path in
+ * scr_dyn_new_num stays a load and a branch. Returns the resulting state. */
+static int scr_dyn_small_ints_fill(void) {
+  int empty = 0;
+  if (!__atomic_compare_exchange_n(&scr_dyn_small_ints_state, &empty, 1, false,
+                                   __ATOMIC_ACQUIRE, __ATOMIC_ACQUIRE))
+    return __atomic_load_n(&scr_dyn_small_ints_state, __ATOMIC_ACQUIRE);
   for (int i = 0; i < 384; i++) {
     scr_dyn_small_ints[i].rc = SIZE_MAX;
     scr_dyn_small_ints[i].kind = SCR_DYN_NUM;
     scr_dyn_small_ints[i].v.num = (double)(i - 128);
   }
+  __atomic_store_n(&scr_dyn_small_ints_state, 2, __ATOMIC_RELEASE);
+  return 2;
 }
 
 ScrDyn *scr_dyn_new_num(double n) {
   /* Preserve negative zero as a distinct payload. */
   if (n >= -128 && n <= 255) {
     int value = (int)n;
-    if ((double)value == n && (value != 0 || !signbit(n))) return &scr_dyn_small_ints[value + 128];
+    if ((double)value == n && (value != 0 || !signbit(n))) {
+      int state = __atomic_load_n(&scr_dyn_small_ints_state, __ATOMIC_ACQUIRE);
+      if (__builtin_expect(state != 2, 0)) state = scr_dyn_small_ints_fill();
+      if (state == 2) return &scr_dyn_small_ints[value + 128];
+    }
   }
   ScrDyn *d = scr_dyn_leaf_alloc(SCR_DYN_NUM);
   d->v.num = n;
@@ -22785,9 +22801,10 @@ static ScrDyn *scr_dyn_obj_data_walk(const ScrDyn *v, ScrObjWalk mode) {
   return out;
 }
 
-/* Object.keys/values/entries of a native Proxy: its ownKeys,
- * getOwnPropertyDescriptor and get traps. */
-static ScrDyn *scr_dyn_proxy_objwalk_held(const ScrDyn *v, ScrObjWalk mode) {
+/* A Proxy's own string keys ([[OwnPropertyKeys]]): the ownKeys trap result,
+ * validated (array-like, string keys, no duplicates, non-configurable target
+ * keys present) before any descriptor or get trap runs. +1 ScrDyn array. */
+static ScrDyn *scr_dyn_proxy_key_list(const ScrDyn *v) {
   ScrDyn *trap = scr_dyn_proxy_trap(v, "ownKeys");
   if (scr_exc_pending()) return NULL;
   ScrDyn *raw;
@@ -22855,6 +22872,14 @@ static ScrDyn *scr_dyn_proxy_objwalk_held(const ScrDyn *v, ScrObjWalk mode) {
     }
     if (!found) { scr_dyn_release(keys); scr_dyn_proxy_invariant(); return NULL; }
   }
+  return keys;
+}
+
+/* Object.keys/values/entries of a native Proxy: its ownKeys,
+ * getOwnPropertyDescriptor and get traps. */
+static ScrDyn *scr_dyn_proxy_objwalk_held(const ScrDyn *v, ScrObjWalk mode) {
+  ScrDyn *keys = scr_dyn_proxy_key_list(v);
+  if (!keys) return NULL;
   ScrDyn *out = scr_dyn_new_arr();
   for (size_t i = 0; i < keys->v.arr.len; i++) {
     ScrStr *key = keys->v.arr.items[i]->v.str;
@@ -22877,6 +22902,38 @@ static ScrDyn *scr_dyn_proxy_objwalk(const ScrDyn *v, ScrObjWalk mode) {
   ScrDyn *held = scr_dyn_retain((ScrDyn *)v); /* see scr_dyn_proxy_get_receiver */
   ScrDyn *out = scr_dyn_proxy_objwalk_held(held, mode);
   scr_dyn_release(held);
+  return out;
+}
+
+/* The own string keys a property copy snapshots (Node's [[OwnPropertyKeys]],
+ * strings only and without the enumerable filter), for an object, function,
+ * array, typed record view, or Proxy. +1 ScrArr of ScrStr; NULL with the
+ * exception pending. */
+ScrArr *scr_dyn_own_key_strs_all(const ScrDyn *v) {
+  ScrDyn *keys = NULL;
+  if (v->kind == SCR_DYN_TYPED_REF) {
+    ScrDyn *view = scr_dyn_typed_ref_materialize(v);
+    if (scr_exc_pending()) return NULL;
+    ScrArr *out = scr_dyn_own_key_strs_all(view);
+    scr_dyn_release(view);
+    return out;
+  }
+  if (v->kind == SCR_DYN_OBJ) {
+    keys = scr_dyn_obj_own_keys(v);
+  } else if (v->kind == SCR_DYN_FUNC || v->kind == SCR_DYN_ARR) {
+    keys = scr_dyn_get_own_property_names(v);
+  } else if (v->kind == SCR_DYN_PROXY) {
+    keys = scr_dyn_proxy_key_list(v);
+  } else {
+    return NULL;
+  }
+  if (keys == NULL) return NULL;
+  ScrArr *out = scr_arr_new(SCR_ELEM_STR, keys->v.arr.len);
+  for (size_t i = 0; i < keys->v.arr.len; i++) {
+    const ScrDyn *key = keys->v.arr.items[i];
+    if (key->kind == SCR_DYN_STR) scr_arr_push_ref(out, scr_str_retain(key->v.str));
+  }
+  scr_dyn_release(keys);
   return out;
 }
 

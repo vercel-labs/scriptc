@@ -28,9 +28,13 @@ export function executableLinkFeatures(
   // A Node island can hand its own AbortSignal to any native receiver of one,
   // and a native signal then stands for it (scr_node_island_abort.c); a
   // FileHandle web stream reaches the stream machinery's signals too.
+  // A message's `signal` is the only dynamic handle member whose dispatch
+  // reaches the abort unit, and only node:http has one: the dynamic-read
+  // facts select it only in a program that uses http.
   const abortSignal =
     features.abortSignal ||
-    features.httpSignal ||
+    (features.httpSignal && features.http) ||
+    (features.dynSignalKey && features.http) ||
     features.fsWebStream ||
     (features.nodeIsland && features.eventTarget);
   // A feature that calls into another feature's units links those too

@@ -119,6 +119,16 @@ export const httpSignatures = defineLibFnSignatures({
   /** message.signal: the request's AbortSignal handle (checked-dynamic). */
   "http.reqSignal": { argTypes: [HTTPREQ_T], result: DYN },
   "http.reqMethod": { argTypes: [HTTPREQ_T], result: STRING },
+  /** The message's own data properties: an assignment replaces the value
+   * every later read (typed and checked-dynamic) and the server's
+   * processing answer (util/dev/server.ts builds a request this way). */
+  "http.reqSetMethod": { argTypes: [HTTPREQ_T, STRING], result: VOID },
+  "http.reqSetUrl": { argTypes: [HTTPREQ_T, STRING], result: VOID },
+  "http.reqSetHeaders": { argTypes: [HTTPREQ_T, DYN], result: VOID },
+  /** `req.headers[name] = value` mutates the headers object itself. */
+  "http.reqSetHeaderName": { argTypes: [HTTPREQ_T, STRING, DYN], result: VOID },
+  "http.reqHasHeadersOverride": { argTypes: [HTTPREQ_T], result: BOOL },
+  "http.reqHeadersOverride": { argTypes: [HTTPREQ_T], result: DYN },
   "http.reqHeader": { argTypes: [HTTPREQ_T, STRING], result: VOID },
   "http.reqTrailer": { argTypes: [HTTPREQ_T, STRING], result: VOID },
   "http.reqHeaderValues": { argTypes: [HTTPREQ_T, STRING], result: VOID },

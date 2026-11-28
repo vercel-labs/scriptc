@@ -917,6 +917,7 @@ static inline void scr_stream_settle_next(ScrStream *s) {
 }
 static int scr_stream_ref_member(void *p, const char *key, size_t key_len, ScrDyn **value);
 static ScrDyn *scr_stream_ref_symbol(void *p, const ScrDyn *key);
+static bool scr_stream_ref_is_view(const ScrDyn *view);
 
 static ScrStream *scr_stream_alloc(const ScrVt *vt, const char *cls, bool has_r, bool has_w,
                                     double rhwm, double whwm, bool auto_destroy,
@@ -3062,6 +3063,7 @@ static ScrStream *scr_stream_alloc(const ScrVt *vt, const char *cls, bool has_r,
   if (!scr_stream_ref_hooks.view) {
     scr_stream_ref_hooks.member = scr_stream_ref_member;
     scr_stream_ref_hooks.symbol = scr_stream_ref_symbol;
+    scr_stream_ref_hooks.is_view = scr_stream_ref_is_view;
     scr_stream_ref_hooks.get = scr_typed_ref_stream_get;
     scr_stream_ref_hooks.has = scr_typed_ref_stream_has;
     scr_stream_ref_hooks.view = scr_stream_ref_view;
@@ -9812,12 +9814,33 @@ static ScrDyn *scr_stream_dyn_call(ScrStream *stream, ScrDyn *self, const char *
 
 static ScrDyn *scr_stream_view_call(ScrClosure *cb, ScrDyn *const *args, size_t argc);
 
+/* The views scr_stream_dyn_view built most recently: a symbol read on a
+ * live stream capsule materializes its view and immediately asks whether
+ * this unit built it, before answering a symbol the stream implements
+ * itself. The identity test avoids storing anything on the view (a symbol
+ * property would render the symbol's name and outlive the call). */
+enum { SCR_STREAM_RECENT_VIEWS = 8 };
+static SCR_TL const ScrDyn *scr_stream_recent_views[SCR_STREAM_RECENT_VIEWS];
+static SCR_TL unsigned scr_stream_recent_next;
+
+static void scr_stream_note_view(const ScrDyn *view) {
+  scr_stream_recent_views[scr_stream_recent_next++ % SCR_STREAM_RECENT_VIEWS] = view;
+}
+
+static bool scr_stream_ref_is_view(const ScrDyn *view) {
+  for (size_t i = 0; i < SCR_STREAM_RECENT_VIEWS; i++)
+    if (scr_stream_recent_views[i] == view) return true;
+  return false;
+}
+
 /* ScrStreamRefHooks.symbol: the symbol-keyed member of a live stream
  * capsule, +1, or NULL when the symbol is not one the stream answers.
  * [Symbol.asyncIterator]() is Node's Readable.prototype method: the stream's
- * async iterator, the same value readable.iterator() answers. */
+ * async iterator, the same value readable.iterator() answers. Only the
+ * readable side has one; a Writable answers undefined. */
 static ScrDyn *scr_stream_ref_symbol(void *p, const ScrDyn *key) {
   ScrStream *stream = p;
+  if (!stream->st->has_r) return NULL;
   if (!scr_dyn_is_async_iterator_symbol(key)) return NULL;
   ScrClosure *cb = scr_closure_new((void *)scr_stream_view_call, 2);
   cb->caps[0] = scr_box_new_obj(scr_stream_retain_v, scr_stream_release_v, scr_stream_trace);
@@ -9962,6 +9985,7 @@ ScrDyn *scr_stream_dyn_view(ScrStream *stream) {
   ScrDyn *attached = scr_dyn_set_prototype(view, prototype);
   scr_dyn_release(attached);
   scr_dyn_release(prototype);
+  scr_stream_note_view(view);
   return view;
 }
 

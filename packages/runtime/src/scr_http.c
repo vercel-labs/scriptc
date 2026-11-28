@@ -286,6 +286,10 @@ struct ScrHttpReq {
   /* req.destroy(err): the error the message reports to its 'error'
    * listeners (Node emits the given error, not the teardown's) (+1). */
   ScrError *destroy_error;
+  /* The server connection that parsed this request (borrowed; NULL on h2
+   * streams and after the connection detaches the request). destroy(err)
+   * reports the error to that server's 'clientError' listeners. */
+  struct ScrHttpConn *conn;
 };
 
 #ifdef SCR_RC_AUDIT
@@ -3480,13 +3484,32 @@ enum {
   SCR_HTTP_EMIT_CLIENT_WCB = 13, /* ScrHttpClientReq: write(chunk, cb) callbacks */
   SCR_HTTP_EMIT_CLIENT_WAE_CB = 14, /* ScrHttpWaeCb: the late write callback, ahead of WAE */
   SCR_HTTP_EMIT_CLIENT_DRAIN = 15, /* ScrHttpClientReq: 'drain', off the write stack */
-  SCR_HTTP_EMIT_REQ_DESTROY_ERROR = 16 /* ScrHttpReq: destroy(err)'s 'error' */
+  SCR_HTTP_EMIT_REQ_DESTROY_ERROR = 16, /* ScrHttpReq: destroy(err)'s 'error' */
+  SCR_HTTP_EMIT_CLIENT_ERROR = 17 /* ScrHttpClientErr: destroy(err)'s 'clientError' */
 };
 
 typedef struct {
   int kind;
   void *h; /* +1 */
 } ScrHttpEmit;
+
+struct ScrHttpSrvCtx;
+
+/* destroy(err) on a server message destroys its socket with that error, and
+ * Node's socket error handler reports the error to the server's
+ * 'clientError' listeners. The connection is gone by the sweep, so the emit
+ * holds everything the listeners need on its own. */
+typedef struct {
+  struct ScrHttpSrvCtx *srv; /* +1 */
+  ScrNetSocket *sock;        /* +1 */
+  ScrError *err;             /* +1: the error destroy() was given */
+  ScrAlsCtx *als;            /* +1: the destroying handler's context */
+} ScrHttpClientErr;
+
+static void scr_http_client_err_release(ScrHttpClientErr *p);
+static bool scr_http_srv_fire_client_error(struct ScrHttpSrvCtx *srv, ScrNetSocket *sock,
+                                           ScrError *e /*borrowed*/);
+static void scr_http_queue_client_error(struct ScrHttpConn *conn, ScrError *err /*borrowed*/);
 
 /* A write callback answered for a message that cannot write: the queue runs
  * it ahead of the write-after-end 'error' the same call reports (Node's
@@ -3572,6 +3595,7 @@ static void scr_http_emit_release(ScrHttpEmit *e) {
     free(p);
     break;
   }
+  case SCR_HTTP_EMIT_CLIENT_ERROR: scr_http_client_err_release((ScrHttpClientErr *)e->h); break;
   }
 }
 
@@ -3600,16 +3624,21 @@ void scr_http_req_destroy_error(ScrHttpReq *r, ScrError *err /*borrowed*/) {
   /* The 'error' emit is queued whichever listeners exist right now: Node's
    * destroy reports the error on the next tick, so a listener registered
    * after this call still hears it. The fire checks the list then. */
-  if (!r->destroyed && !r->close_emitted)
+  if (!r->destroyed && !r->close_emitted) {
+    /* Node destroys the socket with the error too, so the server's
+     * 'clientError' listeners hear it before the message's own 'error'. */
+    scr_http_queue_client_error(r->conn, err);
     scr_http_emit_push(SCR_HTTP_EMIT_REQ_DESTROY_ERROR, scr_http_req_retain(r));
+  }
   scr_http_req_destroy(r);
 }
 
 /* res.destroy(err): Node reports a ServerResponse's destroy error nowhere on
  * the response (its 'error' listeners do not fire); the connection teardown
- * and the deferred 'close' are the whole observable effect. */
+ * and the deferred 'close' are the whole observable effect. The server's
+ * 'clientError' listeners do hear the error, from the socket teardown. */
 void scr_http_res_destroy_error(ScrHttpRes *r, ScrError *err /*borrowed*/) {
-  (void)err;
+  if (!r->destroyed && !r->close_emitted) scr_http_queue_client_error(r->conn, err);
   scr_http_res_destroy(r);
 }
 
@@ -3776,6 +3805,7 @@ static ScrAlsCtx *scr_http_emit_ctx(const ScrHttpEmit *e) {
   case SCR_HTTP_EMIT_REQ_DRAIN:
   case SCR_HTTP_EMIT_REQ_ABORTED:
   case SCR_HTTP_EMIT_REQ_DESTROY_ERROR: return ((ScrHttpReq *)e->h)->als;
+  case SCR_HTTP_EMIT_CLIENT_ERROR: return ((ScrHttpClientErr *)e->h)->als;
   case SCR_HTTP_EMIT_CLIENT_WAE_CB: return scr_http_client_ctx(((ScrHttpWaeCb *)e->h)->c);
   default: return scr_http_client_ctx((struct ScrHttpClientReq *)e->h);
   }
@@ -4004,6 +4034,14 @@ static void scr_http_proto_sweep(void) {
                               SCR_DYNH_HTTP_REQ);
         scr_event_error_payload = saved;
       }
+      break;
+    }
+    case SCR_HTTP_EMIT_CLIENT_ERROR: {
+      ScrHttpClientErr *q = (ScrHttpClientErr *)e.h;
+      /* Node's socket error handler: the server's 'clientError' listeners
+       * get the error destroy() was given and the socket. A connection
+       * with no listener reports it nowhere, as Node does. */
+      scr_http_srv_fire_client_error(q->srv, q->sock, q->err);
       break;
     }
     case SCR_HTTP_EMIT_CLIENT_CLOSE:
@@ -4806,6 +4844,7 @@ static void scr_http_conn_drop_request(ScrHttpConn *conn, bool fire_end) {
   if (conn->res) scr_http_queue_res_close(conn->res);
   if (conn->req) scr_http_queue_req_close(conn->req);
   if (conn->req) {
+    conn->req->conn = NULL;
     scr_http_req_finish(conn->req, fire_end);
     scr_http_req_release(conn->req);
     conn->req = NULL;
@@ -4832,6 +4871,7 @@ static void scr_http_conn_end_after_response(ScrHttpConn *conn) {
   if (conn->res) scr_http_queue_res_close(conn->res);
   if (!before_close) scr_http_req_queue_drain(r);
   scr_http_queue_req_close(r);
+  r->conn = NULL;
   conn->req = NULL;
   scr_http_req_release(r);
   if (conn->res) {
@@ -4957,6 +4997,51 @@ static void scr_http_conn_reject(ScrHttpConn *conn, const char *response, size_t
   scr_http_conn_drop_request(conn, false);
 }
 
+/* Runs the server's 'clientError' listeners with e and the socket; false
+ * without a live listener. An uncaught throw in one listener skips the
+ * rest, as the event loop reports it. */
+static bool scr_http_srv_fire_client_error(ScrHttpSrvCtx *srv, ScrNetSocket *sock,
+                                           ScrError *e /*borrowed*/) {
+  if (srv == NULL || sock == NULL || !scr_net_ls_has_live(&srv->client_error_ls)) return false;
+  ScrNetL *snap;
+  size_t count = scr_net_ls_snapshot(&srv->client_error_ls, &snap);
+  scr_dyn_this_push(scr_net_sock_server(sock), SCR_DYNH_NET_SERVER);
+  for (size_t i = 0; i < count; i++) {
+    if (!scr_exc_pending()) {
+      ((ScrHttpClientErrorFn)snap[i].fn)(snap[i].cb, scr_error_retain(e), scr_net_sock_retain(sock));
+    }
+    scr_closure_release(snap[i].cb);
+  }
+  scr_dyn_this_pop();
+  free(snap);
+  return true;
+}
+
+/* destroy(err) on a server message destroys its socket with that error, so
+ * Node's socket error handler reports the error to the server's
+ * 'clientError' listeners. The teardown is deferred: the listeners run
+ * after the handler's synchronous tail, before the message's own 'error'
+ * and 'close'. The connection may be gone by then, so the emit holds what
+ * the listeners need. */
+static void scr_http_queue_client_error(ScrHttpConn *conn, ScrError *err /*borrowed*/) {
+  if (conn == NULL || conn->client_mode || conn->srv == NULL || conn->sock == NULL) return;
+  ScrHttpClientErr *q = calloc(1, sizeof *q);
+  if (!q) scr_http_oom();
+  q->srv = scr_http_srv_ctx_retain(conn->srv);
+  q->sock = scr_net_sock_retain(conn->sock);
+  q->err = scr_error_retain(err);
+  q->als = scr_als_capture();
+  scr_http_emit_push(SCR_HTTP_EMIT_CLIENT_ERROR, q);
+}
+
+static void scr_http_client_err_release(ScrHttpClientErr *p) {
+  scr_http_srv_ctx_release(p->srv);
+  scr_net_sock_release(p->sock);
+  scr_error_release(p->err);
+  scr_als_ctx_release(p->als);
+  free(p);
+}
+
 /* A parse error with 'clientError' listeners: they get the error (code,
  * "Parse Error: <reason>") and the socket instead of the default answer,
  * and the connection reads nothing more, as Node's parser stays failed.
@@ -4975,17 +5060,7 @@ static bool scr_http_conn_client_error_message(ScrHttpConn *conn, const char *co
    * 'clientError' with the request still in state.incoming, so a listener
    * that closes the socket aborts it ('aborted', then 'error' ECONNRESET
    * "aborted", then 'close'); the socket's close path drops it. */
-  ScrNetL *snap;
-  size_t count = scr_net_ls_snapshot(&conn->srv->client_error_ls, &snap);
-  scr_dyn_this_push(scr_net_sock_server(conn->sock), SCR_DYNH_NET_SERVER);
-  for (size_t i = 0; i < count; i++) {
-    if (!scr_exc_pending()) {
-      ((ScrHttpClientErrorFn)snap[i].fn)(snap[i].cb, scr_error_retain(e), scr_net_sock_retain(conn->sock));
-    }
-    scr_closure_release(snap[i].cb);
-  }
-  scr_dyn_this_pop();
-  free(snap);
+  scr_http_srv_fire_client_error(conn->srv, conn->sock, e);
   scr_error_release(e);
   return true;
 }
@@ -5304,6 +5379,7 @@ static bool scr_http_conn_parse_head(ScrHttpConn *conn, size_t head_len, bool *o
   req->gated = true;
   req->join_dup = conn->srv != NULL && conn->srv->join_dup;
   req->sock = scr_net_sock_retain(conn->sock);
+  req->conn = conn;
 #ifdef SCR_RC_AUDIT
   scr_http_live++;
 #endif

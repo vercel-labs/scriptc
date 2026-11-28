@@ -225,6 +225,12 @@ struct ScrHttpReq {
   int status;      /* -1 on server requests (Node's undefined statusCode) */
   ScrStr *method;
   ScrStr *url;
+  /* method, url and headers are own DATA properties in Node: an assignment
+   * replaces what the getter answers, for this message only. The parsed
+   * values stay the initial ones (+1 each when a program assigned). */
+  ScrStr *method_override;
+  ScrStr *url_override;
+  ScrDyn *headers_override;
   ScrNetSocket *sock; /* +1 — req.socket, may be NULL defensively */
   void *h2_stream; /* +1 through scr_http_h2_ops — the h2 compat request's
                     * stream (destroy() RSTs it, never the shared socket) */
@@ -388,6 +394,9 @@ void scr_http_req_release(ScrHttpReq *r) {
     scr_als_ctx_release(r->als);
     scr_str_release(r->method);
     scr_str_release(r->url);
+    scr_str_release(r->method_override);
+    scr_str_release(r->url_override);
+    if (r->headers_override != NULL) scr_dyn_release(r->headers_override);
     for (size_t i = 0; i < r->nheaders; i++) {
       scr_str_release(r->hnames[i]);
       scr_str_release(r->hnames_raw[i]);
@@ -433,6 +442,9 @@ void *scr_http_req_retain_v(void *p) { return scr_http_req_retain((ScrHttpReq *)
 void scr_http_req_release_v(void *p) { scr_http_req_release((ScrHttpReq *)p); }
 
 ScrStr *scr_http_req_url(ScrHttpReq *r) {
+  /* An assignment to req.url replaces what the getter answers (Node's own
+   * data property). */
+  if (r->url_override != NULL) return scr_str_retain(r->url_override);
   /* The HTTP/1 request line always carries a target. An h2 compat CONNECT
    * frame carries no :path and its url is Node's undefined (the
    * http2.reqUrl read answers that arm); this accessor backs the plain
@@ -445,6 +457,7 @@ ScrStr *scr_http_req_url(ScrHttpReq *r) {
  * :path. The compat dispatch clears the seeded "/" when the block carried
  * none, so this is the bare field. */
 ScrStr *scr_http_req_url_opt(ScrHttpReq *r) {
+  if (r->url_override != NULL) return scr_str_retain(r->url_override);
   return r->url != NULL ? scr_str_retain(r->url) : NULL;
 }
 
@@ -454,7 +467,82 @@ void scr_http_req_clear_url(ScrHttpReq *r) {
   scr_str_release(r->url);
   r->url = NULL;
 }
-ScrStr *scr_http_req_method(ScrHttpReq *r) { return scr_str_retain(r->method); }
+ScrStr *scr_http_req_method(ScrHttpReq *r) {
+  return scr_str_retain(r->method_override != NULL ? r->method_override : r->method);
+}
+
+/* Writes to the message's own data properties. Node's IncomingMessage
+ * assigns method, url and headers itself and a program may assign them
+ * again (util/dev/server.ts builds a request this way); later reads, the
+ * server's processing and the checked-dynamic view see the assigned
+ * values. */
+void scr_http_req_set_method(ScrHttpReq *r, ScrStr *method /*borrowed*/) {
+  scr_str_release(r->method_override);
+  r->method_override = scr_str_retain(method);
+}
+
+void scr_http_req_set_url(ScrHttpReq *r, ScrStr *url /*borrowed*/) {
+  scr_str_release(r->url_override);
+  r->url_override = scr_str_retain(url);
+}
+
+/* The assigned headers object (any checked value, undefined included);
+ * NULL means the parsed headers are still the object reads answer. */
+void scr_http_req_set_headers(ScrHttpReq *r, ScrDyn *value /*borrowed*/) {
+  if (r->headers_override != NULL) scr_dyn_release(r->headers_override);
+  r->headers_override = value != NULL ? scr_dyn_retain(value) : NULL;
+}
+
+static ScrDyn *scr_http_req_headers_view_build(ScrHttpReq *r);
+
+/* `req.headers[name] = value`: Node mutates the headers object itself, so
+ * the write lands in the object every later read answers (a new name
+ * appends; an existing one keeps its position). With no assigned object
+ * the parsed view is promoted to be that object. */
+bool scr_http_req_set_header_name(ScrHttpReq *r, ScrStr *name /*borrowed*/,
+                                  ScrDyn *value /*borrowed*/) {
+  ScrDyn *obj;
+  if (r->headers_override != NULL) {
+    /* A record the program assigned crosses as a compiler-owned typed
+     * reference; a per-name write needs the ordinary object, so its
+     * property view is copied into one once (the contents every read
+     * answers are the same). */
+    obj = r->headers_override;
+    if (obj->kind != SCR_DYN_OBJ) {
+      /* The capsule caches its view; the writable object is a standalone
+       * copy of that view's properties. */
+      ScrDyn *view = scr_dyn_typed_ref_materialize(obj); /* +1 */
+      if (view == NULL || view->kind != SCR_DYN_OBJ) {
+        if (view != NULL) scr_dyn_release(view);
+        return false;
+      }
+      ScrDyn *copy = scr_dyn_new_obj();
+      size_t count = scr_dyn_obj_count(view);
+      for (size_t i = 0; i < count; i++) {
+        ScrDynProp e = scr_dyn_obj_prop_at(view, i);
+        scr_dyn_obj_set(copy, e.key, e.key_len, scr_dyn_retain(e.value));
+      }
+      scr_dyn_release(view);
+      scr_dyn_release(r->headers_override);
+      r->headers_override = copy;
+      obj = copy;
+    }
+  } else {
+    ScrDyn *view = scr_http_req_headers_view_build(r); /* +1 */
+    r->headers_override = scr_dyn_retain(view);
+    scr_dyn_release(view);
+    obj = r->headers_override;
+  }
+  scr_dyn_obj_set(obj, name->data, name->len, scr_dyn_retain((ScrDyn *)value));
+  return true;
+}
+
+bool scr_http_req_has_headers_override(ScrHttpReq *r) { return r->headers_override != NULL; }
+
+ScrDyn *scr_http_req_headers_override(ScrHttpReq *r) {
+  return r->headers_override != NULL ? scr_dyn_retain(r->headers_override)
+                                     : scr_dyn_undefined();
+}
 
 /* Case-insensitive equality of HTTP field names. Incoming names happen to
  * be lowercased already; outgoing names retain the spelling of the setter. */
@@ -11558,6 +11646,32 @@ static ScrDyn *scr_http_dynh_req_invoke(void *h, ScrDyn *self, const char *metho
   return NULL;
 }
 
+/* req.headers as untyped code reads it: built once from the parsed pairs
+ * (lowercased names, arrival order, first value kept, as the per-name read
+ * answers) and kept (+1), so writes to it persist. */
+static ScrDyn *scr_http_req_headers_view_build(ScrHttpReq *r) {
+  if (r->headers_view != NULL) return scr_dyn_retain(r->headers_view);
+  ScrArr *pairs = scr_http_req_header_pairs(r);
+  ScrDyn *obj = scr_dyn_new_obj();
+  size_t n = (size_t)scr_arr_len(pairs);
+  for (size_t i = 0; i + 1 < n; i += 2) {
+    ScrStr *name = (ScrStr *)scr_arr_get_ref(pairs, (double)i);
+    ScrStr *value = (ScrStr *)scr_arr_get_ref(pairs, (double)(i + 1));
+    /* Keep-FIRST on repeated names (scr_dyn_obj_set is later-wins) —
+     * the per-name read's rule (scr_http_req_header), so h.headers.x
+     * and h.headers['x'] agree; joinDuplicateHeaders pairs arrive
+     * pre-joined and unique. */
+    if (!scr_dyn_obj_get(obj, name->data, name->len)) {
+      scr_dyn_obj_set(obj, name->data, name->len, scr_dyn_new_str(value));
+    }
+    scr_str_release(name);
+    scr_str_release(value);
+  }
+  scr_arr_release(pairs);
+  r->headers_view = scr_dyn_retain(obj);
+  return obj;
+}
+
 static ScrDyn *scr_http_dynh_req_get(void *h, const char *key, size_t key_len) {
   ScrHttpReq *r = (ScrHttpReq *)h;
   (void)key_len;
@@ -11588,29 +11702,10 @@ static ScrDyn *scr_http_dynh_req_get(void *h, const char *key, size_t key_len) {
     return d;
   }
   if (strcmp(key, "headers") == 0) {
-    /* The object `{ ...req.headers }` builds — lowercased names, arrival
-     * order, duplicates combined by Node's rules — made once per message:
-     * later reads answer the same object. */
-    if (r->headers_view != NULL) return scr_dyn_retain(r->headers_view);
-    ScrArr *pairs = scr_http_req_header_pairs(r);
-    ScrDyn *obj = scr_dyn_new_obj();
-    size_t n = (size_t)scr_arr_len(pairs);
-    for (size_t i = 0; i + 1 < n; i += 2) {
-      ScrStr *name = (ScrStr *)scr_arr_get_ref(pairs, (double)i);
-      ScrStr *value = (ScrStr *)scr_arr_get_ref(pairs, (double)(i + 1));
-      /* Keep-FIRST on repeated names (scr_dyn_obj_set is later-wins) —
-       * the per-name read's rule (scr_http_req_header), so h.headers.x
-       * and h.headers['x'] agree; joinDuplicateHeaders pairs arrive
-       * pre-joined and unique. */
-      if (!scr_dyn_obj_get(obj, name->data, name->len)) {
-        scr_dyn_obj_set(obj, name->data, name->len, scr_dyn_new_str(value));
-      }
-      scr_str_release(name);
-      scr_str_release(value);
-    }
-    scr_arr_release(pairs);
-    r->headers_view = scr_dyn_retain(obj);
-    return obj;
+    /* An assigned (or per-name written) headers object is what Node's
+     * getter answers; otherwise the parsed view is. */
+    if (r->headers_override != NULL) return scr_dyn_retain(r->headers_override);
+    return scr_http_req_headers_view_build(r);
   }
   if (strcmp(key, "rawHeaders") == 0) {
     ScrArr *raw = scr_http_req_raw_headers(r);
@@ -11666,8 +11761,25 @@ static ScrDyn *scr_http_dynh_req_get(void *h, const char *key, size_t key_len) {
 }
 
 static bool scr_http_dynh_req_set(void *h, const char *key, size_t key_len, const ScrDyn *value) {
-  (void)h; (void)key; (void)key_len; (void)value;
-  return false; /* no modeled writable properties — the caller throws "not supported yet" */
+  ScrHttpReq *r = (ScrHttpReq *)h;
+  (void)key_len;
+  /* method, url and headers are own data properties Node assigns itself and
+   * a program may assign again. The headers object carries any value, as
+   * JavaScript's write does; method and url are the strings the typed
+   * surface allows, and anything else keeps the named refusal. */
+  if (strcmp(key, "headers") == 0) {
+    /* An assigned undefined is the property's value, as in JavaScript:
+     * reads answer undefined until the next assignment. */
+    scr_http_req_set_headers(r, (ScrDyn *)value);
+    return true;
+  }
+  if (strcmp(key, "method") == 0 || strcmp(key, "url") == 0) {
+    if (value->kind != SCR_DYN_STR) return false;
+    if (strcmp(key, "method") == 0) scr_http_req_set_method(r, value->v.str);
+    else scr_http_req_set_url(r, value->v.str);
+    return true;
+  }
+  return false; /* no other modeled writable properties — the caller throws "not supported yet" */
 }
 
 /* ── ServerResponse (SCR_DYNH_HTTP_RES) ──────────────────────────────── */

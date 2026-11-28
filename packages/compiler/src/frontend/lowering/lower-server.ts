@@ -1860,6 +1860,76 @@ export function lowerHttpResPropertyAssignment(
   };
 }
 
+/** Writes to IncomingMessage's own data properties. Node's constructor
+ * assigns method, url and headers, and a program may assign them again
+ * (util/dev/server.ts builds a request this way and hands it on): later
+ * reads, the server's processing and the checked-dynamic view answer the
+ * assigned value. Null when the target isn't one of them. */
+export function lowerHttpReqPropertyAssignment(
+  lowerer: Lowerer,
+  left: ts.Expression,
+  right: ts.Expression,
+  loc: SrcLoc,
+): IrStmt | null {
+  if (!ts.isPropertyAccessExpression(left) || left.questionDotToken) return null;
+  const name = left.name.text;
+  if (name !== "method" && name !== "url" && name !== "headers") return null;
+  if (lowerer.mapTypeOf(lowerer.typeOf(left.expression))?.kind !== "httpReq") return null;
+  if (!lowerer.isStdlibMember(left)) return null;
+  const receiver = coerceToHandle(lowerer, left.expression, HTTPREQ_T);
+  if (name === "headers") {
+    const value = lowerer.lowerExprExpecting(right, DYN);
+    return {
+      kind: "exprStmt",
+      expr: {
+        kind: "libCall",
+        fn: "http.reqSetHeaders",
+        args: [receiver, value],
+        type: VOID,
+        loc,
+      },
+      loc,
+    };
+  }
+  const fn: IrLibFn = name === "url" ? "http.reqSetUrl" : "http.reqSetMethod";
+  const value = lowerer.lowerExprExpecting(right, STRING);
+  return {
+    kind: "exprStmt",
+    expr: { kind: "libCall", fn, args: [receiver, value], type: VOID, loc },
+    loc,
+  };
+}
+
+/** `req.headers[name] = value`: Node mutates the headers object itself, so
+ * the write lands where later reads (typed and checked-dynamic) answer,
+ * while rawHeaders and headersDistinct keep the parsed lines. Null when
+ * the target isn't one of those writes. */
+export function lowerHttpReqHeaderWrite(
+  lowerer: Lowerer,
+  left: ts.ElementAccessExpression,
+  right: ts.Expression,
+  loc: SrcLoc,
+): IrStmt | null {
+  const collection = httpReqFieldCollection(lowerer, left.expression);
+  if (collection !== "headers") return null;
+  const recv = (left.expression as ts.PropertyAccessExpression).expression;
+  if (lowerer.mapTypeOf(lowerer.typeOf(recv))?.kind !== "httpReq") return null;
+  const receiver = coerceToHandle(lowerer, recv, HTTPREQ_T);
+  const key = lowerer.lowerExprExpecting(left.argumentExpression as ts.Expression, STRING);
+  const value = lowerer.lowerExprExpecting(right, DYN);
+  return {
+    kind: "exprStmt",
+    expr: {
+      kind: "libCall",
+      fn: "http.reqSetHeaderName",
+      args: [receiver, key, value],
+      type: VOID,
+      loc,
+    },
+    loc,
+  };
+}
+
 /** `server.timeout = n` and the four HTTP parser/keep-alive timeout
  * siblings. These are ordinary writable number properties in Node: the
  * runtime stores their exact value per server; active timeout behavior is
@@ -4662,13 +4732,69 @@ export function lowerServerMethodCall(
  * when the shape is not a pure index-signature record with a string arm
  * (the caller fences). */
 function headersSnapshotHelper(lowerer: Lowerer, shapeId: string, loc: SrcLoc): string | null {
-  return pairsSnapshotHelper(lowerer, shapeId, loc, {
+  const pairs = pairsSnapshotHelper(lowerer, shapeId, loc, {
     keyPrefix: "headers",
     libCall: "http.reqHeaderPairs",
     params: [{ localId: "r.0", name: "r", type: HTTPREQ_T }],
     callArgs: [varRef("r.0", HTTPREQ_T, loc)],
     listKey: { name: "set-cookie", libCall: "http.reqHeaderList" },
   });
+  if (pairs === null) return null;
+  // An assignment to req.headers replaces the object its getter answers
+  // (Node's own data property), so the snapshot reads the assigned value
+  // when there is one and the parsed headers otherwise.
+  const key = `headers.assigned:${shapeId}`;
+  const existing = lowerer.valueHelpers.get(key);
+  if (existing !== undefined) return existing;
+  const name = keyedHelperName(lowerer, "%headers.assigned", key);
+  lowerer.valueHelpers.set(key, name);
+  const recordType: IrType = { kind: "record", shapeId };
+  const receiver = (): IrExpr => varRef("r.0", HTTPREQ_T, loc);
+  lowerer.liftedFns.push({
+    name,
+    params: [{ localId: "r.0", name: "r", type: HTTPREQ_T }],
+    returnType: recordType,
+    locals: [{ id: "r.0", name: "r", type: HTTPREQ_T, mutable: false }],
+    body: [
+      {
+        kind: "if",
+        cond: {
+          kind: "libCall",
+          fn: "http.reqHasHeadersOverride",
+          args: [receiver()],
+          type: BOOL,
+          loc,
+        },
+        then: [
+          {
+            kind: "return",
+            value: {
+              kind: "dynCheck",
+              value: {
+                kind: "libCall",
+                fn: "http.reqHeadersOverride",
+                args: [receiver()],
+                type: DYN,
+                loc,
+              },
+              type: recordType,
+              loc,
+            },
+            loc,
+          },
+        ],
+        else_: null,
+        loc,
+      },
+      {
+        kind: "return",
+        value: { kind: "call", callee: pairs, args: [receiver()], type: recordType, loc },
+        loc,
+      },
+    ],
+    loc,
+  });
+  return name;
 }
 
 function trailersSnapshotHelper(lowerer: Lowerer, shapeId: string, loc: SrcLoc): string | null {
@@ -6390,6 +6516,48 @@ export function lowerServerProperty(
       collection.endsWith("Distinct") || list
         ? lowerer.withUndefinedArm(arrayOf(STRING))
         : lowerer.envValueType();
+    if (collection === "headers") {
+      // An assigned headers object replaces the one a per-name read goes
+      // through too: Node's property read sees what was assigned.
+      const recvLocal = lowerer.declareHiddenLocal("%req", HTTPREQ_T);
+      const recv = (): IrExpr => varRef(recvLocal.id, HTTPREQ_T, loc);
+      return {
+        kind: "seqExpr",
+        stmts: [{ kind: "varDecl", localId: recvLocal.id, init: receiver, loc }],
+        result: {
+          kind: "ternary",
+          cond: {
+            kind: "libCall",
+            fn: "http.reqHasHeadersOverride",
+            args: [recv()],
+            type: BOOL,
+            loc,
+          },
+          then: lowerer.coerceInto(
+            expr,
+            {
+              kind: "dynKeyGet",
+              key: { kind: "strLit", value: expr.name.text, type: STRING, loc },
+              value: {
+                kind: "libCall",
+                fn: "http.reqHeadersOverride",
+                args: [recv()],
+                type: DYN,
+                loc,
+              },
+              type: DYN,
+              loc,
+            },
+            type,
+          ),
+          else_: { kind: "libCall", fn, args: [recv(), key], type, loc },
+          type,
+          loc,
+        },
+        type,
+        loc,
+      };
+    }
     return { kind: "libCall", fn, args: [receiver, key], type, loc };
   }
   if (recvKind === "httpRes" && lowerer.isStdlibMember(expr) && expr.name.text === "headersSent") {
@@ -11289,21 +11457,74 @@ export function lowerHttpHeadersElement(
   }
   const receiver = lowerer.lowerExpr(recv);
   const list = isSetCookieRead(lowerer, expr, collection, key);
+  const type =
+    collection.endsWith("Distinct") || list
+      ? lowerer.withUndefinedArm(arrayOf(STRING))
+      : lowerer.envValueType();
+  if (collection === "headers") {
+    // An assigned headers object replaces the one a per-name read goes
+    // through too, as Node's property read answers what was assigned.
+    const loc = locOf(expr);
+    const recvLocal = lowerer.declareHiddenLocal("%req", HTTPREQ_T);
+    const keyLocal = lowerer.declareHiddenLocal("%reqName", STRING);
+    const recvRef = (): IrExpr => varRef(recvLocal.id, HTTPREQ_T, loc);
+    const keyRef = (): IrExpr => varRef(keyLocal.id, STRING, loc);
+    return {
+      kind: "seqExpr",
+      stmts: [
+        { kind: "varDecl", localId: recvLocal.id, init: receiver, loc },
+        { kind: "varDecl", localId: keyLocal.id, init: key, loc },
+      ],
+      result: {
+        kind: "ternary",
+        cond: {
+          kind: "libCall",
+          fn: "http.reqHasHeadersOverride",
+          args: [recvRef()],
+          type: BOOL,
+          loc,
+        },
+        then: lowerer.coerceInto(
+          expr,
+          {
+            kind: "dynKeyGet",
+            key: keyRef(),
+            value: {
+              kind: "libCall",
+              fn: "http.reqHeadersOverride",
+              args: [recvRef()],
+              type: DYN,
+              loc,
+            },
+            type: DYN,
+            loc,
+          },
+          type,
+        ),
+        else_: {
+          kind: "libCall",
+          fn: list ? "http.reqHeaderValues" : "http.reqHeader",
+          args: [recvRef(), keyRef()],
+          type,
+          loc,
+        },
+        type,
+        loc,
+      },
+      type,
+      loc,
+    };
+  }
   return {
     kind: "libCall",
     fn:
-      collection === "headers" && !list
-        ? "http.reqHeader"
-        : collection === "trailers"
-          ? "http.reqTrailer"
-          : collection === "headersDistinct" || list
-            ? "http.reqHeaderValues"
-            : "http.reqTrailerValues",
+      collection === "trailers"
+        ? "http.reqTrailer"
+        : collection === "headersDistinct" || list
+          ? "http.reqHeaderValues"
+          : "http.reqTrailerValues",
     args: [receiver, key],
-    type:
-      collection.endsWith("Distinct") || list
-        ? lowerer.withUndefinedArm(arrayOf(STRING))
-        : lowerer.envValueType(),
+    type,
     loc: locOf(expr),
   };
 }

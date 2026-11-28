@@ -2186,7 +2186,10 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
   const literalOrder = (segments: readonly KeyOrderSegment[]): string[] | null => {
     const out: string[] = [];
     for (const segment of segments) {
-      if (segment.kind !== "key" || !segment.definite) return null;
+      // A conditional spread's key keeps the position it is created at when
+      // the branch runs (an absent key is skipped by every surface), so the
+      // literal's order is known either way.
+      if (segment.kind !== "key") return null;
       if (!isArrayIndex(segment.name)) out.push(segment.name);
     }
     return out;

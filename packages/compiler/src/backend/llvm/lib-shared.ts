@@ -1103,6 +1103,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "insp.circular": "scr_insp_circular",
   // Undeclared source properties kept beside a checked record (scr_json.c).
   "record.sourceHas": "scr_record_source_has",
+  "record.sourceView": "scr_record_source_view",
   "record.reflectsStatic": "scr_record_reflects_static",
   "record.sourceGet": "scr_record_source_get",
   "record.sourceHasKey": "scr_record_source_has_key",

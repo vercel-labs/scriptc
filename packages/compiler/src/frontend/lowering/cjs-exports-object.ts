@@ -319,6 +319,12 @@ export function lowerCjsExportsObjectValue(lowerer: Lowerer, node: ts.Expression
   // `module.exports` truthiness keeps its existing fold (and anything the
   // object is not needed for keeps whatever answered it before).
   if (answeredWithoutObject(node)) return null;
+  // A module of a require cycle whose exports a member can observe keeps
+  // Node's live exports object (%exportsThis, mirrored on every export
+  // write): any other value use answers that object, so passing `exports`
+  // to Object.getOwnPropertyNames and friends is the object Node passes.
+  const partial = cjsPartialExportsObject(lowerer, sf);
+  if (partial !== null) return { kind: "varRef", localId: partial.id, type: DYN, loc: locOf(node) };
   lowerer.unsupported(
     "SC1090",
     node,
@@ -899,6 +905,28 @@ export function cjsPartialExportRead(
     type: DYN,
     loc,
   };
+}
+
+/** A member read through a module binding of a module of a partial
+ * require() cycle: the live exports object's member as it stands, undefined
+ * (with Node's circular-dependency warning) while the module evaluates and
+ * the member is missing. Null when the receiver is not such a binding or the
+ * module has no live object. */
+export function lowerCjsPartialCycleMemberRead(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (access.questionDotToken || !ts.isIdentifier(access.name)) return null;
+  const members = lowerer.program.analysis.partialCjsCycleMembers;
+  if (members.size === 0) return null;
+  let recv: ts.Expression = access.expression;
+  while (ts.isParenthesizedExpression(recv)) recv = recv.expression;
+  if (!ts.isIdentifier(recv)) return null;
+  const dep = lowerer.cjsModuleBindingDepOf(recv);
+  if (dep === null) return null;
+  const target = cjsNamespaceTargetOf(lowerer, dep) ?? dep;
+  if (!members.has(target)) return null;
+  return cjsPartialExportRead(lowerer, target, access.name.text, access);
 }
 
 /** The statement that installs export `key`'s accessor descriptor on a

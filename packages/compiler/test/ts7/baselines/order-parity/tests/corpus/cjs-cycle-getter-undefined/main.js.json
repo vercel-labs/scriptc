@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/cjs-cycle-getter-undefined/b.js",
+  "<repo>/tests/corpus/cjs-cycle-getter-undefined/a.js",
+  "<repo>/tests/corpus/cjs-cycle-getter-undefined/main.js"
+ ],
+ "diags": []
+}

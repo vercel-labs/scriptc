@@ -2236,6 +2236,13 @@ function registerCjsExportGlobal(
     const strict = lowerer.checker.getTypeOfSymbol(symbol);
     let t = lowerer.mapTypeOf(strict) ?? dynFallbackType(lowerer, nameNode, strict);
     if (!t || t.kind === "void") lowerer.badType(typeNode, strict);
+    // A module of a partial require() cycle stores members that are not
+    // assigned yet as undefined (a cycle member reading the live exports
+    // object sees them, and an export written from such a read stores
+    // undefined). Its slots are checked-dynamic so the store is exact; typed
+    // reads after the module settles convert at the use.
+    const partialCycle = lowerer.program.analysis.partialCjsCycleMembers.has(sf);
+    if (partialCycle) t = DYN;
     // An export typed as the empty object literal (tsc's enum output
     // `exports.E || (exports.E = {})` after its `exports.E = void 0`
     // preamble): TS's `{}` admits any later non-nullish value and the
@@ -2258,7 +2265,7 @@ function registerCjsExportGlobal(
     {
       let rhs: ts.Node = typeNode;
       while (ts.isParenthesizedExpression(rhs)) rhs = rhs.expression;
-      if (ts.isIdentifier(rhs)) {
+      if (!partialCycle && ts.isIdentifier(rhs)) {
         const vSym = lowerer.checker.getSymbolAtLocation(rhs);
         const vG = vSym && lowerer.globalsBySymbol.get(vSym);
         if (vG) {

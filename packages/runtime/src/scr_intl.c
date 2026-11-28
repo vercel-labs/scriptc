@@ -2683,6 +2683,24 @@ static ScrIntlListFormat *scr_intl_list_format_resolve(const ScrStr *locale, Scr
                                                        const char *method) {
   char icuLocale[ULOC_FULLNAME_CAPACITY];
   if (!scr_intl_locale_of(locale, icuLocale, sizeof icuLocale)) return NULL;
+  // Node's ListFormat takes only an object (or undefined) for its options:
+  // null and every primitive are V8's invalid_argument TypeError, unlike the
+  // sibling formatters, which read a primitive as no options.
+  if (optionsValue != NULL && optionsValue->kind != SCR_DYN_UNDEF) {
+    switch (optionsValue->kind) {
+    case SCR_DYN_NULL:
+    case SCR_DYN_BOOL:
+    case SCR_DYN_NUM:
+    case SCR_DYN_STR:
+    case SCR_DYN_BIGINT:
+    case SCR_DYN_SYMBOL: {
+      static const char message[] = "invalid_argument";
+      scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+      return NULL;
+    }
+    default: break;
+    }
+  }
   ScrIntlOptions options;
   if (!scr_intl_options(optionsValue, method, &options)) return NULL;
   static const char *const MATCHERS[] = { "lookup", "best fit" };
@@ -2725,17 +2743,94 @@ static void scr_intl_list_format_element_error(const ScrDyn *element) {
   scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&message));
 }
 
+/* IteratorStepValue over (iterator, next): true with *done and the owned
+ * value, or false with the exception pending. The native fast path serves a
+ * real native iterator; every other iterator (a program's, a generator)
+ * steps through its own next method, as the collection iterables do. */
+static bool scr_intl_list_format_step(ScrDyn *iterator, ScrDyn *next, bool *done,
+                                      ScrDyn **value) {
+  *done = false;
+  *value = NULL;
+  if (scr_dyn_iterator_can_step(iterator, next)) {
+    ScrDyn *item = scr_dyn_iterator_step(iterator);
+    if (item == NULL) return false;
+    *done = scr_dyn_iterator_step_done(iterator);
+    *value = item;
+    return true;
+  }
+  scr_dyn_this_push_dyn(iterator);
+  ScrDyn *raw = scr_dyn_call(next, NULL, 0, "next");
+  scr_dyn_this_pop();
+  if (raw == NULL) return false;
+  ScrDyn *finished = scr_dyn_iterator_result_get(raw, "done", 4);
+  if (finished == NULL) {
+    scr_dyn_release(raw);
+    return false;
+  }
+  *done = scr_dyn_truthy(finished);
+  scr_dyn_release(finished);
+  if (*done) {
+    scr_dyn_release(raw);
+    *value = scr_dyn_retain(scr_dyn_undefined());
+    return true;
+  }
+  *value = scr_dyn_iterator_result_get(raw, "value", 5);
+  scr_dyn_release(raw);
+  return *value != NULL;
+}
+
+/* IteratorClose(iterator, throw completion): the pending error stays and
+ * everything return() raises is dropped, so the element's TypeError is the
+ * one the program sees. */
+static void scr_intl_list_format_close(ScrDyn *iterator) {
+  ScrCaught *first = scr_exc_take();
+  ScrDyn *method = scr_dyn_member_get(iterator, "return");
+  if (method != NULL) {
+    if (method->kind != SCR_DYN_UNDEF && method->kind != SCR_DYN_NULL) {
+      scr_dyn_this_push_dyn(iterator);
+      ScrDyn *result = scr_dyn_call(method, NULL, 0, "return");
+      scr_dyn_this_pop();
+      if (result == NULL) {
+        ScrCaught *dropped = scr_exc_take();
+        scr_caught_release(dropped);
+      } else {
+        scr_dyn_release(result);
+      }
+    }
+    scr_dyn_release(method);
+  }
+  if (first != NULL) {
+    scr_rethrow(first);
+    scr_caught_release(first);
+  }
+}
+
 static ScrStr *scr_intl_list_format_run(const ScrIntlListFormat *format, ScrDyn *list) {
   if (list == NULL || list->kind == SCR_DYN_UNDEF) return scr_str_new("", 0);
-  ScrDyn *iterator = scr_dyn_array_from_iterator(list);
-  if (iterator == NULL) return NULL;
+  int kind = 0;
+  ScrDyn *iterator = scr_dyn_open_iterator(list, &kind, true);
+  if (iterator == NULL) {
+    if (kind == 0) scr_dyn_throw_not_iterable(list);
+    return NULL;
+  }
+  ScrDyn *next = scr_dyn_member_get(iterator, "next");
+  if (next == NULL) {
+    scr_dyn_release(iterator);
+    return NULL;
+  }
   ScrStr **parts = NULL;
   size_t count = 0;
   size_t cap = 0;
   for (;;) {
-    ScrDyn *item = scr_dyn_iterator_step(iterator);
-    if (item == NULL) goto fail;
-    bool done = scr_dyn_iterator_step_done(iterator);
+    bool done = false;
+    ScrDyn *item = NULL;
+    if (!scr_intl_list_format_step(iterator, next, &done, &item)) {
+      scr_dyn_release(next);
+      scr_dyn_release(iterator);
+      for (size_t i = 0; i < count; i++) scr_str_release(parts[i]);
+      free(parts);
+      return NULL;
+    }
     if (done) {
       scr_dyn_release(item);
       break;
@@ -2743,20 +2838,25 @@ static ScrStr *scr_intl_list_format_run(const ScrIntlListFormat *format, ScrDyn 
     if (item->kind != SCR_DYN_STR) {
       scr_intl_list_format_element_error(item);
       scr_dyn_release(item);
-      goto fail;
+      scr_intl_list_format_close(iterator);
+      scr_dyn_release(next);
+      scr_dyn_release(iterator);
+      for (size_t i = 0; i < count; i++) scr_str_release(parts[i]);
+      free(parts);
+      return NULL;
     }
     if (count == cap) {
-      size_t next = cap != 0 ? cap * 2 : 4;
-      ScrStr **grown = realloc(parts, next * sizeof *parts);
+      size_t grown_cap = cap != 0 ? cap * 2 : 4;
+      ScrStr **grown = realloc(parts, grown_cap * sizeof *parts);
       if (grown == NULL) scr_trap("scriptc: out of memory\n");
       parts = grown;
-      cap = next;
+      cap = grown_cap;
     }
     parts[count++] = scr_str_retain(item->v.str);
     scr_dyn_release(item);
   }
+  scr_dyn_release(next);
   scr_dyn_release(iterator);
-  iterator = NULL;
   if (count == 0) {
     free(parts);
     return scr_str_new("", 0);
@@ -2798,11 +2898,6 @@ static ScrStr *scr_intl_list_format_run(const ScrIntlListFormat *format, ScrDyn 
     if (result == NULL) scr_intl_no_data();
     return result;
   }
-fail:
-  scr_dyn_release(iterator);
-  for (size_t i = 0; i < count; i++) scr_str_release(parts[i]);
-  free(parts);
-  return NULL;
 }
 
 static ScrIntlListFormat *scr_intl_list_format_of(ScrDyn *value) {

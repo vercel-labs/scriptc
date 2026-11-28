@@ -2503,6 +2503,47 @@ ScrDyn *scr_dyn_obj_get(const ScrDyn *d, const char *key, size_t key_len) {
   return entry && !entry->class_view ? entry->value : NULL;
 }
 
+/* A member read over any checked-dynamic value, the one the iterator
+ * protocols use for next/return: a typed capsule's own member or its
+ * materialized view, a handle's, a proxy's, a promise's, a function's or a
+ * plain object's. +1, or NULL with the exception pending. */
+ScrDyn *scr_dyn_member_get(const ScrDyn *object, const char *key) {
+  size_t len = strlen(key);
+  if (object->kind == SCR_DYN_TYPED_REF) {
+    ScrStr *name = scr_str_new(key, len);
+    ScrDyn *fast = scr_dyn_typed_ref_own_get(object, name);
+    scr_str_release(name);
+    if (fast) return fast;
+    ScrDyn *view = scr_dyn_typed_ref_materialize(object);
+    if (!view) return NULL;
+    ScrDyn *out = scr_dyn_member_get(view, key);
+    scr_dyn_release(view);
+    return out;
+  }
+  if (object->kind == SCR_DYN_HANDLE || object->kind == SCR_DYN_PROXY ||
+      object->kind == SCR_DYN_PROMISE) {
+    ScrStr *name = scr_str_new(key, len);
+    ScrDyn *out = object->kind == SCR_DYN_HANDLE
+                    ? scr_dyn_handle_key_get(object, name)
+                    : object->kind == SCR_DYN_PROXY ? scr_dyn_proxy_get(object, name)
+                                                    : scr_dyn_promise_key_get(object, name);
+    scr_str_release(name);
+    return out;
+  }
+  if (object->kind == SCR_DYN_FUNC) return scr_dyn_fn_get(object, key, len);
+  if (object->kind == SCR_DYN_OBJ) {
+    ScrDyn *own = scr_dyn_obj_get(object, key, len);
+    if (own != NULL) return scr_dyn_retain(own);
+    for (const ScrDyn *p = object->prototype; p != NULL; p = p->prototype) {
+      if (p->kind != SCR_DYN_OBJ) continue;
+      ScrDyn *inherited = scr_dyn_obj_get(p, key, len);
+      if (inherited != NULL) return scr_dyn_retain(inherited);
+    }
+    return scr_dyn_retain(scr_dyn_undefined());
+  }
+  return NULL;
+}
+
 bool scr_dyn_obj_enumerable(const ScrDyn *d, const char *key, size_t key_len) {
   if (scr_dyn_is_layout(d)) return scr_dyn_layout_slot(d, key, key_len) != NULL;
   ScrDynEntry *entry = scr_dyn_find_entry(d, key, key_len);
@@ -2979,6 +3020,11 @@ static ScrDyn *scr_dyn_not_iterable(const ScrDyn *src, const ScrStr *msg) {
   scr_jb_puts(&b, " is not iterable (cannot read property Symbol(Symbol.iterator))");
   scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&b));
   return NULL;
+}
+
+/* The same TypeError for a value the caller found not iterable. */
+void scr_dyn_throw_not_iterable(const ScrDyn *value) {
+  (void)scr_dyn_not_iterable(value, NULL);
 }
 
 static ScrDyn *scr_native_iterator_drain(const ScrDyn *src);
@@ -14385,9 +14431,8 @@ ScrStr *scr_dyn_side_effect_free_string(const ScrDyn *value) {
     } else {
       for (const ScrDyn *p = value; p != NULL; p = p->prototype) {
         if (p->kind != SCR_DYN_OBJ) continue;
-        ScrDyn *method = scr_dyn_obj_get(p, "toString", 8);
-        if (method != NULL) {
-          scr_dyn_release(method);
+        /* scr_dyn_obj_get answers BORROWED: only the presence matters. */
+        if (scr_dyn_obj_get(p, "toString", 8) != NULL) {
           custom = true;
           break;
         }

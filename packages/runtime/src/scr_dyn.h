@@ -1081,6 +1081,11 @@ static inline const ScrDynTypedArrayOps *scr_dyn_typed_ref_array_ops(const ScrDy
 
 /* BORROWED member lookup on a SCR_DYN_OBJ; NULL when the key is absent. */
 ScrDyn *scr_dyn_obj_get(const ScrDyn *d, const char *key, size_t key_len);
+/* A member read over any checked-dynamic value (next/return on an
+ * iterator): +1, or NULL with the exception pending. */
+ScrDyn *scr_dyn_member_get(const ScrDyn *object, const char *key);
+/* V8's GetIterator TypeError for a value with no Symbol.iterator. Throws. */
+void scr_dyn_throw_not_iterable(const ScrDyn *value);
 /* Own-enumerable check on a SCR_DYN_OBJ. */
 bool scr_dyn_obj_enumerable(const ScrDyn *d, const char *key, size_t key_len);
 /* Stores own property `entry` of `source` on `target` with its attributes:

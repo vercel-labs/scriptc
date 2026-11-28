@@ -35,3 +35,45 @@ try {
 } catch (error) {
   console.log(error.constructor.name + ": " + error.message);
 }
+
+// An element with an own toString takes the [object Object] branch (the
+// renderer asks whether one exists, borrowing the member read).
+console.log(message(conjunction, { toString() { return "text"; } }));
+
+// An element that is not a string closes the iterator with return() before
+// the TypeError.
+const closing = {
+  [Symbol.iterator]() {
+    let index = 0;
+    return {
+      next: () => ({ done: index > 1, value: index++ === 0 ? "ok" : 5 }),
+      return: () => {
+        console.log("iterator closed");
+        return { done: true };
+      },
+    };
+  },
+};
+try {
+  conjunction.format(closing);
+} catch (error) {
+  console.log(error.constructor.name + ": " + error.message);
+}
+
+// A value that is not iterable is V8's TypeError.
+for (const value of [42, { a: 1 }, { next: () => ({ done: true }) }, null]) {
+  try {
+    conjunction.format(value);
+  } catch (error) {
+    console.log(error.constructor.name + ": " + error.message);
+  }
+}
+
+// Null and primitive options are Node's invalid_argument TypeError.
+for (const options of [null, 5, "x", true]) {
+  try {
+    new Intl.ListFormat("en", options);
+  } catch (error) {
+    console.log("options:", error.constructor.name + ": " + error.message);
+  }
+}

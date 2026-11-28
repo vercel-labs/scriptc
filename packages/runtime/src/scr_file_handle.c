@@ -645,6 +645,37 @@ ScrPromise *scr_file_handle_stat_promise(ScrFileHandle *h) {
                                  &scr_stats_release_v, NULL);
 }
 
+/* FileHandle.stat(options): Node reads bigint before the stat (a throwing
+ * getter rejects), and the call's type names the member table. */
+/* The bigint member read Node's getOptions performs before FileHandle.stat:
+ * a getter runs (its throw rejects), and the value itself is not needed
+ * because the call's own type names the member table. */
+static void scr_fh_read_bigint(const ScrDyn *options) {
+  /* undefined is the absent option; null is Node's TypeError (it reads
+   * bigint off the value, so a null options throws the property-read
+   * TypeError and rejects). */
+  if (options == NULL || options->kind == SCR_DYN_UNDEF) return;
+  ScrStr *name = scr_str_new("bigint", 6);
+  ScrDyn *boxed = scr_dyn_new_str(name);
+  scr_str_release(name);
+  ScrDyn *subject = (ScrDyn *)options;
+  ScrDyn *value = scr_dyn_reflect_get(subject, boxed, subject);
+  scr_dyn_release(boxed);
+  if (value != NULL) scr_dyn_release(value);
+}
+
+ScrPromise *scr_file_handle_stat_opts_promise(ScrFileHandle *h,
+                                              const ScrDyn *options) {
+  /* Node validates the descriptor before the options: a closed handle
+   * rejects EBADF and the bigint member is never read. */
+  if (h->fd < 0) return scr_file_handle_stat_promise(h);
+  scr_fh_read_bigint(options);
+  /* A hostile options value (a primitive, a throwing getter) rejects the
+   * promise; it must not answer a NULL the await would crash on. */
+  if (scr_exc_pending()) return scr_promise_rejected_pending();
+  return scr_file_handle_stat_promise(h);
+}
+
 /* The checked boundary retains the shared descriptor slot. Statically
  * typed uses unwrap it before invoking the existing FileHandle surface. */
 static ScrDyn *scr_file_handle_dyn_invoke(

@@ -4450,8 +4450,11 @@ function validateFunction(
       e.fn === "text.encodeIntoStr" ||
       // fs.promises.stat/lstat(path, options) answer the call's own promise:
       // Stats, BigIntStats, or either with undefined for a suppressed miss.
+      // FileHandle.stat(options) answers the member table the call's type
+      // names, Stats or BigIntStats.
       e.fn === "fsp.statOpts" ||
-      e.fn === "fsp.lstatOpts";
+      e.fn === "fsp.lstatOpts" ||
+      e.fn === "fileHandle.statOpts";
     if (!variableResult && !typeEquals(e.type, sig.result)) {
       // The stat calls answer the SAME snapshot under either member table:
       // their `bigint` option picks BigIntStats' reads over Stats'. The

@@ -83,4 +83,9 @@ export const fileHandleSignatures = defineLibFnSignatures({
     result: { kind: "promise", inner: VOID },
   },
   "fileHandle.stat": { argTypes: [FILEHANDLE_T], result: { kind: "promise", inner: STATS_T } },
+  /** FileHandle.stat(options): Node reads only bigint for a descriptor (a
+   * descriptor cannot miss, so throwIfNoEntry is not in StatOptions); the
+   * runtime reads the member for its effects and TypeErrors, and the call's
+   * own type names the Stats or BigIntStats table. */
+  "fileHandle.statOpts": { argTypes: [FILEHANDLE_T, DYN], result: DYN },
 });

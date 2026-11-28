@@ -4461,6 +4461,15 @@ ScrPromise *scr_promise_settled_void(void) {
   return p;
 }
 
+/* The pending exception as a rejected promise (the option reads a hostile
+ * value or getter throws): a promise-returning entry point must reject, not
+ * answer NULL. */
+ScrPromise *scr_promise_rejected_pending(void) {
+  ScrPromise *rejected = scr_promise_settled_common();
+  if (rejected != NULL) return rejected;
+  return scr_promise_settled_void();
+}
+
 ScrPromise *scr_promise_settled_ref(void *v, void *(*retain)(void *), void (*release)(void *),
                                      ScrTraceFn trace) {
   ScrPromise *rejected = scr_promise_settled_common();

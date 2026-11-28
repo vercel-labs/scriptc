@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/conditional-spread-effectful-prefix.ts"
+ ],
+ "diags": []
+}

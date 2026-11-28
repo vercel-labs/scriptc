@@ -48,6 +48,7 @@ import {
   classMethodsBuilder,
   islandSharedPath,
 } from "./lower-node-island.js";
+import { exactClassCrossing } from "./exact-class.js";
 import { dynUndefinedExpr } from "../../ir/build.js";
 import { funcTypeFromParamShapes } from "./call-signatures.js";
 import { bindingNeverReassigned } from "./binding-analysis.js";
@@ -630,7 +631,12 @@ export function sharedModuleRegistrations(lowerer: Lowerer): IrStmt[] {
       for (const e of plan.exports) {
         let value: IrExpr;
         try {
-          value = lowerer.coerceToExpected(lowerer.lowerExpr(e.ident), DYN);
+          // A class-typed export crosses with the class the value has at run time, as every other
+          // crossing does: a derived instance exported as its base answers the derived class's
+          // members and fields in the island.
+          const lowered = lowerer.lowerExpr(e.ident);
+          value =
+            exactClassCrossing(lowerer, lowered, loc) ?? lowerer.coerceToExpected(lowered, DYN);
         } catch (error) {
           if (!(error instanceof PoisonError)) throw error;
           continue;

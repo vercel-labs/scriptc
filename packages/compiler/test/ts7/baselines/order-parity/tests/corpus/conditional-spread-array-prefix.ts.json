@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/conditional-spread-array-prefix.ts"
+ ],
+ "diags": []
+}

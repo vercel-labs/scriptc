@@ -486,11 +486,25 @@ void scr_http_req_set_url(ScrHttpReq *r, ScrStr *url /*borrowed*/) {
   r->url_override = scr_str_retain(url);
 }
 
-/* The assigned headers object (any checked value, undefined included);
- * NULL means the parsed headers are still the object reads answer. */
+/* The assigned headers object (any checked value). A null or undefined
+ * assignment is Node's accessor rebuilding the parsed headers: the object
+ * answered before is dropped, so writes made to it do not survive. */
 void scr_http_req_set_headers(ScrHttpReq *r, ScrDyn *value /*borrowed*/) {
+  if (value == NULL || value->kind == SCR_DYN_NULL || value->kind == SCR_DYN_UNDEF) {
+    if (r->headers_override != NULL) {
+      scr_dyn_release(r->headers_override);
+      r->headers_override = NULL;
+    }
+    /* The parsed view is rebuilt from the message's lines on the next read;
+     * per-name writes it carried are gone with it. */
+    if (r->headers_view != NULL) {
+      scr_dyn_release(r->headers_view);
+      r->headers_view = NULL;
+    }
+    return;
+  }
   if (r->headers_override != NULL) scr_dyn_release(r->headers_override);
-  r->headers_override = value != NULL ? scr_dyn_retain(value) : NULL;
+  r->headers_override = scr_dyn_retain(value);
 }
 
 static ScrDyn *scr_http_req_headers_view_build(ScrHttpReq *r);
@@ -517,8 +531,12 @@ bool scr_http_req_set_header_name(ScrHttpReq *r, ScrStr *name /*borrowed*/,
   /* A checked-dynamic object is mutated in place, and a record's capsule
    * stores a declared field in place (its checked view commits any other
    * member back into the record), so the assigned object never detaches.
-   * Every other kind is Node's strict-mode TypeError. */
+   * Every other kind is Node's strict-mode TypeError. The object is held
+   * across the write: a setter it runs through a typed override can
+   * replace the message's headers and drop the last other reference. */
+  ScrDyn *kept = scr_dyn_retain(obj);
   scr_dyn_key_set(obj, name, value);
+  scr_dyn_release(kept);
   return true;
 }
 

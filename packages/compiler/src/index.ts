@@ -108,7 +108,7 @@ import { buildCacheRoot, prepareBuildCacheRoot, pruneBuildCache } from "./backen
 import { frontendEnvironment } from "./frontend/environment.js";
 import { observeUnits } from "./units/observe.js";
 import { ffiProfileDigest } from "./units/key.js";
-import { parseUnitsMode, unitsModeValue } from "./units/mode.js";
+import { unitsModeRefusal, unitsModeValue } from "./units/mode.js";
 import {
   CcCompileError,
   compileExternalC,
@@ -589,49 +589,13 @@ function unitsObserving(): boolean {
  * and only M0's observe mode exists. A refused build reports one diagnostic
  * before any load, so it costs nothing. */
 function unitsOptionRefusal(entryPath: string, opts: CompileRequestOptions): CompileFailure | null {
-  const raw = unitsModeValue();
-  if (raw === undefined || raw === "") return null;
-  const mode = parseUnitsMode(raw);
-  if (mode === null)
-    return {
-      ok: false,
-      diagnostics: [
-        nativeCodegenDiag(
-          "SC3002",
-          `SCRIPTC_UNITS=${JSON.stringify(raw)} is not a mode (supported: observe)`,
-          entryPath,
-          "Unset SCRIPTC_UNITS for a whole-program build.",
-        ),
-      ],
-      sourceTexts: new Map(),
-    };
-  if ((opts.optimization ?? "release") === "release")
-    return {
-      ok: false,
-      diagnostics: [
-        nativeCodegenDiag(
-          "SC3002",
-          "SCRIPTC_UNITS is a development-build feature and a release build cannot use it",
-          entryPath,
-          "Build with --optimization=dev (or speed) to observe compilation units.",
-        ),
-      ],
-      sourceTexts: new Map(),
-    };
-  if (mode === "split")
-    return {
-      ok: false,
-      diagnostics: [
-        nativeCodegenDiag(
-          "SC3002",
-          "SCRIPTC_UNITS=split is not implemented yet; only observe mode exists",
-          entryPath,
-          "Use SCRIPTC_UNITS=observe, or unset SCRIPTC_UNITS.",
-        ),
-      ],
-      sourceTexts: new Map(),
-    };
-  return null;
+  const refusal = unitsModeRefusal(opts.optimization);
+  if (refusal === null) return null;
+  return {
+    ok: false,
+    diagnostics: [nativeCodegenDiag("SC3002", refusal.message, entryPath, refusal.hint)],
+    sourceTexts: new Map(),
+  };
 }
 
 export function compile(

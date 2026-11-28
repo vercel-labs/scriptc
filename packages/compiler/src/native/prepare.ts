@@ -40,7 +40,7 @@ import {
 } from "../frontend/input-tracker.js";
 import { compilerOwnedFileRoots } from "../frontend/dts-paths.js";
 import { frontendEnvironment } from "../frontend/environment.js";
-import { unitsObserveEnabled } from "../units/mode.js";
+import { unitsModeRefusal, unitsObserveEnabled } from "../units/mode.js";
 import { ffiProfileDigest } from "../units/key.js";
 import { observeUnits } from "../units/observe.js";
 import { unitsStoreRoot } from "../units/store.js";
@@ -512,6 +512,16 @@ export function prepareNativeExecutable(
     return {
       ok: false,
       diagnostics: [nativeCodegenDiag("SC3002", targetCpuRefusal, entry)],
+      sourceTexts: new Map(),
+    };
+  // SCRIPTC_UNITS has one mode and is a development-build feature: the
+  // native compiler must refuse a value it cannot honour instead of
+  // silently compiling the whole program.
+  const unitsRefusal = unitsModeRefusal(options.optimization);
+  if (unitsRefusal !== null)
+    return {
+      ok: false,
+      diagnostics: [nativeCodegenDiag("SC3002", unitsRefusal.message, entry, unitsRefusal.hint)],
       sourceTexts: new Map(),
     };
   const exclusions = nativeFrontendExclusions(entry, options);

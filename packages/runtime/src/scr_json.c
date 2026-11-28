@@ -1254,6 +1254,17 @@ static SCR_TL size_t scr_dyn_free_count;
 #define SCR_DYN_FREE_MAX ((size_t)1 << 20)
 #endif
 
+#ifdef SCR_CYC_TESTING
+/* Disposed pool blocks keep their headers but own no live graph edges. */
+size_t scr_dyn_pooled_count_at(void) {
+#ifdef SCR_RC_AUDIT
+  return 0;
+#else
+  return scr_dyn_free_count;
+#endif
+}
+#endif
+
 /* Drops a disposed object's keys and storage: a dictionary's entries with the keys
  * they hold (recycled entries past len may hold keys too), or a layout-mode
  * object's slots unless `keep_slots` (a pooled node keeps them for its next
@@ -14340,8 +14351,9 @@ void scr_error_commit_dyn(ScrError *e, const ScrDyn *view) {
   ScrDyn *cause = scr_dyn_obj_get(view, "cause", 5);
   scr_error_install_cause_drop(&scr_error_cause_drop_impl);
   ScrDyn *replacement = cause ? scr_dyn_retain(cause) : NULL;
-  scr_dyn_release(e->error_cause);
+  ScrDyn *previous = e->error_cause;
   e->error_cause = replacement;
+  scr_dyn_release(previous);
   e->cause_enumerable = false;
   for (size_t i = 0; cause && i < view->v.obj.len; i++) {
     const ScrDynProp entry_prop = scr_dyn_obj_prop_at(view, i);
@@ -14476,8 +14488,9 @@ static void scr_error_sync_slots(const ScrDyn *view, ScrDyn *obj, const ScrStr *
   if (e->vt == &scr_error_vts[SCR_ERR_DOMEX]) return;
   ScrDyn *replacement = entry ? scr_dyn_retain(entry->value) : NULL;
   scr_error_install_cause_drop(&scr_error_cause_drop_impl);
-  scr_dyn_release(e->error_cause);
+  ScrDyn *previous = e->error_cause;
   e->error_cause = replacement;
+  scr_dyn_release(previous);
   e->cause_enumerable = entry && entry->enumerable;
 }
 
@@ -22890,11 +22903,13 @@ ScrDyn *scr_dyn_obj_entries(const ScrDyn *v) { return scr_dyn_objwalk(v, SCR_OBJ
 /* Error's cause uses the same split as DOMException: plain runtime
  * throws stay independent of the checked-dynamic implementation. A NULL
  * slot means no own property; a stored dyn undefined is a present cause.
- * Compiled subclasses release the matching hidden dyn field themselves. */
+ * Compiled subclasses release the matching hidden dyn field themselves.
+ * Publish slot changes before releasing: release can synchronously collect. */
 static void scr_error_cause_drop_impl(void *obj) {
   ScrError *e = (ScrError *)obj;
-  scr_dyn_release(e->error_cause);
+  ScrDyn *previous = e->error_cause;
   e->error_cause = NULL;
+  scr_dyn_release(previous);
 }
 
 void scr_error_init_options(void *obj, int kind, const ScrDyn *message, const ScrDyn *options) {
@@ -22980,8 +22995,9 @@ void scr_error_set_cause(ScrError *e, ScrDyn *value) {
   scr_error_install_cause_drop(&scr_error_cause_drop_impl);
   ScrDyn *replacement = scr_dyn_retain(value);
   if (!e->error_cause) e->cause_enumerable = true;
-  scr_dyn_release(e->error_cause);
+  ScrDyn *previous = e->error_cause;
   e->error_cause = replacement;
+  scr_dyn_release(previous);
 }
 
 void scr_error_define_cause(ScrError *e, ScrDyn *value) {
@@ -22997,15 +23013,17 @@ void scr_error_delete_cause(ScrError *e) {
     scr_str_release(key);
     return;
   }
-  scr_dyn_release(e->error_cause);
+  ScrDyn *previous = e->error_cause;
   e->error_cause = NULL;
+  scr_dyn_release(previous);
   e->cause_enumerable = false;
 }
 
 static void scr_aggregate_errors_drop_impl(void *obj) {
   ScrAggregateError *a = (ScrAggregateError *)obj;
-  scr_dyn_release(a->errors);
+  ScrDyn *previous = a->errors;
   a->errors = NULL;
+  scr_dyn_release(previous);
 }
 
 ScrError *scr_aggregate_new(const ScrDyn *message, const ScrDyn *options) {
@@ -23022,8 +23040,9 @@ void scr_aggregate_set_errors(ScrError *e, ScrDyn *errors) {
   ScrAggregateError *a = (ScrAggregateError *)e;
   scr_aggregate_install_errors_drop(&scr_aggregate_errors_drop_impl);
   ScrDyn *replacement = scr_dyn_retain(errors);
-  scr_dyn_release(a->errors);
+  ScrDyn *previous = a->errors;
   a->errors = replacement;
+  scr_dyn_release(previous);
 }
 
 /* An AggregateError minted by a runtime throw path carries no list until
@@ -23040,8 +23059,9 @@ ScrDyn *scr_aggregate_errors(ScrError *e) {
 
 static void scr_domex_cause_drop_impl(void *obj) {
   ScrDomException *d = (ScrDomException *)obj;
-  scr_dyn_release(d->cause);
+  ScrDyn *previous = d->cause;
   d->cause = NULL;
+  scr_dyn_release(previous);
 }
 
 ScrError *scr_domex_new(const ScrDyn *message, const ScrDyn *name_or_options) {

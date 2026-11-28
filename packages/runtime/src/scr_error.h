@@ -276,7 +276,7 @@ ScrError *scr_error_retain(ScrError *e);
 void scr_error_release(ScrError *e); /* dispatches through e->vt */
 void *scr_error_retain_v(void *e);
 void scr_error_release_v(void *e);
-void scr_error_trace(void *e, ScrTraceVisit visit, void *ctx); /* no headered children */
+void scr_error_trace(void *e, ScrTraceVisit visit, void *ctx); /* stored cause edge */
 ScrTraceFn scr_error_trace_arg(void); /* &scr_error_trace when traced, else NULL */
 
 /* True when a thrown hierarchy object (SCR_EXC_OBJ payload) is an Error —

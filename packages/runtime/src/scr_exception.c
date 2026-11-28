@@ -683,14 +683,35 @@ bool scr_exc_suppressed_values(const void *error_object, const ScrCaught **error
   return false;
 }
 
-void scr_exc_suppressed_forget(const void *error_object) {
+void scr_exc_suppressed_trace(const void *error_object, ScrTraceVisit visit, void *ctx) {
+  const ScrCaught *error, *suppressed;
+  if (scr_exc_suppressed_values(error_object, &error, &suppressed)) {
+    visit((void *)error, ctx);
+    visit((void *)suppressed, ctx);
+  }
+}
+
+static bool scr_exc_suppressed_remove(const void *error_object, ScrSuppressedEntry *removed) {
   for (size_t i = 0; i < scr_suppressed_len; i++) {
     if (scr_suppressed_entries[i].error_object != error_object) continue;
-    ScrSuppressedEntry entry = scr_suppressed_entries[i];
+    if (removed) *removed = scr_suppressed_entries[i];
     scr_suppressed_entries[i] = scr_suppressed_entries[--scr_suppressed_len];
+    return true;
+  }
+  return false;
+}
+
+/* Collection has already settled both snapshot edges. Only remove the
+ * producer's side-table entry; ordinary destruction still releases them. */
+void scr_exc_suppressed_unlink(const void *error_object) {
+  scr_exc_suppressed_remove(error_object, NULL);
+}
+
+void scr_exc_suppressed_forget(const void *error_object) {
+  ScrSuppressedEntry entry;
+  if (scr_exc_suppressed_remove(error_object, &entry)) {
     scr_caught_release(entry.error);
     scr_caught_release(entry.suppressed);
-    return;
   }
 }
 

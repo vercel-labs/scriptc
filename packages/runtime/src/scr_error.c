@@ -37,10 +37,8 @@ static const char *const scr_error_names[SCR_ERR_COUNT] = {
     "SuppressedError"};
 
 void scr_error_trace(void *e, ScrTraceVisit visit, void *ctx) {
-  /* name/message are strings — never collector-headered; nothing to visit. */
-  (void)e;
-  (void)visit;
-  (void)ctx;
+  /* String fields have no collector header; the stored cause does. */
+  visit(((ScrError *)e)->error_cause, ctx);
 }
 
 static void scr_error_gcfree(void *obj) {
@@ -55,7 +53,7 @@ static void scr_error_gcfree(void *obj) {
   scr_str_release(e->system_dest);
   scr_str_release(e->system_message);
   scr_str_release(e->system_code);
-  if (e->error_cause && scr_error_cause_drop) scr_error_cause_drop(obj);
+  /* The collector already accounts for the traced cause edge. */
   scr_obj_free_note();
   scr_cyc_free(e);
 }
@@ -71,10 +69,9 @@ void scr_domex_install_cause_drop(void (*fn)(void *obj)) {
   scr_domex_cause_drop = fn;
 }
 
-static void scr_domex_gcfree(void *obj) {
-  ScrDomException *d = (ScrDomException *)obj;
-  if (d->cause != NULL && scr_domex_cause_drop != NULL) scr_domex_cause_drop(obj);
-  scr_error_gcfree(obj);
+static void scr_domex_trace(void *obj, ScrTraceVisit visit, void *ctx) {
+  scr_error_trace(obj, visit, ctx);
+  visit(((ScrDomException *)obj)->cause, ctx);
 }
 
 /* AggregateError teardown: the ScrError fields plus the owned errors
@@ -86,10 +83,9 @@ void scr_aggregate_install_errors_drop(void (*fn)(void *obj)) {
   scr_aggregate_errors_drop = fn;
 }
 
-static void scr_aggregate_gcfree(void *obj) {
-  ScrAggregateError *a = (ScrAggregateError *)obj;
-  if (a->errors != NULL && scr_aggregate_errors_drop != NULL) scr_aggregate_errors_drop(obj);
-  scr_error_gcfree(obj);
+static void scr_aggregate_trace(void *obj, ScrTraceVisit visit, void *ctx) {
+  scr_error_trace(obj, visit, ctx);
+  visit(((ScrAggregateError *)obj)->errors, ctx);
 }
 
 /* The DIRECT release stored in the builtin vtables (the compiler emits the
@@ -147,8 +143,13 @@ static void scr_aggregate_destroy(void *obj) {
 
 /* SuppressedError teardown: the ScrError fields plus the disposal
  * snapshots scr_exc_suppress recorded for its `error` and `suppressed`. */
+static void scr_suppressed_trace(void *obj, ScrTraceVisit visit, void *ctx) {
+  scr_error_trace(obj, visit, ctx);
+  scr_exc_suppressed_trace(obj, visit, ctx);
+}
+
 static void scr_suppressed_gcfree(void *obj) {
-  scr_exc_suppressed_forget(obj);
+  scr_exc_suppressed_unlink(obj);
   scr_error_gcfree(obj);
 }
 
@@ -234,9 +235,9 @@ static ScrError *scr_error_alloc(int kind) {
                 : kind == SCR_ERR_AGGREGATE ? sizeof(ScrAggregateError)
                                             : sizeof(ScrError);
   static ScrCycType error_type = { &scr_error_trace, &scr_error_gcfree, SCR_CYC_KIND_ERROR };
-  static ScrCycType domex_type = { &scr_error_trace, &scr_domex_gcfree, SCR_CYC_KIND_DOMEXCEPTION };
-  static ScrCycType aggregate_type = { &scr_error_trace, &scr_aggregate_gcfree, SCR_CYC_KIND_ERROR };
-  static ScrCycType suppressed_type = { &scr_error_trace, &scr_suppressed_gcfree, SCR_CYC_KIND_ERROR };
+  static ScrCycType domex_type = { &scr_domex_trace, &scr_error_gcfree, SCR_CYC_KIND_DOMEXCEPTION };
+  static ScrCycType aggregate_type = { &scr_aggregate_trace, &scr_error_gcfree, SCR_CYC_KIND_ERROR };
+  static ScrCycType suppressed_type = { &scr_suppressed_trace, &scr_suppressed_gcfree, SCR_CYC_KIND_ERROR };
   ScrError *e;
   if (scr_error_traced) {
     e = scr_cyc_alloc(size, kind == SCR_ERR_DOMEX       ? &domex_type

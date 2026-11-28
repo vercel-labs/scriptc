@@ -4,6 +4,8 @@ All notable changes to scriptc will be documented in this file.
 
 ## Unreleased
 
+- Native error objects release causes, aggregated errors, and suppressed exceptions when those values form an unreachable cycle.
+
 <!-- release:start -->
 
 ## 0.4.17

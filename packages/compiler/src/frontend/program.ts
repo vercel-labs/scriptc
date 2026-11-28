@@ -4300,6 +4300,13 @@ function voidCallResultReadDiags7(
     // A `for` head's initializer and incrementor run for their effects.
     if (ts.isForStatement(parent) && (parent.initializer === node || parent.incrementor === node))
       return true;
+    // A conditional used only for its effects discards both arms:
+    // `flag ? f() : g();` is two statement branches in Node.
+    if (
+      ts.isConditionalExpression(parent) &&
+      (parent.whenTrue === node || parent.whenFalse === node)
+    )
+      return discarded(parent);
     if (ts.isExpressionStatement(parent) || ts.isVoidExpression(parent)) return true;
     // A binding's initializer is the held-call shape the truthiness rule
     // already judges (voidTruthinessHeldCall): the binding stores the value

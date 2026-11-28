@@ -1473,6 +1473,35 @@ static ScrStr *ws_escape_pattern(ScrStr *value) {
 
 /* The index just past the pattern part that starts at `at`: a `:name`, a
  * single `*`, or a `(...)` regexp group (balanced, its escapes respected). */
+static size_t ws_regexp_group_end(const ScrStr *seg, size_t at) {
+  size_t i = at + 1;
+  int depth = 1;
+  bool in_class = false;
+  while (i < seg->len && depth > 0) {
+    char d = seg->data[i];
+    if (d == '\\' && i + 1 < seg->len) {
+      i += 2;
+      continue;
+    }
+    if (in_class) {
+      if (d == ']') in_class = false;
+    } else if (d == '[') {
+      in_class = true;
+    } else if (d == '(') {
+      depth++;
+    } else if (d == ')') {
+      depth--;
+    }
+    i++;
+  }
+  return i;
+}
+
+/* The index just past the pattern part that starts at `at`: a `:name` with
+ * the custom regexp group that may follow it, a single `*`, or a `(...)`
+ * regexp group. A name and the group that constrains it are one part — a
+ * modifier after the group applies to both — so a part wrapped in braces
+ * keeps the group inside them. */
 static size_t ws_pattern_part_end(const ScrStr *seg, size_t at) {
   char c = seg->data[at];
   if (c == ':') {
@@ -1482,31 +1511,10 @@ static size_t ws_pattern_part_end(const ScrStr *seg, size_t at) {
       i++;
       first = false;
     }
+    if (i < seg->len && seg->data[i] == '(') i = ws_regexp_group_end(seg, i);
     return i;
   }
-  if (c == '(') {
-    size_t i = at + 1;
-    int depth = 1;
-    bool in_class = false;
-    while (i < seg->len && depth > 0) {
-      char d = seg->data[i];
-      if (d == '\\' && i + 1 < seg->len) {
-        i += 2;
-        continue;
-      }
-      if (in_class) {
-        if (d == ']') in_class = false;
-      } else if (d == '[') {
-        in_class = true;
-      } else if (d == '(') {
-        depth++;
-      } else if (d == ')') {
-        depth--;
-      }
-      i++;
-    }
-    return i;
-  }
+  if (c == '(') return ws_regexp_group_end(seg, at);
   return at + 1;
 }
 

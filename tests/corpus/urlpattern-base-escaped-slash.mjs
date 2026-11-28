@@ -16,6 +16,10 @@ const urls = [
   "https://example.com/a/a/b",
   "https://example.com/a/12",
   "https://example.com/a/1/2",
+  "https://example.com/a/x/12",
+  "https://example.com/a/x/12/34",
+  "https://example.com/a/x/ab",
+  "https://example.com/a/x/1a",
 ];
 const patterns = [
   "x\\/:id+",
@@ -34,6 +38,12 @@ const patterns = [
   "\\/:id+/tail",
   "\\/\\/:id+",
   "\\/x\\/:id+",
+  "x\\/:id(\\d+)",
+  "x\\/:id(\\d+)+",
+  "x\\/:id(\\d+)?",
+  "x\\/:id(\\d+)*",
+  "x\\/:id(\\d+)-:rest",
+  "\\/:id(\\d+)",
   "\\/",
 ];
 for (const pattern of patterns) {

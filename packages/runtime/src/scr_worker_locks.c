@@ -22,10 +22,12 @@
  * does, and a callback that returns a promise keeps the lock until that
  * promise settles.
  *
- * Steal grants at once and marks every current holder stolen: each holder's
- * request rejects with an AbortError and the name stops being held (a grant
- * left behind by an earlier callback throw is cleared too). Requests already
- * queued keep waiting for the steal's own release, as Node's queue does.
+ * Steal grants at once and marks every current holder stolen: the name stops
+ * being held (a grant left behind by an earlier callback throw is cleared
+ * too) and each holder's request rejects with an AbortError one microtask
+ * later, so an abort in the same turn settles it with the signal's reason
+ * first, as Node's delivered grant does. Requests already queued keep
+ * waiting for the steal's own release, as Node's queue does.
  * ifAvailable answers a null lock when the name is busy, holding and
  * queueing nothing, and settles the request with the callback's own result.
  *
@@ -286,6 +288,29 @@ static void scr_locks_reject_thrown(ScrPromise *promise, bool signal_path) {
   scr_promise_reject_pending(promise);
 }
 
+/* Delivers a stolen request's rejection one microtask after the steal, as
+ * Node's JS layer rejects from the released promise's handler: an abort in
+ * the same turn settles the request first with the signal's reason, and this
+ * job then finds it settled. The abort listener goes away with the grant,
+ * which is Node's finally, and the settled promise is dropped so nothing
+ * audit-visible outlives it. */
+static ScrDyn *scr_locks_stolen_job(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
+  (void)args;
+  (void)argc;
+  ScrLockReq *req = scr_box_get_ref(clo->caps[0]); /* +1 */
+  if (req->promise != NULL && scr_promise_is_pending(req->promise)) {
+    scr_throw_domex("AbortError", "The operation was aborted");
+    scr_promise_reject_pending(req->promise);
+  }
+  if (req->promise != NULL) {
+    scr_promise_release(req->promise);
+    req->promise = NULL;
+  }
+  scr_locks_dispose_signal(req);
+  scr_locks_req_release(req);
+  return scr_dyn_retain(scr_dyn_undefined());
+}
+
 /* The abort listener: a request whose callback has not started yet rejects
  * with the signal's reason, and the queue place or the grant it held goes
  * back to the entry. A request already running its callback keeps going,
@@ -299,6 +324,19 @@ static ScrDyn *scr_locks_abort_fire(ScrClosure *clo, ScrDyn *const *args, size_t
     return scr_dyn_retain(scr_dyn_undefined());
   }
   req->aborted = true;
+  if (req->stolen) {
+    /* A steal already took the grant back, and its rejection is delivered one
+     * microtask later. This abort is the one Node's still-installed listener
+     * would serve: the request is still pending, so it settles with the
+     * signal's reason and the queued callback is skipped. The request holds
+     * no queue place and no grant to give back, so only this thunk's
+     * reference is dropped. */
+    if (req->promise != NULL && scr_promise_is_pending(req->promise))
+      scr_locks_reject_aborted(req);
+    scr_locks_dispose_signal(req);
+    scr_locks_req_release(req);
+    return scr_dyn_retain(scr_dyn_undefined());
+  }
   ScrLockEntry *entry = req->entry;
   bool granted = req->granted;
   if (!granted) {
@@ -674,29 +712,32 @@ ScrPromise *scr_worker_locks_request(ScrStr *name, const ScrDyn *options, const 
   }
   if (steal) {
     /* Node grants a steal ahead of the queue and marks every current holder
-     * stolen: each holder's request rejects with an AbortError and the name
-     * stops being held (a grant left behind by an earlier callback throw is
-     * cleared too). Requests already queued are not aborted; they wait for
-     * the steal's own release. */
-    ScrLockReq *victim = entry->holder_head;
+     * stolen: the name stops being held (a grant left behind by an earlier
+     * callback throw is cleared too) and each holder's request rejects from
+     * the delivered grant one microtask later. Requests already queued are
+     * not aborted; they wait for the steal's own release. */
+    ScrLockReq *victims = entry->holder_head;
     entry->holder_head = NULL;
     entry->holders = 0;
     entry->holder_shared = false;
-    while (victim != NULL) {
-      ScrLockReq *next = victim->hold_next;
+    scr_locks_grant(entry, req);
+    while (victims != NULL) {
+      ScrLockReq *victim = victims;
+      victims = victim->hold_next;
       victim->hold_next = NULL;
       victim->granted = false;
       victim->stolen = true;
       if (victim->promise != NULL && scr_promise_is_pending(victim->promise)) {
-        scr_throw_domex("AbortError", "The operation was aborted");
-        scr_promise_reject_pending(victim->promise);
+        /* The holder list's reference moves into the job's box, so the
+         * request outlives this loop until its rejection is delivered. */
+        ScrClosure *job = scr_closure_new((void *)&scr_locks_stolen_job, 1);
+        job->caps[0] = scr_locks_req_box(victim);
+        scr_queue_microtask(job);
+      } else {
+        /* A grant an earlier callback throw leaked holds no live request. */
+        scr_locks_req_release(victim); /* the holder list's reference */
       }
-      /* A grant an earlier callback throw leaked keeps its (settled) promise:
-       * there is nothing left to reject. */
-      scr_locks_req_release(victim); /* the holder list's reference */
-      victim = next;
     }
-    scr_locks_grant(entry, req);
   } else if (entry->holders == 0 && entry->queue == NULL) {
     scr_locks_grant(entry, req);
     scr_locks_drain(entry);

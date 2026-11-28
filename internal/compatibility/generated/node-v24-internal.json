@@ -125988,6 +125988,7 @@
           "tests/corpus/worker-locks-signal-thrown-value.mjs",
           "tests/corpus/worker-locks-steal-bookkeeping.mjs",
           "tests/corpus/worker-locks-steal-option.ts",
+          "tests/corpus/worker-locks-steal-signal.mjs",
           "tests/corpus/worker-locks-thrown-value.mjs",
           "tests/corpus/worker-messageerror-events.ts",
           "tests/corpus/worker-messageerror-surface.ts",
@@ -127876,7 +127877,8 @@
           "tests/corpus/worker-locks-steal-bookkeeping.mjs",
           "tests/corpus/worker-locks-if-available.mjs",
           "tests/corpus/worker-locks-signal-throw.mjs",
-          "tests/corpus/worker-locks-signal-thrown-value.mjs"
+          "tests/corpus/worker-locks-signal-thrown-value.mjs",
+          "tests/corpus/worker-locks-steal-signal.mjs"
         ]
       },
       "anchorSource": "exact"

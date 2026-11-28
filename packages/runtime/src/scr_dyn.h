@@ -275,6 +275,7 @@ typedef enum {
   Y(ELD_HISTOGRAM) /* monitorEventLoopDelay IntervalHistogram (scr_perf_loop.c) */ \
   Y(HISTOGRAM) /* createHistogram RecordableHistogram (scr_perf_loop.c) */ \
   Y(INTL_DATE_TIME_FORMAT) /* Intl.DateTimeFormat (scr_intl.c) */ \
+  Y(INTL_LIST_FORMAT) /* Intl.ListFormat (scr_intl.c) */ \
   Y(INTL_NUMBER_FORMAT) /* Intl.NumberFormat (scr_intl.c) */ \
   Y(MAC) /* crypto.createMac's Mac (scr_lib.c) */ \
   Y(NET_BOUND_SOCKET) /* net.BoundSocket (scr_net.c) */ \
@@ -1080,6 +1081,12 @@ static inline const ScrDynTypedArrayOps *scr_dyn_typed_ref_array_ops(const ScrDy
 
 /* BORROWED member lookup on a SCR_DYN_OBJ; NULL when the key is absent. */
 ScrDyn *scr_dyn_obj_get(const ScrDyn *d, const char *key, size_t key_len);
+/* A member read for the iterator protocols (next/return): a property Get
+ * (accessors run once, as Node's does), a compiled generator's own method
+ * table first. +1, or NULL with the exception pending. */
+ScrDyn *scr_dyn_iterator_member(const ScrDyn *value, const char *key);
+/* V8's GetIterator TypeError for a value with no Symbol.iterator. Throws. */
+void scr_dyn_throw_not_iterable(const ScrDyn *value);
 /* Own-enumerable check on a SCR_DYN_OBJ. */
 bool scr_dyn_obj_enumerable(const ScrDyn *d, const char *key, size_t key_len);
 /* Stores own property `entry` of `source` on `target` with its attributes:
@@ -2262,6 +2269,12 @@ ScrStr *scr_dyn_proxy_to_string(const ScrDyn *proxy);
  * enc — utf8 default; strings/numbers/booleans/arrays/objects answer
  * JS-exactly; undefined/null throw the catchable TypeError). Borrows; +1. */
 ScrStr *scr_dyn_to_string(const ScrDyn *d, const ScrStr *enc);
+/** V8's side-effect-free string of a value, the text Node quotes in an
+ * unhandled-rejection message and in Intl.ListFormat's element TypeError:
+ * primitives as String() answers, an array as [object Array], an object with
+ * its own toString as [object Object], any other object as #<Constructor>,
+ * and the builtins V8 never exposes as a toString tag as #<Name>. +1. */
+ScrStr *scr_dyn_side_effect_free_string(const ScrDyn *value);
 /* The method-call spelling `d.toString(enc?)`: identical, except a
  * null-prototype dictionary throws "<what> is not a function" — its
  * prototype chain has no toString (Node's answer). */

@@ -354,6 +354,8 @@ const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
   // proxy trap may run) and raise ECMA-402's RangeError and TypeError;
   // format raises RangeError for a time value out of range.
   "icu.numberFormatNew",
+  "icu.listFormatNew",
+  "icu.listFormatFormat",
   "icu.numberFormatFormat",
   "icu.numberFormatFormatDyn",
 ];

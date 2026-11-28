@@ -802,8 +802,8 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     const viaInstance = lowerInstanceConstructorStaticCall(lowerer, expr);
     if (viaInstance !== null) return viaInstance;
   }
-  // Calling a Node 24 global the native runtime does not provide (WebSocket,
-  // FormData, …): the value a read answers refuses the call
+  // Calling a Node 24 global the native runtime does not provide (FormData,
+  // Navigator, …): the value a read answers refuses the call
   // (host-global-values.ts), so the call is that refusal — SC2020, which a
   // JavaScript source defers to the throw at this statement.
   {

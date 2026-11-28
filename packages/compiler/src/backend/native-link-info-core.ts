@@ -34,6 +34,8 @@ export interface NativeLinkFeatures {
   /** fs.Utf8Stream: scr_fs_utf8_stream.c, the buffered file writer. */
   fsUtf8Stream?: boolean;
   fetch: boolean;
+  /** The URLPattern global: scr_urlpattern.c. */
+  urlPattern?: boolean;
   /** The WebSocket client (the global WebSocket class): scr_websocket.c. */
   webSocket?: boolean;
   eventTarget?: boolean;
@@ -502,6 +504,9 @@ export const LINK_FEATURE_REQUIREMENTS: readonly LinkFeatureRequirement[] = [
   { feature: "eventTarget", requires: ["emitter", "symbol"] },
   { feature: "abortSignal", requires: ["emitter", "symbol"] },
   { feature: "fetch", requires: ["emitter", "symbol"] },
+  // scr_urlpattern.c compiles each component pattern through the regex
+  // engine (scr_regex.c) at construction, as the standard requires.
+  { feature: "urlPattern", requires: ["regex"] },
   // scr_websocket.c dials through scr_net.c and sc_http.c's client, wraps
   // wss connections with scr_tls.c, and dispatches its events through
   // scr_event_target.c (with the emitter and symbol units that unit needs).

@@ -79,11 +79,11 @@ console.log(typeof (globalThis as any)[key]);
 test("'X' in globalThis throws for a host global", async () => {
   const result = await runProgram(
     "in-literal",
-    `console.log("URLPattern" in globalThis);
+    `console.log("FormData" in globalThis);
 `,
   );
   expect(result.exitCode).toBe(1);
-  expect(result.stderr).toContain(`TypeError: ${missing("URLPattern")}`);
+  expect(result.stderr).toContain(`TypeError: ${missing("FormData")}`);
 });
 
 test("a computed 'X' in globalThis throws for a host global", async () => {
@@ -173,12 +173,12 @@ console.log(present in globalThis, absent in globalThis);
 test("a host global named by an untyped key still throws", async () => {
   const result = await runProgram(
     "in-untyped",
-    `const key: any = "URLPattern";
+    `const key: any = "FormData";
 console.log(key in globalThis);
 `,
   );
   expect(result.exitCode).toBe(1);
-  expect(result.stderr).toContain(`TypeError: ${missing("URLPattern")}`);
+  expect(result.stderr).toContain(`TypeError: ${missing("FormData")}`);
 });
 
 test("a folded host-global key still throws, a folded other key does not", async () => {

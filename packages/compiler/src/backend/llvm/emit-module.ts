@@ -811,6 +811,9 @@ export function emitModuleParts(emitter: LlEmitter): TextPart[] {
   const usesDnsResolve = runtimeFeatures.dnsResolve;
   const usesHttp2 = runtimeFeatures.http2;
   const usesHttp = runtimeFeatures.http;
+  // The URLPattern global's handle ops: the registry is thread-local, so
+  // every execution context (main and each worker) installs them.
+  const usesUrlPattern = runtimeFeatures.urlPattern;
   // Fetch-referencing programs register native fetch before main.
   // Runtime selection compiles scr_fetch.c on the same predicate.
   const usesFetch = runtimeFeatures.fetch;
@@ -909,6 +912,7 @@ export function emitModuleParts(emitter: LlEmitter): TextPart[] {
   if (usesDnsResolve) emitter.declare(`declare void @scr_dns_resolve_install()`);
   if (usesHttp2) emitter.declare(`declare void @scr_http2_dyn_install()`);
   if (usesHttp) emitter.declare(`declare void @scr_http_dyn_install()`);
+  if (usesUrlPattern) emitter.declare(`declare void @scr_urlpattern_install()`);
   if (usesFetch) emitter.declare(`declare void @scr_fetch_install()`);
   if (usesAsyncHooks) emitter.declare(`declare void @scr_async_hooks_install()`);
   if (usesUrlIdna) emitter.declare(`declare void @scr_url_idna_install()`);
@@ -1739,6 +1743,7 @@ export function emitModuleParts(emitter: LlEmitter): TextPart[] {
     ...(usesWebSocket && !usesNet ? [`  call void @scr_net_install()`] : []),
     ...(usesNetLookup ? [`  call void @scr_net_lookup_install()`] : []),
     ...(usesHttp ? [`  call void @scr_http_dyn_install()`] : []),
+    ...(usesUrlPattern ? [`  call void @scr_urlpattern_install()`] : []),
     ...(usesDgram ? [`  call void @scr_dgram_install()`] : []),
     ...(usesDnsResolve ? [`  call void @scr_dns_resolve_install()`] : []),
     ...(usesHttp2 ? [`  call void @scr_http2_dyn_install()`] : []),

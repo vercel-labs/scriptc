@@ -172,6 +172,8 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_perf.c", "dynAsync"],
   // perf_hooks event-loop metrics, only for programs that read them.
   ["scr_perf_loop.c", "perfLoop"],
+  // The URLPattern global.
+  ["scr_urlpattern.c", "urlPattern"],
   // Module namespace objects as checked-dynamic values.
   ["scr_module_class.c", "moduleClass"],
   ["scr_module_namespace.c", "moduleNamespace"],

@@ -56442,6 +56442,8 @@
           "tests/corpus/timers-untyped-delays.cjs",
           "tests/corpus/url-search-params-record-init-order.cjs",
           "tests/corpus/url-search-params-record-init-order.ts",
+          "tests/corpus/urlpattern-core.mjs",
+          "tests/corpus/urlpattern-syntax.mjs",
           "tests/corpus/web-stream-transform-pipes-untyped.mjs",
           "tests/corpus/webassembly-api.mjs",
           "tests/corpus/webassembly-dylink/main.mjs",
@@ -57182,7 +57184,10 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "evidence": "compiler-feature:globals.FormData",
+        "tests": [
+          "tests/diagnostics/compat-absent-web-globals.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -57973,10 +57978,11 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:globals.URLPattern",
         "tests": [
-          "tests/diagnostics/compat-absent-web-globals.ts"
+          "tests/corpus/urlpattern-core.mjs",
+          "tests/corpus/urlpattern-syntax.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -109495,7 +109501,8 @@
           "tests/corpus/url-search-params-class.ts",
           "tests/corpus/url-search-params-js.js",
           "tests/corpus/url-whatwg-properties.ts",
-          "tests/diagnostics/compat-absent-web-globals.ts",
+          "tests/corpus/urlpattern-core.mjs",
+          "tests/corpus/urlpattern-syntax.mjs",
           "tests/fixtures/node-types/file-url-conversion.ts",
           "tests/fixtures/node-types/url-factories.ts",
           "tests/fixtures/node-types/url-legacy.ts",
@@ -110169,10 +110176,11 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:url.URLPattern",
         "tests": [
-          "tests/diagnostics/compat-absent-web-globals.ts"
+          "tests/corpus/urlpattern-core.mjs",
+          "tests/corpus/urlpattern-syntax.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -110195,10 +110203,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:url.urlPattern.exec",
         "tests": [
-          "tests/diagnostics/compat-absent-web-globals.ts"
+          "tests/corpus/urlpattern-core.mjs",
+          "tests/corpus/urlpattern-syntax.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -110221,10 +110230,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:url.urlPattern.test",
         "tests": [
-          "tests/diagnostics/compat-absent-web-globals.ts"
+          "tests/corpus/urlpattern-core.mjs",
+          "tests/corpus/urlpattern-syntax.mjs"
         ]
       },
       "anchorSource": "exact"

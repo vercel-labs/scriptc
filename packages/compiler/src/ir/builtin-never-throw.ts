@@ -41,6 +41,7 @@ import { textNeverThrow } from "./builtin-never-throw/text.js";
 import { timersNeverThrow } from "./builtin-never-throw/timers.js";
 import { tlsNeverThrow } from "./builtin-never-throw/tls.js";
 import { utilNeverThrow } from "./builtin-never-throw/util.js";
+import { urlpatternNeverThrow } from "./builtin-never-throw/urlpattern.js";
 import { watchEventsNeverThrow } from "./builtin-never-throw/watchEvents.js";
 import { watcherNeverThrow } from "./builtin-never-throw/watcher.js";
 import { weakMapNeverThrow } from "./builtin-never-throw/weakMap.js";
@@ -104,6 +105,7 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   ...timersNeverThrow,
   ...tlsNeverThrow,
   ...utilNeverThrow,
+  ...urlpatternNeverThrow,
   ...watchEventsNeverThrow,
   ...watcherNeverThrow,
   ...weakMapNeverThrow,

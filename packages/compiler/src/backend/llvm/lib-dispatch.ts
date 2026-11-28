@@ -1895,6 +1895,7 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
       return host.emitFilesystemLibCall(e);
     case "tls":
       return emitTlsLibCall(host, e);
+    case "urlpattern":
     case "websocket":
       return host.emitGenericLibCall(e);
     case "http2":

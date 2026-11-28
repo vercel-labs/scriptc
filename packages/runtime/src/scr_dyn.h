@@ -122,7 +122,8 @@ typedef enum {
  * links byte-identical objects. Raising the capacity is a program-wide
  * layout change; do it in a change of its own, measured as neutral, and
  * only when the tags outgrow it. 160: the tags added since the last pin (the
- * WebSocket client's and the compression streams' among them) took the list
+ * URLPattern class's, the WebSocket client's and the compression streams'
+ * among them) took the list
  * past 128. The tables are thread-local pointer rows, so the capacity
  * changes no per-value representation. */
 #define SCR_DYNH_CAPACITY 160
@@ -291,6 +292,7 @@ typedef enum {
   Y(SQLITE_STATEMENT) /* node:sqlite StatementSync (scr_sqlite.c) */ \
   Y(SQLITE_TAG_STORE) /* node:sqlite SQLTagStore (scr_sqlite.c) */ \
   Y(TRACING) /* trace_events.Tracing (scr_async_dyn.c) */ \
+  Y(URL_PATTERN) /* the global URLPattern class (scr_urlpattern.c) */ \
   Y(UTF8_STREAM) /* fs.Utf8Stream (scr_fs_utf8_stream.c) */ \
   Y(WEAK_REF) /* WeakRef (scr_json.c) */ \
   Y(WEBSOCKET) /* the global WebSocket client (scr_websocket.c) */ \

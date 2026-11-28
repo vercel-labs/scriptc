@@ -2064,6 +2064,12 @@
   "code": "SC2020"
  },
  {
+  "file": "scr_urlpattern.c",
+  "function": "ws_invoke",
+  "message": "This URLPattern method is not implemented",
+  "code": "SC2020"
+ },
+ {
   "file": "scr_util_callable.c",
   "function": "scr_util_inherits",
   "message": "util.inherits over class constructors has no lowering; declare the subclass with extends",

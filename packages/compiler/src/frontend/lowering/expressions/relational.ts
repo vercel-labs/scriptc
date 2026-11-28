@@ -54,6 +54,7 @@ import {
 import { nodeThrowExpr, numLit, strLit, varRef } from "../../../ir/build.js";
 import { lowerDisposableStackInstanceOf } from "../builtins/disposable-stack.js";
 import { lowerAbortSignalInstanceOf } from "../builtins/abort-signal.js";
+import { lowerUrlPatternInstanceOf } from "../builtins/urlpattern.js";
 import { lowerWebSocketInstanceOf } from "../builtins/websocket.js";
 import { lowerBlobInstanceof } from "../builtins/blob.js";
 import { lowerReadlineInstanceof } from "../builtins/readline.js";
@@ -462,6 +463,9 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
   // instances, and the handle's tag answers the test (abort-signal.ts).
   const abortSignalTest = lowerAbortSignalInstanceOf(lowerer, expr);
   if (abortSignalTest !== null) return abortSignalTest;
+  // `value instanceof URLPattern`: only the runtime pattern handles are.
+  const urlPatternTest = lowerUrlPatternInstanceOf(lowerer, expr);
+  if (urlPatternTest !== null) return urlPatternTest;
   // `value instanceof WebSocket`: only the runtime's socket handles are.
   const webSocketTest = lowerWebSocketInstanceOf(lowerer, expr);
   if (webSocketTest !== null) return webSocketTest;

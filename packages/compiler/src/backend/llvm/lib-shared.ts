@@ -1155,6 +1155,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "punycode.toUnicode": "scr_punycode_to_unicode",
   "punycode.ucs2Decode": "scr_punycode_ucs2_decode",
   "punycode.ucs2Encode": "scr_str_from_code_point",
+  "punycode.ucs2Object": "scr_punycode_ucs2_object",
   "punycode.warn": "scr_punycode_warn",
   "url.domainToUnicode": "scr_url_domain_to_unicode",
   "url.toHttpOptions": "scr_url_to_http_options_dyn",

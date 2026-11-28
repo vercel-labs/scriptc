@@ -315,6 +315,8 @@ describe.skipIf(!zigOnPath() || !wasmPackInstalled())("wasm32-wasi differential"
     "array-subclass-base-typed-overrides.ts",
     // An own field shadowing an Array method is read off the class view.
     "array-subclass-field-shadowing.ts",
+    // A generic map override monomorphizes per call site on 32-bit pointers.
+    "array-subclass-generic-map.ts",
     // Comparator sorts move 64-bit slots of 32-bit pointers.
     "5360-array-sort-comparator-calls.ts",
     "5363-array-sort-comparator-writes.ts",

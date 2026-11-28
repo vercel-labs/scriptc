@@ -943,7 +943,7 @@ function arrayOverrideCall(
     // every generic method.
     const generic = findGenericMethodOn(lowerer, info, name);
     if (generic === null) return null;
-    direct = lowerClassGenericMethodCall(lowerer, call, access, info, generic, view);
+    direct = lowerClassGenericMethodCall(lowerer, call, access, info, generic, view, true);
   }
   return typeEquals(direct.type, want)
     ? direct

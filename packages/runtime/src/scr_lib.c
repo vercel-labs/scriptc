@@ -320,14 +320,23 @@ extern void scr_census_write(void) __attribute__((weak));
 
 static void scr_process_config_teardown(void);
 
+/* The interned process.argv array, released by the handler
+ * scr_process_argv registers when it first builds the array: the array is
+ * the only thing here that names scr_array.c, and a program that never
+ * reads argv keeps it out of the link. */
+static void scr_argv_cleanup(void) {
+  scr_arr_release(scr_argv_arr);
+  scr_argv_arr = NULL;
+}
+
 static void scr_lib_cleanup(void) {
 #if defined(__linux__) && !defined(SCR_LIB)
   if (scr_census_write != NULL) scr_census_write();
 #endif
-  scr_module_registry_cleanup();
-  scr_process_config_teardown();
-  scr_arr_release(scr_argv_arr);
-  scr_argv_arr = NULL;
+  /* The module registry, process.config and argv release themselves through
+   * the handlers their getters register. Naming those cleanups here (and
+   * through them scr_dyn_release and the object model) would keep the units
+   * in every program, whatever it holds. */
   free(scr_lib_argv_owned);
   scr_lib_argv_owned = NULL;
 #if defined(_WIN32) && !defined(SCR_LIB)
@@ -514,6 +523,8 @@ static void scr_process_exec_argv_cleanup(void);
  * scr_library_reset (scr_library.c) calls this every session reset. */
 void scr_lib_session_cleanup(void) {
   scr_lib_cleanup();
+  scr_process_config_teardown();
+  scr_module_registry_cleanup();
   scr_process_platform_cleanup();
   scr_process_exec_path_cleanup();
   scr_process_arch_cleanup();
@@ -549,6 +560,12 @@ void scr_module_registry_init(double count_value) {
   for (size_t i = 0; i < scr_module_record_count; i++) {
     scr_module_records[i].parent = -1;
   }
+#if !defined(SCR_LIB)
+  /* Registered where the records are made, not from scr_lib_init: a program
+   * with no module registry keeps scr_module_registry_cleanup's references
+   * (scr_dyn_release above all) out of its link. */
+  scr_atexit(scr_module_registry_cleanup);
+#endif
 }
 
 void scr_module_define(double module_id, ScrStr *filename, ScrStr *id,
@@ -706,6 +723,12 @@ ScrDyn *scr_process_config(void) {
   scr_dyn_release(scr_dyn_freeze_data(target));
   scr_dyn_release(scr_dyn_freeze_data(config));
   scr_process_config_obj = scr_dyn_retain(config);
+#if !defined(SCR_LIB)
+  /* Released by the handler registered where the object is made; the
+   * teardown's scr_dyn_release would otherwise root the object model from
+   * every program's exit path. */
+  scr_atexit(scr_process_config_teardown);
+#endif
   return config;
 }
 
@@ -1420,6 +1443,7 @@ ScrArr *scr_process_argv(void) {
       const char *a = scr_lib_arg(i);
       scr_arr_push_ref(scr_argv_arr, scr_str_from_utf8_lossy((const uint8_t *)a, strlen(a)));
     }
+    scr_atexit(scr_argv_cleanup);
   }
   return scr_arr_retain(scr_argv_arr);
 }

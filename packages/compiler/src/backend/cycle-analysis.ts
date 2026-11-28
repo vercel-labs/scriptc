@@ -11,6 +11,7 @@ import {
   STRING,
   VOID,
 } from "../ir/ir.js";
+import { everyModuleNode } from "../ir/traverse.js";
 import { type CycleMutability, computeCycleMutability, fieldKey } from "./cycle-mutability.js";
 import { weakKeyUnits } from "./weak-keys.js";
 
@@ -54,29 +55,29 @@ export function prototypeOverrides(mod: IrModule): {
   const shapes = new Set<string>();
   let arrays = false;
   let allRecords = false;
-  const seen = new Set<object>();
-  const scan = (value: unknown): void => {
-    if (typeof value !== "object" || value === null) return;
-    if (seen.has(value)) return;
-    seen.add(value);
-    if (Array.isArray(value)) {
-      for (const item of value) scan(item);
-      return;
-    }
-    const node = value as { kind?: unknown; fn?: unknown; args?: unknown };
-    if (node.kind === "libCall" && node.fn === "dyn.setPrototype" && Array.isArray(node.args)) {
-      const receiver = node.args[0] as
-        | { kind?: unknown; type?: IrType; value?: { type?: IrType } }
-        | undefined;
-      const type = receiver?.kind === "dynFrom" ? receiver.value?.type : receiver?.type;
-      if (type?.kind === "record") shapes.add(type.shapeId);
-      else if (type?.kind === "array") arrays = true;
-      else if (type === undefined || type.kind === "dyn" || type.kind === "union")
-        allRecords = true;
-    }
-    for (const key of Object.keys(value)) scan((value as Record<string, unknown>)[key]);
-  };
-  scan(mod);
+  // One walk of the module's executable nodes (ir/traverse.ts), not a
+  // reflection over every object the module reaches. The compiler's own
+  // module holds more objects than a Set can — V8 refuses the 16,777,216th
+  // entry, which is where the compiler's self-compile failed — and most of
+  // them (source text, locations, the node index, the type tables) can hold
+  // no call at all. This walk visits each expression once and keeps nothing.
+  everyModuleNode(mod, {
+    expr: (node) => {
+      if (node.kind === "libCall" && node.fn === "dyn.setPrototype") {
+        const receiver = node.args[0] as
+          | { kind?: unknown; type?: IrType; value?: { type?: IrType } }
+          | undefined;
+        const type = receiver?.kind === "dynFrom" ? receiver.value?.type : receiver?.type;
+        if (type?.kind === "record") shapes.add(type.shapeId);
+        else if (type?.kind === "array") arrays = true;
+        else if (type === undefined || type.kind === "dyn" || type.kind === "union")
+          allRecords = true;
+      }
+      return true;
+    },
+    stmt: () => true,
+    type: () => true,
+  });
   return { shapes, arrays, allRecords };
 }
 

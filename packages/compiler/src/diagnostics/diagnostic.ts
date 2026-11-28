@@ -111,6 +111,7 @@
  *   SC9xxx  internal compiler errors (still source-anchored)
  */
 import type { SrcLoc } from "../ir/ir.js";
+import type { DynamicTierEntry, DynamicTierPackageCount } from "./dynamic-tier.js";
 import type { NodeIslandPackageMark, NodeIslandPathMark } from "../node-islands/policy.js";
 import type { DiagnosticCode } from "./codes.js";
 
@@ -123,6 +124,12 @@ export interface ScrDiagnostic {
   code: DiagnosticCode;
   message: string;
   loc: SrcLoc;
+  /** Set when the diagnostic's severity differs from what its code implies:
+   * strict mode promotes a performance or divergence finding to an error. */
+  severity?: "error" | "warning";
+  /** SC6101 only: the entries and package counts behind the aggregate
+   * message, so strict mode can drop the functions a line allows. */
+  dynamicTier?: { entries: DynamicTierEntry[]; packages: DynamicTierPackageCount[] };
   milestone?: Milestone;
   hint?: string;
   /** Embedder-authored guidance riding a refusal (the ask-5 teaching

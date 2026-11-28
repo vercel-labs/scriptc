@@ -392,7 +392,41 @@ static ScrDyn *scr_cl_default_settings(void) {
   return settings;
 }
 
-/* Copies `source`'s own enumerable string-keyed entries onto `target`. */
+/* The own string keys a property copy snapshots: every own string key of an
+ * object, function, array, typed record view, or Proxy (Node's
+ * [[OwnPropertyKeys]]); a handle keeps its own enumerable names. */
+static ScrArr *scr_cl_settings_keys(const ScrDyn *source) {
+  if (source->kind == SCR_DYN_HANDLE) return scr_dyn_obj_key_strs(source);
+  return scr_dyn_own_key_strs_all(source);
+}
+
+/* Whether `source` still has `key` as an own enumerable property. Node's
+ * spread snapshots the own keys, then checks each key's descriptor before it
+ * reads the value, so a getter that deleted a later key or made it
+ * non-enumerable earlier in the merge leaves it out, and one that made it
+ * enumerable includes it. */
+static bool scr_cl_settings_enumerable(const ScrDyn *source, const char *key, size_t key_len) {
+  if (source->kind == SCR_DYN_OBJ) return scr_dyn_obj_enumerable(source, key, key_len);
+  ScrStr *name = scr_str_new(key, key_len);
+  ScrDyn *key_value = scr_dyn_new_str(name);
+  ScrDyn *descriptor = scr_dyn_get_own_property_descriptor((ScrDyn *)source, key_value);
+  scr_dyn_release(key_value);
+  scr_str_release(name);
+  if (descriptor == NULL) return false; /* exception pending */
+  bool enumerable = false;
+  if (descriptor->kind != SCR_DYN_UNDEF) {
+    ScrDyn *flag = scr_dyn_obj_get(descriptor, "enumerable", 10);
+    enumerable = flag != NULL && scr_dyn_truthy(flag);
+  }
+  scr_dyn_release(descriptor);
+  return enumerable;
+}
+
+/* Copies the parts of `source` an object spread copies onto `target`: the own
+ * enumerable string-keyed entries of an object, function, array, typed record
+ * view, Proxy, or handle. Each value is read through an ordinary property
+ * access, so an accessor entry runs its getter and the merged settings hold
+ * the value it answers; a Proxy source answers its ownKeys and its get trap. */
 static void scr_cl_object_assign(ScrDyn *target, const ScrDyn *source) {
   if (source == NULL) return;
   /* A typed settings record crosses as a capsule; its properties live on
@@ -406,17 +440,34 @@ static void scr_cl_object_assign(ScrDyn *target, const ScrDyn *source) {
     }
     source = view;
   }
-  if (source->kind != SCR_DYN_OBJ) {
+  switch (source->kind) {
+  case SCR_DYN_OBJ:
+  case SCR_DYN_FUNC:
+  case SCR_DYN_ARR:
+  case SCR_DYN_PROXY:
+  case SCR_DYN_HANDLE:
+    break;
+  default:
     scr_dyn_release(view);
     return;
   }
-  ScrArr *names = scr_dyn_obj_key_strs(source); /* +1 */
+  ScrArr *names = scr_cl_settings_keys(source); /* +1 */
+  if (names == NULL) {
+    scr_dyn_release(view);
+    return;
+  }
   size_t n = (size_t)scr_arr_len(names);
   for (size_t i = 0; i < n; i++) {
     ScrStr *key = scr_arr_get_ref(names, (double)i); /* +1 */
-    ScrDyn *value = scr_dyn_obj_get(source, key->data, key->len); /* borrowed */
-    if (value != NULL) scr_dyn_obj_set(target, key->data, key->len, scr_dyn_retain(value));
+    if (scr_cl_settings_enumerable(source, key->data, key->len)) {
+      ScrDyn *value = scr_dyn_obj_read(source, key->data, key->len); /* +1 */
+      if (value != NULL && !scr_exc_pending())
+        scr_dyn_obj_set(target, key->data, key->len, value);
+      else
+        scr_dyn_release(value);
+    }
     scr_str_release(key);
+    if (scr_exc_pending()) break;
   }
   scr_arr_release(names);
   scr_dyn_release(view);
@@ -444,15 +495,34 @@ static void scr_cl_schedule_setup(ScrDyn *settings) {
  * program left it (Node's `...cluster.settings`), then `options`. Node
  * assigns a fresh object and schedules a 'setup' emission per call, each
  * carrying that call's object. `options` is borrowed; NULL is the bare
- * call. */
+ * call. A settings getter can call setupPrimary or setupMaster again while
+ * the merge runs, so every value is read before the object is swapped in,
+ * and the object the merge reads from stays alive until the read is done. */
 static void scr_cl_setup_impl(const ScrDyn *options) {
-  ScrDyn *previous = scr_cl_settings;
+  /* A reentrant call releases the settings object it found, which can be the
+   * object this merge reads from; keep a reference of our own while the
+   * merge reads it. */
+  ScrDyn *previous = scr_cl_settings != NULL ? scr_dyn_retain(scr_cl_settings) : NULL;
   ScrDyn *settings = scr_cl_default_settings();
   if (previous != NULL) scr_cl_object_assign(settings, previous);
-  if (options != NULL) scr_cl_object_assign(settings, options);
-  scr_dyn_release(previous);
+  /* A getter on the previous settings that throws stops the spread before
+   * the options are read, so their getters do not run. */
+  if (!scr_exc_pending() && options != NULL) scr_cl_object_assign(settings, options);
+  /* A throwing getter makes Node's object spread throw, so the merge stops
+   * before the settings object replaces the previous one or is emitted. */
+  if (scr_exc_pending()) {
+    scr_dyn_release(settings);
+    scr_dyn_release(previous);
+    return;
+  }
+  /* A reentrant call has already swapped its settings in and released the
+   * object installed at that point. Release whatever the global holds now,
+   * so each settings object is released once. */
+  ScrDyn *replaced = scr_cl_settings;
   scr_cl_settings = settings;
+  if (replaced != NULL) scr_dyn_release(replaced);
   scr_cl_schedule_setup(settings);
+  scr_dyn_release(previous);
 }
 
 void scr_cluster_setup(const ScrDyn *options) {
@@ -976,6 +1046,10 @@ ScrDyn *scr_cluster_fork(const ScrDyn *env) {
     return NULL;
   }
   scr_cl_setup_impl(NULL);
+  /* A settings getter that throws during the implicit merge leaves the
+   * exception pending; the fork does not start a worker, as Node's fork
+   * throws from its own setupPrimary call. */
+  if (scr_exc_pending()) return NULL;
 #if !defined(_WIN32) && !defined(__wasi__)
   /* A worker's credentials would have to be dropped before exec; this
    * runtime re-executes the artifact and would drop them in the child,

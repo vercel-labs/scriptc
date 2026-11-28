@@ -19,7 +19,10 @@
  * program whose IR and LLVM are identical and whose executable differs only
  * through changed runtime objects is "runtime-only", and a difference the
  * baseline reproduces against itself is "nondeterministic": both pass with a
- * note unless --strict. Any other difference fails the gate. */
+ * note unless --strict. A runtime-only difference that grows one of the
+ * floor programs (bench/n-body, bench/dynamic-properties) fails unless
+ * --allow-programs names the program: a minimal program pays nothing for
+ * runtime it does not use. Any other difference fails the gate. */
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -173,7 +176,10 @@ Other differences are classified:
                     differs from its own first build in the same artifacts.
   differs           anything else, in IR, LLVM or the executable.
 "differs" fails the gate. runtime-only and nondeterministic pass with a
-note; --strict fails them too, so any difference fails as before.
+note; --strict fails them too, so any difference fails as before. A
+runtime-only difference that grows bench/n-body or bench/dynamic-properties
+fails even without --strict, unless --allow-programs names the program: the
+smallest programs are the runtime's size floor.
 
 --timing-runs=N (default 5) times N paired --emit=llvm builds per bench
 program, baseline and candidate side by side. The self-hosted compiler's
@@ -247,6 +253,14 @@ const selfTimingRuns = Number(values["self-timing-runs"]);
 const fixtureTimingRuns = Number(values["fixture-timing-runs"]);
 const maxTimeGrowth = Number(values["max-time-growth"]) / 100;
 const maxSizeGrowth = Number(values["max-size-growth"]) / 100;
+/** The floor programs: the smallest shipped benchmark executables, whose
+ * bytes are the runtime's size claim. Their IR and LLVM must not change,
+ * and a runtime-only difference — the executable differs through the
+ * runtime alone — must not grow them either. A deliberate runtime growth
+ * still passes when --allow-programs names the program, so the PR shows
+ * the bytes it adds. tests/harness/runtime-dce-guard.test.ts holds the
+ * same line for hello-world, which the gate has no workload for. */
+const FLOOR_PROGRAMS = new Set(["bench/n-body", "bench/dynamic-properties"]);
 const jobs = Number(values.jobs);
 assert.ok(Number.isInteger(timingRuns) && timingRuns >= 0, "--timing-runs must be >= 0");
 assert.ok(Number.isInteger(jobs) && jobs >= 1, "--jobs must be >= 1");
@@ -1067,6 +1081,19 @@ await pool(
       if (!baseline.ok) entry.baselineError = baseline.error;
       if (!candidate.ok) entry.candidateError = candidate.error;
       const size = artifacts.exe?.bytes;
+      if (
+        verdict === "runtime-only" &&
+        FLOOR_PROGRAMS.has(program.id) &&
+        size !== undefined &&
+        size.candidate > size.baseline
+      ) {
+        entry.sizeFailure = true;
+        report.failures.push(
+          `${program.id}: runtime-only executable grew ${size.baseline} -> ${size.candidate} bytes; ` +
+            "a minimal program pays nothing for unused runtime, so list it in --allow-programs and " +
+            "set --max-size-growth to the growth the change owes",
+        );
+      }
       if (verdict === "allowed" && size && size.candidate > size.baseline * (1 + maxSizeGrowth)) {
         entry.sizeFailure = true;
         report.failures.push(

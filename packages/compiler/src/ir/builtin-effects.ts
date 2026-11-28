@@ -361,6 +361,10 @@ const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
 ];
 
 const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
+  // A per-name write to req.headers copies an assigned record's view and
+  // stores a property; a frozen or non-object target keeps the runtime's
+  // "not supported yet" Error, which the call delivers.
+  "http.reqSetHeaderName",
   // node:cluster validates its env argument and refuses setupPrimary in a
   // worker process (ERR_WORKER_INIT_FAILED).
   "cluster.fork",

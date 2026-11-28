@@ -9071,9 +9071,16 @@ static const ScrDynHandleOps sf_signal_ops = {
     &sf_signal_invoke, &sf_signal_get, &sf_signal_set, NULL,
     .methods = sf_signal_methods,
     .invalid_this = "Value of \"this\" must be of type AbortSignal"};
+/* AbortController.prototype's method as a value: `typeof c.abort` is
+ * "function" and an extracted call still aborts the controller it was read
+ * from. Node's abort takes no declared arguments (reason is optional), so
+ * its length is 0. */
+static const ScrDynHandleMethod sf_abort_controller_methods[] = {
+    {"abort", 0, false}, {NULL, 0, false}};
 static const ScrDynHandleOps sf_abort_controller_ops = {
     "AbortController", &sf_signal_retain_v, &sf_signal_release_v,
-    &sf_abort_controller_invoke, &sf_abort_controller_get, &sf_no_set, NULL};
+    &sf_abort_controller_invoke, &sf_abort_controller_get, &sf_no_set, NULL,
+    .methods = sf_abort_controller_methods};
 /* The fetch streams' accessor names, for the generic member read with an
  * explicit receiver (the handle-class unit may not be linked). */
 static const ScrDynHandleName sf_stream_attributes[] = {SCR_DYN_HANDLE_NAME("locked"),
@@ -9227,9 +9234,12 @@ static const ScrDynHandleOps sf_signal_ops = {
   &sf_signal_invoke, &sf_signal_get, &sf_signal_set, NULL,
   .methods = sf_signal_methods,
   .invalid_this = "Value of \"this\" must be of type AbortSignal" };
+static const ScrDynHandleMethod sf_abort_controller_methods[] = {
+  {"abort", 0, false}, {NULL, 0, false}};
 static const ScrDynHandleOps sf_abort_controller_ops = {
   "AbortController", &sf_signal_retain_v, &sf_signal_release_v,
-  &sf_abort_controller_invoke, &sf_abort_controller_get, &sf_no_set, NULL };
+  &sf_abort_controller_invoke, &sf_abort_controller_get, &sf_no_set, NULL,
+  .methods = sf_abort_controller_methods };
 static void sf_signal_teardown(void) {
   while (sf_reason_signals) sf_signal_drop_reason(sf_reason_signals);
 }

@@ -274,17 +274,103 @@ function lowerSearchParamsInit(lowerer: Lowerer, arg: ts.Expression, loc: SrcLoc
         coerces: true,
       };
     };
-    const pairs: { key: string; keyLoc: SrcLoc; value: ValueOf }[] = [];
+    type SpreadGroup = { shapeId: string; localId: string; decl: IrStmt };
+    const pairs: {
+      key: string;
+      keyLoc: SrcLoc;
+      value: ValueOf;
+      spread?: SpreadGroup;
+    }[] = [];
+    // A key names one entry: a spread that overlaps another entry (a later
+    // duplicate would only replace the value) is outside the fold.
+    const keys = new Set<string>();
+    const addKey = (key: string, node: ts.Node): void => {
+      if (keys.has(key))
+        lowerer.unsupported(
+          "SC1090",
+          node,
+          "URLSearchParams record inits that name a key twice (a spread overlapping another entry)",
+        );
+      keys.add(key);
+    };
+    let hasSpread = false;
     for (const prop of arg.properties.nodes) {
       // `{ model }` appends the binding's value under its own name, like
       // the `{ model: model }` spelling.
       if (ts.isShorthandPropertyAssignment(prop)) {
         const key = (prop.name as ts.Identifier | ts.StringLiteral).text;
+        addKey(key, prop.name);
         pairs.push({
           key,
           keyLoc: locOf(prop.name),
           value: valueOf(prop.name, () => lowerer.lowerShorthandValue(prop)),
         });
+        continue;
+      }
+      // A spread of a CLOSED record whose keys no other entry names: the
+      // merged object appends its fields in shape order, and the source
+      // evaluates once at the spread's position (the reads pass below
+      // hoists it when the orders differ). Anything else — an index
+      // signature (keys only known at run time), a tuple, an accessor
+      // record — stays outside the fold.
+      if (ts.isSpreadAssignment(prop)) {
+        const mapped = lowerer.mapTypeOf(lowerer.typeOf(prop.expression));
+        const shape = mapped?.kind === "record" ? lowerer.shapes.get(mapped.shapeId) : undefined;
+        if (
+          mapped?.kind !== "record" ||
+          !shape ||
+          shape.tuple ||
+          shape.indexValue !== undefined ||
+          shape.fields.some((field) => field.name.startsWith("%"))
+        ) {
+          lowerer.unsupported(
+            "SC1090",
+            prop,
+            "URLSearchParams record inits with spreads of anything but a closed record of strings",
+          );
+        }
+        const src = lowerer.lowerExpr(prop.expression);
+        const local = lowerer.declareHiddenLocal("%spSpread", src.type);
+        const group: SpreadGroup = {
+          shapeId: mapped.shapeId,
+          localId: local.id,
+          decl: { kind: "varDecl", localId: local.id, init: src, loc: locOf(prop) },
+        };
+        hasSpread = true;
+        for (const field of shape.fields) {
+          if (field.type.kind !== "string" && !lowerer.dynConvertible(field.type))
+            lowerer.unsupported(
+              "SC1090",
+              prop,
+              "URLSearchParams record inits whose spread source holds a non-string field",
+            );
+          addKey(field.name, prop);
+          const raw: IrExpr = {
+            kind: "recordGet",
+            obj: varRef(local.id, src.type, locOf(prop)),
+            shapeId: mapped.shapeId,
+            field: field.name,
+            type: field.type,
+            loc: locOf(prop),
+          };
+          const coerces = field.type.kind !== "string";
+          const coerce = (value: IrExpr): IrExpr =>
+            coerces
+              ? {
+                  kind: "libCall",
+                  fn: "dyn.toStringCoerce",
+                  args: [{ kind: "dynFrom", value, type: DYN, loc: value.loc }],
+                  type: STRING,
+                  loc: value.loc,
+                }
+              : value;
+          pairs.push({
+            key: field.name,
+            keyLoc: locOf(prop),
+            value: { value: raw, coerce, coerces },
+            spread: group,
+          });
+        }
         continue;
       }
       if (!ts.isPropertyAssignment(prop) || prop.name === undefined) {
@@ -308,6 +394,7 @@ function lowerSearchParamsInit(lowerer: Lowerer, arg: ts.Expression, loc: SrcLoc
           "non-literal keys in a URLSearchParams record init",
         );
       }
+      addKey(key, prop.name);
       pairs.push({
         key,
         keyLoc: locOf(prop.name),
@@ -339,11 +426,22 @@ function lowerSearchParamsInit(lowerer: Lowerer, arg: ts.Expression, loc: SrcLoc
     // Reflect order.
     let reads: IrExpr[] | null = null;
     if (
+      hasSpread ||
       ordered.some((entry, i) => entry.source !== i) ||
       pairs.some((pair, i) => pair.value.coerces && i + 1 < pairs.length)
     ) {
       const stmts: IrStmt[] = [];
+      const emitted = new Set<SpreadGroup>();
       reads = pairs.map((pair) => {
+        // A spread source evaluates once, at its own position in the
+        // literal; its fields then read from the held value.
+        if (pair.spread !== undefined) {
+          if (!emitted.has(pair.spread)) {
+            emitted.add(pair.spread);
+            stmts.push(pair.spread.decl);
+          }
+          return pair.value.value;
+        }
         const value = pair.value.value;
         // A bare unit (`{ c: null }`) has no local slot: locals may not
         // carry a bare unit type. A literal needs no read; a unit-typed

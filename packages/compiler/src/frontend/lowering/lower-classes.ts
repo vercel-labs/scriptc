@@ -3122,6 +3122,12 @@ export function collectClassShapeInner(
           symbol = lowerer.checker.getAliasedSymbol(symbol);
         const info = symbol === undefined ? undefined : lowerer.classBySymbol.get(symbol);
         if (info !== undefined && info.decl !== null) {
+          if (info.generic !== undefined)
+            lowerer.unsupported(
+              "SC1090",
+              t,
+              `extending the generic class '${info.def.jsName ?? info.def.name}' through '${ts.getTextOfNode(t.expression)}' (its instantiation is not modeled here — extend a non-generic class, or name the base by its instantiated class)`,
+            );
           base = info;
           continue;
         }

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/stream-symbol-async-iterator-overrides.mjs"
+ ],
+ "diags": []
+}

@@ -7779,7 +7779,7 @@ static bool scr_typed_ref_plain_array(const ScrDyn *d) {
   return !x || (x->prop_len == 0 && !x->metadata && !x->cls);
 }
 
-ScrStreamRefHooks scr_stream_ref_hooks = { NULL, NULL, NULL, NULL };
+ScrStreamRefHooks scr_stream_ref_hooks = { NULL, NULL, NULL, NULL, NULL, NULL };
 
 /* Whether capsule `d`, which has a snapshot adapter, holds a native stream
  * that answers member questions without its view: the adapter is the stream
@@ -13223,6 +13223,21 @@ static ScrDyn *scr_dyn_symbol_key_get_receiver(const ScrDyn *value, const ScrDyn
     ScrDyn *view = scr_dyn_typed_ref_materialize(value);
     ScrDyn *result = scr_exc_pending() ? NULL
       : scr_dyn_symbol_key_get_receiver(view, key, optional, receiver);
+    /* A live stream answers the symbols it implements itself (its async
+     * iterator) only when its view and prototype have no answer at all: a
+     * symbol property the program installed (own or on the prototype), a
+     * class method or an accessor wins, as on any object, and an explicit
+     * undefined shadows the built-in method too. */
+    if (result != NULL && !scr_exc_pending() && result->kind == SCR_DYN_UNDEF &&
+        scr_dyn_symbol_entry(view, key, false) == NULL &&
+        scr_stream_ref_hooks.symbol != NULL && scr_stream_ref_hooks.is_stream != NULL &&
+        scr_stream_ref_hooks.is_stream(value->v.typed_ref.ptr)) {
+      ScrDyn *member = scr_stream_ref_hooks.symbol(value->v.typed_ref.ptr, key);
+      if (member != NULL || scr_exc_pending()) {
+        scr_dyn_release(result);
+        result = member;
+      }
+    }
     scr_dyn_release(view);
     return result;
   }

@@ -590,8 +590,13 @@ void scr_stream_trace(void *obj, ScrTraceVisit visit, void *ctx) {
   scr_stream_st_trace(s->st, visit, ctx);
 }
 
+static bool scr_stream_ref_is_stream(const void *ptr);
+static void scr_stream_live_add(const void *ptr);
+static void scr_stream_live_remove(const void *ptr);
+
 static void scr_stream_gcfree(void *obj) {
   ScrStream *s = obj;
+  scr_stream_live_remove(s);
   scr_emitter_reg_gcfree(s->reg);
   scr_stream_state_drop(s->st, true);
   scr_obj_free_note();
@@ -601,6 +606,7 @@ static void scr_stream_gcfree(void *obj) {
 static void scr_stream_release_direct(void *obj) {
   ScrStream *s = obj;
   if (--s->rc == 0) {
+    scr_stream_live_remove(s);
     scr_cyc_dead(s);
     scr_emitter_reg_drop(s->reg);
     scr_stream_state_drop(s->st, false);
@@ -922,6 +928,9 @@ static inline void scr_stream_settle_next(ScrStream *s) {
   if (s->st->r.next_waiter && !s->st->r.next_reading) scr_stream_settle_next_waiter(s);
 }
 static int scr_stream_ref_member(void *p, const char *key, size_t key_len, ScrDyn **value);
+static ScrDyn *scr_stream_ref_symbol(void *p, const ScrDyn *key);
+
+
 static ScrStream *scr_stream_alloc(const ScrVt *vt, const char *cls, bool has_r, bool has_w,
                                     double rhwm, double whwm, bool auto_destroy,
                                     bool emit_close, bool allow_half_open);
@@ -3061,10 +3070,13 @@ static ScrStream *scr_stream_alloc(const ScrVt *vt, const char *cls, bool has_r,
                                     bool emit_close, bool allow_half_open) {
   static ScrCycType cyc_type = { &scr_stream_trace, &scr_stream_gcfree, SCR_CYC_KIND_STREAM };
   ScrStream *s = scr_cyc_alloc(sizeof *s, &cyc_type);
+  scr_stream_live_add(s);
   /* A stream seen as `unknown` answers member questions from here on: the
    * address a capsule is known by goes in last. */
   if (!scr_stream_ref_hooks.view) {
     scr_stream_ref_hooks.member = scr_stream_ref_member;
+    scr_stream_ref_hooks.symbol = scr_stream_ref_symbol;
+    scr_stream_ref_hooks.is_stream = scr_stream_ref_is_stream;
     scr_stream_ref_hooks.get = scr_typed_ref_stream_get;
     scr_stream_ref_hooks.has = scr_typed_ref_stream_has;
     scr_stream_ref_hooks.view = scr_stream_ref_view;
@@ -9812,6 +9824,107 @@ static ScrDyn *scr_stream_dyn_call(ScrStream *stream, ScrDyn *self, const char *
   else if (!strcmp(method, "uncork")) scr_stream_uncork(stream);
   if (!result && !scr_exc_pending()) result = self ? scr_dyn_retain(self) : scr_dyn_this_get();
   return result;
+}
+
+static ScrDyn *scr_stream_view_call(ScrClosure *cb, ScrDyn *const *args, size_t argc);
+
+/* The live streams of this thread, by address: a symbol read on a live
+ * stream capsule asks whether the capsule's payload is one of these, which
+ * is a real type test rather than a look at a view that may have been freed
+ * and whose address a pooled allocation can reuse. Every stream enters the
+ * set in scr_stream_alloc and leaves it in scr_stream_gcfree, so an address
+ * is in the set only while the stream is live. */
+static SCR_TL void **scr_stream_live;
+static SCR_TL size_t scr_stream_live_cap, scr_stream_live_count, scr_stream_live_tombs;
+static void *const scr_stream_live_tomb = (void *)(uintptr_t)1;
+
+static size_t scr_stream_live_bucket(const void *ptr, size_t cap) {
+  return (size_t)((((uintptr_t)ptr >> 4) * UINT64_C(11400714819323198485)) & (cap - 1));
+}
+
+static void scr_stream_live_put(void **slots, size_t cap, const void *ptr) {
+  size_t slot = scr_stream_live_bucket(ptr, cap);
+  while (slots[slot] != NULL && slots[slot] != scr_stream_live_tomb) slot = (slot + 1) & (cap - 1);
+  slots[slot] = (void *)ptr;
+}
+
+static void scr_stream_live_rehash(size_t capacity) {
+  void **slots = calloc(capacity, sizeof *slots);
+  if (!slots) scr_stream_oom();
+  for (size_t i = 0; i < scr_stream_live_cap; i++) {
+    void *entry = scr_stream_live[i];
+    if (entry != NULL && entry != scr_stream_live_tomb) scr_stream_live_put(slots, capacity, entry);
+  }
+  free(scr_stream_live);
+  scr_stream_live = slots;
+  scr_stream_live_cap = capacity;
+  scr_stream_live_tombs = 0;
+}
+
+/* Additions after a removal hold the same address until the stream is freed
+ * twice, so entries are never duplicated. */
+static void scr_stream_live_add(const void *ptr) {
+  if ((scr_stream_live_count + scr_stream_live_tombs + 1) * 2 >= scr_stream_live_cap)
+    scr_stream_live_rehash(scr_stream_live_cap ? scr_stream_live_cap * 2 : 64);
+  size_t slot = scr_stream_live_bucket(ptr, scr_stream_live_cap);
+  while (scr_stream_live[slot] != NULL && scr_stream_live[slot] != scr_stream_live_tomb &&
+         scr_stream_live[slot] != ptr)
+    slot = (slot + 1) & (scr_stream_live_cap - 1);
+  if (scr_stream_live[slot] == ptr) return; /* already registered */
+  if (scr_stream_live[slot] == scr_stream_live_tomb) scr_stream_live_tombs--;
+  scr_stream_live_count++;
+  scr_stream_live[slot] = (void *)ptr;
+}
+
+static void scr_stream_live_remove(const void *ptr) {
+  if (scr_stream_live_cap == 0) return;
+  size_t slot = scr_stream_live_bucket(ptr, scr_stream_live_cap);
+  while (scr_stream_live[slot] != NULL) {
+    if (scr_stream_live[slot] == ptr) {
+      scr_stream_live[slot] = scr_stream_live_tomb;
+      scr_stream_live_count--;
+      /* The table is the thread's, and a worker's streams can all be gone
+       * long before it exits: free it with the last stream so nothing is
+       * left for a thread-exit leak check to find. */
+      if (scr_stream_live_count == 0) {
+        free(scr_stream_live);
+        scr_stream_live = NULL;
+        scr_stream_live_cap = 0;
+        scr_stream_live_tombs = 0;
+      } else {
+        scr_stream_live_tombs++;
+      }
+      return;
+    }
+    slot = (slot + 1) & (scr_stream_live_cap - 1);
+  }
+}
+
+static bool scr_stream_ref_is_stream(const void *ptr) {
+  if (scr_stream_live_cap == 0 || ptr == NULL) return false;
+  size_t slot = scr_stream_live_bucket(ptr, scr_stream_live_cap);
+  while (scr_stream_live[slot] != NULL) {
+    if (scr_stream_live[slot] == ptr) return true;
+    slot = (slot + 1) & (scr_stream_live_cap - 1);
+  }
+  return false;
+}
+
+/* ScrStreamRefHooks.symbol: the symbol-keyed member of a live stream
+ * capsule, +1, or NULL when the symbol is not one the stream answers.
+ * [Symbol.asyncIterator]() is Node's Readable.prototype method: the stream's
+ * async iterator, the same value readable.iterator() answers. Only the
+ * readable side has one; a Writable answers undefined. */
+static ScrDyn *scr_stream_ref_symbol(void *p, const ScrDyn *key) {
+  ScrStream *stream = p;
+  if (!stream->st->has_r) return NULL;
+  if (!scr_dyn_is_async_iterator_symbol(key)) return NULL;
+  ScrClosure *cb = scr_closure_new((void *)scr_stream_view_call, 2);
+  cb->caps[0] = scr_box_new_obj(scr_stream_retain_v, scr_stream_release_v, scr_stream_trace);
+  cb->caps[1] = scr_box_new(SCR_BOX_STR);
+  scr_box_set_ref(cb->caps[0], scr_stream_retain(stream));
+  scr_box_set_ref(cb->caps[1], scr_str_new("iterator", 8));
+  return scr_dyn_new_func(cb, scr_stream_view_call, 0, "()", "[Symbol.asyncIterator]");
 }
 
 static ScrDyn *scr_stream_view_call(ScrClosure *cb, ScrDyn *const *args, size_t argc) {

@@ -2,6 +2,7 @@ import { lowerHistogramStatsMethodCall } from "./builtins/histogram-stats.js";
 import { isCheckerPanic } from "../../diagnostics/diagnostic.js";
 import { reboundRequireBindingOf } from "./rebindable-requires.js";
 import { voidTruthinessNeedsRuntimeValue } from "../tsc-codes.js";
+import { awaitDynThenable } from "./thenables.js";
 import { checkedIterableSpread } from "./checked-iterable-spread.js";
 import { mayReplacePrototype } from "./class-method-mutations.js";
 import { lowerIteratorFromDyn } from "./iterator-prototype.js";
@@ -685,7 +686,10 @@ export function lowerAwaitedVoidTruthinessCall(
   if (!ts.isCallExpression(inner)) return null;
   const call = lowerVoidTruthinessCall(lowerer, inner, true);
   if (call === null) return null;
-  return { kind: "libCall", fn: "async.awaitDyn", args: [call], type: DYN, loc };
+  // Node's await is PromiseResolve over the value the call answered, so a
+  // lazy thenable the callee returns has its then called: adopt it here,
+  // as the typed and checked-dynamic awaits do.
+  return awaitDynThenable(lowerer, call, loc);
 }
 
 /** A void-typed call whose result a truthiness test reads (preflight

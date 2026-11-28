@@ -4466,6 +4466,52 @@ ScrPromise *scr_promise_settled_ref(void *v, void *(*retain)(void *), void (*rel
   return p;
 }
 
+/* A dynamic Promise.race entry. A native promise is passed through by the
+ * lowering's run-time test; a THENABLE would be adopted by Node's
+ * PromiseResolve, and the dynamic resolve path does not model that adoption
+ * yet, so the entry REFUSES by name rather than settling the race with the
+ * thenable object as if it were the winner. */
+ScrPromise *scr_promise_race_dyn_entry(ScrDyn *value) {
+  /* PromiseResolve reads `then` only from an OBJECT: a primitive fulfills as
+   * itself without a property read. A typed capsule answers through its
+   * materialized view, as every checked-dynamic member read does. */
+  ScrDyn *subject = value;
+  ScrDyn *view = NULL;
+  if (value->kind == SCR_DYN_TYPED_REF) {
+    view = scr_dyn_typed_ref_materialize(value);
+    if (view == NULL) return NULL;
+    subject = view;
+  }
+  bool objectLike = subject->kind == SCR_DYN_OBJ || subject->kind == SCR_DYN_ARR ||
+                    subject->kind == SCR_DYN_HANDLE || subject->kind == SCR_DYN_FUNC ||
+                    subject->kind == SCR_DYN_PROXY;
+  bool thenable = false;
+  if (objectLike) {
+    ScrStr *name = scr_str_new("then", 4);
+    ScrDyn *boxed = scr_dyn_new_str(name);
+    scr_str_release(name);
+    ScrDyn *thenValue = scr_dyn_reflect_get(subject, boxed, subject);
+    scr_dyn_release(boxed);
+    if (thenValue == NULL) {
+      if (view != NULL) scr_dyn_release(view);
+      return NULL; /* the get threw */
+    }
+    thenable = thenValue->kind != SCR_DYN_UNDEF && thenValue->kind != SCR_DYN_NULL &&
+               scr_dyn_is_callable(thenValue);
+    scr_dyn_release(thenValue);
+  }
+  if (view != NULL) scr_dyn_release(view);
+  if (thenable) {
+    static const char message[] =
+      "Promise.race over a dynamic entry that holds a thenable is not supported yet";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC1090");
+    return NULL;
+  }
+  ScrPromise *p = scr_promise_new();
+  scr_promise_fulfill_ref(p, scr_dyn_retain(value), scr_dyn_retain_v, scr_dyn_release_v, NULL);
+  return p;
+}
+
 /* ── fs/promises ─────────────────────────────────────────────────────
  * The promise forms run the SAME sync operations and mint an already-
  * settled promise (scr_promise_settled_*): success fulfills, a pending

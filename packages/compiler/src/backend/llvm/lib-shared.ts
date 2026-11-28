@@ -1582,6 +1582,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "handle.propsCheck": "scr_dyn_handle_props_check",
   // Promise statics with a foreign `this` (scr_js_promise_generic.c).
   "promise.genericStatic": "scr_js_promise_generic_call",
+  "promise.raceDynEntry": "scr_promise_race_dyn_entry",
   "child.propsDefine": "scr_dyn_define_property_hp",
   "child.propsDescriptor": "scr_dyn_get_own_property_descriptor_hp",
   "child.propsResolve": "scr_dyn_promise_resolve_hp",

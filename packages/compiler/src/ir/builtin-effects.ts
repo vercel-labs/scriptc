@@ -1010,6 +1010,7 @@ const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   // resolve — every throw (a non-object this, a non-constructor, a throwing
   // executor or resolve) rejects the capability or propagates.
   "promise.genericStatic",
+  "promise.raceDynEntry",
   "dyn.hasKey",
   "dyn.in",
   "child.kill",

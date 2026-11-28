@@ -1011,8 +1011,8 @@ export function lowerPromiseStaticCall(
             cond: { kind: "dynTest", test: "promise", value: ref, type: BOOL, loc: locOf(el) },
             then: { kind: "dynCheck", value: ref, type: promiseType, loc: locOf(el) },
             else_: {
-              kind: "intrinsic",
-              name: "promise.resolve",
+              kind: "libCall",
+              fn: "promise.raceDynEntry",
               args: [ref],
               type: promiseType,
               loc: locOf(el),

@@ -194,6 +194,9 @@ ScrDyn *scr_await_dyn_value_settled(ScrDyn *value);
  * until the value's promise settled, or taken the non-promise hop. */
 ScrDyn *scr_coro_await_dyn_value(ScrDyn *value);
 void scr_promise_resolve_dyn(ScrPromise *destination, ScrDyn *value);
+/* A dynamic Promise.race entry: a promise (+1), or NULL with the named
+ * thenable refusal pending. */
+ScrPromise *scr_promise_race_dyn_entry(ScrDyn *value);
 /* `new Promise(executor)` of a checked-dynamic value whose resolve function
  * adopts a promise it is given (scr_async_dyn.c). */
 ScrClosure *scr_make_resolve_dyn(ScrPromise *p, ScrClosure *reject);

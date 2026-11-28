@@ -45,6 +45,14 @@ export function withLibraryRuntimeFlavors(matrix) {
     // calls scr_arr_join_str, so the library flavors carry the same optional
     // unit the executable flavors compile.
     "scr_arr_join_str.c",
+    // A checked cast of a dynamic value to a declared type.
+    "scr_decl_adopt.c",
+    // A class test's prototype read, as of `instanceof` on a dynamic value.
+    "scr_dyn_class_test.c",
+    // AbortController and AbortSignal without the fetch transport, over
+    // the EventTarget unit their listeners use.
+    "scr_abort.c",
+    "scr_event_target.c",
   ]);
   const libraryUnits = [
     ...matrix.runtime_units.filter(

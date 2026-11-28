@@ -3376,7 +3376,7 @@ export class LlDyn {
    * node only when something else holds it.
    *
    * The plain helper itself where the program does not link the adoption
-   * unit (a library), the type has no live capsule, or the adoption could
+   * unit, the type has no live capsule, or the adoption could
    * reach a record without fields, which would lose its source's properties
    * (adoptsAtTypedSlot). */
   dynCheckAdoptingHelper(t: IrType, preserveRefs: boolean, borrowed: boolean): string {

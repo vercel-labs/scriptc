@@ -43,6 +43,8 @@ export function libraryArchiveFeatures(options: LibArchiveOptions): NativeLinkFe
     // the SCR_FN_MEMBER_PROPS builds of scr_json.c and scr_dyn_invoke.c, the
     // same pair the executable lane links.
     ...(options.fnMemberProps === true ? { fnMemberProps: true } : {}),
+    ...(options.declAdopt === true ? { declAdopt: true } : {}),
+    ...(options.classTestPrototype === true ? { classTestPrototype: true } : {}),
     dc: false,
     dynAsync: false,
     events: false,

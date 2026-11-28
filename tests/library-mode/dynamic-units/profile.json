@@ -1,0 +1,18 @@
+{
+  "profile_format": 1,
+  "name": "conformance-dynamic-units",
+  "entry": "main.ts",
+  "emission": "llvm",
+  "abi": {
+    "prefix": "kd_",
+    "init_symbol": "kd_init",
+    "sink_register_symbol": "kd_set_panic_sink",
+    "collect_symbol": "kd_collect",
+    "result_reset_symbol": null
+  },
+  "exports": [
+    { "export": "castShares", "symbol": "kd_cast_shares", "params": [], "returns": "bool" },
+    { "export": "slotShares", "symbol": "kd_slot_shares", "params": [], "returns": "bool" },
+    { "export": "classTest", "symbol": "kd_class_test", "params": [], "returns": "bool" }
+  ]
+}

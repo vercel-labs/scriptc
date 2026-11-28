@@ -62,7 +62,7 @@ export function dynUndefinedExpr(loc: SrcLoc): IrExpr {
  * code omits the error code property; a `url` becomes the error's own `url`
  * property (Node's ERR_MODULE_NOT_FOUND for a missing file). */
 export function nodeThrowExpr(
-  kind: 0 | 1 | 2 | 5 | 6,
+  kind: 0 | 1 | 2 | 3 | 5 | 6,
   code: string,
   message: string,
   type: IrType,

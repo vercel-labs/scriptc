@@ -27,6 +27,9 @@ export const moduleNeverThrow: readonly IrLibFn[] = [
   // marks it as one and records it: no program code runs, and allocation
   // failure ends the process.
   "module.namespaceCopy",
+  // The strip-type experimental warning writes one message to stderr on its
+  // first call; nothing else runs.
+  "module.stripTypesWarning",
   // getSourceMapsSupport retains the thread's frozen record (building it on
   // first use), and findSourceMap answers the immortal undefined value;
   // neither throws, and allocation failure ends the process.

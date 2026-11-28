@@ -1014,6 +1014,27 @@ ScrDyn *scr_module_cache_object(void) {
   return scr_dyn_retain(scr_module_cache_obj);
 }
 
+/* module.stripTypeScriptTypes reports Node's one-time experimental warning on
+ * its first call, byte for byte: the pid-prefixed line and the
+ * --trace-warnings hint. */
+void scr_module_strip_types_warning(void) {
+  static SCR_TL bool emitted = false;
+  if (emitted) return;
+  /* NODE_NO_WARNINGS silences warnings, as it does in Node. */
+  const char *no_warnings = getenv("NODE_NO_WARNINGS");
+  if (no_warnings != NULL && no_warnings[0] != '\0') {
+    emitted = true;
+    return;
+  }
+  emitted = true;
+  fprintf(stderr,
+          "(node:%ld) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and "
+          "might change at any time\n",
+          (long)scr_process_pid());
+  fputs("(Use `node --trace-warnings ...` to show where the warning was created)\n", stderr);
+  fflush(stderr);
+}
+
 int scr_lib_arg_count(void) {
 #if defined(_WIN32) && !defined(SCR_LIB)
   scr_lib_prepare_utf8_argv();

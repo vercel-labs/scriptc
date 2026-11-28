@@ -51,6 +51,7 @@ import {
   funcOf,
 } from "../../../ir/ir.js";
 import { lowerFfiMemoryModule } from "../native-ffi.js";
+import { StripUnsupportedSyntax, stripTypeScriptTypesStrip } from "../../strip-typescript-types.js";
 import {
   createRequireSpecOf,
   createRequireProgramModuleOf,
@@ -278,6 +279,169 @@ function lowerSourceMapsCall(
  * statement it refreshes the events module's ES module namespace copy of
  * defaultMaxListeners (lowerExprStatement), the one builtin export a program
  * can change. */
+/** Node's util.inspect-shaped description of a `code` argument that is not a
+ * string, or null for a shape this check does not reproduce. */
+function stripCodeReceivedText(lowerer: Lowerer, arg: ts.Expression): string | null {
+  const a = withoutParenthesesTypeWrappers(arg);
+  if (ts.isNumericLiteral(a)) return `type number (${a.text})`;
+  if (a.kind === ts.SyntaxKind.TrueKeyword) return "type boolean (true)";
+  if (a.kind === ts.SyntaxKind.FalseKeyword) return "type boolean (false)";
+  if (a.kind === ts.SyntaxKind.NullKeyword) return "null";
+  if (ts.isIdentifier(a) && lowerer.isStdlibGlobal(a, "undefined")) return "undefined";
+  if (ts.isObjectLiteralExpression(a) && a.properties.nodes.length === 0)
+    return "an instance of Object";
+  if (ts.isArrayLiteralExpression(a) && a.elements.nodes.length === 0)
+    return "an instance of Array";
+  return null;
+}
+
+/** module.stripTypeScriptTypes(code, options): a compiled program strips the
+ * code at build time, so the code and the options must be written literally.
+ * Node's argument checks (the code's type, the mode, sourceMap, sourceUrl)
+ * and the strip-mode syntax refusals answer Node's own errors and messages;
+ * `mode: "transform"` is a named refusal (it re-prints the program through
+ * SWC's code generator). The first call reports Node's one-time
+ * ExperimentalWarning, then answers the stripped text. */
+export function lowerStripTypeScriptTypesCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  loc: SrcLoc,
+): IrExpr {
+  const args = call.arguments.nodes;
+  const refuse = (what: string, hint: string): never =>
+    lowerer.noLowering(`module.stripTypeScriptTypes ${what}`, call, hint);
+  // Node evaluates every argument before the call body runs, so an error the
+  // checks raise happens after them — an ignored option value or an extra
+  // argument keeps its side effects and its own exceptions on every path.
+  const evaluation: IrStmt[] = args.map((arg) => ({
+    kind: "exprStmt",
+    expr: lowerer.lowerExpr(arg),
+    loc: locOf(arg),
+  }));
+  const fail = (thrown: IrExpr): IrExpr =>
+    evaluation.length === 0
+      ? thrown
+      : { kind: "seqExpr", stmts: evaluation, result: thrown, type: thrown.type, loc };
+  if (args.some(ts.isSpreadElement))
+    refuse("with a spread argument", "stripTypeScriptTypes(code, options) takes written literals");
+  const codeNode = args[0];
+  let code: string | null = null;
+  if (codeNode !== undefined) {
+    const a = withoutParenthesesTypeWrappers(codeNode);
+    if (ts.isStringLiteralLike(a)) code = a.text;
+  }
+  if (code === null) {
+    const received =
+      codeNode === undefined ? "undefined" : stripCodeReceivedText(lowerer, codeNode);
+    if (received !== null)
+      return fail(
+        nodeThrowExpr(
+          1,
+          "ERR_INVALID_ARG_TYPE",
+          `The "code" argument must be of type string. Received ${received}`,
+          DYN,
+          loc,
+        ),
+      );
+    return refuse(
+      "with runtime-computed code",
+      "the code must be a string literal: a compiled program strips it at build time",
+    );
+  }
+  let sourceUrl: string | null = null;
+  const optionsNode = args[1];
+  if (optionsNode !== undefined) {
+    const o = withoutParenthesesTypeWrappers(optionsNode);
+    if (!ts.isObjectLiteralExpression(o))
+      return refuse(
+        "with runtime-computed options",
+        'pass an options literal: { mode: "strip" }, sourceMap or sourceUrl',
+      );
+    for (const prop of o.properties?.nodes ?? []) {
+      if (
+        !ts.isPropertyAssignment(prop) ||
+        prop.name === undefined ||
+        !ts.isIdentifier(prop.name) ||
+        prop.initializer === undefined
+      )
+        return refuse(
+          "with a computed option",
+          'write each option by name: { mode: "strip" }, sourceMap, sourceUrl',
+        );
+      const name = prop.name.text;
+      const value = withoutParenthesesTypeWrappers(prop.initializer);
+      if (name === "mode") {
+        if (!ts.isStringLiteralLike(value))
+          return refuse("with a runtime-computed mode", 'write the mode as a string: "strip"');
+        if (value.text === "transform")
+          return refuse(
+            "in transform mode",
+            "transform mode re-prints the program through SWC's code generator; only strip mode is implemented",
+          );
+        if (value.text !== "strip")
+          return fail(
+            nodeThrowExpr(
+              1,
+              "ERR_INVALID_ARG_VALUE",
+              "The property 'options.mode' must be one of: 'strip', 'transform'. " +
+                `Received '${value.text}'`,
+              DYN,
+              loc,
+            ),
+          );
+      } else if (name === "sourceMap") {
+        if (value.kind === ts.SyntaxKind.TrueKeyword)
+          return fail(
+            nodeThrowExpr(
+              1,
+              "ERR_INVALID_ARG_VALUE",
+              "The property 'options.sourceMap' must be one of: false, undefined. Received true",
+              DYN,
+              loc,
+            ),
+          );
+        if (
+          value.kind !== ts.SyntaxKind.FalseKeyword &&
+          !(ts.isIdentifier(value) && lowerer.isStdlibGlobal(value, "undefined"))
+        )
+          return refuse("with a runtime-computed sourceMap", "write sourceMap as false");
+      } else if (name === "sourceUrl") {
+        if (ts.isStringLiteralLike(value)) sourceUrl = value.text;
+        else if (ts.isIdentifier(value) && lowerer.isStdlibGlobal(value, "undefined"))
+          sourceUrl = null;
+        else
+          return refuse("with a runtime-computed sourceUrl", "write sourceUrl as a string literal");
+      }
+    }
+  }
+  let stripped: string;
+  try {
+    stripped = stripTypeScriptTypesStrip(code as string);
+  } catch (err) {
+    if (!(err instanceof StripUnsupportedSyntax)) throw err;
+    // The refusal carries Node's own code: the strip-only syntax errors are
+    // ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX, and pre-strip validation (an
+    // `override` with no base class) is ERR_INVALID_TYPESCRIPT_SYNTAX.
+    return fail(nodeThrowExpr(3, err.code, err.message, DYN, loc));
+  }
+  const text = sourceUrl === null ? stripped : `${stripped}\n\n//# sourceURL=${sourceUrl}`;
+  // Node evaluates every argument before the call returns: an ignored option
+  // value, an extra argument, their side effects and their exceptions all
+  // happen where the call stands.
+  const warning: IrStmt = {
+    kind: "exprStmt",
+    expr: { kind: "libCall", fn: "module.stripTypesWarning", args: [], type: VOID, loc },
+    loc,
+  };
+  return {
+    kind: "seqExpr",
+    stmts: [...evaluation, warning],
+    result: { kind: "strLit", value: text, type: STRING, loc },
+    type: STRING,
+    loc,
+  };
+}
+
 export function lowerNodeModuleCall(
   lowerer: Lowerer,
   expr: ts.CallExpression,
@@ -289,6 +453,8 @@ export function lowerNodeModuleCall(
     return lowerCompileCacheCall(lowerer, expr, bi.member as CompileCacheMember, loc);
   }
   if (bi.member === "findPackageJSON") return lowerFindPackageJsonCall(lowerer, expr, loc);
+  if (bi.member === "stripTypeScriptTypes")
+    return lowerStripTypeScriptTypesCall(lowerer, expr, loc);
   if (Object.hasOwn(SOURCE_MAP_CALLS, bi.member)) {
     return lowerSourceMapsCall(lowerer, expr, bi.member as SourceMapMember, loc);
   }

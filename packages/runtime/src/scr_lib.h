@@ -63,6 +63,8 @@ bool scr_module_cache_has(ScrStr *filename);
 ScrArr *scr_module_cache_keys(void);
 /* require.cache as a value: the one cache object, shared with Module._cache. */
 ScrDyn *scr_module_cache_object(void);
+/* The one-time stripTypeScriptTypes experimental warning. */
+void scr_module_strip_types_warning(void);
 
 int scr_lib_arg_count(void);
 const char *scr_lib_arg(int i);

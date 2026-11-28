@@ -67,10 +67,10 @@
 #define SCR_HAVE_KQUEUE 1
 #include <sys/event.h>
 #include <sys/param.h>
-/* Darwin directory watches deliver through FSEvents in libuv, which names
- * entries; the kqueue arm watches the directory inode and cannot. Until
- * slice F3 lands FSEvents, a listener that reads the filename has no
- * lowering there. */
+/* Darwin directory watches deliver through FSEvents, here as in libuv, and
+ * FSEvents names entries; a listener that reads the filename of a plain
+ * directory watch is still refused there until the compiler's lowering
+ * takes it (slice F3). */
 #if defined(__APPLE__)
 #define SCR_WATCH_DIR_NAMES_REFUSED 1
 #endif
@@ -151,7 +151,7 @@ struct ScrWatcher {
                       * the root watch is the only one) */
 #endif
 #if defined(__APPLE__)
-  void *fse;   /* the FSEvents stream of a recursive directory watch */
+  void *fse;   /* the FSEvents stream of a directory watch */
   void *fse_q; /* the thread queue it delivers to (NULL until started) */
 #endif
 #ifdef SCR_HAVE_RDCW
@@ -216,9 +216,11 @@ static bool scr_watch_arm(ScrWatcher *w) {
 #endif
 
 #if defined(__APPLE__)
-/* ── the FSEvents arm for a recursive directory watch ──────────────────
+/* ── the FSEvents arm for a directory watch ────────────────────────────
  * kqueue watches one inode, so it can neither name an entry nor follow a
- * tree; Node-on-macOS implements a recursive watch with an FSEvents stream.
+ * tree, and on a directory it misses a write to a file inside it (the
+ * directory's inode does not change); Node-on-macOS watches a directory,
+ * recursive or not, with an FSEvents stream.
  * CoreServices is loaded with dlopen so the runtime archive carries no
  * framework link flag, which the compiler's link line does not have.
  * Events arrive on a private serial queue. Watchers and kqueues are
@@ -499,7 +501,7 @@ static void scr_fse_callback(void *stream, void *info, size_t count, void *paths
   pthread_mutex_unlock(&scr_fse_reg_mu);
 }
 
-/** Starts the stream for a recursive directory watch. False leaves the
+/** Starts the stream for a directory watch, recursive or not. False leaves the
  * watcher open, holding the loop, emitting nothing (the kqueue exhaustion
  * stance). */
 static bool scr_fse_start(ScrWatcher *w) {
@@ -550,9 +552,10 @@ static void scr_fse_stop(ScrWatcher *w) {
   if (q != NULL) scr_fse_queue_detach(q);
 }
 
-/** Delivers this thread's queued batches to its own recursive watchers whose
- * root names the event's path. The name is the path relative to the root,
- * which is what Node reports. */
+/** Delivers this thread's queued batches to its own FSEvents watchers whose
+ * root names the event's path: a recursive one at any depth, a plain
+ * directory watch for its direct entries. The name is the path relative to
+ * the root, which is what Node reports. */
 static void scr_fse_drain(void) {
   ScrFseQueue *q = scr_fse_own;
   if (q == NULL) return;
@@ -578,7 +581,7 @@ static void scr_fse_drain(void) {
                     SCR_FSE_ITEM_XATTR_MOD)) != 0;
     if (rename || change) {
       for (ScrWatcher *w = scr_watchers; w != NULL; w = w->next) {
-        if (w->closed || !w->recursive) continue;
+        if (w->closed || w->fse == NULL) continue;
         const char *roots[2] = {w->abs_root != NULL ? w->abs_root->data : NULL, w->path->data};
         for (int r = 0; r < 2; r++) {
           if (roots[r] == NULL) continue;
@@ -587,6 +590,9 @@ static void scr_fse_drain(void) {
           if (plen <= rlen + 1) continue;
           if (memcmp(list->path, roots[r], rlen) != 0) continue;
           if (list->path[rlen] != '/') continue;
+          /* A plain directory watch reports its own entries, not deeper
+           * ones: libuv's filter for a non-recursive FSEvents watch. */
+          if (!w->recursive && strchr(list->path + rlen + 1, '/') != NULL) break;
           scr_watch_fire(w, rename ? "rename" : "change", list->path + rlen + 1);
           if (scr_exc_pending()) return;
           break; /* one delivery per watcher per event, whichever spelling matched */
@@ -909,7 +915,14 @@ ScrWatcher *scr_fs_watch(ScrStr *path, ScrClosure *cb /*moves, nullable*/, ScrWa
   w->rc = 1;
   w->recursive = recursive;
   w->path = scr_str_retain(path);
-  if (recursive) {
+#if defined(__APPLE__)
+  /* FSEvents reports an entry under the root's canonical spelling, so a
+   * plain directory watch keeps it as a recursive one does. */
+  bool canonical = recursive || is_dir;
+#else
+  bool canonical = recursive;
+#endif
+  if (canonical) {
 #if defined(_WIN32)
     /* Windows watches by directory handle and reports the entry name from
      * it, so it needs no canonical spelling (and the GNU CRT has no
@@ -942,14 +955,10 @@ ScrWatcher *scr_fs_watch(ScrStr *path, ScrClosure *cb /*moves, nullable*/, ScrWa
 #elif defined(SCR_HAVE_KQUEUE)
   w->fd = fd;
 #if defined(__APPLE__)
-  bool watched_subtree = false;
-  if (recursive) {
-    struct stat st;
-    watched_subtree = fstat(fd, &st) == 0 && S_ISDIR(st.st_mode);
-  }
-  if (watched_subtree) {
-    /* FSEvents owns the subtree; the opened descriptor only validated the
-     * path, because kqueue would watch the one inode. */
+  if (is_dir) {
+    /* FSEvents owns a directory watch, recursive or not; the opened
+     * descriptor only validated the path, because kqueue would watch the
+     * directory's one inode and miss a write to a file inside it. */
     close(fd);
     w->fd = -1;
     (void)scr_fse_start(w);

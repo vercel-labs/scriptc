@@ -5,9 +5,11 @@ import { afterEach, expect, test, vi } from "vitest";
 import {
   FrontendServices,
   PROGRAM_HOST_LOADS,
+  keepsCheckerHost,
   programHostLoads,
   type ComptimeEvaluator,
 } from "./services.js";
+import { CHECKER_SERVER_LOAD_MEMORY } from "./ts7/checker-server.js";
 import { Ts7Api } from "./ts7/rpc-api.js";
 import { checkPreflight, isNodeEsmFile, loadProgram } from "./program.js";
 import { clearResolveCaches } from "./resolve.js";
@@ -225,6 +227,51 @@ test("without reuse, and for timed hosts, every load gets its own host", () => {
   }
   for (const connection of connections) expect(connection.close).toHaveBeenCalledTimes(1);
 });
+
+test("a released host keeps its connection only while its server is small enough", () => {
+  const small = { loads: 1, serverRssMb: () => CHECKER_SERVER_LOAD_MEMORY - 1 };
+  expect(keepsCheckerHost(small, false, 4)).toBe(true);
+  // A host that cannot read the server's size keeps the connection, as before.
+  expect(keepsCheckerHost({ loads: 1, serverRssMb: () => 0 }, false, 4)).toBe(true);
+  expect(keepsCheckerHost(small, true, 4)).toBe(false);
+  expect(keepsCheckerHost({ loads: 4, serverRssMb: () => 0 }, false, 4)).toBe(false);
+  expect(
+    keepsCheckerHost({ loads: 1, serverRssMb: () => CHECKER_SERVER_LOAD_MEMORY }, false, 4),
+  ).toBe(false);
+});
+
+test("SCRIPTC_CHECKER_LOAD_MEMORY overrides the threshold", () => {
+  const previous = process.env["SCRIPTC_CHECKER_LOAD_MEMORY"];
+  process.env["SCRIPTC_CHECKER_LOAD_MEMORY"] = "256";
+  try {
+    expect(keepsCheckerHost({ loads: 1, serverRssMb: () => 255 }, false, 4)).toBe(true);
+    expect(keepsCheckerHost({ loads: 1, serverRssMb: () => 256 }, false, 4)).toBe(false);
+  } finally {
+    if (previous === undefined) delete process.env["SCRIPTC_CHECKER_LOAD_MEMORY"];
+    else process.env["SCRIPTC_CHECKER_LOAD_MEMORY"] = previous;
+  }
+});
+
+test.skipIf(process.platform !== "linux")(
+  "a server over the threshold is closed between loads, so the next load starts a new one",
+  () => {
+    const { services, connections, dir } = setup();
+    const previous = process.env["SCRIPTC_CHECKER_LOAD_MEMORY"];
+    process.env["SCRIPTC_CHECKER_LOAD_MEMORY"] = "1";
+    services.reuseProgramHosts(4);
+    const entry = join(dir, "main.ts");
+    writeFileSync(entry, "export const value = 1;");
+    try {
+      for (let load = 0; load < 2; load++) loadProgram(entry, services).dispose();
+      expect(connections).toHaveLength(2);
+      expect(connections[0]!.close).toHaveBeenCalledTimes(1);
+    } finally {
+      if (previous === undefined) delete process.env["SCRIPTC_CHECKER_LOAD_MEMORY"];
+      else process.env["SCRIPTC_CHECKER_LOAD_MEMORY"] = previous;
+      services.close();
+    }
+  },
+);
 
 test("SCRIPTC_TS7_HOST_LOADS selects the share and rejects malformed values", () => {
   expect(programHostLoads({})).toBe(PROGRAM_HOST_LOADS);

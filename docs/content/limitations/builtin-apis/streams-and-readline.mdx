@@ -7,7 +7,7 @@
   It may also be a source function, which the pipeline calls with `{ signal }` and whose iterable result it pumps, or a `{ readable, writable }` pair, whose readable side it pumps.
   Later `pipeline` stages that arrive as untyped values may be native streams, `Cipheriv` and `Decipheriv` values, functions, and iterables.
   A function is called with the previous stage and `{ signal }` as a function stage: before the last stage it must return an async iterable, and as the last stage it may return a promise, whose value resolves the pipeline, or an async iterable, which feeds the PassThrough that `pipeline()` returns.
-  An untyped source function, function stage, or destination that returns a stream is unsupported.
+  A source function's result is pumped as Node pumps it — a readable stream, an iterable, or an async iterable; a function stage or destination that returns a stream throws a not-supported error, where Node answers `ERR_INVALID_RETURN_VALUE`.
   An iterable becomes `Duplex.from` of it, which the next stage reads from while the stages before it are not read, as in Node.
   A pipeline branches at run time on whether each of its first three untyped stages after the first is a function; a function in a later untyped stage, an untyped web stream, and a `{ readable, writable }` pair after the first stage throw a not-supported error.
   `for await` sources that arrive as untyped values must be native streams, or `Cipheriv` and `Decipheriv` values, at run time; other values throw a not-supported error.
@@ -21,6 +21,10 @@
   `node:stream/consumers` and readline interfaces read object-mode streams of strings and Buffers; other values throw a not-supported error.
   `node:stream/consumers` `text`, `json`, `buffer`, `bytes`, `arrayBuffer` and `blob` collect a readable as Node does — the utf8 text, the parsed JSON, a Buffer, a plain Uint8Array, a byte-length-exact ArrayBuffer, or a Blob whose `type` is empty — and a stream error or an early close rejects the promise.
   `pipeline` accepts function stages anywhere among its streams: async generator functions (`async function* (source)`, iterating `source` with `for await`), an async generator source function (`async function* ({ signal })`), an async generator function as the destination, and an async function destination whose value resolves the promise form and reaches the callback's second argument.
+  A stage that is not an async generator is a plain function stage: it is called with the previous stage and `{ signal }` while the pipeline is set up and must return an async iterable, or a stream, which the pipeline reads, and any other result throws Node's `ERR_INVALID_RETURN_VALUE` naming the stage.
+  A plain function destination's async iterable, or the stream it answers, feeds the PassThrough `pipeline()` returns.
+  A plain function may also be the source: it is called with `{ signal }` while the pipeline is set up and must answer an iterable (synchronous or asynchronous) or a stream, which the pipeline reads, and any other result throws Node's `ERR_INVALID_RETURN_VALUE` naming the source.
+  In typed code a plain function stage's source parameter is declared as the stream the stage receives: an async-protocol interface such as `AsyncIterable` is not accepted there, and such a stage is written as an async generator function.
   A stage is written inline, or named by a function declaration or a `const` bound to a function expression that nothing reassigns.
   The source may also be an array, a string, a `Set`, a `Map`, a generator or async generator object, or a synchronous generator function without parameters; their elements reach the next stage on the same ticks as in Node.
   Stages may take the `{ signal }` argument.
@@ -52,8 +56,8 @@
   In TypeScript, `tee`, `pipeTo`, and `pipeThrough`, the `WritableStream` constructor with an underlying sink, and a `TransformStream` with a transformer or queuing strategies compile: a program that uses one of them builds its `ReadableStream`, `WritableStream`, and `TransformStream` values with the same classes as JavaScript, and a `Response` or `Request` body has those members too.
   A TypeScript program that uses only `getReader`, `cancel`, `locked`, and the identity `TransformStream` keeps the smaller native streams.
   A web `TransformStream`, or a `{ readable, writable }` web stream pair, is a `compose` stage in any position: the stage before it writes into its writable side and the stage after reads its readable side.
-  A value it enqueues reaches the next stream as Node passes it when the stage is not the last, and a web stage in the last position hands the composed Duplex byte-mode chunks.
-  A node stream before a web stage hands it one write per chunk where Node's iteration combines the chunks it has buffered.
+  A value it enqueues reaches the next stream as Node passes it when the stage is not the last, and a web stage in the last position hands the composed Duplex byte-mode chunks and takes the chunks written to it as they are.
+  A node stream before a web stage hands it what Node's iteration reads: the chunks it has buffered arrive as one write, and an object-mode stage one value per read.
   `stream.isDestroyed`, `isErrored`, `isDisturbed`, `isReadable`, and `isWritable`, and `Readable.isDisturbed`, answer for the `node:stream` classes and their subclasses, for file and zlib streams, for the web stream classes and their readers and writers (including a `Response` body), for an untyped value that holds one of those, and for primitives.
   For any other value, such as a plain object or an array, they answer by the state members Node's duck typing reads, and for a child-process stream they answer only about the side the stream has.
   The `nodejs.stream.*` symbol properties a userland stream may carry are not read; its state members answer instead.

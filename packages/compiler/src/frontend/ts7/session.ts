@@ -2,9 +2,11 @@ import { ts7Diagnostic, type Ts7Diagnostic } from "./diagnostic.js";
 import type { SourceFile } from "./ast-types.js";
 import { AstFile, AstNode } from "./ast-node.js";
 import { Ts7RpcClient } from "./rpc-client.js";
+import { Ts7FrameLimitError } from "./rpc-wire.js";
 import { SemanticChecker } from "./semantic-checker.js";
 import { SemanticSnapshot, type SemanticDocument } from "./semantic-model.js";
 import { parseSemanticJson } from "./semantic-json.js";
+import { checkerBackend } from "./checker-backend.js";
 import { Ts7SourceCache } from "./session-cache.js";
 import { Ts7Paths, ts7DocumentFile } from "./session-path.js";
 import { Ts7Timing, type Ts7ServerTiming, type Ts7TimingInfo } from "./session-timing.js";
@@ -132,6 +134,17 @@ interface ProgramQuery {
 export interface Ts7CheckedFileDiagnosticData {
   files: Ts7DiagnosticData[][];
   global: Ts7DiagnosticData[];
+}
+
+/** A diagnostics request body, asking tsc-ts to leave the formatting context
+ * out of its records. Each record otherwise carries the source lines around
+ * the diagnostic (sourceLines, startPosition, endPosition), which scriptc
+ * never reads, and a bundled file's lines are large: one answer of a few
+ * thousand diagnostics over such a file is hundreds of megabytes. The field
+ * is tsc-ts's own; tsgo's protocol does not take it, and a tsc-ts that predates
+ * it ignores it. */
+export function diagnosticContextOff<T extends ProgramQuery>(body: T): T & { context?: false } {
+  return checkerBackend() === "tsc-ts" ? { ...body, context: false } : body;
 }
 
 /** Platform-independent session over an already connected transport. The
@@ -504,10 +517,11 @@ export class Ts7SessionProgram {
   /** A diagnostics request for `file`, or for the whole program. TypeScript
    * 7.1 takes the file in a list (`files`). */
   private diagnosticsQuery(file?: SemanticDocument): ProgramQuery {
-    if (file === undefined || !this.session.usesTs71Protocol()) return this.query(file);
+    if (file === undefined || !this.session.usesTs71Protocol())
+      return diagnosticContextOff(this.query(file));
     const query = this.query();
     query.files = [file];
-    return query;
+    return diagnosticContextOff(query);
   }
   private diagnostics(method: string, file?: SemanticDocument): Ts7Diagnostic[] {
     const result: Ts7Diagnostic[] = [];
@@ -530,10 +544,10 @@ export class Ts7SessionProgram {
    * or null when the server does not answer that method. */
   checkedFileDiagnosticData(files: readonly string[]): Ts7CheckedFileDiagnosticData | null {
     try {
-      return this.session.request<Ts7CheckedFileDiagnosticData>("getDiagnosticsOfCheckedFiles", {
-        ...this.query(),
-        files: [...files],
-      });
+      return this.session.request<Ts7CheckedFileDiagnosticData>(
+        "getDiagnosticsOfCheckedFiles",
+        diagnosticContextOff({ ...this.query(), files: [...files] }),
+      );
     } catch (error) {
       if (
         error instanceof Error &&
@@ -572,4 +586,50 @@ export class Ts7SessionProgram {
     this.sources.clear();
     this.metadata.clear();
   }
+}
+
+/** Files named in one getDiagnosticsOfCheckedFiles request. The answer is
+ * one frame, and a large program's answer can exceed the channel limit, so
+ * the files are asked for in batches of this size. */
+export const DIAGNOSTIC_FILES_PER_REQUEST = 64;
+
+/** checkedFileDiagnosticData for any number of files: requests batches of
+ * DIAGNOSTIC_FILES_PER_REQUEST and merges the per-file answers in the
+ * requested order. A batch that still overflows is halved and retried down
+ * to one file. Global diagnostics, which a subset's check may repeat, are
+ * reported once. */
+export function checkedFileDiagnosticDataBatched(
+  program: Ts7SessionProgram,
+  files: readonly string[],
+): Ts7CheckedFileDiagnosticData | null {
+  if (files.length === 0) return program.checkedFileDiagnosticData(files);
+  const out: Ts7DiagnosticData[][] = new Array(files.length);
+  const seen = new Set<string>();
+  const global: Ts7DiagnosticData[] = [];
+  for (let start = 0; start < files.length;) {
+    let end = Math.min(start + DIAGNOSTIC_FILES_PER_REQUEST, files.length);
+    let answer: Ts7CheckedFileDiagnosticData | null;
+    for (;;) {
+      try {
+        answer = program.checkedFileDiagnosticData(files.slice(start, end));
+        break;
+      } catch (error) {
+        // A single file's own answer can still overflow; batching cannot
+        // shrink it further, so that refusal stands.
+        if (!(error instanceof Ts7FrameLimitError) || end - start === 1) throw error;
+        end = start + Math.max(1, Math.floor((end - start) / 2));
+      }
+    }
+    if (answer === null) return null;
+    for (let index = 0; index < end - start; index++)
+      out[start + index] = answer.files[index] ?? [];
+    for (const diagnostic of answer.global) {
+      const key = `${diagnostic.fileName ?? ""}:${diagnostic.pos}:${diagnostic.end}:${diagnostic.code}:${diagnostic.category}:${diagnostic.text}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      global.push(diagnostic);
+    }
+    start = end;
+  }
+  return { files: out, global };
 }

@@ -537,8 +537,17 @@ export function lowerFileHandleMethodCall(
   call: ts.CallExpression,
   access: ts.PropertyAccessExpression,
 ): IrExpr | null {
-  if (call.questionDotToken || access.questionDotToken) return null;
-  if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "fileHandle") return null;
+  // `handle?.close()`: the optional-chain lowering guards the receiver and
+  // re-dispatches the member call with the member marked handled and its
+  // receiver proven never nullish (chainRecvByNode), so the step is the
+  // plain call.
+  if (call.questionDotToken || (access.questionDotToken && !lowerer.chainHandled.has(access)))
+    return null;
+  const recvTs =
+    access.questionDotToken !== undefined && lowerer.chainHandled.has(access)
+      ? lowerer.checker.getNonNullableType(lowerer.typeOf(access.expression))
+      : lowerer.typeOf(access.expression);
+  if (lowerer.mapTypeOf(recvTs)?.kind !== "fileHandle") return null;
   if (!lowerer.isStdlibMember(access)) return null;
   const name = access.name.text;
   const loc = locOf(call);

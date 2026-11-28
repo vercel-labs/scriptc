@@ -104,6 +104,26 @@ ScrHttpRes *scr_http_h2_res_new(ScrNetSocket *sock /*borrowed, nullable*/,
 void scr_http_h2_res_close(ScrHttpRes *r);
 bool scr_http_h2_res_finished(ScrHttpRes *r);
 void scr_http_req_on_aborted(ScrHttpReq *r, ScrClosure *cb /*moves*/, bool once);
+/* req.off(event, cb) / removeListener: the LAST listener standing for the
+ * same function leaves that event's list (Node's EventEmitter removal
+ * order). `kind` selects the list (SCR_HTTP_REQ_OFF_*); an event without a
+ * list changes nothing. */
+enum {
+  SCR_HTTP_REQ_OFF_DATA = 1,
+  SCR_HTTP_REQ_OFF_END = 2,
+  SCR_HTTP_REQ_OFF_ERROR = 3,
+  SCR_HTTP_REQ_OFF_CLOSE = 4,
+  SCR_HTTP_REQ_OFF_ABORTED = 5,
+};
+void scr_http_req_off(ScrHttpReq *r, ScrClosure *cb /*borrowed*/, double kind);
+/* res.off(event, cb) / removeListener, the ServerResponse twin. */
+enum {
+  SCR_HTTP_RES_OFF_CLOSE = 1,
+  SCR_HTTP_RES_OFF_FINISH = 2,
+  SCR_HTTP_RES_OFF_PREFINISH = 3,
+  SCR_HTTP_RES_OFF_DRAIN = 4,
+};
+void scr_http_res_off(ScrHttpRes *r, ScrClosure *cb /*borrowed*/, double kind);
 ScrStr *scr_http_req_http_version(ScrHttpReq *r); /* +1 — "1.0"/"1.1"/"2.0" */
 double scr_http_req_http_version_major(ScrHttpReq *r);
 double scr_http_req_http_version_minor(ScrHttpReq *r);
@@ -178,6 +198,10 @@ void scr_http_req_on_data(ScrHttpReq *r, ScrClosure *cb /*moves*/, ScrNetDataFn 
  * typedef for the ClientRequest leg. */
 void scr_http_req_pipe_res(ScrHttpReq *r, ScrHttpRes *dst /*borrowed*/);
 void scr_http_req_pipe_sock(ScrHttpReq *r, ScrNetSocket *dst /*borrowed*/);
+/* req.unpipe(dst): that destination stops receiving the body. A different
+ * destination (or a request with none) changes nothing, as in Node. */
+void scr_http_req_unpipe_res(ScrHttpReq *r, ScrHttpRes *dst /*borrowed*/);
+void scr_http_req_unpipe_sock(ScrHttpReq *r, ScrNetSocket *dst /*borrowed*/);
 void scr_http_req_on_end(ScrHttpReq *r, ScrClosure *cb /*moves*/, bool once);
 void scr_http_res_set_header(ScrHttpRes *r, ScrStr *name /*borrowed*/, ScrStr *value /*borrowed*/);
 /* setHeader/appendHeader with a number, string or array value (borrowed);
@@ -199,6 +223,9 @@ void scr_http_res_write_early_hints(ScrHttpRes *r, ScrArr *pairs /*borrowed: [na
 /* writeInformation(status[, headers]): the generic informational response,
  * status 100..199 but never 101; answers write()'s backpressure boolean. */
 bool scr_http_res_write_information(ScrHttpRes *r, double status, ScrArr *pairs /*borrowed, nullable*/);
+bool scr_http_res_write_information_cb(ScrHttpRes *r, double status,
+                                       ScrArr *pairs /*borrowed, nullable*/,
+                                       ScrClosure *cb /*moves, nullable*/);
 /* The callback forms: the callback fires once the message is written. */
 void scr_http_res_write_continue_cb(ScrHttpRes *r, ScrClosure *cb /*moves, nullable*/);
 void scr_http_res_write_processing_cb(ScrHttpRes *r, ScrClosure *cb /*moves, nullable*/);
@@ -219,6 +246,14 @@ void scr_http_res_end_bytes(ScrHttpRes *r, ScrBytes *data /*borrowed*/);
 void scr_http_res_add_trailers(ScrHttpRes *r, ScrArr *pairs /*borrowed: [name, value, ...] */);
 /* Checked-dynamic chunk forms (the scr_net_sock_write_dynv story). */
 bool scr_http_res_write_dynv(ScrHttpRes *r, const ScrDyn *d /*borrowed*/);
+/* write(chunk[, encoding][, callback]) / end([data[, encoding]][, callback])
+ * when the call carries the extra arguments: the chunk is a string or a
+ * Buffer (an encoding applies to a string only), and the callback runs when
+ * the chunk has been flushed. */
+bool scr_http_res_write_args(ScrHttpRes *r, const ScrDyn *chunk /*borrowed*/,
+                             const ScrDyn *encoding /*borrowed*/, const ScrDyn *callback /*borrowed*/);
+void scr_http_res_end_args(ScrHttpRes *r, const ScrDyn *chunk /*borrowed*/,
+                           const ScrDyn *encoding /*borrowed*/, const ScrDyn *callback /*borrowed*/);
 void scr_http_res_end_dynv(ScrHttpRes *r, const ScrDyn *d /*borrowed*/);
 bool scr_http_res_headers_sent(ScrHttpRes *r);
 bool scr_http_res_writable_ended(ScrHttpRes *r);
@@ -388,6 +423,7 @@ void scr_http_client_set_header_dyn(ScrHttpClientReq *c, ScrStr *name /*borrowed
 void scr_http_client_append_header_dyn(ScrHttpClientReq *c, ScrStr *name /*borrowed*/,
                                        ScrDyn *raw /*borrowed*/);
 ScrStr *scr_http_client_get_header(ScrHttpClientReq *c, ScrStr *name /*borrowed*/); /* +1 or NULL */
+ScrDyn *scr_http_client_get_header_dyn(ScrHttpClientReq *c, ScrStr *name /*borrowed*/); /* +1 */
 bool scr_http_client_has_header_named(ScrHttpClientReq *c, ScrStr *name /*borrowed*/);
 void scr_http_client_remove_header(ScrHttpClientReq *c, ScrStr *name /*borrowed*/);
 ScrArr *scr_http_client_get_header_names(ScrHttpClientReq *c); /* +1 */
@@ -417,6 +453,10 @@ void scr_http_client_on_drain(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, boo
 void scr_http_client_cannot_pipe(ScrHttpClientReq *c);
 /* Checked-dynamic chunk forms (the scr_net_sock_write_dynv story). */
 bool scr_http_client_write_dynv(ScrHttpClientReq *c, const ScrDyn *d /*borrowed*/);
+bool scr_http_client_write_args(ScrHttpClientReq *c, const ScrDyn *chunk /*borrowed*/,
+                                const ScrDyn *encoding /*borrowed*/, const ScrDyn *callback /*borrowed*/);
+void scr_http_client_end_args(ScrHttpClientReq *c, const ScrDyn *chunk /*borrowed*/,
+                              const ScrDyn *encoding /*borrowed*/, const ScrDyn *callback /*borrowed*/);
 void scr_http_client_end_dynv(ScrHttpClientReq *c, const ScrDyn *d /*borrowed*/);
 void scr_http_client_set_timeout(ScrHttpClientReq *c, double ms);
 void scr_http_client_destroy(ScrHttpClientReq *c);
@@ -469,6 +509,8 @@ void scr_http_client_on_timeout(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, b
 void scr_http_client_on_close(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, bool once);
 void scr_http_client_on_upgrade(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, ScrHttpUpgradeFn fn, bool once);
 void scr_http_req_pipe_client(ScrHttpReq *r, ScrHttpClientReq *dst /*borrowed*/);
+/* req.unpipe(dst) for the client-request destination. */
+void scr_http_req_unpipe_client(ScrHttpReq *r, ScrHttpClientReq *dst /*borrowed*/);
 void scr_http_resp_thunk0(ScrClosure *cb, ScrHttpReq *res);
 void scr_http_resp_thunk_res(ScrClosure *cb, ScrHttpReq *res);
 /* The transport-parameterized client constructor (scr_tls.c's https
@@ -491,6 +533,22 @@ ScrHttpClientReq *scr_http_request_ex_direct(ScrStr *host /*borrowed*/, double p
                                               bool auto_end, ScrClosure *cb /*moves, nullable*/,
                                               ScrHttpRespFn fn, int default_port,
                                               void (*wrap)(ScrNetSocket *, void *), void *wrap_ctx); /* +1 */
+/* Whether the module's proxy policy routes a request for this host through a
+ * proxy (the request's own resolution would then be the proxy's, not the
+ * origin's). A malformed proxy value leaves the exception pending. */
+bool scr_http_proxy_applies(ScrStr *host /*borrowed*/, double port, bool tls);
+/* The same request over a transport the caller already established (the
+ * WebSocket dial's resolved connection): `sock` moves. The caller chose the
+ * transport before any asynchronous step, so the module's proxy policy is
+ * not re-evaluated for it — a policy change while the caller waited must not
+ * route the request through a proxy or leak a proxy's credentials. */
+ScrHttpClientReq *scr_http_request_ex_socket(ScrStr *host /*borrowed*/, double port,
+                                              ScrStr *path /*borrowed*/, ScrStr *method /*borrowed*/,
+                                              double timeout_ms, ScrArr *header_pairs /*borrowed*/,
+                                              bool auto_end, ScrClosure *cb /*moves, nullable*/,
+                                              ScrHttpRespFn fn, int default_port,
+                                              void (*wrap)(ScrNetSocket *, void *), void *wrap_ctx,
+                                              ScrNetSocket *sock /*moves, nullable*/); /* +1 */
 /* The URL-string client form (http.get('http://host:port/path')): parses
  * through the WHATWG unit; throws catchably on an unparsable input
  * ("Invalid URL") or a non-http scheme (ERR_INVALID_PROTOCOL) and

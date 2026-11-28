@@ -516,25 +516,35 @@ static void bcs_listener0(ScrClosure *adapter) {
   bcs_listener_call(adapter, NULL, 0);
 }
 
-static void bcs_listener_data(ScrClosure *adapter, ScrBytes *bytes, ScrStr *text, ScrDyn *value) {
+/* The emitter's fixed-arity shims call every listener through its own
+ * signature: void (*)(ScrClosure *) for the empty events and
+ * void (*)(ScrClosure *, void *…) for the rest. The listeners below thus
+ * take the pointers the shim passes and read their arguments from them. */
+static void bcs_listener_data(ScrClosure *adapter, void *bytes_arg, void *text_arg, void *value_arg) {
+  ScrBytes *bytes = bytes_arg;
+  ScrStr *text = text_arg;
+  ScrDyn *value = value_arg;
   ScrDyn *arg = value ? scr_dyn_retain(value) : text ? scr_dyn_new_str(text) : scr_dyn_new_buffer(bytes);
   bcs_listener_call(adapter, &arg, 1);
   scr_dyn_release(arg);
 }
 
-static void bcs_listener_error(ScrClosure *adapter, ScrError *error) {
+static void bcs_listener_error(ScrClosure *adapter, void *reason) {
+  ScrError *error = reason;
   ScrDyn *arg = scr_dyn_from_error(error);
   bcs_listener_call(adapter, &arg, 1);
   scr_dyn_release(arg);
 }
 
-static void bcs_listener_stream(ScrClosure *adapter, ScrStream *stream) {
+static void bcs_listener_stream(ScrClosure *adapter, void *source) {
+  ScrStream *stream = source;
   ScrDyn *arg = bcs_stream_value(stream);
   bcs_listener_call(adapter, &arg, 1);
   scr_dyn_release(arg);
 }
 
-static void bcs_listener_name(ScrClosure *adapter, ScrStr *name) {
+static void bcs_listener_name(ScrClosure *adapter, void *event_name) {
+  ScrStr *name = event_name;
   ScrDyn *arg = scr_dyn_new_str(name);
   bcs_listener_call(adapter, &arg, 1);
   scr_dyn_release(arg);

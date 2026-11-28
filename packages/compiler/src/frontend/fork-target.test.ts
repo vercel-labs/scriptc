@@ -224,3 +224,23 @@ test("fork discovery reads a package imports entry that maps node:child_process"
   });
   expect(result.queried).toBe(true);
 });
+
+test("fork discovery answers a JavaScript spelling with its TypeScript source", () => {
+  expect(
+    discover({
+      "main.ts":
+        'import { fork } from "node:child_process";\nfork(new URL("./child.js", import.meta.url));\n',
+      "child.ts": 'process.send?.({ kind: "child" });\n',
+    }),
+  ).toEqual({ targets: ["child.ts"], queried: true });
+});
+
+test("fork discovery keeps a JavaScript spelling whose file exists", () => {
+  expect(
+    discover({
+      "main.ts":
+        'import { fork } from "node:child_process";\nfork(new URL("./child.js", import.meta.url));\n',
+      "child.js": 'process.send?.({ kind: "child" });\n',
+    }),
+  ).toEqual({ targets: ["child.js"], queried: true });
+});

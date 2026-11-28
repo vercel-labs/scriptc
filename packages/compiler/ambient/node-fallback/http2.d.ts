@@ -92,6 +92,8 @@ declare module "http2" {
     /* A 1xx block before the response starts: 100..199 (never 101). */
     writeInformation(statusCode: number, headers?: OutgoingHttpHeaders): boolean;
     write(data: string | Uint8Array): void;
+    write(data: string | Uint8Array, callback: () => void): void;
+    write(data: string | Uint8Array, encoding: string, callback: () => void): void;
     flushHeaders(): void;
     cork(): void;
     uncork(): void;
@@ -118,6 +120,9 @@ declare module "http2" {
      * surface answers the record with port 0 there, the serverPort
      * stance). */
     address(): import("node:dgram").AddressInfo;
+    /* The server-level idle timeout, as on Http2Server. */
+    timeout: number;
+    setTimeout(msecs?: number, callback?: (session: Http2Session) => void): void;
     emit(event: "connection", socket: Socket): void;
     on(event: "connection", listener: (socket: Socket) => void): void;
     on(
@@ -130,6 +135,7 @@ declare module "http2" {
     ): void;
     on(event: "error", listener: (err: Error) => void): void;
     on(event: "close", listener: () => void): void;
+    on(event: "timeout", listener: (session: Http2Session) => void): void;
     on(event: "sessionError", listener: (err: Error, session: ServerHttp2Session) => void): void;
     /* The ALPN=h2 server's surface (createSecureServer WITHOUT
      * allowHTTP1 — the real h2-over-TLS stack): per-stream and
@@ -154,6 +160,7 @@ declare module "http2" {
     ): void;
     once(event: "error", listener: (err: Error) => void): void;
     once(event: "close", listener: () => void): void;
+    once(event: "timeout", listener: (session: Http2Session) => void): void;
     once(event: "sessionError", listener: (err: Error, session: ServerHttp2Session) => void): void;
     once(
       event: "stream",
@@ -172,6 +179,7 @@ declare module "http2" {
     ): void;
     addListener(event: "error", listener: (err: Error) => void): void;
     addListener(event: "close", listener: () => void): void;
+    addListener(event: "timeout", listener: (session: Http2Session) => void): void;
     addListener(
       event: "sessionError",
       listener: (err: Error, session: ServerHttp2Session) => void,
@@ -795,7 +803,10 @@ declare module "http2" {
     /* Node's promisify(server.close): resolves when the server closed. */
     [Symbol.asyncDispose](): Promise<void>;
     address(): import("node:dgram").AddressInfo;
-    setTimeout(msecs?: number, callback?: () => void): void;
+    /* The server-level idle timeout: each accepted session's socket arms
+     * from it, and the optional callback is a 'timeout' listener. */
+    timeout: number;
+    setTimeout(msecs?: number, callback?: (session: Http2Session) => void): void;
     ref(): void;
     unref(): void;
     on(
@@ -812,7 +823,8 @@ declare module "http2" {
       listener: (req: Http2ServerRequest, res: Http2ServerResponse) => void,
     ): void;
     on(event: "error", listener: (err: Error) => void): void;
-    on(event: "close" | "listening" | "timeout", listener: () => void): void;
+    on(event: "close" | "listening", listener: () => void): void;
+    on(event: "timeout", listener: (session: Http2Session) => void): void;
     on(event: "connection", listener: (socket: import("net").Socket) => void): void;
     on(event: "sessionError", listener: (err: Error, session: ServerHttp2Session) => void): void;
     /* HTTP CONNECT, as on the secure server above: the compatibility
@@ -834,7 +846,8 @@ declare module "http2" {
       listener: (req: Http2ServerRequest, res: Http2ServerResponse) => void,
     ): void;
     once(event: "error", listener: (err: Error) => void): void;
-    once(event: "close" | "listening" | "timeout", listener: () => void): void;
+    once(event: "close" | "listening", listener: () => void): void;
+    once(event: "timeout", listener: (session: Http2Session) => void): void;
     once(event: "connection", listener: (socket: import("net").Socket) => void): void;
     once(event: "sessionError", listener: (err: Error, session: ServerHttp2Session) => void): void;
     once(event: "connect", listener: (req: any, resOrSocket: any, head?: Buffer) => void): void;
@@ -852,7 +865,8 @@ declare module "http2" {
       listener: (req: Http2ServerRequest, res: Http2ServerResponse) => void,
     ): void;
     addListener(event: "error", listener: (err: Error) => void): void;
-    addListener(event: "close" | "listening" | "timeout", listener: () => void): void;
+    addListener(event: "close" | "listening", listener: () => void): void;
+    addListener(event: "timeout", listener: (session: Http2Session) => void): void;
     addListener(event: "connection", listener: (socket: import("net").Socket) => void): void;
     addListener(
       event: "sessionError",

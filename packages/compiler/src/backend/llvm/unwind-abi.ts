@@ -4,6 +4,7 @@ import type { IrExpr, IrModule, IrStmt } from "../../ir/ir.js";
 import { eachStringField } from "../../ir/fields.generated.js";
 import { eachNodeOfKinds, type IrNodeIndex } from "../../ir/node-index.js";
 import { InternalCompilerError } from "../../errors.js";
+import { flatText, bytesOfText, type TextPart, textOfPart } from "../../text-parts.js";
 
 /** The kinds of every recorded node, for eachNodeOfKinds over whole bodies. */
 const EVERY_KIND: ReadonlySet<string> = new Set();
@@ -418,13 +419,13 @@ function dummyValue(type: string): string {
  * pending and the call's dummy result: the pending-flag contract those
  * call sites were emitted for, whichever lowering emitted them. Calls of
  * these functions that emitDirectCall lowered are invokes already. */
-export function bridgePlainUnwindCalls(parts: string[]): string[] {
+export function bridgePlainUnwindCalls(parts: TextPart[]): TextPart[] {
   const raisers = new Set<string>();
-  const split = parts.map(splitFunctions);
-  for (const chunks of split)
-    for (const chunk of chunks) {
+  const splitOf = (part: TextPart): string[] => splitFunctions(textOfPart(part));
+  for (const part of parts)
+    for (const chunk of splitOf(part)) {
       const m = DEFINE_NAME.exec(chunk);
-      if (m !== null && UNWINDS.test(chunk)) raisers.add(m[1]!);
+      if (m !== null && UNWINDS.test(chunk)) raisers.add(flatText(m[1]!));
     }
   if (raisers.size === 0) return parts;
   // An invoke's callee must raise or never test the pending flag: one that
@@ -438,33 +439,34 @@ export function bridgePlainUnwindCalls(parts: string[]): string[] {
   const violations = new Set<string>();
   const invoked = new Set<string>();
   const testsFlag = new Set<string>();
-  for (const chunks of split)
-    for (const chunk of chunks) {
+  for (const part of parts)
+    for (const chunk of splitOf(part)) {
       const m = DEFINE_NAME.exec(chunk);
-      if (m !== null && testsPendingFlag(chunk)) testsFlag.add(m[1]!);
-      for (const c of chunk.matchAll(/ invoke [^@\n]*@([\w.$%-]+)\(/g)) invoked.add(c[1]!);
+      if (m !== null && testsPendingFlag(chunk)) testsFlag.add(flatText(m[1]!));
+      for (const c of chunk.matchAll(/ invoke [^@\n]*@([\w.$%-]+)\(/g))
+        invoked.add(flatText(c[1]!));
     }
   const resumers = new Set<string>();
   for (let grew = true; grew;) {
     grew = false;
-    for (const chunks of split)
-      for (const chunk of chunks) {
+    for (const part of parts)
+      for (const chunk of splitOf(part)) {
         const m = DEFINE_NAME.exec(chunk);
         const name = m?.[1];
         if (name === undefined || raisers.has(name) || !invoked.has(name)) continue;
         if (![...chunk.matchAll(/ call [^@\n]*@([\w.$%-]+)\(/g)].some((c) => raisers.has(c[1]!)))
           continue;
         if (testsFlag.has(name)) continue;
-        raisers.add(name);
-        resumers.add(name);
+        raisers.add(flatText(name));
+        resumers.add(flatText(name));
         grew = true;
       }
   }
   for (const name of invoked) if (!raisers.has(name) && testsFlag.has(name)) violations.add(name);
   // Every mention of a raising function outside its `define` line, other
   // than as the callee of a call or invoke, found with indexOf.
-  for (const chunks of split)
-    for (const chunk of chunks)
+  for (const part of parts)
+    for (const chunk of splitOf(part))
       for (let at = chunk.indexOf("@"); at >= 0;) {
         let end = at + 1;
         while (end < chunk.length && isNameCode(chunk.charCodeAt(end))) end++;
@@ -473,7 +475,7 @@ export function bridgePlainUnwindCalls(parts: string[]): string[] {
           at = next;
           continue;
         }
-        const name = chunk.slice(at + 1, end);
+        const name = flatText(chunk.slice(at + 1, end));
         if (raisers.has(name)) {
           const start = chunk.lastIndexOf("\n", at) + 1;
           const line = chunk.slice(start, at);
@@ -489,148 +491,159 @@ export function bridgePlainUnwindCalls(parts: string[]): string[] {
   let personality = false;
   let resumes = false;
   let counter = 0;
-  const out = split.map((chunks) =>
-    chunks
-      .map((chunk) => {
-        if (!DEFINE_NAME.test(chunk) || !chunk.includes("call ")) return chunk;
-        // A function without a plain call of a raising function only marks
-        // its calls nounwind: rewrite just its call lines.
-        let bridged = false;
-        const marks: { start: number; end: number; line: string }[] = [];
-        eachCallLine(chunk, (start, end) => {
-          if (bridged) return;
-          const line = chunk.slice(start, end);
-          const m = PLAIN_CALL.exec(line);
-          const callee = m === null ? undefined : (m[4] ?? m[7]);
-          if (m !== null && callee !== undefined && raisers.has(callee)) {
-            bridged = true;
-            return;
-          }
-          if (!CALL_LINE.test(line)) return;
-          const marked = markNounwind(line);
-          if (marked !== line) marks.push({ start, end, line: marked });
-        });
-        if (!bridged) {
-          if (marks.length === 0) return chunk;
-          const pieces: string[] = [];
-          let from = 0;
-          for (const mark of marks) {
-            pieces.push(chunk.slice(from, mark.start), mark.line);
-            from = mark.end;
-          }
-          pieces.push(chunk.slice(from));
-          return pieces.join("");
+  const out: TextPart[] = parts.map((part) => {
+    const chunks = splitOf(part);
+    const rewritten = chunks.map((chunk) => {
+      if (!DEFINE_NAME.test(chunk) || !chunk.includes("call ")) return chunk;
+      // A function without a plain call of a raising function only marks
+      // its calls nounwind: rewrite just its call lines.
+      let bridged = false;
+      const marks: { start: number; end: number; line: string }[] = [];
+      eachCallLine(chunk, (start, end) => {
+        if (bridged) return;
+        const line = chunk.slice(start, end);
+        const m = PLAIN_CALL.exec(line);
+        const callee = m === null ? undefined : (m[4] ?? m[7]);
+        if (m !== null && callee !== undefined && raisers.has(callee)) {
+          bridged = true;
+          return;
         }
-        const lines = chunk.split("\n");
-        const resume = resumers.has(DEFINE_NAME.exec(chunk)![1]!);
-        const result: string[] = [];
-        // The label a block's terminator now follows, for phi operands.
-        const moved = new Map<string, string>();
-        let block = "";
-        let changed = false;
-        for (let i = 0; i < lines.length; i++) {
-          const line = lines[i]!;
-          const label = /^([\w.$-]+):/.exec(line);
-          if (label !== null) block = label[1]!;
-          const m = PLAIN_CALL.exec(line);
-          const callee = m === null ? undefined : (m[4] ?? m[7]);
-          if (m === null || callee === undefined || !raisers.has(callee)) {
-            const marked = CALL_LINE.test(line) ? markNounwind(line) : line;
-            changed ||= marked !== line;
-            result.push(marked);
-            continue;
-          }
-          // The call's text from its callee to the end of the argument list.
-          const close = argumentsEnd(line, line.indexOf(`@${callee}(`) + callee.length + 1);
-          const head = line.slice(line.indexOf("call ") + 5, close + 1);
-          const tail = line.slice(close + 1);
-          const meta = /,\s*!/.exec(tail);
-          const attrs = (
-            meta === null ? tail.replace(/;.*$/, "") : tail.slice(0, meta.index)
-          ).trimEnd();
-          const dbg = meta === null ? "" : tail.slice(meta.index).replace(/\s;.*$/, "");
-          const n = counter++;
-          if (block === "") {
-            result.splice(1, 0, "entry.ub:");
-            block = "entry.ub";
-          }
-          const indent = m[1] ?? m[5] ?? "  ";
-          const ok = `ub.ok.${n}`;
-          const pad = `ub.lp.${n}`;
-          if (resume) {
-            // The wrapper holds nothing to release: the unwind goes on to
-            // its caller's landing pad.
-            const assign = m[2] !== undefined ? `${m[2]} = ` : "";
-            result.push(
-              `${indent}${assign}invoke ${head}${attrs} to label %${ok} unwind label %${pad}${dbg}`,
-            );
-            result.push(
-              `${pad}:`,
-              `${indent}%ub.v.${n} = landingpad { ptr, i32 } cleanup`,
-              `${indent}%ub.e.${n} = extractvalue { ptr, i32 } %ub.v.${n}, 0`,
-              `${indent}call void @scr_unwind_resume(ptr %ub.e.${n})`,
-              `${indent}unreachable`,
-            );
-            resumes = true;
-            result.push(`${ok}:`);
-          } else if (m[2] !== undefined) {
-            const type = (m[3] ?? "").replace(RETURN_ATTRIBUTES, "").trim();
-            const normal = `ub.n.${n}`;
-            result.push(
-              `${indent}${m[2]}.ub = invoke ${head}${attrs} to label %${normal} unwind label %${pad}${dbg}`,
-            );
-            result.push(`${normal}:`, `${indent}br label %${ok}`);
-            result.push(
-              `${pad}:`,
-              `${indent}%ub.v.${n} = landingpad { ptr, i32 } cleanup`,
-              `${indent}br label %${ok}`,
-            );
-            result.push(
-              `${ok}:`,
-              `${indent}${m[2]} = phi ${type} [ ${m[2]}.ub, %${normal} ], [ ${dummyValue(type)}, %${pad} ]`,
-            );
-          } else {
-            result.push(
-              `${indent}invoke ${head}${attrs} to label %${ok} unwind label %${pad}${dbg}`,
-            );
-            result.push(
-              `${pad}:`,
-              `${indent}%ub.v.${n} = landingpad { ptr, i32 } cleanup`,
-              `${indent}br label %${ok}`,
-            );
-            result.push(`${ok}:`);
-          }
-          moved.set(block, ok);
-          changed = true;
+        if (!CALL_LINE.test(line)) return;
+        const marked = markNounwind(line);
+        if (marked !== line) marks.push({ start, end, line: marked });
+      });
+      if (!bridged) {
+        if (marks.length === 0) return chunk;
+        const pieces: string[] = [];
+        let from = 0;
+        for (const mark of marks) {
+          pieces.push(chunk.slice(from, mark.start), mark.line);
+          from = mark.end;
         }
-        if (!changed) return chunk;
-        if (moved.size === 0) return result.join("\n");
-        personality = true;
-        const header = result[0]!;
-        const brace = header.lastIndexOf(" {");
-        if (!header.includes("personality") && brace >= 0) {
-          // Before the function's metadata attachments (`!dbg`), if any.
-          const dbg = header.slice(0, brace).search(/\s!dbg !\d+$/);
-          const at = dbg >= 0 ? dbg : brace;
-          result[0] = `${header.slice(0, at)} ${UNWIND_PERSONALITY}${header.slice(at)}`;
+        pieces.push(chunk.slice(from));
+        return pieces.join("");
+      }
+      const lines = chunk.split("\n");
+      const resume = resumers.has(DEFINE_NAME.exec(chunk)![1]!);
+      const result: string[] = [];
+      // The label a block's terminator now follows, for phi operands.
+      const moved = new Map<string, string>();
+      let block = "";
+      let changed = false;
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i]!;
+        const label = /^([\w.$-]+):/.exec(line);
+        if (label !== null) block = label[1]!;
+        const m = PLAIN_CALL.exec(line);
+        const callee = m === null ? undefined : (m[4] ?? m[7]);
+        if (m === null || callee === undefined || !raisers.has(callee)) {
+          const marked = CALL_LINE.test(line) ? markNounwind(line) : line;
+          changed ||= marked !== line;
+          result.push(marked);
+          continue;
         }
-        // A split block's successors now come from its last part.
-        if (moved.size > 0)
-          for (let i = 0; i < result.length; i++) {
-            const line = result[i]!;
-            if (!line.includes(" phi ")) continue;
-            result[i] = line.replace(/, %([\w.$-]+) \]/g, (all, name: string) => {
-              const to = moved.get(name);
-              return to === undefined ? all : `, %${to} ]`;
-            });
-          }
-        return result.join("\n");
-      })
-      .join("\n"),
-  );
-  if (personality && !out.some((part) => part.includes("@__gcc_personality_v0(...)")))
-    out[0] = `declare i32 @__gcc_personality_v0(...)\n${out[0]}`;
-  if (resumes && !out.some((part) => part.includes(UNWIND_RESUME_DECLARATION)))
-    out[0] = `${UNWIND_RESUME_DECLARATION}\n${out[0]}`;
+        // The call's text from its callee to the end of the argument list.
+        const close = argumentsEnd(line, line.indexOf(`@${callee}(`) + callee.length + 1);
+        const head = line.slice(line.indexOf("call ") + 5, close + 1);
+        const tail = line.slice(close + 1);
+        const meta = /,\s*!/.exec(tail);
+        const attrs = (
+          meta === null ? tail.replace(/;.*$/, "") : tail.slice(0, meta.index)
+        ).trimEnd();
+        const dbg = meta === null ? "" : tail.slice(meta.index).replace(/\s;.*$/, "");
+        const n = counter++;
+        if (block === "") {
+          result.splice(1, 0, "entry.ub:");
+          block = "entry.ub";
+        }
+        const indent = m[1] ?? m[5] ?? "  ";
+        const ok = `ub.ok.${n}`;
+        const pad = `ub.lp.${n}`;
+        if (resume) {
+          // The wrapper holds nothing to release: the unwind goes on to
+          // its caller's landing pad.
+          const assign = m[2] !== undefined ? `${m[2]} = ` : "";
+          result.push(
+            `${indent}${assign}invoke ${head}${attrs} to label %${ok} unwind label %${pad}${dbg}`,
+          );
+          result.push(
+            `${pad}:`,
+            `${indent}%ub.v.${n} = landingpad { ptr, i32 } cleanup`,
+            `${indent}%ub.e.${n} = extractvalue { ptr, i32 } %ub.v.${n}, 0`,
+            `${indent}call void @scr_unwind_resume(ptr %ub.e.${n})`,
+            `${indent}unreachable`,
+          );
+          resumes = true;
+          result.push(`${ok}:`);
+        } else if (m[2] !== undefined) {
+          const type = (m[3] ?? "").replace(RETURN_ATTRIBUTES, "").trim();
+          const normal = `ub.n.${n}`;
+          result.push(
+            `${indent}${m[2]}.ub = invoke ${head}${attrs} to label %${normal} unwind label %${pad}${dbg}`,
+          );
+          result.push(`${normal}:`, `${indent}br label %${ok}`);
+          result.push(
+            `${pad}:`,
+            `${indent}%ub.v.${n} = landingpad { ptr, i32 } cleanup`,
+            `${indent}br label %${ok}`,
+          );
+          result.push(
+            `${ok}:`,
+            `${indent}${m[2]} = phi ${type} [ ${m[2]}.ub, %${normal} ], [ ${dummyValue(type)}, %${pad} ]`,
+          );
+        } else {
+          result.push(`${indent}invoke ${head}${attrs} to label %${ok} unwind label %${pad}${dbg}`);
+          result.push(
+            `${pad}:`,
+            `${indent}%ub.v.${n} = landingpad { ptr, i32 } cleanup`,
+            `${indent}br label %${ok}`,
+          );
+          result.push(`${ok}:`);
+        }
+        moved.set(block, ok);
+        changed = true;
+      }
+      if (!changed) return chunk;
+      if (moved.size === 0) return result.join("\n");
+      personality = true;
+      const header = result[0]!;
+      const brace = header.lastIndexOf(" {");
+      if (!header.includes("personality") && brace >= 0) {
+        // Before the function's metadata attachments (`!dbg`), if any.
+        const dbg = header.slice(0, brace).search(/\s!dbg !\d+$/);
+        const at = dbg >= 0 ? dbg : brace;
+        result[0] = `${header.slice(0, at)} ${UNWIND_PERSONALITY}${header.slice(at)}`;
+      }
+      // A split block's successors now come from its last part.
+      if (moved.size > 0)
+        for (let i = 0; i < result.length; i++) {
+          const line = result[i]!;
+          if (!line.includes(" phi ")) continue;
+          result[i] = line.replace(/, %([\w.$-]+) \]/g, (all, name: string) => {
+            const to = moved.get(name);
+            return to === undefined ? all : `, %${to} ]`;
+          });
+        }
+      return result.join("\n");
+    });
+    if (rewritten.every((chunk, i) => chunk === chunks[i])) return part;
+    const text = rewritten.join("\n");
+    return typeof part === "string" ? text : bytesOfText(text);
+  });
+  // The declarations go at the front of the module, as part of its first part.
+  let prefix = "";
+  if (personality && !out.some((part) => textOfPart(part).includes("@__gcc_personality_v0(...)")))
+    prefix += "declare i32 @__gcc_personality_v0(...)\n";
+  if (resumes && !out.some((part) => textOfPart(part).includes(UNWIND_RESUME_DECLARATION)))
+    prefix += `${UNWIND_RESUME_DECLARATION}\n`;
+  if (prefix !== "") {
+    const first = out[0];
+    out[0] =
+      first === undefined
+        ? prefix
+        : typeof first === "string"
+          ? `${prefix}${first}`
+          : Buffer.concat([Buffer.from(prefix, "utf8"), Buffer.from(first.subarray(0))]);
+  }
   return out;
 }

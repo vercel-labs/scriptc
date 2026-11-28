@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/crypto-subtle-alias.mjs"
+ ],
+ "diags": []
+}

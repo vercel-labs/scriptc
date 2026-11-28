@@ -36,6 +36,25 @@ import type { Defines } from "./defines.js";
 import type { SourceFile } from "./ts7/ast-types.js";
 import type { ComptimeLimits } from "./comptime.js";
 import type { Ladder } from "./npm-static-ladder.js";
+import { CHECKER_SERVER_LOAD_MEMORY } from "./ts7/checker-server.js";
+
+/** CHECKER_SERVER_LOAD_MEMORY, or SCRIPTC_CHECKER_LOAD_MEMORY for a local
+ * experiment (measurement builds only). */
+function checkerLoadMemoryMb(): number {
+  const override = Number(process.env["SCRIPTC_CHECKER_LOAD_MEMORY"]);
+  return Number.isFinite(override) && override > 0 ? override : CHECKER_SERVER_LOAD_MEMORY;
+}
+
+/** Whether a released program host keeps its checker connection for the next
+ * load: while these services are open, while the host has loads left, and while
+ * its server is still smaller than CHECKER_SERVER_LOAD_MEMORY. */
+export function keepsCheckerHost(
+  released: { loads: number; serverRssMb(): number },
+  closed: boolean,
+  hostLoads: number,
+): boolean {
+  return !closed && released.loads < hostLoads && released.serverRssMb() < checkerLoadMemoryMb();
+}
 
 /** Whether the source can contain `word` as a keyword or identifier: it
  * holds the word itself or a Unicode escape that might spell it. */
@@ -149,9 +168,10 @@ export class FrontendServices {
     }
     return new Ts7Host(this.createApi, { ...options, cwd }, (released) => {
       // The host's load closed it: keep its connection for the next load,
-      // unless it has served its share or these services are closed.
-      if (this.closed || released.loads >= this.hostLoads) released.closeConnection();
-      else this.idleHosts.push(released);
+      // unless it has served its share, these services are closed, or its
+      // checker server is large enough that the next load should start fresh.
+      if (keepsCheckerHost(released, this.closed, this.hostLoads)) this.idleHosts.push(released);
+      else released.closeConnection();
     });
   }
   rewriteCjs(

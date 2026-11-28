@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/npm-star-reexport-esm-declarations/facade.ts",
+  "<repo>/tests/corpus/npm-star-reexport-esm-declarations/main.ts"
+ ],
+ "diags": []
+}

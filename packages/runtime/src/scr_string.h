@@ -197,6 +197,49 @@ bool scr_bytes_encoding_is_utf8(const ScrStr *enc);
 ScrStr *scr_str_alloc_raw(size_t len, size_t cap);
 ScrStr *scr_str_regrow(ScrStr *s, size_t newcap);
 
+/* Node 24's maximum string length in UTF-16 code units: V8's
+ * String::kMaxLength and buffer.constants.MAX_STRING_LENGTH (2^29 - 24).
+ * Every string-producing operation checks it: a result past it throws
+ * Node's catchable RangeError "Invalid string length" ("Cannot create a
+ * string longer than 0x1fffffe8 characters" with code ERR_STRING_TOO_LONG
+ * from Buffer#toString) instead of trapping. The check is free where the
+ * UTF-8 byte length alone proves the fit: a UTF-16 length never exceeds
+ * the byte length, and SCR_STR_MAX_CAP (2^31 - 1 bytes) sits above the
+ * longest UTF-8 encoding of a string at this limit (four bytes per two
+ * units, so under 1.7 GiB), which keeps the capacity field's 31 bits out of
+ * reach of any string a program can legally build. The macro is overridable
+ * so the runtime checks can force the limit with a small value. */
+#ifndef SCR_STR_MAX_UNITS
+#define SCR_STR_MAX_UNITS ((size_t)UINT32_C(0x1fffffe8))
+#endif
+
+/* Whether a string holding `units` UTF-16 code units fits the maximum
+ * length. */
+static inline bool scr_str_units_fit(size_t units) { return units <= SCR_STR_MAX_UNITS; }
+
+/* Throw Node's catchable RangeError for a string past the maximum length
+ * (scr_string.c). The operation that was building it returns the empty
+ * string, which generated code never observes: it polls the pending
+ * exception after the call. */
+SCR_COLD void scr_str_throw_too_long(void);
+
+/* The UTF-16 length of s in code units, as .length reads it: a proven-ASCII
+ * string answers its byte length, and a long non-ASCII one is counted once
+ * and remembered (scr_string.c). */
+size_t scr_str_units_count(const ScrStr *s);
+
+/* The growth check for the emitter's self-append sites (a[i] += x,
+ * obj.f += x, s += x): they let go of the container's or binding's
+ * reference before appending so the concat can write in place, so they must
+ * know first whether the result would pass Node's maximum string length;
+ * one that would throws its RangeError and the emitted pending check unwinds
+ * with the container untouched. Both borrow their operands. */
+void scr_str_growth_check2(const ScrStr *a, const ScrStr *b);
+void scr_str_growth_check_parts(const ScrStr *head, ScrStr *const *parts, const double *nums,
+                                size_t count);
+/* The same check for a self-append of `units` code units (one character). */
+void scr_str_growth_check_add(const ScrStr *a, size_t units);
+
 static inline ScrStr *scr_str_retain(ScrStr *s) {
   if (s->rc != SIZE_MAX) s->rc++;
   return s;

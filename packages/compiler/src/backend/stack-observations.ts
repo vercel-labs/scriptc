@@ -273,7 +273,6 @@ const CAPTURE_FREE_EXPRS: ReadonlySet<IrExpr["kind"]> = new Set([
   "arrayState",
   "strCmp",
   "strEq",
-  "strConcat",
   "upcast",
   "unionDisc",
   "unionIsTag",

@@ -2811,28 +2811,37 @@ static void *scr_sa_large_take(size_t n, bool zero) {
  * is exhausted or refused. A worker that keeps its memory apart records its
  * window blocks, as it records its system blocks, so that they go back when
  * it parks without having shared. */
-__attribute__((noinline)) void *scr_sa_slow_ref(size_t n, bool zero) {
+static __attribute__((noinline)) void *scr_sa_slow_ref_impl(size_t n, bool zero, bool window_only) {
   if (n - 1 < SCR_SA_MAX) {
     void *p = scr_sa_slow(n, zero);
     /* The window could not serve it (full, refused, or the thread has no
      * arena): a program that stores references in 32-bit fields cannot keep
-     * the system address the field would truncate. */
-    if (scr_sa_window_required() && !scr_sa_in_window(p)) scr_sa_window_limit();
+     * the system address the field would truncate. A soft block (a string,
+     * which no such field can name) takes the system address instead. */
+    if (window_only && scr_sa_window_required() && !scr_sa_in_window(p)) scr_sa_window_limit();
     return p;
   }
   if (n > SIZE_MAX - SCR_SA_CHUNK || !(scr_sa.span || (!scr_sa_refused && scr_sa_reserve()))) {
-    if (scr_sa_window_required()) scr_sa_window_limit();
+    if (window_only && scr_sa_window_required()) scr_sa_window_limit();
     return scr_sa_slow(n, zero);
   }
   void *p = scr_sa_large_take(n, zero);
   if (!p) {
-    if (scr_sa_window_required()) scr_sa_window_limit();
+    if (window_only && scr_sa_window_required()) scr_sa_window_limit();
     return scr_sa_slow(n, zero);
   }
 #ifdef SCR_SA_TRIM
   if (scr_sa_keep) scr_sa_keep_add(scr_sa_keep, p);
 #endif
   return p;
+}
+
+__attribute__((noinline)) void *scr_sa_slow_ref(size_t n, bool zero) {
+  return scr_sa_slow_ref_impl(n, zero, true);
+}
+
+__attribute__((noinline)) void *scr_sa_slow_soft_ref(size_t n, bool zero) {
+  return scr_sa_slow_ref_impl(n, zero, false);
 }
 
 #ifdef SCR_SA_TEST
@@ -2896,8 +2905,8 @@ static void *scr_sa_run_move(void *p, size_t have, size_t n) {
 }
 #endif
 
-void *scr_mem_realloc_ref(void *p, size_t n) {
-  if (!p) return scr_mem_alloc_ref(n);
+static void *scr_mem_realloc_ref_impl(void *p, size_t n, bool soft) {
+  if (!p) return soft ? scr_mem_alloc_soft_ref(n) : scr_mem_alloc_ref(n);
   size_t have = scr_mem_block_size(p);
   if (n && n <= have && (n % 16 || have % 16 == 0)) {
     /* A run's block keeps its run and now holds n of the run's bytes. */
@@ -2941,12 +2950,15 @@ void *scr_mem_realloc_ref(void *p, size_t n) {
 #endif
     return q;
   }
-  void *q = scr_mem_alloc_ref(n ? n : 1);
+  void *q = soft ? scr_mem_alloc_soft_ref(n ? n : 1) : scr_mem_alloc_ref(n ? n : 1);
   if (!q) return NULL;
   memcpy(q, p, have < n ? have : n);
   scr_mem_free(p);
   return q;
 }
+
+void *scr_mem_realloc_ref(void *p, size_t n) { return scr_mem_realloc_ref_impl(p, n, false); }
+void *scr_mem_realloc_soft_ref(void *p, size_t n) { return scr_mem_realloc_ref_impl(p, n, true); }
 
 /* The usable bytes of the block p (non-NULL) of any of the allocators. */
 size_t scr_mem_block_size(const void *p) {

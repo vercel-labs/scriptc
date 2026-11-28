@@ -1026,10 +1026,11 @@ export function emitBytesIntrinsic(
     case "toStringVar": {
       // The encoding arg is always present (the frontend completes an
       // omitted one to "utf8"). The runtime-valued form validates and
-      // may throw ERR_UNKNOWN_ENCODING; the literal form is canonical
-      // and cannot throw. Both return +1. Range forms: [enc, start]
-      // decode to the buffer's end (the element count — r->len in the C
-      // spelling); [enc, start, end] clamps.
+      // may throw ERR_UNKNOWN_ENCODING; either form may throw
+      // ERR_STRING_TOO_LONG for a result past the maximum string length.
+      // Both return +1. Range forms: [enc, start] decode to the buffer's
+      // end (the element count — r->len in the C spelling); [enc, start,
+      // end] clamps.
       const checked = method === "toStringVar";
       const stem = checked ? "scr_bytes_to_str_checked" : "scr_bytes_to_str";
       if (e.args.length === 3) {
@@ -1038,7 +1039,7 @@ export function emitBytesIntrinsic(
           "ptr (ptr, ptr, double, double)",
           `ptr ${r.name}, ptr ${args[0]!.name}, double ${args[1]!.name}, double ${args[2]!.name}`,
           true,
-          checked,
+          true,
         );
       }
       if (e.args.length === 2) {
@@ -1050,10 +1051,10 @@ export function emitBytesIntrinsic(
           "ptr (ptr, ptr, double, double)",
           `ptr ${r.name}, ptr ${args[0]!.name}, double ${args[1]!.name}, double ${len}`,
           true,
-          checked,
+          true,
         );
       }
-      return call(stem, "ptr (ptr, ptr)", `ptr ${r.name}, ptr ${args[0]!.name}`, true, checked);
+      return call(stem, "ptr (ptr, ptr)", `ptr ${r.name}, ptr ${args[0]!.name}`, true, true);
     }
     case "equals":
       return call(

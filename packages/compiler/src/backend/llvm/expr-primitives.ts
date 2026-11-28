@@ -930,12 +930,15 @@ export function emitStringExpr(
         host.declare(`declare ptr @scr_str_concat_f64(ptr, double)`);
         const t = B.tmp();
         B.line(`${t} = call ptr @scr_str_concat_f64(ptr ${l.name}, double ${x.name})`);
+        // A result past Node's maximum length throws its catchable RangeError.
+        host.emitPendingCheck();
         return host.own({ name: t, type: e.type });
       }
       const [r] = emitStringInputs(host, [e.right]);
       host.declare(`declare ptr @scr_str_concat(ptr, ptr)`);
       const t = B.tmp();
       B.line(`${t} = call ptr @scr_str_concat(ptr ${l.name}, ptr ${r!.name})`);
+      host.emitPendingCheck();
       return host.own({ name: t, type: e.type });
     }
     case "strEq": {
@@ -1060,6 +1063,8 @@ export function emitStringExpr(
               const r = B.tmp();
               host.declare(`declare ptr @scr_bytes_to_str(ptr, ptr)`);
               B.line(`${r} = call ptr @scr_bytes_to_str(ptr ${p}, ptr ${enc})`);
+              // ERR_STRING_TOO_LONG past the maximum string length.
+              host.emitPendingCheck();
               B.line(`store ptr ${r}, ptr ${slot}`);
               break;
             }

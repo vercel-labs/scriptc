@@ -462,8 +462,13 @@ import { classUnionHeaders, emitClassUnionHelpers } from "./class-unions.js";
 export const DYN_ABSENT = "@sc_dyn_absent";
 import { emitNullablePresent, emitUnionPeek, emitUnionTag } from "./union-repr.js";
 import {
+  emitConcatAddCheck,
+  emitConcatCheck,
   emitConcatInputs,
-  emitMixedConcat,
+  emitMixedConcatCall,
+  emitMixedConcatCheck,
+  emitMixedConcatInputs,
+  type MixedConcatSlots,
   numberPart,
   stringParts,
 } from "./string-construction.js";
@@ -8755,22 +8760,33 @@ export class LlEmitter {
       s.kind === "fieldSet"
         ? this.classFieldPtr(obj.name, s.className, s.field)
         : this.recordFieldPtr(obj.name, s.shapeId, s.field);
-    // Unlink, then release: nothing between here and the store below can
-    // run user code or observe the field (the concat only traps on OOM).
-    // Only an owned snapshot may survive the field's release.
+    // The length check runs before the field's reference goes (the unlink
+    // below is what lets the concat write in place): a result past Node's
+    // maximum string length throws its RangeError with the field unchanged.
+    // Nothing between the unlink and the store can then throw.
     const owned = this.ownsSnapshot(snapshot.name);
+    let slots: MixedConcatSlots | null = null;
+    if (right === null) {
+      slots = emitMixedConcatInputs(this, inputs);
+      emitMixedConcatCheck(this, snapshot.name, slots);
+    } else {
+      emitConcatCheck(this, snapshot.name, right.name);
+    }
+    // Unlink, then release: nothing between here and the store below can
+    // run user code or observe the field. Only an owned snapshot may
+    // survive the field's release.
     if (owned) {
       const old = this.loadField(ptr, fieldType, false);
       this.storeField(ptr, fieldType, "null", false);
       this.releaseHeap(old, fieldType);
     }
     let raw: string;
-    if (right === null) {
-      raw = emitMixedConcat(this, snapshot.name, inputs);
+    if (slots !== null) {
+      raw = emitMixedConcatCall(this, snapshot.name, slots);
     } else {
       this.declare(`declare ptr @scr_str_concat(ptr, ptr)`);
       raw = B.tmp();
-      B.line(`${raw} = call ptr @scr_str_concat(ptr ${snapshot.name}, ptr ${right.name})`);
+      B.line(`${raw} = call ptr @scr_str_concat(ptr ${snapshot.name}, ptr ${right!.name})`);
     }
     // The +1 result moves straight into the (now empty) field.
     if (owned) this.storeField(ptr, fieldType, raw, false);
@@ -8817,6 +8833,16 @@ export class LlEmitter {
     const inputs = mixed ? emitConcatInputs(this, parts) : [];
     const right = mixed ? null : this.emitExpr(value.right);
     this.emitPublishedArrayGuard(arr.name, s.arr.type, 0, idx.name);
+    // The length check runs before the slot's reference goes (the unlink
+    // below is what lets the concat write in place): a result past Node's
+    // maximum string length throws its RangeError with the slot unchanged.
+    let slots: MixedConcatSlots | null = null;
+    if (right === null) {
+      slots = emitMixedConcatInputs(this, inputs);
+      emitMixedConcatCheck(this, snapshot.name, slots);
+    } else {
+      emitConcatCheck(this, snapshot.name, right.name);
+    }
     if (this.ownsSnapshot(snapshot.name))
       emitDenseSlotUnlink(
         this,
@@ -8828,12 +8854,12 @@ export class LlEmitter {
         elem,
       );
     let raw: string;
-    if (right === null) {
-      raw = emitMixedConcat(this, snapshot.name, inputs);
+    if (slots !== null) {
+      raw = emitMixedConcatCall(this, snapshot.name, slots);
     } else {
       this.declare(`declare ptr @scr_str_concat(ptr, ptr)`);
       raw = B.tmp();
-      B.line(`${raw} = call ptr @scr_str_concat(ptr ${snapshot.name}, ptr ${right.name})`);
+      B.line(`${raw} = call ptr @scr_str_concat(ptr ${snapshot.name}, ptr ${right!.name})`);
     }
     emitDenseArraySet(this, arr.name, idx, s.index, "ref", elem, raw);
     return true;
@@ -8873,6 +8899,18 @@ export class LlEmitter {
     const B = this.B;
     const head = B.tmp();
     B.line(`${head} = load ptr, ptr ${b.slot}`);
+    // The length check runs before the reference moves into the concat: a
+    // result past Node's maximum string length throws its RangeError with
+    // the binding unchanged.
+    let slots: MixedConcatSlots | null = null;
+    if (charCode !== null) {
+      emitConcatAddCheck(this, head);
+    } else if (right === null) {
+      slots = emitMixedConcatInputs(this, inputs);
+      emitMixedConcatCheck(this, head, slots);
+    } else {
+      emitConcatCheck(this, head, right.name);
+    }
     let raw: string;
     if (charCode !== null) {
       this.declare(`declare ptr @scr_str_concat_move_char_code(ptr, double)`);
@@ -8880,12 +8918,12 @@ export class LlEmitter {
       B.line(
         `${raw} = call ptr @scr_str_concat_move_char_code(ptr ${head}, double ${charCode.name})`,
       );
-    } else if (right === null) {
-      raw = emitMixedConcat(this, head, inputs, true);
+    } else if (slots !== null) {
+      raw = emitMixedConcatCall(this, head, slots, true);
     } else {
       this.declare(`declare ptr @scr_str_concat_move(ptr, ptr)`);
       raw = B.tmp();
-      B.line(`${raw} = call ptr @scr_str_concat_move(ptr ${head}, ptr ${right.name})`);
+      B.line(`${raw} = call ptr @scr_str_concat_move(ptr ${head}, ptr ${right!.name})`);
     }
     B.line(`store ptr ${raw}, ptr ${b.slot}`);
     return { name: raw, type: left.type }; // moved into the binding

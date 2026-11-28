@@ -547,25 +547,33 @@ export function emitStrIntrinsic(
         true,
       );
     case "padStart":
-      return call(
-        "scr_str_pad_start",
+    case "padEnd": {
+      // A target past Node's maximum string length throws its catchable
+      // RangeError.
+      const result = call(
+        method === "padStart" ? "scr_str_pad_start" : "scr_str_pad_end",
         "ptr (ptr, double, ptr)",
         `ptr ${r.name}, double ${args[0]!.name}, ptr ${args[1]!.name}`,
         "ptr",
         true,
       );
-    case "padEnd":
-      return call(
-        "scr_str_pad_end",
-        "ptr (ptr, double, ptr)",
-        `ptr ${r.name}, double ${args[0]!.name}, ptr ${args[1]!.name}`,
-        "ptr",
-        true,
-      );
+      host.emitPendingCheck();
+      return result;
+    }
     case "toLowerCase":
-      return call("scr_str_to_lower", "ptr (ptr)", `ptr ${r.name}`, "ptr", true);
-    case "toUpperCase":
-      return call("scr_str_to_upper", "ptr (ptr)", `ptr ${r.name}`, "ptr", true);
+    case "toUpperCase": {
+      // A case mapping can raise the length past Node's maximum (ß to SS,
+      // ﬃ to FFI): the runtime throws its catchable RangeError.
+      const result = call(
+        method === "toLowerCase" ? "scr_str_to_lower" : "scr_str_to_upper",
+        "ptr (ptr)",
+        `ptr ${r.name}`,
+        "ptr",
+        true,
+      );
+      host.emitPendingCheck();
+      return result;
+    }
     case "normalize": {
       const result = call(
         "scr_str_normalize",
@@ -1007,19 +1015,25 @@ export function emitArrIntrinsic(
     case "join": {
       // Separator borrowed; the result is an owned (+1) string. Union
       // elements use the scalar join walker: nullish arms print empty,
-      // and other arms append their String() spelling directly.
+      // and other arms append their String() spelling directly. A result
+      // past Node's maximum string length throws its catchable RangeError
+      // (the pending check after every entry).
       const sep = emitBorrowedInput(host, e.args[0]!);
       if (elem.kind === "union") {
         const helper = host.walkers.unionJoinHelper(elem.unionId);
         const t = B.tmp();
         B.line(`${t} = call ptr @${helper}(ptr ${r.name}, ptr ${sep.name})`);
-        return host.own({ name: t, type: e.type });
+        const result = host.own({ name: t, type: e.type });
+        host.emitPendingCheck();
+        return result;
       }
       if (elem.kind === "date") {
         host.declare(`declare ptr @scr_date_arr_join(ptr, ptr)`);
         const t = B.tmp();
         B.line(`${t} = call ptr @scr_date_arr_join(ptr ${r.name}, ptr ${sep.name})`);
-        return host.own({ name: t, type: e.type });
+        const result = host.own({ name: t, type: e.type });
+        host.emitPendingCheck();
+        return result;
       }
       // String elements have the typed entry (scr_arr_join_str.c, linked by
       // the arrJoinStr feature, which reads the same receiver type): it joins
@@ -1028,7 +1042,9 @@ export function emitArrIntrinsic(
       host.declare(`declare ptr @${entry}(ptr, ptr)`);
       const t = B.tmp();
       B.line(`${t} = call ptr @${entry}(ptr ${r.name}, ptr ${sep.name})`);
-      return host.own({ name: t, type: e.type });
+      const result = host.own({ name: t, type: e.type });
+      host.emitPendingCheck();
+      return result;
     }
     case "slice": {
       // Receiver borrowed; the result a fresh +1 shallow copy (ref

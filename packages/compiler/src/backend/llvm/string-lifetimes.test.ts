@@ -356,9 +356,16 @@ test.each(methodCases)(
       const ir = body(mod(f), "sc_bf_method", bits);
       expect(ir).toContain(`@${inline ? "sc" : "scr"}_str_${target}(`);
       expect(ir).not.toContain("@scr_str_retain_v");
-      // Throwing methods release their owned result on the unwind path.
-      if (method !== "normalize" && method !== "repeat")
-        expect(ir).not.toContain("@scr_str_release");
+      // Methods that can throw (a count, target or case mapping past Node's
+      // maximum string length) release their owned result on the unwind path.
+      const throwing =
+        method === "normalize" ||
+        method === "repeat" ||
+        method === "padStart" ||
+        method === "padEnd" ||
+        method === "toLowerCase" ||
+        method === "toUpperCase";
+      if (!throwing) expect(ir).not.toContain("@scr_str_release");
       expect(ir).toContain(
         result.kind === "f64" ? "ret double" : result.kind === "bool" ? "ret i1" : "ret ptr",
       );

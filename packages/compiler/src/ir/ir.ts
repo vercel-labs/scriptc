@@ -2836,6 +2836,9 @@ export const MAY_THROW_ARR_METHODS: ReadonlySet<IrArrIntrinsicMethod> = new Set(
   "withUndefined",
   "sortValues",
   "sortDense",
+  // Array.prototype.join raises Node's RangeError for a result past the
+  // maximum string length.
+  "join",
 ]);
 
 /** Element types whose comparator sort can run in the runtime over raw
@@ -3113,6 +3116,9 @@ export type IrBytesIntrinsicMethod =
  * may-throw analyses seed on these exactly like MAY_THROW_LIB_FNS. */
 export const MAY_THROW_BYTES_METHODS: ReadonlySet<IrBytesIntrinsicMethod> = new Set([
   "sortCompare",
+  // Buffer#toString raises ERR_STRING_TOO_LONG for a result past the
+  // maximum string length, whichever encoding form.
+  "toString",
   "toStringVar",
   "with",
   "setFrom",

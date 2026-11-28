@@ -424,10 +424,35 @@ void scr_jb_init(ScrJsonBuf *b) {
   b->seen_cap = 0;
 }
 
+/* The growth policy: doubling below 64 MiB (the small documents every
+ * stringify loop builds), then fixed 64 MiB steps, so one append of a large
+ * text asks for the run it needs instead of doubling a multi-hundred-
+ * megabyte block into a request no run serves. */
+#ifndef SCR_JB_GEOMETRIC_MAX
+#define SCR_JB_GEOMETRIC_MAX ((size_t)64 << 20)
+#endif
+#ifndef SCR_JB_STEP
+#define SCR_JB_STEP ((size_t)64 << 20)
+#endif
+
 static void scr_jb_grow(ScrJsonBuf *b, size_t need) {
-  if (need > SIZE_MAX - sizeof(ScrStr) - 1 - b->len) scr_json_oom();
+  if (need > SIZE_MAX - sizeof(ScrStr) - 1 - b->len) scr_json_oom(); /* no span is this long */
   size_t required = b->len + need;
   if (required <= b->cap) return;
+  if (__builtin_expect(required > SCR_STR_MAX_CAP, 0)) {
+    /* Past the capacity field's 31 bits, so past Node's maximum string
+     * length whatever the text (a UTF-16 unit costs at most three UTF-8
+     * bytes, and 2^31 - 1 bytes can only hold more than 2^29 - 24 units).
+     * The document is abandoned with Node's RangeError, and the write that
+     * asked for the room starts a fresh prefix in the block the buffer
+     * already holds, so the builder stays memory-safe while the pending
+     * check unwinds its caller. */
+    if (need > SCR_STR_MAX_CAP) scr_json_oom(); /* the same unreachable bound */
+    b->len = 0;
+    required = need;
+    scr_str_throw_too_long();
+    if (required <= b->cap) return;
+  }
   if (!b->data) { /* first allocation: len == 0 */
     size_t cap = scr_jb_hint >= need ? scr_jb_hint : need;
     ScrStr *s = scr_str_alloc_raw(0, cap);
@@ -436,13 +461,18 @@ static void scr_jb_grow(ScrJsonBuf *b, size_t need) {
     return;
   }
   size_t cap = b->cap;
-  while (cap < required) {
-    if (cap > (SIZE_MAX - sizeof(ScrStr) - 1) / 2) {
-      cap = required;
-      break;
-    }
-    cap *= 2;
+  if (cap < SCR_JB_GEOMETRIC_MAX) {
+    do cap *= 2;
+    while (cap < required && cap < SCR_JB_GEOMETRIC_MAX);
+    if (cap < required) cap = required;
+  } else {
+    cap += (required - cap + SCR_JB_STEP - 1) / SCR_JB_STEP * SCR_JB_STEP;
+    if (cap < required) cap = required;
   }
+  /* Never ask scr_str_regrow for a capacity the layout cannot hold: the
+   * reset above keeps `required` inside it, and a step that would cross it
+   * takes the exact length instead. */
+  if (cap > SCR_STR_MAX_CAP) cap = required;
   ScrStr *s = scr_str_regrow(SCR_JB_STR(b), cap);
   b->data = s->data;
   b->cap = cap;
@@ -695,6 +725,17 @@ ScrStr *scr_jb_finish(ScrJsonBuf *b) {
   ScrStr *s = SCR_JB_STR(b);
   s->len = b->len;
   s->data[b->len] = '\0';
+  /* A document past Node's maximum length throws its RangeError; the
+   * buffer goes back before the pending exception unwinds the caller, so
+   * the exception leaves nothing allocated. The byte length bounds the
+   * unit count, so only a document past it is counted. */
+  if (__builtin_expect(b->len > SCR_STR_MAX_UNITS, 0) &&
+      !scr_str_units_fit(s->ascii ? s->len : (size_t)scr_str_utf16_len(s))) {
+    scr_jb_init(b);
+    scr_str_release(s);
+    scr_str_throw_too_long();
+    return scr_str_empty_value();
+  }
   /* Remember the size class for the next buffer (bounded so one giant
    * document cannot pin big allocations forever). */
   scr_jb_init(b);

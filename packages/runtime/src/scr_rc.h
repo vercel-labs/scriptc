@@ -659,6 +659,36 @@ static inline void *scr_mem_calloc(size_t n) { return scr_sa_take(n, true, false
 static inline void *scr_mem_alloc_ref(size_t n) { return scr_sa_take(n, false, true); }
 static inline void *scr_mem_calloc_ref(size_t n) { return scr_sa_take(n, true, true); }
 void *scr_mem_realloc_ref(void *p, size_t n);
+/* As scr_mem_alloc_ref, for a block no 32-bit field can name: a string
+ * (literals keep 8-byte pointers too, so strings are never a compressed
+ * field's target). The window serves it when it can; when it cannot, the
+ * block comes from the system allocator even in a program that requires
+ * the window (scr_sa_require_window), where the reference form ends the
+ * process. Frees and grows route by address like any other block. */
+void *scr_sa_slow_soft_ref(size_t n, bool zero);
+static inline void *scr_mem_alloc_soft_ref(size_t n) {
+  if (n - 1 < SCR_SA_MAX) {
+    unsigned c = scr_sa_class(n);
+    ScrSaBlock *b = scr_sa.free[c];
+    if (b) {
+      scr_sa.free[c] = b->next;
+      return b;
+    }
+    size_t sz = scr_sa_class_size(c);
+    char *p = scr_sa.bump[c];
+    if ((size_t)(scr_sa.lim[c] - p) >= sz) {
+      scr_sa.bump[c] = p + sz;
+      return p;
+    }
+  }
+  return scr_sa_slow_soft_ref(n, false);
+}
+static inline void *scr_mem_calloc_soft_ref(size_t n) {
+  void *p = scr_mem_alloc_soft_ref(n);
+  if (p) memset(p, 0, n);
+  return p;
+}
+void *scr_mem_realloc_soft_ref(void *p, size_t n);
 /* The usable bytes of a block of scr_mem_alloc, scr_mem_alloc_ref or the
  * system allocator. */
 size_t scr_mem_block_size(const void *p);
@@ -731,6 +761,13 @@ static inline void *scr_mem_alloc_ref(size_t n) { return scr_mem_alloc(n); }
 static inline void *scr_mem_calloc_ref(size_t n) { return scr_mem_calloc(n); }
 void *scr_mem_realloc_ref(void *p, size_t n);
 size_t scr_mem_block_size(const void *p);
+/* Every block is a reference block here, so the soft twins are the plain
+ * path (a string never needs the window's guarantees). */
+static inline void *scr_mem_alloc_soft_ref(size_t n) { return scr_mem_alloc(n); }
+static inline void *scr_mem_calloc_soft_ref(size_t n) { return scr_mem_calloc(n); }
+static inline void *scr_mem_realloc_soft_ref(void *p, size_t n) {
+  return scr_mem_realloc_ref(p, n);
+}
 #endif
 
 /* Inline twins of scr_cyc_alloc/scr_cyc_free for hot runtime allocation

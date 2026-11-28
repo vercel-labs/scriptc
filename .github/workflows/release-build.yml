@@ -280,8 +280,10 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.plan.outputs.platforms) }}
     runs-on: ${{ matrix.runner }}
-    # The optimized native CLI takes most of a platform's build.
-    timeout-minutes: 90
+    # The optimized native CLI takes most of a platform's build: 56-63
+    # minutes on darwin-x64, and from 68 to over 90 on darwin-arm64, whose
+    # runner has 7 GB of memory and swaps for most of it.
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:

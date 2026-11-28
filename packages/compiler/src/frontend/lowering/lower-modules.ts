@@ -24,7 +24,7 @@ import { collectRebindableRequireDecls, isRebindableRequireDecl } from "./rebind
 import { bindingSource } from "../binding-source.js";
 import type { Lowerer } from "./lowerer.js";
 import {
-  sharedInitFlagStores,
+  lowerSharedFunctionValue,
   sharedModulePlans,
   sharedModuleRegistrations,
 } from "./lower-shared-modules.js";
@@ -53,6 +53,7 @@ import {
   entryPackageFilePredicate,
   isCjsJsFile,
   isJsSourceFile,
+  isNodeEsmFile,
   isRequireStatement,
   locOf,
   makeCycleAdmission,
@@ -4787,22 +4788,40 @@ export function lowerFileInit(
         loc: loc0,
       });
     }
-    // Reassigned function declarations are initialized when the module
-    // starts, as declarations are hoisted: before its dependencies run, so
-    // a module of an import cycle can call one while it initializes. Their
-    // statements then lower to nothing (rebindable-functions.ts).
+    // Islands can read shared function bindings before this module runs.
+    // Instantiate those once at startup; evaluation must not undo a later
+    // reassignment. Other modules retain their initializer and retry owner.
+    const shared = sharedModulePlans(lowerer).some((plan) => plan.sf === sf);
+    const sharedFunctions: IrStmt[] = [];
+    const functionHeader = shared ? sharedFunctions : header;
     for (const stmt of stmts) {
       if (!ts.isFunctionDeclaration(stmt) || !stmt.name || !isRebindableFunction(lowerer, stmt))
         continue;
       const g = lowerer.globalsByDeclNode.get(stmt);
       if (!g) continue;
-      header.push({
+      functionHeader.push({
         kind: "assign",
         localId: g.id,
-        value: lowerer.coerceToExpected(lowerer.lowerLambda(stmt), DYN),
+        value: shared
+          ? lowerSharedFunctionValue(lowerer, stmt)
+          : lowerer.coerceToExpected(lowerer.lowerLambda(stmt), DYN),
         loc: locOf(stmt),
       });
       ctx.hoistedFnDecls.add(stmt);
+    }
+    if (sharedFunctions.length > 0) {
+      const functionInit = `${name}%functions`;
+      // Keep allocation IR in the ordinary function passes: boxing a
+      // callable also makes its return type visible to dynamic dispatch.
+      lowerer.liftedFns.push({
+        name: functionInit,
+        params: [],
+        locals: [],
+        returnType: VOID,
+        body: sharedFunctions,
+        loc: loc0,
+      });
+      lowerer.sharedFunctionInitializers.push(functionInit);
     }
     const islandActions = lowerer.islandImportActions.get(sf);
     const islandPlaced = new Set<ts.Statement>();
@@ -5106,7 +5125,6 @@ export function lowerFileInit(
         stmt,
         deferred ? [deferred] : lowerer.lowerStmts([stmt]),
       );
-      if (lowerer.sharedInitFlags.size > 0) stmtIr.push(...sharedInitFlagStores(lowerer, stmt));
       // Mixin instantiations created while THIS statement lowered (a class
       // expression's heritage is such a call) evaluate at this statement,
       // so their declaration-time code lands here, before the statement's
@@ -5167,29 +5185,28 @@ export function lowerFileInit(
       });
     }
     const moduleRef = cjsModuleRef(lowerer, sf);
-    if (moduleRef !== null) {
+    // A failed require clears the run-once flag even when the program
+    // never reads module metadata.
+    const retriesCommonJs = guardId !== undefined && !isNodeEsmFile(sf, lowerer.program);
+    if (moduleRef !== null || retriesCommonJs) {
       const preamble = (guardId !== undefined ? 2 : 0) + (evaluatingId !== undefined ? 1 : 0);
       const guardedBody = body.splice(preamble);
       const catchLocal = lowerer.declareHiddenLocal("%moduleError", { kind: "caught" });
-      guardedBody.unshift({
-        kind: "exprStmt",
-        expr: { kind: "libCall", fn: "module.enter", args: [moduleRef], type: VOID, loc: loc0 },
-        loc: loc0,
-      });
-      guardedBody.push({
-        kind: "exprStmt",
-        expr: { kind: "libCall", fn: "module.finish", args: [moduleRef], type: VOID, loc: loc0 },
-        loc: loc0,
-      });
+      const moduleEvent = (fn: "module.enter" | "module.finish" | "module.fail"): IrStmt[] =>
+        moduleRef === null
+          ? []
+          : [
+              {
+                kind: "exprStmt",
+                expr: { kind: "libCall", fn, args: [moduleRef], type: VOID, loc: loc0 },
+                loc: loc0,
+              },
+            ];
       body.push({
         kind: "tryCatch",
-        tryBody: guardedBody,
+        tryBody: [...moduleEvent("module.enter"), ...guardedBody, ...moduleEvent("module.finish")],
         catchBody: [
-          {
-            kind: "exprStmt",
-            expr: { kind: "libCall", fn: "module.fail", args: [moduleRef], type: VOID, loc: loc0 },
-            loc: loc0,
-          },
+          ...moduleEvent("module.fail"),
           ...(guardId !== undefined
             ? [
                 {
@@ -5491,6 +5508,15 @@ export function buildMain(lowerer: Lowerer): IrFunction {
       loc,
     });
   }
+  // Each execution context needs the same hoisted bindings before any
+  // root can enter a Node island, including worker and fork roots.
+  body.unshift(
+    ...lowerer.sharedFunctionInitializers.map((name): IrStmt => ({
+      kind: "exprStmt",
+      expr: { kind: "call", callee: name, args: [], type: VOID, loc },
+      loc,
+    })),
+  );
   // Classes with custom inspect methods register their compiled calls for
   // the runtime's inspect walk, and classes whose conversion method the
   // untyped path runs register their compiled String(instance), before any

@@ -14,6 +14,40 @@ const USE_KINDS: readonly IrNodeKind[] = [
   "tryCatch",
 ];
 
+/** A failed CommonJS initializer resets its guard only after the body has
+ * unwound, then immediately rethrows. Activations cannot overlap, but a
+ * later require can observe values left by the failed activation. */
+function retryingInitializer(fn: IrFunction): Extract<IrStmt, { kind: "tryCatch" }> | null {
+  const set = fn.body[1],
+    region = fn.body[2];
+  if (
+    fn.body.length !== 3 ||
+    set?.kind !== "assign" ||
+    region?.kind !== "tryCatch" ||
+    region.finallyBody !== null ||
+    region.catchLocalId === null ||
+    !region.catchBody
+  )
+    return null;
+  const body = region.catchBody;
+  if (body.length !== 2 && body.length !== 3) return null;
+  if (body.length === 3) {
+    const fail = body[0]!;
+    if (fail.kind !== "exprStmt" || fail.expr.kind !== "libCall" || fail.expr.fn !== "module.fail")
+      return null;
+  }
+  const reset = body[body.length - 2]!,
+    rethrow = body[body.length - 1]!;
+  return reset.kind === "assign" &&
+    reset.localId === set.localId &&
+    reset.value.kind === "boolLit" &&
+    !reset.value.value &&
+    rethrow.kind === "rethrow" &&
+    rethrow.localId === region.catchLocalId
+    ? region
+    : null;
+}
+
 /** Globals private to a guarded, synchronous initializer have local numeric
  * dataflow: no other function can replace their slots, and reentrant module
  * evaluation returns before reaching them. Keep the actual global storage
@@ -76,7 +110,7 @@ export function findInitializerBindings(
       guard.tdz ||
       excluded.has(guard.id) ||
       owners.get(guard.id) !== fn.name ||
-      writes.get(guard.id) !== 1
+      (writes.get(guard.id) !== 1 && !(writes.get(guard.id) === 2 && retryingInitializer(fn)))
     )
       continue;
     guarded.add(fn.name);
@@ -101,12 +135,44 @@ export function findInitializerBindings(
 /** The candidates for local storage: number bindings whose slots the
  * initializer could keep in a local of its own. No other code reads or
  * writes them (that is what makes them initializer bindings), and the
- * guard runs the initializer's body at most once, so a local that starts at
- * the global's zero value is indistinguishable from the global. Import-cycle
- * bindings keep their global: their initialization flag is checked by code
- * outside the initializer. */
-export function initializerLocalCandidates(bindings: readonly IrGlobal[]): IrGlobal[] {
-  return bindings.filter((g) => g.type.kind === "f64" && g.initFlag === undefined);
+ * guard prevents overlapping activations. A retrying initializer must also
+ * overwrite the binding before every read in each activation; otherwise the
+ * failed activation's value must survive in the global. Import-cycle bindings
+ * keep their externally checked initialization flag and global storage. */
+export function initializerLocalCandidates(
+  fn: IrFunction,
+  bindings: readonly IrGlobal[],
+): IrGlobal[] {
+  const candidates = bindings.filter((g) => g.type.kind === "f64" && g.initFlag === undefined);
+  const retry = retryingInitializer(fn);
+  if (!retry || !candidates.length) return candidates;
+  const initialized = new Set<string>();
+  const incomingReads = new Set<string>();
+  const readExpr = (e: IrExpr): boolean => {
+    if ((e.kind === "varRef" || e.kind === "incDec") && !initialized.has(e.localId))
+      incomingReads.add(e.localId);
+    return everyExprChild(e, readExpr, readStmt);
+  };
+  const readStmt = (s: IrStmt): boolean => everyStmtChild(s, readExpr, readStmt);
+  const body = (stmts: readonly IrStmt[]): void => {
+    for (const s of stmts) {
+      if (s.kind === "block" && !s.labels?.length) body(s.body);
+      else if (s.kind === "assign") {
+        // The RHS can read the previous value or throw before the store.
+        readExpr(s.value);
+        initialized.add(s.localId);
+      } else {
+        // Branches, loops and exception regions may skip their writes.
+        // Scan all their reads without crediting a nested store.
+        readStmt(s);
+      }
+    }
+  };
+  body(retry.tryBody);
+  // An exception can reach the outer catch before any initializer store.
+  initialized.clear();
+  for (const s of retry.catchBody!) readStmt(s);
+  return candidates.filter((g) => !incomingReads.has(g.id));
 }
 
 /** An analysis view that lists bindings as plain locals: their writes, not

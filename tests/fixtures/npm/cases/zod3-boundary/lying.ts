@@ -17,8 +17,9 @@ try {
 } catch (e) {
   console.log("frozen threw", (e as Error).message);
 }
-// A non-enumerable key crosses and stays non-enumerable; a read-only key
-// and an accessor have no native form yet and are refused by name.
+// A non-enumerable key crosses and stays non-enumerable; a declared
+// accessor has no native field form and is refused by name; a read-only key
+// is refused by name.
 const Tagged = z.custom<{ id: string; n: number }>();
 function tagged(descriptor: PropertyDescriptor): unknown {
   const o = JSON.parse('{"n":1}');

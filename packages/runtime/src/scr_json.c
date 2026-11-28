@@ -6205,7 +6205,10 @@ void scr_record_source_note(void *rec, const ScrDyn *src, const char *const *nam
     const ScrDynProp entry_prop = scr_dyn_obj_prop_at(src, i);
     const ScrDynProp *entry = &entry_prop;
     size_t index = scr_record_source_index(&probe, entry->key, entry->key_len);
-    keep = index == count || index < next || (!entry->enumerable && !entry->accessor);
+    /* A declared accessor has no native field form: the record keeps the
+     * source so the conversion can tell adoption to refuse it. */
+    keep = index == count || index < next || !entry->enumerable ||
+           (entry->accessor && index < count);
     next = index + 1;
   }
   if (!keep) return;
@@ -6215,8 +6218,9 @@ void scr_record_source_note(void *rec, const ScrDyn *src, const char *const *nam
     const ScrDynProp *entry = &entry_prop;
     if (scr_record_source_declared(&probe, entry->key, entry->key_len)) {
       scr_dyn_obj_set(view, entry->key, entry->key_len, scr_dyn_retain(scr_dyn_undefined()));
-      if (!entry->enumerable && !entry->accessor)
-        scr_record_source_hide(view, entry->key, entry->key_len);
+      /* The placeholder keeps the source member's enumerability: a
+       * non-enumerable declared member, accessor or data, stays hidden. */
+      if (!entry->enumerable) scr_record_source_hide(view, entry->key, entry->key_len);
     } else if (!entry->accessor && entry->writable && entry->enumerable && entry->configurable) {
       scr_dyn_obj_set(view, entry->key, entry->key_len, scr_dyn_retain(entry->value));
     } else {

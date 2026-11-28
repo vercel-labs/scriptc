@@ -45,6 +45,14 @@ export function withLibraryRuntimeFlavors(matrix) {
     // calls scr_arr_join_str, so the library flavors carry the same optional
     // unit the executable flavors compile.
     "scr_arr_join_str.c",
+    // The adoption unit: a library whose program checks a dynamic value's
+    // type calls scr_decl_adopt, and the archive must carry it or the
+    // embedder's link fails. The executable flavors compile it the same way.
+    "scr_decl_adopt.c",
+    // The prototype read of a class test's walk: an instanceof on an untyped
+    // value calls scr_dyn_class_test_prototype, so the library flavors carry
+    // the same optional unit the executable flavors compile.
+    "scr_dyn_class_test.c",
   ]);
   const libraryUnits = [
     ...matrix.runtime_units.filter(

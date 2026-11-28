@@ -2678,6 +2678,11 @@ function libraryNativeFeatures(mod: IrModule, backend: "llvm"): EarlyLibraryNati
     ...(features.arrJoinStr ? { arrJoinStr: true } : {}),
     ...(features.dynBuffer ? { dynBuffer: true } : {}),
     ...(features.dynTier ? { dynTier: true } : {}),
+    // A checked cast of a dynamic value calls the adoption unit, and an
+    // instanceof on one reads the prototype unit. The archive must carry
+    // both or the embedder's link fails on the symbols.
+    ...(features.declAdopt ? { declAdopt: true } : {}),
+    ...(features.classTestPrototype ? { classTestPrototype: true } : {}),
     mutableBuffers: features.mutableBuffers,
     fnMemberProps: features.fnMemberProps,
     ...(mod.lib?.identity !== undefined ? { buildId: mod.lib.identity.buildId } : {}),
@@ -2781,6 +2786,11 @@ async function compileLibraryNative(
     ...(features.dynTier === true ? { dynTier: true } : {}),
     ...(features.mutableBuffers === true ? { mutableBuffers: true } : {}),
     ...(features.fnMemberProps === true ? { fnMemberProps: true } : {}),
+    // The program object calls the adoption and class-test units for its
+    // checked conversions; the archive has to select them or the embedder's
+    // link stops at an undefined scr_dyn_adopt_whole (or the class test).
+    ...(features.declAdopt === true ? { declAdopt: true } : {}),
+    ...(features.classTestPrototype === true ? { classTestPrototype: true } : {}),
   };
   if (packTarget !== null) await compilePackedLibrary(archiveOptions, packTarget);
   else await compileExternalCLibrary(archiveOptions);

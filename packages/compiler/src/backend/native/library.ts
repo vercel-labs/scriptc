@@ -124,6 +124,12 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
     ...(opts.copying ? ["scr_copying.c"] : []),
     ...(opts.recordSourceGet === true ? ["scr_record_source_get.c"] : []),
     ...(opts.arrJoinStr === true ? ["scr_arr_join_str.c"] : []),
+    // A checked cast of a dynamic value adopts the object through
+    // scr_decl_adopt.c, and an instanceof on one reads its prototype through
+    // scr_dyn_class_test.c. The program object names both, so an archive
+    // that leaves them out links undefined from the embedder.
+    ...(opts.declAdopt === true ? ["scr_decl_adopt.c"] : []),
+    ...(opts.classTestPrototype === true ? ["scr_dyn_class_test.c"] : []),
   ];
   const cflags = [
     "-std=c11",

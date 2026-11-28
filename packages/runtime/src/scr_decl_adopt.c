@@ -60,7 +60,10 @@ static void scr_decl_adopt_push(ScrDeclAdoptList *list, ScrDyn *node, ScrDyn *ca
     list->items = realloc(list->items, list->cap * sizeof *list->items);
     if (!list->items) scr_trap("scriptc: out of memory\n");
   }
-  list->items[list->len].node = node;
+  /* The list holds the node: converting a parent releases the source fields
+   * that are this node's only other holders, and the walk converts in
+   * discovery order, so a shared child must stay alive until its own turn. */
+  list->items[list->len].node = scr_dyn_retain(node);
   list->items[list->len].capsule = capsule;
   list->len++;
 }
@@ -296,6 +299,7 @@ static bool scr_decl_adopt_run(ScrDyn *source, ScrDyn *capsule, bool lenient, bo
     ScrDeclAdopt *item = &list.items[i];
     if (ok && item->node->kind != SCR_DYN_TYPED_REF) scr_dyn_decl_become(item->node, item->capsule);
     scr_dyn_release(item->capsule);
+    scr_dyn_release(item->node);
   }
   free(list.items);
   return ok;

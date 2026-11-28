@@ -392,6 +392,45 @@ static ScrDyn *scr_cl_default_settings(void) {
   return settings;
 }
 
+/* The own string keys a spread snapshots: every own string key of a plain
+ * object (each key's enumerability is checked when its value is read), and
+ * the own enumerable keys of every other kind. */
+static ScrArr *scr_cl_settings_keys(const ScrDyn *source) {
+  if (source->kind != SCR_DYN_OBJ) return scr_dyn_obj_key_strs(source);
+  ScrDyn *keys = scr_dyn_obj_own_keys(source); /* +1 */
+  if (keys == NULL) return NULL;
+  ScrArr *out = scr_arr_new(SCR_ELEM_STR, keys->v.arr.len);
+  for (size_t i = 0; i < keys->v.arr.len; i++) {
+    const ScrDyn *key = keys->v.arr.items[i];
+    if (key->kind != SCR_DYN_STR) continue;
+    scr_arr_push_ref(out, scr_str_retain(key->v.str));
+  }
+  scr_dyn_release(keys);
+  return out;
+}
+
+/* Whether `source` still has `key` as an own enumerable property. Node's
+ * spread snapshots the own keys, then checks each key's descriptor before it
+ * reads the value, so a getter that deleted a later key or made it
+ * non-enumerable earlier in the merge leaves it out, and one that made it
+ * enumerable includes it. */
+static bool scr_cl_settings_enumerable(const ScrDyn *source, const char *key, size_t key_len) {
+  if (source->kind == SCR_DYN_OBJ) return scr_dyn_obj_enumerable(source, key, key_len);
+  ScrStr *name = scr_str_new(key, key_len);
+  ScrDyn *key_value = scr_dyn_new_str(name);
+  ScrDyn *descriptor = scr_dyn_get_own_property_descriptor((ScrDyn *)source, key_value);
+  scr_dyn_release(key_value);
+  scr_str_release(name);
+  if (descriptor == NULL) return false; /* exception pending */
+  bool enumerable = false;
+  if (descriptor->kind != SCR_DYN_UNDEF) {
+    ScrDyn *flag = scr_dyn_obj_get(descriptor, "enumerable", 10);
+    enumerable = flag != NULL && scr_dyn_truthy(flag);
+  }
+  scr_dyn_release(descriptor);
+  return enumerable;
+}
+
 /* Copies the parts of `source` an object spread copies onto `target`: the own
  * enumerable string-keyed entries of an object, function, array, typed record
  * view, Proxy, or handle. Each value is read through an ordinary property
@@ -421,7 +460,7 @@ static void scr_cl_object_assign(ScrDyn *target, const ScrDyn *source) {
     scr_dyn_release(view);
     return;
   }
-  ScrArr *names = scr_dyn_obj_key_strs(source); /* +1 */
+  ScrArr *names = scr_cl_settings_keys(source); /* +1 */
   if (names == NULL) {
     scr_dyn_release(view);
     return;
@@ -429,11 +468,13 @@ static void scr_cl_object_assign(ScrDyn *target, const ScrDyn *source) {
   size_t n = (size_t)scr_arr_len(names);
   for (size_t i = 0; i < n; i++) {
     ScrStr *key = scr_arr_get_ref(names, (double)i); /* +1 */
-    ScrDyn *value = scr_dyn_obj_read(source, key->data, key->len); /* +1 */
-    if (value != NULL && !scr_exc_pending())
-      scr_dyn_obj_set(target, key->data, key->len, value);
-    else
-      scr_dyn_release(value);
+    if (scr_cl_settings_enumerable(source, key->data, key->len)) {
+      ScrDyn *value = scr_dyn_obj_read(source, key->data, key->len); /* +1 */
+      if (value != NULL && !scr_exc_pending())
+        scr_dyn_obj_set(target, key->data, key->len, value);
+      else
+        scr_dyn_release(value);
+    }
     scr_str_release(key);
     if (scr_exc_pending()) break;
   }
@@ -1012,6 +1053,10 @@ ScrDyn *scr_cluster_fork(const ScrDyn *env) {
     return NULL;
   }
   scr_cl_setup_impl(NULL);
+  /* A settings getter that throws during the implicit merge leaves the
+   * exception pending; the fork does not start a worker, as Node's fork
+   * throws from its own setupPrimary call. */
+  if (scr_exc_pending()) return NULL;
 #if !defined(_WIN32) && !defined(__wasi__)
   /* A worker's credentials would have to be dropped before exec; this
    * runtime re-executes the artifact and would drop them in the child,

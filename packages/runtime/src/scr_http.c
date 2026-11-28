@@ -7064,7 +7064,14 @@ static void scr_http_req_fire_aborted(ScrHttpReq *r) {
 
 void scr_http_h2_req_aborted(ScrHttpReq *r) {
   if (r->close_emitted) return;
-  scr_http_h2_req_body_end(r);
+  /* A message the PROGRAM destroyed rejects its iterator with the stream's
+   * premature close (Node's eos on a destroyed stream); a peer reset or
+   * session loss completes the readable, as Node's stream reset does. */
+  if (r->local_destroy) {
+    scr_http_body_bridge_fail(r->body_bridge, r);
+  } else {
+    scr_http_h2_req_body_end(r);
+  }
   scr_http_req_fire_aborted(r);
 }
 

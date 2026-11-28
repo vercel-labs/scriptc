@@ -1040,10 +1040,18 @@ function collectOneDynamicImport(
     arg !== undefined && ts.isStringLiteralLike(arg)
       ? (() => {
           const modSym = lowerer.checker.getSymbolAtLocation(arg);
-          return (
+          if (
             modSym !== undefined &&
             modSym.declarations.some((d) => ts.isSourceFile(d) && !d.isDeclarationFile)
-          );
+          )
+            return true;
+          // A literal whose checker answer is a DECLARATION (a sibling
+          // .d.mts typing shipped JS, the openh264.mjs case): the runtime
+          // module is the JS file Node resolves. When the program includes
+          // it, the dynamic import is a program-module edge exactly like the
+          // static import of the same specifier (which compiles the JS).
+          const target = lowerer.facts.importedModule(sf, spec);
+          return target !== null && !target.isDeclarationFile;
         })()
       : (() => {
           const target = lowerer.facts.importedModule(sf, spec);

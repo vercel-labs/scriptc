@@ -524,6 +524,16 @@ export function nsMemberIdentOf(
     // the exporter's binding.
     return name !== "default" && names.has(name) ? access.name : null;
   }
+  // `default` has no binding to resolve (the default export's symbol is not
+  // a value the identifier path can lower). A dynamic namespace receiver
+  // reads it by key from the namespace object instead
+  // (property-access.ts boxes moduleNs receivers).
+  if (
+    receiverEvaluated &&
+    access.name.text === "default" &&
+    lowerer.resolveValueSymbol(access.name) === null
+  )
+    return null;
   if (nsBlockKindOfSymbol(lowerer, memberSym) !== null) return access.name;
   if (moduleNsSourceFileOf(lowerer, access.expression) !== null) return access.name;
   return null;

@@ -5,6 +5,7 @@ import { lowerIteratorMemberValue } from "../iterator-prototype.js";
 import { widensReducedRecords } from "../function-returns.js";
 import { nullishReadTypeError, throwAfterEach } from "../primitive-throws.js";
 import { lowerStaticPrivateRead } from "../private-statics.js";
+import { lowerModuleNamespaceProperty } from "../module-namespace-elements.js";
 import { widthNarrowHelper } from "../coercions/unions.js";
 /* Property reads (`a.b`): lowerExprInner's property-access branch, intrinsic and union properties, field reads and targets, and match-group reads. */
 import { jsSpecialGlobalValue } from "../global-values.js";
@@ -566,6 +567,11 @@ export function lowerPropertyAccessExpr(
   expr: ts.PropertyAccessExpression,
   loc: SrcLoc,
 ): IrExpr {
+  // `(await import("./m.mjs")).member`: a dynamic namespace value's dotted
+  // read takes the export dispatch a computed read takes (the receiver
+  // evaluates first). Bound namespaces keep their identifier paths.
+  const namespaceValueRead = lowerModuleNamespaceProperty(lowerer, expr);
+  if (namespaceValueRead !== null) return namespaceValueRead;
   // `require.cache[file].member` (and the same read through a binding): the
   // Module view's live member, from the registry — Node's view is the
   // module's own object, so `exports` is the module's exports object.
@@ -1548,6 +1554,11 @@ export function lowerPropertyAccessExpr(
           loc: value.loc,
         };
       }
+      // A DYNAMIC namespace receiver (`(await import("./m.mjs")).default`):
+      // the module's export dispatch answers the member by name (the same
+      // path a computed read takes), after the receiver evaluates.
+      const namespaceRead = lowerModuleNamespaceProperty(lowerer, expr);
+      if (namespaceRead !== null) return namespaceRead;
     }
     // Expando function members (`foo.bar` after `foo.bar = 12`) read
     // through the closure's own-property table (the callable-member path

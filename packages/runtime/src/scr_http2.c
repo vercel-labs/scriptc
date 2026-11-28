@@ -737,6 +737,16 @@ struct ScrH2Stream {
    * request) hands it to the program, so an unread body stalls at the
    * flow-control window instead of buffering without bound. */
   uint32_t recv_unacked;
+  /* client: the request's HEADERS block waits here while the peer's
+   * maxConcurrentStreams is reached (Node defers the block until a slot
+   * frees; the stream stays `pending` with no id meanwhile) */
+  ScrH2Buf deferred_block;
+  bool deferred;
+  bool deferred_end;
+  /* client: whether this stream holds one of the peer's concurrency slots
+   * (released when the stream closes on the wire, not when its readable
+   * drains) */
+  bool slot_held;
   /* respondWithFile/respondWithFD: the descriptor source, streamed as the
    * peer's windows open (never buffered whole). */
   int file_fd;             /* -1 when there is no source */
@@ -894,6 +904,12 @@ struct ScrH2Session {
   int64_t send_window;
   uint32_t peer_max_frame;
   uint32_t peer_init_window;
+  /* client: the requests whose HEADERS wait for a concurrency slot (+1
+   * each), and the client streams whose HEADERS went out (the count the
+   * peer's maxConcurrentStreams bounds) */
+  ScrH2Stream **deferred;
+  size_t ndeferred, deferred_cap;
+  size_t client_live;
   /* the API-visible settings records + the in-flight local ack */
   ScrH2Settings local_settings, remote_settings;
   ScrH2PendingSettings *pending;
@@ -1090,6 +1106,8 @@ static void scr_h2_session_free(ScrH2Session *s) {
   free(s->rbuf);
   free(s->hblock.data);
   free(s->authority);
+  for (size_t i = 0; i < s->ndeferred; i++) scr_http2_stream_release(s->deferred[i]);
+  free(s->deferred);
   scr_h2_dyntab_free(&s->dec_table);
   if (s->srv) {
     scr_h2_srv_untrack_session(s->srv, s);
@@ -1384,6 +1402,51 @@ static void scr_h2_session_forget_stream(ScrH2Session *s, ScrH2Stream *st) {
 }
 
 static void scr_h2_session_maybe_finish_close(ScrH2Session *s);
+static void scr_h2_session_flush_deferred(ScrH2Session *s);
+/* force: flush every queued request whatever the peer's limit (session
+ * close lets them go out, as Node does). */
+static void scr_h2_session_flush_deferred_mode(ScrH2Session *s, bool force);
+static bool scr_h2_stream_local_closed(ScrH2Stream *st);
+static void scr_h2_stream_mark_ready_tick(ScrClosure *cb);
+
+/* Give the stream's concurrency slot back and let the next deferred request
+ * go. A slot is held from the moment a request's HEADERS go out until the
+ * stream closes ON THE WIRE (both directions done) — not until the program
+ * has drained the readable, which Node does not wait for: a completed
+ * response with an unread body must not keep the peer's limit occupied. */
+static void scr_h2_stream_release_slot(ScrH2Stream *st) {
+  if (!st->slot_held) return;
+  st->slot_held = false;
+  ScrH2Session *s = st->sess;
+  if (s == NULL || !s->client || s->client_live == 0) return;
+  s->client_live--;
+  scr_h2_session_flush_deferred(s);
+}
+
+/* Both halves are done on the wire: the slot goes back now. */
+static void scr_h2_stream_maybe_release_slot(ScrH2Stream *st) {
+  if (st->end_recv && scr_h2_stream_local_closed(st)) scr_h2_stream_release_slot(st);
+}
+
+/* A settling stream leaves the deferred queue (its block never went out) or
+ * ends its slot usage. */
+static void scr_h2_stream_deferred_drop(ScrH2Session *s, ScrH2Stream *st) {
+  if (st->deferred) {
+    st->deferred = false;
+    for (size_t i = 0; i < s->ndeferred; i++) {
+      if (s->deferred[i] != st) continue;
+      memmove(s->deferred + i, s->deferred + i + 1, (s->ndeferred - i - 1) * sizeof *s->deferred);
+      s->ndeferred--;
+      scr_http2_stream_release(st); /* the queue's ref */
+      break;
+    }
+    free(st->deferred_block.data);
+    st->deferred_block.data = NULL;
+    st->deferred_block.len = st->deferred_block.cap = 0;
+    return;
+  }
+  scr_h2_stream_release_slot(st);
+}
 
 /* Queue the stream's 'close' (idempotent) and forget it session-side. */
 static void scr_h2_stream_settle(ScrH2Stream *st) {
@@ -1407,6 +1470,7 @@ static void scr_h2_stream_settle(ScrH2Stream *st) {
    * its unread body already returned as the frames arrived. */
   st->recv_unacked = 0;
   scr_h2_session_forget_stream(sess, st);
+  scr_h2_stream_deferred_drop(sess, st);
   scr_h2_session_maybe_finish_close(sess);
 }
 
@@ -1852,6 +1916,12 @@ void scr_http2_session_destroy(ScrH2Session *s) {
 void scr_http2_session_close(ScrH2Session *s, ScrClosure *cb /*moves, nullable*/) {
   if (cb) scr_net_ls_add(&s->close_ls, cb, NULL, true);
   if (s->closed || s->destroyed) return;
+  /* Node lets the requests a concurrency slot held back go out as the
+   * session closes (they get real ids and 'ready'; the peer refuses those
+   * past its limit with REFUSED_STREAM, which the request reports as
+   * ERR_HTTP2_STREAM_ERROR). Without this they would stay queued forever
+   * and the graceful-close callback would never run. */
+  if (s->client) scr_h2_session_flush_deferred_mode(s, true);
   s->closed = true;
   s->close_requested = true;
   scr_h2_send_goaway(s, 0 /* NGHTTP2_NO_ERROR */);
@@ -2007,6 +2077,7 @@ static bool scr_h2_on_frame_in(ScrH2Session *s, uint8_t type, uint8_t flags, int
       }
       if (flags & SCR_H2_FLAG_END_STREAM) {
         st->end_recv = true;
+        scr_h2_stream_maybe_release_slot(st);
         st->end_emitted = true;
         st->state = st->state == SCR_H2_S_CLOSED_LOCAL ? SCR_H2_S_CLOSED : SCR_H2_S_CLOSED_REMOTE;
         scr_http_h2_req_end(st->compat_req);
@@ -2028,6 +2099,7 @@ static bool scr_h2_on_frame_in(ScrH2Session *s, uint8_t type, uint8_t flags, int
     }
     if (flags & SCR_H2_FLAG_END_STREAM) {
       st->end_recv = true;
+      scr_h2_stream_maybe_release_slot(st);
       st->state = st->state == SCR_H2_S_CLOSED_LOCAL ? SCR_H2_S_CLOSED : SCR_H2_S_CLOSED_REMOTE;
       scr_h2_stream_maybe_emit_end(st);
       if (scr_exc_pending()) return false;
@@ -2084,6 +2156,7 @@ static bool scr_h2_on_frame_in(ScrH2Session *s, uint8_t type, uint8_t flags, int
         s->remote_settings.enable_push = v != 0;
       } else if (id == 0x3) {
         s->remote_settings.max_concurrent_streams = v;
+        scr_h2_session_flush_deferred(s);
       } else if (id == 0x6) {
         s->remote_settings.max_header_list_size = v;
       } else if (id == 0x8) {
@@ -2170,6 +2243,7 @@ static bool scr_h2_on_frame_in(ScrH2Session *s, uint8_t type, uint8_t flags, int
        * gets no 'end' here, as in Node. */
       if (st->compat_req != NULL && !st->end_recv) {
         st->end_recv = true;
+        scr_h2_stream_maybe_release_slot(st);
         st->end_emitted = true;
         scr_http_h2_req_end(st->compat_req);
       }
@@ -2369,6 +2443,10 @@ static bool scr_h2_on_err(void *ctx, ScrStr *msg) {
 
 static bool scr_h2_on_err_in(void *ctx, ScrStr *msg) {
   ScrH2Session *s = ctx;
+  /* A write that fails after the peer's GOAWAY (or our own teardown) is the
+   * connection winding down, not a session error: Node does not report the
+   * EPIPE a teardown write can raise. */
+  if (s->destroyed || s->goaway_recv) return true;
   /* A server session always has a listener in Node (the server's own, which
    * re-emits as 'sessionError'), so its socket error is never unhandled; a
    * client session without an 'error' listener leaves it to the socket. */
@@ -2415,6 +2493,7 @@ static void scr_h2_stream_mark_local_closed(ScrH2Stream *st) {
   st->state = st->state == SCR_H2_S_CLOSED_REMOTE || st->state == SCR_H2_S_CLOSED
       ? SCR_H2_S_CLOSED
       : SCR_H2_S_CLOSED_LOCAL;
+  scr_h2_stream_maybe_release_slot(st);
 }
 
 /* Both halves are done: settle once the read side was delivered. A server
@@ -2482,6 +2561,10 @@ static void scr_h2_stream_want_trailers(ScrH2Stream *st) {
  * the trailer block when the response waits for one. */
 static void scr_h2_stream_flush(ScrH2Stream *st) {
   ScrH2Session *s = st->sess;
+  /* A deferred request has no id yet: nothing may go on the wire (a frame on
+   * stream 0 is a session-level protocol error). Its body waits in wbuf and
+   * flushes once the block goes out. */
+  if (st->deferred) return;
   if (st->destroyed || scr_h2_stream_local_closed(st) || !scr_h2_sock_alive(s)) return;
   /* A file source feeds the peer's windows before the buffer does; a
    * blocked window stops this pass until WINDOW_UPDATE calls back in. */
@@ -3488,7 +3571,9 @@ void scr_http2_stream_close(ScrH2Stream *st, double code, ScrClosure *cb /*moves
   st->rst_code = c;
   st->rst_sent = true;
   st->destroyed = true;
-  if (st->state != SCR_H2_S_CLOSED && scr_h2_sock_alive(st->sess)) {
+  /* A deferred request never went on the wire: a frame for it would name
+   * stream 0, which resets the whole session. */
+  if (!st->deferred && st->state != SCR_H2_S_CLOSED && scr_h2_sock_alive(st->sess)) {
     scr_h2_send_rst(st->sess, st->id, c);
   }
   scr_h2_stream_begin_close(st);
@@ -3500,7 +3585,7 @@ void scr_http2_stream_destroy(ScrH2Stream *st) {
   if (st->destroyed || st->close_emitted) return;
   st->rst_sent = true;
   st->destroyed = true;
-  if (st->state != SCR_H2_S_CLOSED && scr_h2_sock_alive(st->sess)) {
+  if (!st->deferred && st->state != SCR_H2_S_CLOSED && scr_h2_sock_alive(st->sess)) {
     scr_h2_send_rst(st->sess, st->id, 0 /* NGHTTP2_NO_ERROR */);
   }
   scr_h2_stream_begin_close(st);
@@ -3676,7 +3761,10 @@ void scr_http2_stream_priority(ScrH2Stream *st /*borrowed, nullable*/,
   (void)opts;
   if (scr_h2_dep0194_emitted) return;
   scr_h2_dep0194_emitted = true;
-  scr_next_tick(scr_closure_new((void *)&scr_h2_dep0194_tick, 0));
+  /* The tick takes no closure argument: schedule it as a raw tick so it is
+   * called through its own type (the closure form calls it through a
+   * one-argument pointer, which UBSan reports). */
+  scr_next_tick_raw(&scr_h2_dep0194_tick);
 }
 
 void scr_http2_stream_on_error(ScrH2Stream *st, ScrClosure *cb /*moves*/, ScrChildErrFn fn, bool once) {
@@ -3793,7 +3881,12 @@ bool scr_http2_stream_headers_sent(ScrH2Stream *st) {
   return st->sess->client || st->respond_sent;
 }
 bool scr_http2_stream_aborted(ScrH2Stream *st) { return st->aborted; }
-bool scr_http2_stream_pending(ScrH2Stream *st) { return false; /* streams send at request() */ }
+/* Node: a request stream is `pending` until the connection it was created
+ * on is established (the HEADERS wait in the socket buffer); a request the
+ * peer's concurrency limit holds back reads pending false, as Node's does. */
+bool scr_http2_stream_pending(ScrH2Stream *st) {
+  return st->sess != NULL && st->sess->client && !st->sess->connected;
+}
 bool scr_http2_stream_end_after_headers(ScrH2Stream *st) { return st->end_after_headers; }
 
 /* Http2Stream.bufferSize: the bytes buffered for the writable side (the
@@ -4201,6 +4294,7 @@ static void scr_h2_reject_stream_error(ScrH2Session *s, ScrH2Stream *st, int32_t
    * waiting for a body that cannot arrive. */
   if (!st->end_recv) {
     st->end_recv = true;
+    scr_h2_stream_maybe_release_slot(st);
     st->end_emitted = true;
     if (st->compat_req != NULL) {
       scr_http_h2_req_end(st->compat_req);
@@ -4256,6 +4350,7 @@ static void scr_h2_dispatch_headers(ScrH2Session *s, int32_t stream_id, uint8_t 
       if (scr_exc_pending()) return;
       if (end_stream) {
         st->end_recv = true;
+        scr_h2_stream_maybe_release_slot(st);
         st->state = scr_h2_stream_local_closed(st) ? SCR_H2_S_CLOSED : SCR_H2_S_CLOSED_REMOTE;
         if (st->compat_req != NULL) {
           st->end_emitted = true;
@@ -4300,6 +4395,7 @@ static void scr_h2_dispatch_headers(ScrH2Session *s, int32_t stream_id, uint8_t 
     }
     if (end_stream) {
       st->end_recv = true;
+      scr_h2_stream_maybe_release_slot(st);
       st->end_after_headers = true;
       st->state = SCR_H2_S_CLOSED_REMOTE;
     }
@@ -4443,6 +4539,7 @@ static void scr_h2_dispatch_headers(ScrH2Session *s, int32_t stream_id, uint8_t 
     if (scr_exc_pending()) return;
     if (end_stream) {
       st->end_recv = true;
+      scr_h2_stream_maybe_release_slot(st);
       st->state = scr_h2_stream_local_closed(st) ? SCR_H2_S_CLOSED : SCR_H2_S_CLOSED_REMOTE;
       scr_h2_stream_maybe_emit_end(st);
       if (scr_exc_pending()) return;
@@ -4453,6 +4550,7 @@ static void scr_h2_dispatch_headers(ScrH2Session *s, int32_t stream_id, uint8_t 
   st->got_response = true;
   if (end_stream) {
     st->end_recv = true;
+    scr_h2_stream_maybe_release_slot(st);
     st->state = scr_h2_stream_local_closed(st) ? SCR_H2_S_CLOSED : SCR_H2_S_CLOSED_REMOTE;
   }
   double status = 0;
@@ -5304,6 +5402,47 @@ static void scr_h2_stream_mark_ready_tick(ScrClosure *cb) {
   scr_http2_stream_release(st);
 }
 
+/* Send the requests a concurrency slot held back, in request order, while
+ * the peer's maxConcurrentStreams allows (Node defers the HEADERS block and
+ * fires 'ready' when it actually goes out). */
+static void scr_h2_session_flush_deferred_mode(ScrH2Session *s, bool force) {
+  while (s->ndeferred > 0 && !s->destroyed && (force || !s->closed)) {
+    uint32_t limit = s->remote_settings.max_concurrent_streams;
+    if (!force && limit != 0xffffffffu && s->client_live >= (size_t)limit) break;
+    ScrH2Stream *st = s->deferred[0];
+    memmove(s->deferred, s->deferred + 1, (s->ndeferred - 1) * sizeof *s->deferred);
+    s->ndeferred--;
+    st->deferred = false;
+    st->id = s->next_stream_id;
+    s->next_stream_id += 2;
+    s->client_live++;
+    st->slot_held = true;
+    scr_h2_send_headers(s, st->id, &st->deferred_block, st->deferred_end);
+    free(st->deferred_block.data);
+    st->deferred_block.data = NULL;
+    st->deferred_block.len = st->deferred_block.cap = 0;
+    if (st->deferred_end) {
+      scr_h2_stream_mark_local_closed(st);
+    } else {
+      /* a body the program wrote while the block was held back */
+      scr_h2_stream_flush(st);
+    }
+    scr_h2_stream_maybe_release_slot(st);
+    if (s->connected) {
+      ScrClosure *mark = scr_closure_new((void *)&scr_h2_stream_mark_ready_tick, 1);
+      mark->caps[0] = scr_box_new_obj(scr_http2_stream_retain_v, scr_http2_stream_release_v, NULL);
+      scr_box_set_ref(mark->caps[0], scr_http2_stream_retain(st));
+      scr_next_tick(mark);
+    }
+    scr_http2_stream_release(st); /* the queue's ref */
+    if (scr_exc_pending()) break;
+  }
+}
+
+static void scr_h2_session_flush_deferred(ScrH2Session *s) {
+  scr_h2_session_flush_deferred_mode(s, false);
+}
+
 ScrH2Stream *scr_http2_session_request(ScrH2Session *s, ScrArr *pairs /*borrowed, nullable*/,
                                         double end_stream, bool wait_trailers) {
   if (s->destroyed || s->closed || !s->client) {
@@ -5353,9 +5492,18 @@ ScrH2Stream *scr_http2_session_request(ScrH2Session *s, ScrArr *pairs /*borrowed
    * any listener can attach; a connecting session fires it on 'connect' (the
    * emit above). A rejected block above never reaches this point, so it
    * creates no stream. */
-  ScrH2Stream *st = scr_h2_stream_new(s, s->next_stream_id);
-  if (s->connected) scr_h2_stream_fire_ready(st);
-  s->next_stream_id += 2;
+  /* Node defers the request's HEADERS while the peer's advertised
+   * maxConcurrentStreams is reached: the stream is `pending`, its id reads
+   * undefined, and 'ready' waits for the block to actually go out. */
+  uint32_t live_limit = s->remote_settings.max_concurrent_streams;
+  bool defer = live_limit != 0xffffffffu && s->client_live >= (size_t)live_limit;
+  ScrH2Stream *st = scr_h2_stream_new(s, defer ? 0 : s->next_stream_id);
+  if (s->connected && !defer) scr_h2_stream_fire_ready(st);
+  if (!defer) {
+    s->next_stream_id += 2;
+    s->client_live++;
+    st->slot_held = true;
+  }
   st->want_trailers = wait_trailers;
   ScrH2Buf block = {0};
   scr_h2_hpack_encode(&block, ":method", 7, method ? method->data : "GET", method ? method->len : 3);
@@ -5412,6 +5560,18 @@ ScrH2Stream *scr_http2_session_request(ScrH2Session *s, ScrArr *pairs /*borrowed
   if (scheme) scr_str_release(scheme);
   if (authority) scr_str_release(authority);
   if (protocol) scr_str_release(protocol);
+  if (defer) {
+    st->deferred = true;
+    st->deferred_end = end;
+    st->deferred_block = block; /* the block moves to the stream */
+    if (s->ndeferred == s->deferred_cap) {
+      s->deferred_cap = s->deferred_cap ? s->deferred_cap * 2 : 4;
+      s->deferred = realloc(s->deferred, s->deferred_cap * sizeof *s->deferred);
+      if (!s->deferred) scr_h2_oom();
+    }
+    s->deferred[s->ndeferred++] = scr_http2_stream_retain(st);
+    return st;
+  }
   scr_h2_send_headers(s, st->id, &block, end);
   free(block.data);
   if (end) {
@@ -6506,7 +6666,11 @@ static ScrDyn *scr_h2_dynh_stream_invoke(void *h, ScrDyn *self, const char *meth
 static ScrDyn *scr_h2_dynh_stream_get(void *h, const char *key, size_t key_len) {
   ScrH2Stream *st = (ScrH2Stream *)h;
   (void)key_len;
-  if (strcmp(key, "id") == 0) return scr_dyn_new_num(scr_http2_stream_id(st));
+  if (strcmp(key, "id") == 0) {
+    /* a request the peer's concurrency limit holds back has no id yet */
+    if (st->deferred) return scr_dyn_undefined();
+    return scr_dyn_new_num(scr_http2_stream_id(st));
+  }
   if (strcmp(key, "rstCode") == 0) return scr_dyn_new_num(scr_http2_stream_rst_code(st));
   if (strcmp(key, "destroyed") == 0) return scr_dyn_new_bool(scr_http2_stream_destroyed(st));
   if (strcmp(key, "closed") == 0) return scr_dyn_new_bool(scr_http2_stream_closed(st));

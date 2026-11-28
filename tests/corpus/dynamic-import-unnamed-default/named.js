@@ -1,4 +1,4 @@
 export default function () {
-  return "d";
+  return "default value";
 }
 export const x = 7;

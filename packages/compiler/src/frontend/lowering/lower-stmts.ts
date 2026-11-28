@@ -1,3 +1,5 @@
+import { defaultExportSymbolOf } from "./lower-modules.js";
+import { funcTypeFromParamShapes } from "./call-signatures.js";
 import {
   cjsEsModuleStampObjectWrite,
   cjsExportStatementObjectWrites,
@@ -5399,14 +5401,41 @@ function lowerModuleNamespacePattern(
       exported = lowerer.checker.getAliasedSymbol(exported);
     }
     const declared = exported?.valueDeclaration?.name as ts.Node | undefined;
-    if (declared === undefined || !ts.isIdentifier(declared)) {
-      lowerer.unsupported(
-        "SC1031",
-        el,
-        "destructuring module namespace members that are not named value exports",
-      );
+    let value: IrExpr;
+    if (declared !== undefined && ts.isIdentifier(declared)) {
+      value = lowerer.lowerExpr(declared);
+    } else {
+      // An unnamed default: the module's registered global of the export
+      // symbol holds the value (the same storage a default import reads).
+      const defaultSym = propName === "default" ? defaultExportSymbolOf(lowerer, source) : null;
+      const global =
+        (exported === undefined ? undefined : lowerer.globalsBySymbol.get(exported)) ??
+        (defaultSym === null ? undefined : lowerer.globalsBySymbol.get(defaultSym));
+      if (global !== undefined) {
+        value = { kind: "varRef", localId: global.id, type: global.type, loc: locOf(el) };
+      } else {
+        // An unnamed FUNCTION default interns a zero-capture closure under its
+        // collected signature (what a default import reads).
+        const sig =
+          (exported === undefined ? undefined : lowerer.fnSigsBySymbol.get(exported)) ??
+          (defaultSym === null ? undefined : lowerer.fnSigsBySymbol.get(defaultSym));
+        if (sig === undefined) {
+          lowerer.unsupported(
+            "SC1031",
+            el,
+            "destructuring module namespace members that are not named value exports",
+          );
+        }
+        lowerer.noteEdge(sig.name);
+        value = {
+          kind: "closure",
+          fnName: sig.name,
+          captures: [],
+          type: funcTypeFromParamShapes(sig.params, sig.returnType),
+          loc: locOf(el),
+        };
+      }
     }
-    let value = lowerer.lowerExpr(declared);
     if (el.initializer) value = applyBindingDefault(lowerer, el, value);
     lowerer.bindPatternTarget(el.name, value, isLet, out);
   }

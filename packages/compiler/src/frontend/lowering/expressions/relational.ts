@@ -3645,6 +3645,31 @@ export function lowerInExpression(
     const boxed = callableBox(lowerer, recv);
     if (boxed !== null) return { kind: "dynHasKey", key, value: boxed, type: BOOL, loc };
   }
+  // A program module namespace value with a literal key: Node's namespace
+  // object holds exactly the runtime value exports, so the answer is static.
+  // The receiver still evaluates for its effects (a dynamic import).
+  if (recv.type.kind === "moduleNs") {
+    const source = lowerer.sourceFileOfModuleNamespace(recv.type);
+    if (source !== null) {
+      const symbol = lowerer.checker.getSymbolAtLocation(source);
+      const runtimeNames = lowerer.runtimeExportNames(source);
+      const has =
+        symbol !== undefined &&
+        lowerer.checker.getExportsOfModule(symbol).some((entry) => {
+          const name = ts.symbolName(entry);
+          return name === key && runtimeNames.has(name);
+        });
+      const answer: IrExpr = { kind: "boolLit", value: has, type: BOOL, loc };
+      if (isSafeToDiscard(recv)) return answer;
+      return {
+        kind: "seqExpr",
+        stmts: [{ kind: "exprStmt", expr: recv, loc }],
+        result: answer,
+        type: BOOL,
+        loc,
+      };
+    }
+  }
   if (recv.type.kind !== "record") {
     // A typed handle in a program that adds properties to handles: own
     // keys and the class's members answer from its property table

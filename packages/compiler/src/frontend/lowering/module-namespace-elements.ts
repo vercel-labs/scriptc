@@ -96,11 +96,37 @@ function moduleNamespaceDispatch(
       if (!(target.flags & ts.SymbolFlags.Value)) continue;
       const declaration = target.valueDeclaration;
       const identifier = declaration?.name as ts.Node | undefined;
-      // An export with no binding identifier (an unnamed default) has no
-      // value this dispatch can read: skip it, so reading ANOTHER member
-      // still lowers; the read site refuses only when it names that export.
-      if (!identifier || !ts.isIdentifier(identifier)) continue;
-      const value = lowerer.lowerExprExpecting(identifier, DYN);
+      let value: IrExpr;
+      if (identifier !== undefined && ts.isIdentifier(identifier)) {
+        value = lowerer.lowerExprExpecting(identifier, DYN);
+      } else {
+        // An export with no binding identifier (an unnamed default): the
+        // module's registered global of that export symbol holds the value,
+        // which is what a default import reads.
+        const global = lowerer.globalsBySymbol.get(target) ?? lowerer.globalsBySymbol.get(exported);
+        if (global !== undefined) {
+          value = lowerer.coerceToExpected(
+            { kind: "varRef", localId: global.id, type: global.type, loc },
+            DYN,
+          );
+        } else {
+          // An unnamed FUNCTION default has no binding to read: its collected
+          // signature interns the zero-capture closure a default import reads.
+          const sig = lowerer.fnSigsBySymbol.get(target) ?? lowerer.fnSigsBySymbol.get(exported);
+          if (sig === undefined) continue;
+          lowerer.noteEdge(sig.name);
+          value = lowerer.coerceToExpected(
+            {
+              kind: "closure",
+              fnName: sig.name,
+              captures: [],
+              type: funcTypeFromParamShapes(sig.params, sig.returnType),
+              loc,
+            },
+            DYN,
+          );
+        }
+      }
       body.push({
         kind: "if",
         cond: {
@@ -140,27 +166,6 @@ function moduleNamespaceDispatch(
   return name;
 }
 
-/** Whether `name` is an export of the module with no binding identifier (an
- * unnamed default), which the namespace dispatch cannot read. */
-function namespaceExportIsUnnamed(
-  lowerer: Lowerer,
-  type: IrType & { kind: "moduleNs" },
-  name: string,
-): boolean {
-  const source = lowerer.sourceFileOfModuleNamespace(type);
-  if (!source) return false;
-  const symbol = lowerer.checker.getSymbolAtLocation(source);
-  if (!symbol) return false;
-  const exported = lowerer.checker
-    .getExportsOfModule(symbol)
-    .find((entry) => ts.symbolName(entry) === name);
-  if (exported === undefined) return false;
-  const target =
-    exported.flags & ts.SymbolFlags.Alias ? lowerer.checker.getAliasedSymbol(exported) : exported;
-  const declaration = target.valueDeclaration as (ts.Node & { name?: ts.Node }) | undefined;
-  return !(declaration && declaration.name && ts.isIdentifier(declaration.name));
-}
-
 /** A DOTTED read of a module namespace VALUE
  * (`(await import("./m.mjs")).default`): the dispatch the computed read
  * uses, with the member name as its key. The receiver evaluates first (a
@@ -177,8 +182,6 @@ export function lowerModuleNamespaceProperty(
   const type = lowerer.mapTypeOf(lowerer.typeOf(expr.expression));
   if (type?.kind !== "moduleNs" || type.moduleId.startsWith("builtin:")) return null;
   const loc = locOf(expr);
-  if (namespaceExportIsUnnamed(lowerer, type, expr.name.text))
-    lowerer.unsupported("SC1090", expr, "computed namespace reads of unnamed exports");
   const name = moduleNamespaceDispatch(lowerer, type, expr, loc);
   if (name === null) return null;
   const receiver = lowerer.lowerExpr(expr.expression);

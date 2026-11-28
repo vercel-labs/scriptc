@@ -10,8 +10,11 @@ import { join } from "node:path";
 import * as util from "node:util";
 import { pathToFileURL } from "node:url";
 
+// '?' cannot name a Windows directory; the legal set (space, '#', '%', ü)
+// still exercises percent-encoding on that platform.
+const dirName = process.platform === "win32" ? "sub dir #% ü" : "sub dir #%? ü";
 const root = mkdtempSync(join(tmpdir(), "runtime-dce-inspect-"));
-const dir = join(root, "sub dir #%? ü");
+const dir = join(root, dirName);
 mkdirSync(dir);
 process.chdir(dir);
 

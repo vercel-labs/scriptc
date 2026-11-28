@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/http2-stream-close-cannot-end.ts"
+ ],
+ "diags": []
+}

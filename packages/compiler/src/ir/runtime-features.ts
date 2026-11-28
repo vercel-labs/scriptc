@@ -674,6 +674,10 @@ const SYMBOL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "webstream.from",
   "webstream.instanceOf",
   "webstream.install",
+  // A checked-dynamic async loop asks for Symbol.asyncIterator even when
+  // the program never names it (a handle's own iterator member).
+  "dyn.asyncIteratorOpen",
+  "dyn.asyncIteratorWasSync",
   // EventEmitter's kShapeMode and kCapture properties
   ...BUILTIN_CLASS_LIB_FNS,
   "dyn.usingDispose",

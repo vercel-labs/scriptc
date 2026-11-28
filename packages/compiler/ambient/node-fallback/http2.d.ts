@@ -617,6 +617,9 @@ declare module "http2" {
     setTimeout(msecs: number, callback?: () => void): void;
     priority(options: Record<string, number | boolean>): void;
     sendTrailers(headers: OutgoingHttpHeaders): void;
+    /* Node's Duplex: `for await` yields the body's chunks — Buffers, or
+     * strings after setEncoding — and ends with the stream. */
+    [Symbol.asyncIterator](): AsyncIterableIterator<any>;
   }
 
   export interface ServerHttp2Stream extends Http2StreamCore {

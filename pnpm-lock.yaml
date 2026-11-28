@@ -252,6 +252,8 @@ importers:
 
   packages/libnode-linux-x64-gnu: {}
 
+  packages/libnode-win32-x64: {}
+
   packages/llvm-darwin-arm64: {}
 
   packages/llvm-darwin-x64: {}

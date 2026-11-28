@@ -31,6 +31,7 @@ import {
   hostLibnodeTarget,
   LibnodePackError,
   libnodePackPackage,
+  publishedLibnodePackPackage,
   readLibnodePack,
   type LibnodePack,
 } from "./libnode-pack.js";
@@ -197,9 +198,13 @@ export function libnodeRecordFor(
   const source = installed ?? explicit;
   if (source === undefined || source === null || source === "") {
     const pack = libnodePackPackage(target);
+    const published = publishedLibnodePackPackage(target);
+    if (published !== null) {
+      return `this program calls into Node.js (@scriptc/node), but no libnode pack is installed: install ${published}, set SCRIPTC_LIBNODE or pass --libnode=<pack directory>`;
+    }
     return pack === null
       ? `this program calls into Node.js (@scriptc/node), but there is no libnode pack for ${target}: set SCRIPTC_LIBNODE or pass --libnode=<pack directory>`
-      : `this program calls into Node.js (@scriptc/node), but no libnode pack is installed: install ${pack}, set SCRIPTC_LIBNODE or pass --libnode=<pack directory>`;
+      : `this program calls into Node.js (@scriptc/node), but no libnode pack is installed for ${target}, and ${pack} is not published yet: build a pack with packages/libnode-common/build-pack.mjs, set SCRIPTC_LIBNODE or pass --libnode=<pack directory>`;
   }
   if (installed !== null) {
     const problem = installedPackProblem(installed, libnodePackPackage(target)!);
@@ -220,9 +225,9 @@ export function libnodeRecordFor(
 }
 
 /** SC8005's hint: what in the program reached into Node (when lowering
- * recorded it) and how to get a pack for this host. A target with a published
- * pack names the package and the install line; musl, Windows and WASI keep
- * the self-build route. */
+ * recorded it) and how to get a pack for this host. A target whose pack npm
+ * publishes names the package and the install line; Windows (whose pack is
+ * not published yet), musl and WASI keep the self-build route. */
 export function nodeIslandPackHint(
   use?: { file: string; api: string },
   env: NodeJS.ProcessEnv = process.env,
@@ -234,10 +239,13 @@ export function nodeIslandPackHint(
  * (see libnodeRecordFor). */
 export function nodeIslandPackHintFor(target: string, use?: { file: string; api: string }): string {
   const pack = libnodePackPackage(target);
+  const published = publishedLibnodePackPackage(target);
   const install =
-    pack === null
-      ? `point SCRIPTC_LIBNODE or --libnode at a libnode pack for ${target} (packages/libnode-common/build-pack.mjs assembles one)`
-      : `npm i ${pack}@${compilerReleaseVersion()}, or point SCRIPTC_LIBNODE or --libnode at a pack directory (packages/libnode-common/build-pack.mjs assembles one)`;
+    published !== null
+      ? `npm i ${published}@${compilerReleaseVersion()}, or point SCRIPTC_LIBNODE or --libnode at a pack directory (packages/libnode-common/build-pack.mjs assembles one)`
+      : pack !== null
+        ? `the ${pack} package is not published yet: build a pack with packages/libnode-common/build-pack.mjs, or point SCRIPTC_LIBNODE or --libnode at a pack directory`
+        : `point SCRIPTC_LIBNODE or --libnode at a libnode pack for ${target} (packages/libnode-common/build-pack.mjs assembles one)`;
   const reached =
     use === undefined
       ? "this program runs code in Node.js (@scriptc/node)"

@@ -1,0 +1,32 @@
+{
+  "name": "@scriptc/libnode-win32-x64",
+  "version": "0.4.17",
+  "description": "Prebuilt Node.js shared library and scriptc bridge for Node islands on Windows x64",
+  "license": "SEE LICENSE IN LICENSE",
+  "homepage": "https://scriptc.dev",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vercel-labs/scriptc.git",
+    "directory": "packages/libnode-win32-x64"
+  },
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "libnode.dll",
+    "libscr_node_bridge.dll",
+    "manifest.json",
+    "LICENSE",
+    "SCRIPTC_LICENSE",
+    "THIRD_PARTY_NOTICES"
+  ],
+  "scripts": {
+    "build": "true",
+    "build:native": "node scripts/build.mjs",
+    "prepack": "node ../libnode-common/scripts/verify.mjs ."
+  },
+  "private": true
+}

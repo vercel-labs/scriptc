@@ -58,12 +58,14 @@ export function configureFlagsFor(platform, pin = readPin()) {
 }
 
 /** Pack platforms: the npm package suffix, the Node `os`/`arch`, and the
- * file names inside the pack. The darwin packs build only on macOS hosts. */
+ * file names inside the pack. The darwin packs build only on macOS hosts,
+ * and the win32 one on Windows. */
 export const LIBNODE_PLATFORMS = {
   "linux-x64-gnu": { os: "linux", arch: "x64", target: "linux-x64-gnu" },
   "linux-arm64-gnu": { os: "linux", arch: "arm64", target: "linux-arm64-gnu" },
   "darwin-arm64": { os: "darwin", arch: "arm64", target: "macos-arm64" },
   "darwin-x64": { os: "darwin", arch: "x64", target: "macos-x64" },
+  "win32-x64": { os: "win32", arch: "x64", target: "win32-x64" },
 };
 
 /** @param {string} platform */
@@ -73,9 +75,12 @@ export function platformInfo(platform) {
   return info;
 }
 
-/** The library names inside a pack for one platform and module version. */
+/** The library names inside a pack for one platform and module version.
+ * Windows DLLs carry no version in their name: the pack holds the one
+ * libnode.dll the bridge imports. */
 export function packFileNames(platform, moduleVersion) {
   const { os } = platformInfo(platform);
+  if (os === "win32") return { libnode: "libnode.dll", bridge: "libscr_node_bridge.dll" };
   return os === "darwin"
     ? { libnode: `libnode.${moduleVersion}.dylib`, bridge: "libscr_node_bridge.dylib" }
     : { libnode: `libnode.so.${moduleVersion}`, bridge: "libscr_node_bridge.so" };

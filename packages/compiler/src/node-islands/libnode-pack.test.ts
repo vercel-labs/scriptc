@@ -21,6 +21,7 @@ import {
   hostLibnodeTarget,
   libnodePackPackage,
   parseLibnodeSetting,
+  publishedLibnodePackPackage,
   readLibnodePack,
   writeLibnodeNotices,
 } from "./libnode-pack.js";
@@ -100,11 +101,29 @@ describe("the pack packages", () => {
           JSON.parse(readFileSync(join(repo, "packages", name, "package.json"), "utf8")).name,
       )
       .sort();
-    const targets = ["linux-x64-gnu", "linux-arm64-gnu", "macos-arm64", "macos-x64"];
+    const targets = [
+      "linux-x64-gnu",
+      "linux-arm64-gnu",
+      "macos-arm64",
+      "macos-x64",
+      "windows-x64-msvc",
+    ];
     expect(targets.map((target) => libnodePackPackage(target)).sort()).toEqual(packages);
     expect(libnodePackPackage("linux-x64-musl")).toBeNull();
-    expect(libnodePackPackage("windows-x64-msvc")).toBeNull();
     expect(libnodePackPackage("wasm32-wasi")).toBeNull();
+    expect(libnodePackPackage("ios-arm64")).toBeNull();
+  });
+
+  test("only a published pack is offered as an install", () => {
+    // The Windows package exists and a build looks for it when installed, but
+    // nothing can install it until its pack ships.
+    expect(publishedLibnodePackPackage("windows-x64-msvc")).toBeNull();
+    expect(publishedLibnodePackPackage("linux-x64-gnu")).toBe("@scriptc/libnode-linux-x64-gnu");
+    expect(publishedLibnodePackPackage("linux-arm64-gnu")).toBe("@scriptc/libnode-linux-arm64-gnu");
+    expect(publishedLibnodePackPackage("macos-arm64")).toBe("@scriptc/libnode-darwin-arm64");
+    expect(publishedLibnodePackPackage("macos-x64")).toBe("@scriptc/libnode-darwin-x64");
+    expect(publishedLibnodePackPackage("linux-x64-musl")).toBeNull();
+    expect(publishedLibnodePackPackage("wasm32-wasi")).toBeNull();
   });
 
   test("host targets map to native target names", () => {
@@ -112,6 +131,10 @@ describe("the pack packages", () => {
     expect(hostLibnodeTarget("linux", "arm64")).toBe("linux-arm64-gnu");
     expect(hostLibnodeTarget("darwin", "arm64")).toBe("macos-arm64");
     expect(hostLibnodeTarget("darwin", "x64")).toBe("macos-x64");
+    expect(hostLibnodeTarget("win32", "x64")).toBe("windows-x64-msvc");
+    expect(libnodePackPackage(hostLibnodeTarget("win32", "x64"))).toBe(
+      "@scriptc/libnode-win32-x64",
+    );
   });
 });
 

@@ -27,7 +27,27 @@ const PACK_PACKAGES: Readonly<Record<string, string>> = {
   "linux-arm64-gnu": "@scriptc/libnode-linux-arm64-gnu",
   "macos-arm64": "@scriptc/libnode-darwin-arm64",
   "macos-x64": "@scriptc/libnode-darwin-x64",
+  "windows-x64-msvc": "@scriptc/libnode-win32-x64",
 };
+
+/** The pack packages npm publishes today. The Windows package exists in this
+ * repository, and a build looks for it when one is installed, but its pack
+ * build and release wiring are still landing: until they do, no message
+ * offers it as an install line. */
+const PUBLISHED_PACK_PACKAGES: ReadonlySet<string> = new Set([
+  "@scriptc/libnode-linux-x64-gnu",
+  "@scriptc/libnode-linux-arm64-gnu",
+  "@scriptc/libnode-darwin-arm64",
+  "@scriptc/libnode-darwin-x64",
+]);
+
+/** The pack package for a native target that can be installed today, or null
+ * when npm has no pack for it: musl, WASI and mobile targets, and a target
+ * whose package is not published yet. */
+export function publishedLibnodePackPackage(targetName: string): string | null {
+  const packageName = PACK_PACKAGES[targetName];
+  return packageName !== undefined && PUBLISHED_PACK_PACKAGES.has(packageName) ? packageName : null;
+}
 
 export type LibnodePlacement =
   | { kind: "embedded" }
@@ -74,17 +94,21 @@ export class LibnodePackError extends Error {
 }
 
 /** The libnode pack package for a native target, or null when Node islands
- * have no pack there (musl, Windows, WASI and mobile targets). */
+ * have no pack there (musl, WASI and mobile targets). */
 export function libnodePackPackage(targetName: string): string | null {
   return PACK_PACKAGES[targetName] ?? null;
 }
 
-/** The native target name of the host, as libnodePackPackage takes it. */
+/** The native target name of the host, as libnodePackPackage takes it. A
+ * Windows target is the MSVC one the compiler emits for, whatever C runtime
+ * the runtime pack is built against. */
 export function hostLibnodeTarget(
   platform: string = process.platform,
   arch: string = process.arch,
 ): string {
-  return platform === "darwin" ? `macos-${arch}` : `${platform}-${arch}-gnu`;
+  if (platform === "darwin") return `macos-${arch}`;
+  if (platform === "win32") return `windows-${arch}-msvc`;
+  return `${platform}-${arch}-gnu`;
 }
 
 /** Validates a `nodeIslands.libnode` value; a string result is the reason

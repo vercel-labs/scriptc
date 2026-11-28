@@ -647,14 +647,23 @@ export function cjsRuntimeWholeExportValueWritesOf(
     if (!ts.isBinaryExpression(node)) return undefined;
     // A member export, an `exports` rebinding, or a member write through
     // `module.exports` needs the exports object itself; leave those shapes
-    // to the fences they already have. Comparisons read the objects and do
-    // not change the export, so they stay.
+    // to the fences they already have. The one exception is a plain member
+    // write through `module.exports` in a module whose whole export a
+    // run-time write chooses (a UMD function export with members attached,
+    // `module.exports.unload = unload`): the slot holds the value the
+    // whole-export write stored, so the member write lands on that value's
+    // own property. Comparisons read the objects and do not change the
+    // export, so they stay.
     const operator = node.operatorToken.kind;
     const assigns =
       operator >= ts.SyntaxKind.FirstAssignment && operator <= ts.SyntaxKind.LastAssignment;
+    const memberThroughModuleExports =
+      ts.isPropertyAccessExpression(node.left) &&
+      isCjsModuleExports(lowerer, node.left.expression);
     if (
       assigns &&
       !isModuleExportsAccess(node.left) &&
+      !(memberThroughModuleExports && operator === ts.SyntaxKind.EqualsToken) &&
       (isCjsExportsIdentifier(lowerer, node.left) ||
         (ts.isPropertyAccessExpression(node.left) &&
           (isCjsModuleExports(lowerer, node.left.expression) ||

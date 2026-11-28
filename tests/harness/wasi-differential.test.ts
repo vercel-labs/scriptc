@@ -218,6 +218,10 @@ describe.skipIf(!zigOnPath() || !wasmPackInstalled())("wasm32-wasi differential"
     "buffer-codec-boundaries.ts",
     "text-encode-into-boundaries.ts",
     "object-key-indexes.js",
+    // A UMD wrapper's function export with a member attached.
+    "cjs-umd-export-members/main.ts",
+    // A conditional whole export with members attached to the chosen value.
+    "cjs-conditional-whole-export-members/main.cjs",
     "record-key-order.ts",
     "typed-array-bulk-conversion.mjs",
     "typed-array-numeric-import.ts",

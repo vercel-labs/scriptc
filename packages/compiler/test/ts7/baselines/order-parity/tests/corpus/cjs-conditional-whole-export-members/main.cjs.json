@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/cjs-conditional-whole-export-members/exit.cjs",
+  "<repo>/tests/corpus/cjs-conditional-whole-export-members/settings.cjs",
+  "<repo>/tests/corpus/cjs-conditional-whole-export-members/main.cjs"
+ ],
+ "diags": []
+}

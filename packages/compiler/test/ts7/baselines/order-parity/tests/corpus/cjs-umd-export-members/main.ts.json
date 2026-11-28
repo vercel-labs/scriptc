@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/cjs-umd-export-members/main.ts"
+ ],
+ "diags": []
+}

@@ -1,0 +1,240 @@
+/* A certificate in untyped code keeps nothing behind once it is dropped.
+ * The dynamic handle's own-property table is handed to the handle (adopted
+ * and traced) when a program annotates or freezes a certificate, as the
+ * fetch-style handles do; without that integration the side table keeps the
+ * handle — and its DER and property graph — alive until the thread exits,
+ * which the RC audit reports for a request-scoped certificate made in a
+ * loop. Linux only (Apple's ASan has no LeakSanitizer); runs in the
+ * SCRIPTC_SAN=1 lane. */
+import { execFile } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
+import { describe, expect, test } from "vitest";
+import { compile } from "@scriptc/compiler";
+
+const execFileAsync = promisify(execFile);
+const cacheDir = join(import.meta.dirname, "../../node_modules/.cache/scriptc-tests");
+const sanitize = process.env["SCRIPTC_SAN"] === "1";
+
+const PEM = `-----BEGIN CERTIFICATE-----
+MIIDqjCCApKgAwIBAgICCwswDQYJKoZIhvcNAQELBQAwPjELMAkGA1UEBhMCVVMx
+FDASBgNVBAoMC0V4YW1wbGUgT3JnMRkwFwYDVQQDDBBFeGFtcGxlIFJTQSBSb290
+MCAXDTI2MTAyMjA5NDY0MVoYDzIxMjYwOTI4MDk0NjQxWjBfMQswCQYDVQQGEwJV
+UzEUMBIGA1UECgwLRXhhbXBsZSBPcmcxGDAWBgNVBAMMD3d3dy5leGFtcGxlLmNv
+bTEgMB4GCSqGSIb3DQEJARYRYWRtaW5AZXhhbXBsZS5jb20wWTATBgcqhkjOPQIB
+BggqhkjOPQMBBwNCAARidSirNIIrw+YHeS112z3N+1n0+uA9HjzkQ5u3QfZsRGCe
+ivCEMQSs5+cUE/nv5WWda2kQWavxPGluHFtYmS10o4IBWDCCAVQwCQYDVR0TBAIw
+ADALBgNVHQ8EBAMCBaAwHQYDVR0lBBYwFAYIKwYBBQUHAwEGCCsGAQUFBwMCMHsG
+A1UdEQR0MHKCDSouZXhhbXBsZS5jb22CC2V4YW1wbGUuY29tghV4bi0tYmNoZXIt
+a3ZhLmV4YW1wbGWBD29wc0BleGFtcGxlLmNvbYcECgAAAYcQIAENuAAAAAAAAAAA
+AAAAAYYUaHR0cHM6Ly9leGFtcGxlLmNvbS8wXgYIKwYBBQUHAQEEUjBQMCQGCCsG
+AQUFBzABhhhodHRwOi8vb2NzcC5leGFtcGxlLmNvbS8wKAYIKwYBBQUHMAKGHGh0
+dHA6Ly9jYS5leGFtcGxlLmNvbS9jYS5jcnQwHQYDVR0OBBYEFHyUnRTDwZxUPVwZ
+RKmse3fjoeMMMB8GA1UdIwQYMBaAFAgaWVveRbA7VKqcHzjMqBPzi1/LMA0GCSqG
+SIb3DQEBCwUAA4IBAQAfMTcpidoH47PXOQVxRttfrG7K9BcntyXP4+5hUAoSfMr6
+Rxy7X/9ba7R0yCGlNsUCusObaBpbdvwX8v9TiTYKVL+C9rEVGrTHnh6kbgZaaCQc
+L3oWbfRrYnEBYuSlFuadjVvX42aqzHV28E4ITgywCxwubu2hAbacbcUHpnRSqLDq
+lV+VZSQA/6cPNct7PR6AkJU80D+5wVOk7RVi4rsfbw1wFDeksCHu+0EThs9zjzL+
+S7HTCjB6AOHpbu1Sx+0d5YEKSE7EPF+dSFATNbhjTHzYQySnHK+Lm8nON8wmY1rC
+7opOhvUlid1jA1d2BKO2ZxlxLir4pyIehTC1ddG2
+-----END CERTIFICATE-----
+`;
+
+describe.skipIf(!sanitize || process.platform !== "linux")(
+  "a dropped dynamic certificate in the LeakSanitizer lane",
+  () => {
+    test("annotated and frozen certificates report no leaks", { timeout: 300_000 }, async () => {
+      const dir = mkdtempSync(join(tmpdir(), "scriptc-x509-dyn-leaks-"));
+      try {
+        const entry = join(dir, "main.mjs");
+        writeFileSync(
+          entry,
+          [
+            'import { X509Certificate } from "node:crypto";',
+            "",
+            "const PEM = `" + PEM + "`;",
+            "",
+            "// A property written on a typed handle makes the program add",
+            "// properties to handles, which installs the handle-property unit:",
+            "// the certificate's own table is then the side table this checks.",
+            'const res = new Response("x");',
+            "res.custom = 1;",
+            "let frozen = 0;",
+            "for (let i = 0; i < 50; i++) {",
+            "  const cert = new X509Certificate(PEM);",
+            "  const held = cert;",
+            "  try {",
+            "    Object.freeze(held);",
+            "  } catch (e) {",
+            "    // a refused freeze still went through the integrity path",
+            "  }",
+            "  frozen++;",
+            "}",
+            'console.log("frozen", frozen, "res", res.custom);',
+            "",
+          ].join("\n"),
+        );
+        const outDir = join(cacheDir, "x509-dynamic-value-leaks");
+        mkdirSync(outDir, { recursive: true });
+        const result = await compile(entry, {
+          outPath: join(outDir, "program"),
+          outDir,
+          sanitize: true,
+          backend: "llvm",
+        });
+        if (!result.ok) {
+          throw new Error(
+            "program failed to compile:\n" +
+              result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"),
+          );
+        }
+        const run = await execFileAsync(result.binaryPath, [], {
+          env: { ...process.env, ASAN_OPTIONS: "detect_leaks=1" },
+          maxBuffer: 16 * 1024 * 1024,
+        });
+        expect(run.stdout).toBe("frozen 50 res 1\n");
+        expect(run.stderr).toBe("");
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    test(
+      "a dynamic certificate links without reading publicKey",
+      { timeout: 300_000 },
+      async () => {
+        const dir = mkdtempSync(join(tmpdir(), "scriptc-x509-dyn-link-"));
+        try {
+          const entry = join(dir, "main.mjs");
+          writeFileSync(
+            entry,
+            [
+              'import { X509Certificate } from "node:crypto";',
+              "",
+              "const PEM = `" + PEM + "`;",
+              "const cert = new X509Certificate(PEM);",
+              "const held = cert;",
+              'console.log("keys", JSON.stringify(Object.keys(held)), "subject", typeof held.subject);',
+              "",
+            ].join("\n"),
+          );
+          const outDir = join(cacheDir, "x509-dynamic-value-link");
+          mkdirSync(outDir, { recursive: true });
+          const result = await compile(entry, {
+            outPath: join(outDir, "program"),
+            outDir,
+            sanitize: true,
+            backend: "llvm",
+          });
+          if (!result.ok) {
+            throw new Error(
+              "program failed to compile:\n" +
+                result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"),
+            );
+          }
+          const run = await execFileAsync(result.binaryPath, [], {
+            env: { ...process.env, ASAN_OPTIONS: "detect_leaks=1" },
+            maxBuffer: 16 * 1024 * 1024,
+          });
+          expect(run.stdout).toBe("keys [] subject string\n");
+          expect(run.stderr).toBe("");
+        } finally {
+          rmSync(dir, { recursive: true, force: true });
+        }
+      },
+    );
+
+    test("every certificate shape links and runs", { timeout: 300_000 }, async () => {
+      const cases: { name: string; file: string; source: string[]; stdout: string }[] = [
+        {
+          name: "typed-without-publickey",
+          file: "main.ts",
+          source: [
+            'import { X509Certificate } from "node:crypto";',
+            "",
+            "const PEM = `" + PEM + "`;",
+            "const cert = new X509Certificate(PEM);",
+            'console.log("typed", cert.subject.length > 0, cert.checkHost("www.example.com"));',
+            "",
+          ],
+          stdout: "typed true *.example.com\n",
+        },
+        {
+          name: "typed-with-publickey",
+          file: "main.ts",
+          source: [
+            'import { X509Certificate } from "node:crypto";',
+            "",
+            "const PEM = `" + PEM + "`;",
+            "const cert = new X509Certificate(PEM);",
+            'console.log("typed pk", cert.publicKey.asymmetricKeyType);',
+            "",
+          ],
+          stdout: "typed pk ec\n",
+        },
+        {
+          name: "plain-dynamic",
+          file: "main.mjs",
+          source: [
+            'import { X509Certificate } from "node:crypto";',
+            "",
+            "const PEM = `" + PEM + "`;",
+            "const cert = new X509Certificate(PEM);",
+            "const held = cert;",
+            'console.log("dynamic", JSON.stringify(Object.keys(held)), String(held).length > 0);',
+            "",
+          ],
+          stdout: "dynamic [] true\n",
+        },
+        {
+          name: "props-using",
+          file: "main.mjs",
+          source: [
+            'import { X509Certificate } from "node:crypto";',
+            "",
+            "const PEM = `" + PEM + "`;",
+            'const res = new Response("x");',
+            "res.custom = 1;",
+            "const cert = new X509Certificate(PEM);",
+            "const held = cert;",
+            "Object.freeze(held);",
+            'console.log("props", res.custom, Object.isFrozen(held), held.subject.length > 0);',
+            "",
+          ],
+          stdout: "props 1 true true\n",
+        },
+      ];
+      for (const one of cases) {
+        const dir = mkdtempSync(join(tmpdir(), `scriptc-x509-link-${one.name}-`));
+        try {
+          const entry = join(dir, one.file);
+          writeFileSync(entry, one.source.join("\n"));
+          const outDir = join(cacheDir, `x509-shape-${one.name}`);
+          mkdirSync(outDir, { recursive: true });
+          const result = await compile(entry, {
+            outPath: join(outDir, "program"),
+            outDir,
+            sanitize: true,
+            backend: "llvm",
+          });
+          if (!result.ok) {
+            throw new Error(
+              `${one.name} failed to compile:\n` +
+                result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"),
+            );
+          }
+          const run = await execFileAsync(result.binaryPath, [], {
+            env: { ...process.env, ASAN_OPTIONS: "detect_leaks=1" },
+            maxBuffer: 16 * 1024 * 1024,
+          });
+          expect(run.stdout, one.name).toBe(one.stdout);
+          expect(run.stderr, one.name).toBe("");
+        } finally {
+          rmSync(dir, { recursive: true, force: true });
+        }
+      }
+    });
+  },
+);

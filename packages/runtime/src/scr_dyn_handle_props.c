@@ -225,7 +225,7 @@ static ScrDyn *hp_method_value(void *h, const char *key, size_t key_len) {
 #define HP_TAGS(X) \
   X(DATE) X(REGEXP) X(MAP) X(SET) X(WEAK_MAP) X(WEAK_SET) \
   X(ARRAY_BUFFER) X(SHARED_ARRAY_BUFFER) X(FINALIZATION_REGISTRY) X(WEAK_REF) \
-  X(FETCH_REQUEST) X(FETCH_RESPONSE) X(FETCH_HEADERS)
+  X(FETCH_REQUEST) X(FETCH_RESPONSE) X(FETCH_HEADERS) X(X509_CERT)
 
 static bool hp_accepts(ScrDynHandleTag tag) {
   switch (tag) {
@@ -405,14 +405,19 @@ static ScrDyn *hp_props_of_box(const ScrDyn *handle) {
   size_t i = hp_bucket(h);
   while (hp_slots[i].ptr) i = (i + 1) & (hp_capacity - 1);
   props = scr_dyn_new_obj_null_proto();
-  hp_slots[i].ptr = hp_fetch_tag(tag) ? h : hp_orig[tag]->retain(h);
+  /* A class whose native object adopts and traces the table (ScrDynHandleOps
+   * .adopt_props: the fetch classes and the X509 certificate) holds it
+   * itself; the slot keeps a weak pointer and the handle releases the table
+   * with itself, so a dropped handle — and the graph behind it — is
+   * reclaimed. Otherwise the slot owns the table and retains the handle
+   * until the thread exits. */
+  const ScrDynHandleOps *ops = hp_orig[tag];
+  bool adopts = ops != NULL && ops->adopt_props != NULL;
+  hp_slots[i].ptr = adopts ? h : ops->retain(h);
   hp_slots[i].tag = tag;
   hp_slots[i].props = props;
-  /* The fetch unit's native object holds and traces the table, so a
-   * property that refers back to its handle is an edge the cycle collector
-   * can follow. Otherwise the slot owns it. */
-  hp_slots[i].owns_props = !(hp_fetch_tag(tag) && hp_orig[tag]->adopt_props);
-  if (!hp_slots[i].owns_props) hp_orig[tag]->adopt_props(h, props);
+  hp_slots[i].owns_props = !adopts;
+  if (adopts) ops->adopt_props(h, props);
   hp_count++;
   return props;
 }
@@ -492,6 +497,7 @@ static bool hp_denied_member(const char *name, size_t len, ScrDynHandleTag tag) 
     SCR_DYN_HANDLE_NAME("__defineGetter__"), SCR_DYN_HANDLE_NAME("__defineSetter__"),
     SCR_DYN_HANDLE_NAME("__lookupGetter__"), SCR_DYN_HANDLE_NAME("__lookupSetter__"),
   };
+  if (tag == SCR_DYNH_X509_CERT && len == 6 && memcmp("toJSON", name, 6) == 0) return false;
   for (size_t i = 0; i < sizeof denied / sizeof *denied; i++)
     if (denied[i].len == len && memcmp(denied[i].name, name, len) == 0) return true;
   /* ToPrimitive reaches the table only where the coercion calls the tag's
@@ -499,7 +505,7 @@ static bool hp_denied_member(const char *name, size_t len, ScrDynHandleTag tag) 
    * (toString, toLocaleString). Every other class keeps the refusal. */
   bool string_hint = (len == 8 && memcmp("toString", name, 8) == 0) ||
                      (len == 14 && memcmp("toLocaleString", name, 14) == 0);
-  if (string_hint) return tag != SCR_DYNH_DATE && tag != SCR_DYNH_REGEXP;
+  if (string_hint) return tag != SCR_DYNH_DATE && tag != SCR_DYNH_REGEXP && tag != SCR_DYNH_X509_CERT;
   if (len == 7 && memcmp("valueOf", name, 7) == 0) return tag != SCR_DYNH_DATE;
   /* Set and Map composition methods read the argument's has and keys
    * (GetSetRecord reads both, and iterates the keys it got), and
@@ -522,6 +528,9 @@ static bool hp_granted(ScrDynHandleTag tag, const ScrStr *key) {
   /* A fetch handle's writes are untyped JavaScript's, so every name its
    * class declares is open without a grant. */
   if (hp_members_open[tag] || hp_fetch_tag(tag)) return true;
+  /* The certificate's fields are prototype getters Node lets any code
+   * read, and its dynamic handle answers them from its accessor table. */
+  if (tag == SCR_DYNH_X509_CERT) return true;
   for (size_t i = 0; i < hp_grant_n; i++)
     if (hp_grants[i].tag == tag && strlen(hp_grants[i].name) == key->len &&
         memcmp(hp_grants[i].name, key->data, key->len) == 0)

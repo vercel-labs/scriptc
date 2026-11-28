@@ -29,6 +29,13 @@ export const cryptoSignatures = defineLibFnSignatures({
    * PEM string decodes as the static forms do, and every other value
    * throws Node's ERR_INVALID_ARG_TYPE TypeError for "buffer" (may-throw). */
   "crypto.x509RawDyn": { argTypes: [DYN], result: BYTES_U8 },
+  /** The certificate's dynamic handle for a record's DER: the record
+   * crossing into a dynamic slot, with Node's prototype fields and
+   * methods, no own keys, and its PEM as JSON. */
+  "crypto.x509Dyn": { argTypes: [BYTES_U8], result: DYN },
+  /** `value instanceof crypto.X509Certificate` for a dynamic value: true
+   * for a certificate handle. */
+  "crypto.x509IsDyn": { argTypes: [DYN], result: BOOL },
   /** The remaining X509Certificate fields over that DER, in Node's
    * renderings (scr_lib.c). subjectAltName, infoAccess and
    * signatureAlgorithm answer "" where Node answers undefined. Borrowed;

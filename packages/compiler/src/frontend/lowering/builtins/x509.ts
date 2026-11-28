@@ -16,7 +16,7 @@ import {
   type IrType,
   type SrcLoc,
 } from "../../../ir/ir.js";
-import { everyStmtList } from "../../../ir/traverse.js";
+import { mapExprChildren, mapStmtChildren } from "../../../ir/traverse.js";
 import { unsupportedDiag } from "../../../diagnostics/diagnostic.js";
 import { X509_DER_FIELD, X509_PUBLIC_KEY_FIELD } from "../../type-mapper.js";
 import { keyedHelperName } from "../stable-names.js";
@@ -53,12 +53,13 @@ function isX509Record(lowerer: Lowerer, node: ts.Expression): boolean {
   return isX509Type(lowerer, lowerer.mapTypeOf(type));
 }
 
-/** A certificate in an `unknown` or `any` slot would cross as a plain
- * object of its fields, which Node's certificate is not: its fields are
- * prototype getters, and toString() and toJSON() give its PEM. Every such
- * conversion in the lowered program, including a certificate inside an
- * array or record that converts, is refused where it happens. */
-export function refuseX509DynValues(lowerer: Lowerer, functions: readonly IrFunction[]): void {
+/** A certificate crossing into a dynamic slot becomes the runtime handle
+ * Node's X509Certificate is: the record's DER behind the prototype fields
+ * and methods, no own keys, and its PEM as JSON. A certificate nested in
+ * a record or array converts with the container's own deep copy, which
+ * cannot carry the handle, so those conversions stay refused where they
+ * happen. */
+export function lowerX509DynValues(lowerer: Lowerer, functions: IrFunction[]): void {
   // Certificates exist only where `new X509Certificate` built one.
   if (
     !lowerer.valueHelpers.has("x509.record:bytes") &&
@@ -122,22 +123,37 @@ export function refuseX509DynValues(lowerer: Lowerer, functions: readonly IrFunc
         return false;
     }
   };
-  const visitor = {
-    expr: (e: IrExpr): boolean => {
-      if (e.kind === "dynFrom" && holds(e.value.type)) {
+  function rewriteStmt(stmt: IrStmt): IrStmt {
+    return mapStmtChildren(stmt, rewriteExpr, rewriteStmt);
+  }
+  function rewriteExpr(e: IrExpr): IrExpr {
+    if (e.kind === "dynFrom") {
+      if (isX509Type(lowerer, e.value.type))
+        return {
+          kind: "libCall",
+          fn: "crypto.x509Dyn",
+          args: [derOf(e.value, e.loc)],
+          type: DYN,
+          loc: e.loc,
+        };
+      if (holds(e.value.type)) {
         lowerer.pushDiag(
           unsupportedDiag(
             "SC1090",
             e.loc,
-            "X509Certificate values in 'unknown' or 'any' slots (Node keeps a certificate's fields as prototype getters, and its toString() and toJSON() give the PEM; keep the X509Certificate type)",
+            "X509Certificate values inside a record or array crossing into 'unknown' or 'any' slots (the container's copy cannot carry the certificate's handle; convert the certificate itself, or read its fields)",
           ),
         );
+        return e;
       }
-      return true;
-    },
-    stmt: (): boolean => true,
-  };
-  for (const fn of functions) everyStmtList(fn.body, visitor);
+    }
+    return mapExprChildren(e, rewriteExpr, rewriteStmt);
+  }
+  for (let i = 0; i < functions.length; i++) {
+    const fn = functions[i]!;
+    const body = fn.body.map(rewriteStmt);
+    if (body.some((stmt, k) => stmt !== fn.body[k])) functions[i] = { ...fn, body };
+  }
 }
 
 /** String(x509), `${x509}` and x509 + "": the certificate's toString(),

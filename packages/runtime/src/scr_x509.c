@@ -1919,3 +1919,348 @@ ScrDyn *scr_crypto_x509_legacy_object(ScrBytes *der) {
   scr_dyn_obj_set(obj, "nistCurve", 9, key[5]);
   return obj;
 }
+
+/* The handle-properties unit's hooks (scr_dyn.h): a program that links this
+ * unit without that one resolves the reference weakly to NULL and reports
+ * the release to no one, as the fetch unit does (scr_fetch.c). */
+extern SCR_TL const ScrDynHandlePropsHooks *scr_dyn_handle_props_hooks __attribute__((weak));
+
+/* The pki unit's certificate-key calls (scr_pki.c): a program that carries a
+ * certificate statically does not link it, so the dynamic handle's members
+ * answer a refusal there; a dynamic certificate links it through
+ * crypto.x509Dyn (runtime-features.ts). */
+extern ScrDyn *scr_crypto_x509_public_key(ScrBytes *der) __attribute__((weak));
+extern bool scr_crypto_x509_verify(ScrBytes *der, ScrDyn *key) __attribute__((weak));
+extern bool scr_crypto_x509_check_private_key(ScrBytes *der, ScrDyn *key) __attribute__((weak));
+
+/* ── the dynamic representation ───────────────────────────────────────── */
+
+/* An X509Certificate that crossed into a dynamic slot: the DER the record
+ * was built from. Node's certificate keeps nothing as own properties —
+ * every field is a prototype getter and every method a prototype function —
+ * so the handle answers them from its tables, has no own keys, and gives
+ * JSON.stringify its PEM (toJSON). */
+typedef struct {
+  size_t rc;
+  ScrBytes *der;
+  /* The own-property table the props unit hands over for a program that
+   * annotates or freezes the certificate (adopted, traced, released here). */
+  ScrDyn *props;
+  /* Node's `raw`: one Buffer per certificate, so writes through an earlier
+   * reference stay visible and `cert.raw === cert.raw`. */
+  ScrDyn *raw;
+} ScrX509Dyn;
+
+static ScrDyn *scr_x509_dyn_get(void *p, const char *key, size_t key_len);
+
+static void scr_x509_dyn_trace(void *ptr, ScrTraceVisit visit, void *ctx) {
+  ScrX509Dyn *h = ptr;
+  if (h->props) visit(h->props, ctx);
+  if (h->raw) visit(h->raw, ctx);
+}
+
+static void scr_x509_dyn_gcfree(void *ptr) {
+  ScrX509Dyn *h = ptr;
+  /* The handle-property unit's slot for this handle goes with it (the table
+   * is ours), as the fetch classes report. */
+  if (&scr_dyn_handle_props_hooks != NULL && scr_dyn_handle_props_hooks != NULL &&
+      scr_dyn_handle_props_hooks->released)
+    scr_dyn_handle_props_hooks->released(h);
+  if (h->der) scr_bytes_release(h->der);
+  h->der = NULL;
+  scr_cyc_free(h);
+}
+
+static void scr_x509_dyn_destroy(void *ptr) {
+  ScrX509Dyn *h = ptr;
+  scr_dyn_release(h->props);
+  h->props = NULL;
+  scr_dyn_release(h->raw);
+  h->raw = NULL;
+  scr_x509_dyn_gcfree(h);
+}
+
+static ScrCycType scr_x509_dyn_cyc_type = {&scr_x509_dyn_trace, &scr_x509_dyn_gcfree, SCR_CYC_KIND_NONE, 0};
+
+static void *scr_x509_dyn_retain(void *p) {
+  ScrX509Dyn *h = p;
+  if (h->rc != SIZE_MAX) h->rc++;
+  return h;
+}
+
+static void scr_x509_dyn_release(void *p) {
+  ScrX509Dyn *h = p;
+  if (!h || h->rc == SIZE_MAX) return;
+  if (--h->rc == 0) {
+    scr_cyc_dead(h);
+    scr_rc_destroy(h, scr_x509_dyn_destroy);
+  } else {
+    scr_cyc_released(h);
+  }
+}
+
+static void scr_x509_dyn_adopt_props(void *p, ScrDyn *props) {
+  ((ScrX509Dyn *)p)->props = props;
+}
+
+/* A field's text as a dyn string; consumes the +1 `text`. */
+static ScrDyn *scr_x509_field_text(ScrStr *text) {
+  ScrDyn *out = scr_dyn_new_str(text);
+  scr_str_release(text);
+  return out;
+}
+
+/* A field's text: Node keeps the field getters, and answers undefined for
+ * the optional ones the runtime renders as "". Consumes `text`. */
+static ScrDyn *scr_x509_optional_text(ScrStr *text) {
+  if (!text) return NULL; /* an error is pending */
+  if (text->len == 0) {
+    scr_str_release(text);
+    return scr_dyn_undefined();
+  }
+  return scr_x509_field_text(text);
+}
+
+#define SCR_X509_IS(s) (key_len == sizeof(s) - 1 && memcmp(key, s, sizeof(s) - 1) == 0)
+
+/* A member whose pki unit a static-only program does not link. */
+static void scr_x509_unlinked(const char *what) {
+  char message[96];
+  int n = snprintf(message, sizeof message, "%s needs a dynamically carried certificate", what);
+  if (n < 0) n = 0;
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message,
+                           (size_t)n < sizeof message ? (size_t)n : sizeof message - 1, "SC2020");
+}
+
+static ScrDyn *scr_x509_dyn_get(void *p, const char *key, size_t key_len) {
+  ScrX509Dyn *h = p;
+  ScrBytes *der = h->der;
+  if (SCR_X509_IS("ca")) return scr_dyn_new_bool(scr_crypto_x509_ca(der));
+  if (SCR_X509_IS("raw")) {
+    if (!h->raw) {
+      ScrBytes *view = der;
+      SCR_BYTES_SNAPSHOT(view);
+      h->raw = scr_x509_dyn_buffer(SCR_X509_DER(view));
+    }
+    return scr_dyn_retain(h->raw);
+  }
+  if (SCR_X509_IS("subject")) return scr_x509_field_text(scr_crypto_x509_subject(der));
+  if (SCR_X509_IS("issuer")) return scr_x509_field_text(scr_crypto_x509_issuer(der));
+  if (SCR_X509_IS("subjectAltName")) return scr_x509_optional_text(scr_crypto_x509_subject_alt_name(der));
+  if (SCR_X509_IS("infoAccess")) return scr_x509_optional_text(scr_crypto_x509_info_access(der));
+  if (SCR_X509_IS("signatureAlgorithm"))
+    return scr_x509_optional_text(scr_crypto_x509_signature_algorithm(der));
+  if (SCR_X509_IS("signatureAlgorithmOid"))
+    return scr_x509_field_text(scr_crypto_x509_signature_algorithm_oid(der));
+  if (SCR_X509_IS("serialNumber")) return scr_x509_field_text(scr_crypto_x509_serial_number(der));
+  if (SCR_X509_IS("fingerprint")) return scr_x509_field_text(scr_crypto_x509_fingerprint(der));
+  if (SCR_X509_IS("fingerprint256")) return scr_x509_field_text(scr_crypto_x509_fingerprint256(der));
+  if (SCR_X509_IS("fingerprint512")) return scr_x509_field_text(scr_crypto_x509_fingerprint512(der));
+  if (SCR_X509_IS("keyUsage")) return scr_crypto_x509_key_usage(der);
+  if (SCR_X509_IS("validFrom") || SCR_X509_IS("validTo")) {
+    ScrStr *text = SCR_X509_IS("validFrom") ? scr_crypto_x509_valid_from(der)
+                                            : scr_crypto_x509_valid_to(der);
+    return scr_x509_field_text(text);
+  }
+  if (SCR_X509_IS("validFromDate") || SCR_X509_IS("validToDate")) {
+    ScrStr *text = SCR_X509_IS("validFromDate") ? scr_crypto_x509_valid_from(der)
+                                                : scr_crypto_x509_valid_to(der);
+    double ms = scr_date_parse(text);
+    scr_str_release(text);
+    return scr_dyn_native_date_from_ms(ms);
+  }
+  if (SCR_X509_IS("publicKey")) {
+    if (!scr_crypto_x509_public_key) {
+      scr_x509_unlinked("X509Certificate.publicKey");
+      return NULL;
+    }
+    return scr_crypto_x509_public_key(der);
+  }
+  /* A certificate built from PEM or DER carries no issuer chain (Node
+   * answers undefined for one too). */
+  if (SCR_X509_IS("issuerCertificate")) return scr_dyn_undefined();
+  return NULL;
+}
+
+#undef SCR_X509_IS
+
+/* The DER of a certificate handle argument (checkIssued's), +1; otherwise
+ * Node's argument TypeError is pending and NULL answers. */
+static ScrBytes *scr_x509_dyn_der_of(ScrDyn *value) {
+  if (value->kind == SCR_DYN_HANDLE && value->v.handle.tag == SCR_DYNH_X509_CERT)
+    return scr_bytes_retain(((ScrX509Dyn *)value->v.handle.ptr)->der);
+  scr_dyn_arg_type_fail("otherCert", "an instance of X509Certificate", value);
+  return NULL;
+}
+
+#define SCR_X509_IS(s) (strcmp(method, s) == 0)
+
+static ScrDyn *scr_x509_dyn_invoke(void *p, ScrDyn *self, const char *method, ScrDyn *const *args,
+                                   size_t argc, const char *what) {
+  (void)self;
+  (void)what;
+  ScrX509Dyn *h = p;
+  ScrDyn *a0 = argc > 0 ? args[0] : scr_dyn_undefined();
+  ScrDyn *a1 = argc > 1 ? args[1] : scr_dyn_undefined();
+  if (SCR_X509_IS("toString") || SCR_X509_IS("toJSON"))
+    return scr_x509_field_text(scr_crypto_x509_pem(h->der));
+  if (SCR_X509_IS("checkHost"))
+    return scr_x509_optional_text(scr_crypto_x509_check_host(h->der, a0, a1));
+  if (SCR_X509_IS("checkEmail"))
+    return scr_x509_optional_text(scr_crypto_x509_check_email(h->der, a0, a1));
+  if (SCR_X509_IS("checkIP")) return scr_x509_optional_text(scr_crypto_x509_check_ip(h->der, a0, a1));
+  if (SCR_X509_IS("verify")) {
+    if (!scr_crypto_x509_verify) {
+      scr_x509_unlinked("X509Certificate.verify");
+      return NULL;
+    }
+    return scr_dyn_new_bool(scr_crypto_x509_verify(h->der, a0));
+  }
+  if (SCR_X509_IS("checkPrivateKey")) {
+    if (!scr_crypto_x509_check_private_key) {
+      scr_x509_unlinked("X509Certificate.checkPrivateKey");
+      return NULL;
+    }
+    return scr_dyn_new_bool(scr_crypto_x509_check_private_key(h->der, a0));
+  }
+  if (SCR_X509_IS("checkIssued")) {
+    ScrBytes *other = scr_x509_dyn_der_of(a0);
+    if (!other) return NULL;
+    bool ok = scr_crypto_x509_check_issued(h->der, other);
+    scr_bytes_release(other);
+    return scr_dyn_new_bool(ok);
+  }
+  if (SCR_X509_IS("toLegacyObject")) return scr_crypto_x509_legacy_object(h->der);
+  /* A name the class's surface never had: Node's TypeError, naming the
+   * call as the source wrote it. */
+  char message[192];
+  int n = snprintf(message, sizeof message, "%s is not a function", what && what[0] ? what : method);
+  if (n < 0) n = 0;
+  scr_throw_error_msg(SCR_ERR_TYPE, message, (size_t)n < sizeof message ? (size_t)n : sizeof message - 1);
+  return NULL;
+}
+
+#undef SCR_X509_IS
+
+/* JSON.stringify of the certificate: toJSON()'s PEM. */
+static ScrDyn *scr_x509_dyn_json(void *p) {
+  return scr_x509_field_text(scr_crypto_x509_pem(((ScrX509Dyn *)p)->der));
+}
+
+/* util.inspect lists the fields Node's inspector prints, in its order. */
+static ScrDyn *scr_x509_dyn_inspect(void *p) {
+  ScrBytes *der = ((ScrX509Dyn *)p)->der;
+  ScrDyn *view = scr_dyn_new_obj();
+  ScrStr *text = scr_crypto_x509_subject(der);
+  scr_dyn_obj_set(view, "subject", 7, scr_dyn_new_str(text));
+  scr_str_release(text);
+  text = scr_crypto_x509_subject_alt_name(der);
+  scr_dyn_obj_set(view, "subjectAltName", 14, scr_x509_optional_text(text));
+  text = scr_crypto_x509_issuer(der);
+  scr_dyn_obj_set(view, "issuer", 6, scr_dyn_new_str(text));
+  scr_str_release(text);
+  text = scr_crypto_x509_info_access(der);
+  scr_dyn_obj_set(view, "infoAccess", 10, scr_x509_optional_text(text));
+  text = scr_crypto_x509_valid_from(der);
+  scr_dyn_obj_set(view, "validFrom", 9, scr_dyn_new_str(text));
+  scr_dyn_obj_set(view, "validFromDate", 13, scr_dyn_native_date_from_ms(scr_date_parse(text)));
+  scr_str_release(text);
+  text = scr_crypto_x509_valid_to(der);
+  scr_dyn_obj_set(view, "validTo", 7, scr_dyn_new_str(text));
+  scr_dyn_obj_set(view, "validToDate", 11, scr_dyn_native_date_from_ms(scr_date_parse(text)));
+  scr_str_release(text);
+  text = scr_crypto_x509_fingerprint(der);
+  scr_dyn_obj_set(view, "fingerprint", 11, scr_dyn_new_str(text));
+  scr_str_release(text);
+  text = scr_crypto_x509_fingerprint256(der);
+  scr_dyn_obj_set(view, "fingerprint256", 14, scr_dyn_new_str(text));
+  scr_str_release(text);
+  text = scr_crypto_x509_fingerprint512(der);
+  scr_dyn_obj_set(view, "fingerprint512", 14, scr_dyn_new_str(text));
+  scr_str_release(text);
+  scr_dyn_obj_set(view, "keyUsage", 8, scr_crypto_x509_key_usage(der));
+  text = scr_crypto_x509_serial_number(der);
+  scr_dyn_obj_set(view, "serialNumber", 12, scr_dyn_new_str(text));
+  scr_str_release(text);
+  text = scr_crypto_x509_signature_algorithm(der);
+  scr_dyn_obj_set(view, "signatureAlgorithm", 18, scr_x509_optional_text(text));
+  text = scr_crypto_x509_signature_algorithm_oid(der);
+  scr_dyn_obj_set(view, "signatureAlgorithmOid", 21, scr_dyn_new_str(text));
+  scr_str_release(text);
+  return view;
+}
+
+/* The class's prototype accessors and methods, for member reads and calls
+ * in untyped code, and the `in` and method-value paths. */
+static const ScrDynHandleName scr_x509_attributes[] = {
+  SCR_DYN_HANDLE_NAME("ca"),
+  SCR_DYN_HANDLE_NAME("fingerprint"),
+  SCR_DYN_HANDLE_NAME("fingerprint256"),
+  SCR_DYN_HANDLE_NAME("fingerprint512"),
+  SCR_DYN_HANDLE_NAME("infoAccess"),
+  SCR_DYN_HANDLE_NAME("issuer"),
+  SCR_DYN_HANDLE_NAME("issuerCertificate"),
+  SCR_DYN_HANDLE_NAME("keyUsage"),
+  SCR_DYN_HANDLE_NAME("publicKey"),
+  SCR_DYN_HANDLE_NAME("raw"),
+  SCR_DYN_HANDLE_NAME("serialNumber"),
+  SCR_DYN_HANDLE_NAME("signatureAlgorithm"),
+  SCR_DYN_HANDLE_NAME("signatureAlgorithmOid"),
+  SCR_DYN_HANDLE_NAME("subject"),
+  SCR_DYN_HANDLE_NAME("subjectAltName"),
+  SCR_DYN_HANDLE_NAME("validFrom"),
+  SCR_DYN_HANDLE_NAME("validFromDate"),
+  SCR_DYN_HANDLE_NAME("validTo"),
+  SCR_DYN_HANDLE_NAME("validToDate"),
+  {NULL, 0},
+};
+
+static const ScrDynHandleMethod scr_x509_methods[] = {
+  {"checkEmail", 2, false}, {"checkHost", 2, false}, {"checkIP", 2, false},
+  {"checkIssued", 1, false}, {"checkPrivateKey", 1, false}, {"toJSON", 0, false},
+  {"toLegacyObject", 0, false}, {"toString", 0, false}, {"verify", 1, false},
+  {NULL, 0, false},
+};
+
+/* Node's certificate owns no properties (its fields are prototype
+ * getters); the props unit answers the ones a program adds once it wraps
+ * this tag. */
+static ScrDyn *scr_x509_dyn_own_names(void *p) {
+  (void)p;
+  return scr_dyn_new_arr();
+}
+
+static const ScrDynHandleOps scr_x509_ops = {
+  .cls = "X509Certificate",
+  .retain = &scr_x509_dyn_retain,
+  .release = &scr_x509_dyn_release,
+  .invoke = &scr_x509_dyn_invoke,
+  .get = &scr_x509_dyn_get,
+  .inspect_view = &scr_x509_dyn_inspect,
+  .own_names = &scr_x509_dyn_own_names,
+  .adopt_props = &scr_x509_dyn_adopt_props,
+  .methods = scr_x509_methods,
+  .attributes = scr_x509_attributes,
+  .json_value = &scr_x509_dyn_json,
+};
+
+/* The certificate's dynamic handle for a record's DER (borrowed; the
+ * handle keeps its own copy). */
+bool scr_crypto_x509_is_dyn(ScrDyn *value) {
+  return value->kind == SCR_DYN_HANDLE && value->v.handle.tag == SCR_DYNH_X509_CERT;
+}
+
+ScrDyn *scr_crypto_x509_dyn(ScrBytes *der) {
+  ScrX509Dyn *h = scr_cyc_alloc(sizeof *h, &scr_x509_dyn_cyc_type);
+  h->rc = 1;
+  h->props = NULL;
+  h->raw = NULL;
+  ScrBytes *view = der;
+  SCR_BYTES_SNAPSHOT(view);
+  h->der = scr_crypto_x509_raw_der(view);
+  scr_dyn_handle_install(SCR_DYNH_X509_CERT, &scr_x509_ops);
+  ScrDyn *out = scr_dyn_new_handle(h, SCR_DYNH_X509_CERT);
+  /* The box holds its own reference. */
+  scr_x509_dyn_release(h);
+  return out;
+}

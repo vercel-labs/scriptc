@@ -466,6 +466,10 @@ bool scr_crypto_x509_ca(ScrBytes *der);
 ScrStr *scr_crypto_x509_signature_algorithm(ScrBytes *der);
 ScrStr *scr_crypto_x509_signature_algorithm_oid(ScrBytes *der);
 ScrStr *scr_crypto_x509_pem(ScrBytes *der);
+/* The certificate's dynamic handle for a record's DER (borrowed; the
+ * handle keeps its own copy) — scr_x509.c. */
+ScrDyn *scr_crypto_x509_dyn(ScrBytes *der);
+bool scr_crypto_x509_is_dyn(ScrDyn *value);
 /* X509Certificate methods over the DER (borrowed). checkHost, checkEmail
  * and checkIP answer the matching name ("" for none, Node's undefined) or
  * NULL with Node's argument error pending (scr_x509.c). publicKey, verify

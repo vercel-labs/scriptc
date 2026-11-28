@@ -1196,6 +1196,9 @@ export const PKI_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.x509PublicKey",
   "crypto.x509Verify",
   "crypto.x509CheckPrivateKey",
+  /* The certificate's dynamic handle answers publicKey, verify and
+   * checkPrivateKey through this unit too. */
+  "crypto.x509Dyn",
   "crypto.spkacVerify",
   "crypto.spkacChallenge",
   "crypto.spkacPublicKey",
@@ -2930,6 +2933,8 @@ const RUNTIME_FEATURE_RULES = {
       "crypto.x509RawDer",
       "crypto.x509RawStr",
       "crypto.x509RawDyn",
+      "crypto.x509Dyn",
+      "crypto.x509IsDyn",
       "crypto.x509SerialNumber",
       "crypto.x509SignatureAlgorithm",
       "crypto.x509SignatureAlgorithmOid",

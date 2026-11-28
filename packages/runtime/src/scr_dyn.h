@@ -295,7 +295,8 @@ typedef enum {
   Y(WEAK_REF) /* WeakRef (scr_json.c) */ \
   Y(WEBSOCKET) /* the global WebSocket client (scr_websocket.c) */ \
   Y(WS_COMPRESSION) /* CompressionStream (scr_webstream_compress.c) */ \
-  Y(WS_DECOMPRESSION) /* DecompressionStream (scr_webstream_compress.c) */
+  Y(WS_DECOMPRESSION) /* DecompressionStream (scr_webstream_compress.c) */ \
+  Y(X509_CERT) /* node:crypto X509Certificate in dynamic slots (scr_x509.c) */
 
 /* Values below the largest pinned one that no tag holds, each with the
  * reason. Never reuse one without removing it here. */
@@ -2942,6 +2943,11 @@ typedef struct ScrDynHandleOps {
    * database's Object.keys and for-in keep working). NULL hook = the
    * own_names list, all of whose properties are enumerable. */
   ScrDyn *(*own_enumerable_names)(void *h);
+  /* A JSON value for the class (+1) whose serialization is a primitive or
+   * a value of another kind — the X509Certificate's PEM string, which its
+   * toJSON() gives: JSON.stringify writes this value in place of the
+   * handle. NULL hook = the own-property walk above answers. */
+  ScrDyn *(*json_value)(void *h);
   /* Object.defineProperty and Reflect.defineProperty on the class's own
    * properties, `descriptor` read as any descriptor object: the class
    * applies the definition (an added property, or a class accessor's

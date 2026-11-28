@@ -10553,6 +10553,7 @@ ScrDyn *scr_dyn_new_handle(void *h, ScrDynHandleTag tag) {
       tag == SCR_DYNH_CIPHER || tag == SCR_DYNH_DECIPHER || tag == SCR_DYNH_SIGN ||
       tag == SCR_DYNH_VERIFY || tag == SCR_DYNH_FETCH_REQUEST ||
       tag == SCR_DYNH_FETCH_RESPONSE || tag == SCR_DYNH_FETCH_HEADERS ||
+      tag == SCR_DYNH_X509_CERT ||
       ((tag == SCR_DYNH_SET || tag == SCR_DYNH_MAP) &&
        ((ScrMap *)h)->traced != 0);
   return d;
@@ -14613,6 +14614,19 @@ static bool scr_dyn_json_write(ScrJsonBuf *b, const ScrDyn *d) {
     return present;
   }
   case SCR_DYN_HANDLE:
+    if (scr_dyn_handle_ops_of(d)->json_value) {
+      /* The class's JSON form is a value of another kind (the
+       * X509Certificate's PEM string). */
+      ScrDyn *value = scr_dyn_handle_ops_of(d)->json_value(d->v.handle.ptr);
+      if (!value) {
+        if (scr_exc_pending()) return true;
+        scr_jb_puts(b, "{}");
+        return true;
+      }
+      bool present = scr_dyn_json_write(b, value);
+      scr_dyn_release(value);
+      return present;
+    }
     if (scr_dyn_handle_ops_of(d)->own_view) {
       /* The class's own enumerable properties, read on this call. */
       ScrDyn *view = scr_dyn_handle_own_view(d);
@@ -15737,7 +15751,7 @@ ScrStr *scr_dyn_to_string(const ScrDyn *d, const ScrStr *enc) {
      * ToString(params) answers `a=1&b=2` as it does in Node. */
     if (d->v.handle.tag == SCR_DYNH_REGEXP || d->v.handle.tag == SCR_DYNH_URL || d->v.handle.tag == SCR_DYNH_DATE ||
         d->v.handle.tag == SCR_DYNH_MIME_TYPE || d->v.handle.tag == SCR_DYNH_MIME_PARAMS ||
-        d->v.handle.tag == SCR_DYNH_SEARCH_PARAMS) {
+        d->v.handle.tag == SCR_DYNH_SEARCH_PARAMS || d->v.handle.tag == SCR_DYNH_X509_CERT) {
       ScrDyn *text = scr_dyn_handle_ops_of(d)->invoke(d->v.handle.ptr, (ScrDyn *)d, "toString", NULL, 0, "RegExp.toString");
       if (!text) return NULL;
       /* ToPrimitive takes the member's answer as the primitive and ToString

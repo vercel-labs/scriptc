@@ -199,7 +199,12 @@ export {
   lowerPrefixUnary,
 } from "./expressions/updates.js";
 import { lowerDeleteExpression } from "./primitive-throws.js";
-import { awaitDynThenable, awaitTypedThenable, programMayDefineThenables } from "./thenables.js";
+import {
+  awaitDynThenable,
+  awaitTypedThenable,
+  programMayDefineThenables,
+  thenableParts,
+} from "./thenables.js";
 import { awaitsChildThenable } from "./handle-properties.js";
 export { lowerInstanceOf } from "./expressions/relational.js";
 
@@ -646,6 +651,34 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     const element = assertedElementOperand(lowerer, expr, loc);
     if (element) return element;
     const inner = lowerer.lowerExpr(expr.expression);
+    // `record[key]!` on a checked-dynamic dictionary: `!` performs no check,
+    // so the read keeps its runtime value (undefined for a missing key) and
+    // the consumer decides what it observes. A numeric use coerces with
+    // ToNumber (one inline unbox for a present number; NaN for a missing
+    // key, exactly what `undefined + n` computes), while a value or string
+    // use sees the undefined itself (String(x) is "undefined"). This is the
+    // fast path the scalar-union extraction replaced.
+    if (inner.type.kind === "dyn" && assertedDictionaryRead(lowerer, expr.expression)) {
+      const asserted = lowerer.mapTypeOf(lowerer.typeOf(expr));
+      if (assertedDictionaryReadUse(lowerer, expr) === "raw") {
+        // A value or string use observes the runtime value, so the read
+        // keeps the index value's own arms and the undefined arm: typeof
+        // answers "undefined", String() and templates print it, JSON omits
+        // an object member, and a typed argument receives the absence as
+        // the record's own missing-key read does. The armed value only
+        // serves non-hot uses.
+        const declared = assertedDictionaryReadType(lowerer, expr.expression);
+        const armed = declared === null ? null : lowerer.withUndefinedArmOf(declared);
+        return armed !== null ? lowerer.coerceToExpected(inner, armed) : inner;
+      }
+      if (asserted !== null && numericAssertionType(lowerer, asserted))
+        // ToNumber with the missing key answered as NaN on the inline fast
+        // path (js.toNumberOrNaN), so the read stays unboxed: a present
+        // number unboxes in place, `undefined` is NaN and `null` is 0,
+        // exactly what the arithmetic computes.
+        return { kind: "libCall", fn: "dyn.toNumberOrNaN", args: [inner], type: F64, loc };
+      return inner;
+    }
     if (inner.type.kind === "union") {
       // `!` performs no runtime check: a missing array element stays
       // undefined where its destination can hold it.
@@ -1002,6 +1035,16 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
         const adopted = awaitTypedThenable(lowerer, expr, value, loc);
         if (adopted !== null) return adopted;
       }
+      // A thenable this lowering cannot carry into checked-dynamic form (a
+      // union with a thenable arm, a value whose type has no dynamic
+      // representation) would otherwise take the non-thenable hop below
+      // and never call its `then`: refuse by name instead.
+      if (thenableParts(lowerer, lowerer.typeOf(expr.expression), expr.expression).length > 0)
+        lowerer.unsupported(
+          "SC1090",
+          expr,
+          "awaiting a thenable whose value has no checked-dynamic form (the await would not call its 'then')",
+        );
       // A TYPED non-promise operand (`await 42`, an awaited record):
       // JS awaits non-thenables through exactly one microtask turn and
       // yields the value itself — evaluate the operand, hop, answer it.
@@ -1902,6 +1945,80 @@ function scalarUnion(lowerer: Lowerer, unionId: string): boolean {
  * value to a string (a template span, `+` with a string), "value" where the
  * consumer lowers the union itself (equality, truthiness, a comparison with
  * a string), null for other uses. */
+/** Whether the asserted type of a dictionary read is a number, or a union of
+ * a number with null and undefined: ToNumber has a value for every arm
+ * (undefined and null both convert), so a numeric use can lower inline. */
+function numericAssertionType(lowerer: Lowerer, type: IrType): boolean {
+  if (type.kind === "f64") return true;
+  if (type.kind !== "union") return false;
+  return (lowerer.unions.get(type.unionId)?.arms ?? []).every(
+    (arm) => arm.kind === "f64" || isUnitType(arm),
+  );
+}
+
+/** Whether `node` reads a checked-dynamic dictionary through its string
+ * index signature (the read #4192 arms with an undefined arm), so a
+ * surrounding non-null assertion keeps the runtime value for the consumer. */
+function assertedDictionaryRead(lowerer: Lowerer, node: ts.Expression): boolean {
+  return assertedDictionaryReadType(lowerer, node) !== null;
+}
+
+/** The declared index-signature value type of a dictionary read, or null
+ * when `node` is not one. The runtime value may be absent (undefined) or the
+ * index value's own null arm whatever the assertion claims. */
+function assertedDictionaryReadType(lowerer: Lowerer, node: ts.Expression): IrType | null {
+  let read = node;
+  while (ts.isParenthesizedExpression(read)) read = read.expression;
+  if (!ts.isElementAccessExpression(read) && !ts.isPropertyAccessExpression(read)) return null;
+  return lowerer.dynIndexSignatureValueRead(read);
+}
+
+/** How the consumer of a non-null asserted checked-dynamic dictionary read
+ * observes it: "raw" keeps the runtime value (a missing key is undefined, so
+ * String(x) is "undefined" and JSON.stringify answers undefined), "number"
+ * coerces it with ToNumber (a missing key is NaN, a present number unboxes
+ * in place). */
+function assertedDictionaryReadUse(lowerer: Lowerer, expr: ts.NonNullExpression): "raw" | "number" {
+  const use = convertingUseOf(lowerer, expr);
+  if (use === "string" || use === "value") return "raw";
+  let outer: ts.Expression = expr;
+  while (ts.isParenthesizedExpression(outer.parent)) outer = outer.parent;
+  const parent = outer.parent;
+  // An object literal property holds the value itself: a missing read keeps
+  // its undefined arm, so the record field widens and JSON drops it (or
+  // typeof answers "undefined"), as Node does.
+  if (ts.isPropertyAssignment(parent) && parent.initializer === outer) return "raw";
+  if (ts.isShorthandPropertyAssignment(parent)) return "raw";
+  if (ts.isCallExpression(parent) && parent.arguments.nodes.includes(outer)) {
+    const callee = parent.expression;
+    if (
+      ts.isIdentifier(callee) &&
+      callee.text === "String" &&
+      lowerer.isStdlibGlobal(callee, "String")
+    )
+      return "raw";
+    if (
+      ts.isPropertyAccessExpression(callee) &&
+      callee.name.text === "stringify" &&
+      lowerer.isStdlibGlobal(callee.expression, "JSON")
+    )
+      return "raw";
+    // The Number statics never coerce: Number.isNaN(undefined) is false, and
+    // a NaN from ToNumber would answer true.
+    if (
+      ts.isPropertyAccessExpression(callee) &&
+      lowerer.isStdlibGlobal(callee.expression, "Number")
+    )
+      return "raw";
+    // A parameter typed unknown or any receives the value itself: a typeof
+    // test through such a call must observe the undefined, not a number.
+    const contextual = lowerer.checker.getContextualType(outer);
+    if (contextual && (contextual.flags & (ts.TypeFlags.Unknown | ts.TypeFlags.Any)) !== 0)
+      return "raw";
+  }
+  return "number";
+}
+
 function convertingUseOf(
   lowerer: Lowerer,
   expr: ts.NonNullExpression,
@@ -3198,6 +3315,7 @@ const NODE_CONSTRUCTOR_GLOBALS: ReadonlySet<string> = new Set([
   "TransformStream",
   "URL",
   "URLSearchParams",
+  "WebSocket",
   "WritableStream",
 ]);
 

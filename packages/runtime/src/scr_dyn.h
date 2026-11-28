@@ -121,9 +121,10 @@ typedef enum {
  * always-linked storage or code: a program that never boxes the new handle
  * links byte-identical objects. Raising the capacity is a program-wide
  * layout change; do it in a change of its own, measured as neutral, and
- * only when the tags outgrow it. The compression streams' two tags took the
- * list past 128 to this 160. The tables are thread-local pointer rows, so the
- * capacity changes no per-value representation. */
+ * only when the tags outgrow it. 160: the tags added since the last pin (the
+ * WebSocket client's and the compression streams' among them) took the list
+ * past 128. The tables are thread-local pointer rows, so the capacity
+ * changes no per-value representation. */
 #define SCR_DYNH_CAPACITY 160
 
 /* The handle-type tags the checked-dynamic tree can carry. The set is deliberately the
@@ -274,6 +275,7 @@ typedef enum {
   Y(ELD_HISTOGRAM) /* monitorEventLoopDelay IntervalHistogram (scr_perf_loop.c) */ \
   Y(HISTOGRAM) /* createHistogram RecordableHistogram (scr_perf_loop.c) */ \
   Y(INTL_DATE_TIME_FORMAT) /* Intl.DateTimeFormat (scr_intl.c) */ \
+  Y(INTL_LIST_FORMAT) /* Intl.ListFormat (scr_intl.c) */ \
   Y(INTL_NUMBER_FORMAT) /* Intl.NumberFormat (scr_intl.c) */ \
   Y(MAC) /* crypto.createMac's Mac (scr_lib.c) */ \
   Y(NET_BOUND_SOCKET) /* net.BoundSocket (scr_net.c) */ \
@@ -289,7 +291,9 @@ typedef enum {
   Y(SQLITE_STATEMENT) /* node:sqlite StatementSync (scr_sqlite.c) */ \
   Y(SQLITE_TAG_STORE) /* node:sqlite SQLTagStore (scr_sqlite.c) */ \
   Y(TRACING) /* trace_events.Tracing (scr_async_dyn.c) */ \
+  Y(UTF8_STREAM) /* fs.Utf8Stream (scr_fs_utf8_stream.c) */ \
   Y(WEAK_REF) /* WeakRef (scr_json.c) */ \
+  Y(WEBSOCKET) /* the global WebSocket client (scr_websocket.c) */ \
   Y(WS_COMPRESSION) /* CompressionStream (scr_webstream_compress.c) */ \
   Y(WS_DECOMPRESSION) /* DecompressionStream (scr_webstream_compress.c) */
 
@@ -1077,6 +1081,12 @@ static inline const ScrDynTypedArrayOps *scr_dyn_typed_ref_array_ops(const ScrDy
 
 /* BORROWED member lookup on a SCR_DYN_OBJ; NULL when the key is absent. */
 ScrDyn *scr_dyn_obj_get(const ScrDyn *d, const char *key, size_t key_len);
+/* A member read for the iterator protocols (next/return): a property Get
+ * (accessors run once, as Node's does), a compiled generator's own method
+ * table first. +1, or NULL with the exception pending. */
+ScrDyn *scr_dyn_iterator_member(const ScrDyn *value, const char *key);
+/* V8's GetIterator TypeError for a value with no Symbol.iterator. Throws. */
+void scr_dyn_throw_not_iterable(const ScrDyn *value);
 /* Own-enumerable check on a SCR_DYN_OBJ. */
 bool scr_dyn_obj_enumerable(const ScrDyn *d, const char *key, size_t key_len);
 /* Stores own property `entry` of `source` on `target` with its attributes:
@@ -1378,6 +1388,10 @@ ScrDyn *scr_dyn_negate(const ScrDyn *value);
 /* Internal constructor consumes a retained symbol with its native operations. */
 ScrDyn *scr_dyn_symbol_ref(ScrSym *value, void (*release)(ScrSym *), ScrStr *(*render)(ScrSym *), ScrStr *(*description)(ScrSym *));
 ScrDyn *scr_dyn_new_str(ScrStr *s);
+/* Throws Node's DataCloneError for a value the clone cannot carry:
+ * "<rendered> could not be cloned." with the structured clone's rendering
+ * (defined in scr_json.c). */
+void scr_clone_value_error(const ScrDyn *v);
 ScrDyn *scr_dyn_new_arr(void);
 ScrDyn *scr_dyn_array_constructor(void);
 /* Gives a builtin constructor value (Object, Array, Error) its builtin
@@ -1502,6 +1516,9 @@ ScrDyn *scr_dyn_async_iterator_symbol_value(void);
 /* True when key is Symbol.asyncDispose (registered by the symbol unit when
  * the program names it); handle symbol_get ops outside that unit use it. */
 bool scr_dyn_is_async_dispose_symbol(const ScrDyn *key);
+/* Symbol.asyncDispose as the symbol unit installed it (borrowed), or NULL
+ * before the program names it. */
+ScrDyn *scr_dyn_async_dispose_symbol_value(void);
 /* Whether key is Symbol.dispose (registered by the symbol unit when the
  * program names it). */
 bool scr_dyn_is_dispose_symbol(const ScrDyn *key);
@@ -1661,6 +1678,10 @@ ScrDyn *scr_dyn_new_typed_ref_traced(
     const char *type_key, size_t type_key_len,
     ScrDyn *(*materialize)(void *),
     void (*commit)(void *, const ScrDyn *));
+/* Intern a type key built at run time (a stack buffer): the typed reference
+ * stores the returned pointer, which lives as long as the process. */
+const char *scr_dyn_type_key_intern(const char *key, size_t len);
+
 ScrDyn *scr_dyn_new_typed_ref_observed(
     void *ptr, void *(*retain)(void *), void (*release)(void *),
     const char *type_key, size_t type_key_len,
@@ -2248,6 +2269,12 @@ ScrStr *scr_dyn_proxy_to_string(const ScrDyn *proxy);
  * enc — utf8 default; strings/numbers/booleans/arrays/objects answer
  * JS-exactly; undefined/null throw the catchable TypeError). Borrows; +1. */
 ScrStr *scr_dyn_to_string(const ScrDyn *d, const ScrStr *enc);
+/** V8's side-effect-free string of a value, the text Node quotes in an
+ * unhandled-rejection message and in Intl.ListFormat's element TypeError:
+ * primitives as String() answers, an array as [object Array], an object with
+ * its own toString as [object Object], any other object as #<Constructor>,
+ * and the builtins V8 never exposes as a toString tag as #<Name>. +1. */
+ScrStr *scr_dyn_side_effect_free_string(const ScrDyn *value);
 /* The method-call spelling `d.toString(enc?)`: identical, except a
  * null-prototype dictionary throws "<what> is not a function" — its
  * prototype chain has no toString (Node's answer). */

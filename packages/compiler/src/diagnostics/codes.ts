@@ -119,6 +119,7 @@ export const DIAGNOSTIC_CODES = {
   SC6013: "divergence: member written on a promise",
   SC6014: "divergence: key order of a record type not followed per object",
   SC6015: "divergence: statement that throws when it runs",
+  SC6016: "divergence: assertion through unknown between layouts that cannot match",
   SC6101: "performance: likely-hot function with untyped values",
   SC6102: "performance: declaration-typed boundary note",
   SC6103: "performance: shape inference overlay report",

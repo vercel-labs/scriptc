@@ -1,10 +1,10 @@
 // A member read through a constant holding the value: the alias is the same
-// constructor, so the class's own static member refuses there too (SC2020,
-// host-global), where Node answers WebSocket.OPEN.
-declare var WebSocket: {
-  new (url: string): unknown;
+// constructor, so the member refuses there too (SC2020, host-global), where
+// Node answers it.
+declare var FormData: {
+  new (): unknown;
   readonly prototype: object;
   readonly OPEN: number;
 };
-const Socket = WebSocket;
-console.log(Socket.OPEN);
+const Form = FormData;
+console.log(Form.OPEN);

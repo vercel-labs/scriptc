@@ -450,6 +450,7 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.stdioWritable",
   "stream.unboxDyn",
   "stream.dynIterableSource",
+  "stream.dynHandsValue",
   "stream.dynSourceValue",
   "stream.dynTransformResult",
   "stream.duplexBodyValue",
@@ -751,6 +752,26 @@ export function isDynUndefined(e: IrExpr): boolean {
 
 /** With `nodes` (the module's node index), the scan reads the recorded
  * expressions and types instead of walking the module. */
+/** Whether the module reads the well-known symbol `name`. A checked-dynamic
+ * stream's [Symbol.asyncDispose]() reaches the runtime's disposal path
+ * through that read, and the path boxes the promise it answers through the
+ * checked-dynamic promise unit, so the unit has to be linked for a program
+ * whose only async use is the disposal call. */
+function readsWellKnownSymbol(mod: IrModule, name: string): boolean {
+  let found = false;
+  everyModuleNode(mod, {
+    expr: (expr) => {
+      if (expr.kind !== "libCall" || expr.fn !== "sym.wellKnown") return true;
+      const arg = expr.args[0];
+      if (arg !== undefined && arg.kind === "strLit" && arg.value === name) found = true;
+      return !found;
+    },
+    stmt: () => !found,
+    type: () => !found,
+  });
+  return found;
+}
+
 export function moduleRuntimeFeatures(mod: IrModule, nodes?: IrNodeIndex): RuntimeFeatures {
   return scanRuntimeFeatures(mod, undefined, nodes);
 }
@@ -1990,6 +2011,7 @@ const RUNTIME_FEATURE_RULES = {
   dynAsync: rule({
     initial: (mod) =>
       mod.workers === true ||
+      readsWellKnownSymbol(mod, "asyncDispose") ||
       mod.functions.some(
         (fn) => fn.async === true && fn.generator === undefined && fn.returnType.kind === "dyn",
       ),
@@ -2411,7 +2433,17 @@ const RUNTIME_FEATURE_RULES = {
     // A runtime key can name signal, so every dynamic member read selects
     // the unit the handle's dispatch needs.
     expr: (node) =>
-      node.kind === "dynKeyGet" && (node.key.kind !== "strLit" || node.key.value === "signal"),
+      (node.kind === "dynKeyGet" && (node.key.kind !== "strLit" || node.key.value === "signal")) ||
+      // Readable.from(iterable, options): its `signal` option adds the abort
+      // listener through this unit. A literal options value is read here; an
+      // opaque one may carry the member, so it selects the unit too.
+      (node.kind === "libCall" &&
+        node.fn === "readable.fromDyn" &&
+        node.args[1] !== undefined &&
+        (node.args[1]!.kind !== "dynObjLit" ||
+          (node.args[1]!.fields ?? []).some(
+            (f) => f.key.kind === "strLit" && f.key.value === "signal",
+          ))),
   }),
   /** IncomingMessage.signal: the message's abort signal is an
    * AbortController, so a program that reads it links the signal unit
@@ -2436,6 +2468,8 @@ const RUNTIME_FEATURE_RULES = {
    * program does not resolve to a typed tuple (scr_events_once_signal.c). */
   eventsOnceSignal: rule({ fns: ["events.onceSignal", "events.onceAny"] }),
   fetch: rule({ prefixes: ["fetch."] }),
+  /** The WebSocket client (the global WebSocket class): scr_websocket.c. */
+  webSocket: rule({ fns: ["websocket.new", "websocket.is"] }),
   fileHandle: rule({ types: ["fileHandle"] }),
   /** filehandle.readableWebStream (scr_fs_web_stream.c): the handle's
    * content as a byte-oriented web stream, its own gated unit. */
@@ -2444,6 +2478,8 @@ const RUNTIME_FEATURE_RULES = {
    * reads the file on demand through the file handle unit. */
   fsOpenAsBlob: rule({ fns: ["fs.openAsBlob"] }),
   fsWatch: rule({ prefixes: ["fs.watch", "watcher."], types: ["fsWatcher"] }),
+  /** fs.Utf8Stream: Node's buffered file writer (scr_fs_utf8_stream.c). */
+  fsUtf8Stream: rule({ fns: ["fs.utf8StreamNew"] }),
   /** fs.watchFile / fs.unwatchFile (scr_watch_file.c): the stat-polling
    * half of the watching surface, gated on its own unit. */
   fsWatchFile: rule({
@@ -2994,6 +3030,11 @@ const RUNTIME_FEATURE_RULES = {
       "net.serverListeners",
       "http.serverOff",
       "http.serverListeners",
+      "http.reqOff",
+      "http.resOff",
+      "http.reqUnpipeRes",
+      "http.reqUnpipeClient",
+      "http.reqUnpipeSock",
       "process.prependExit",
       "process.prependSignal",
       "process.prependUncaughtException",
@@ -3022,6 +3063,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
   return {
     assert: false,
     asyncContext: false,
+    webSocket: false,
     asyncHooks: false,
     bigint: false,
     bigstats: false,
@@ -3067,6 +3109,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     moduleClass: false,
     fsBytesWrites: false,
     fsWatch: false,
+    fsUtf8Stream: false,
     fsWatchFile: false,
     fsWatchEvents: false,
     genBind: false,

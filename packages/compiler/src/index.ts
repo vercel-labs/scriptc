@@ -197,7 +197,7 @@ import {
 import { type IrModule, type SrcLoc } from "./ir/ir.js";
 import { jsObjectModelFact, moduleRuntimeFeatures } from "./ir/runtime-features.js";
 import { serializeModuleParts } from "./ir/serialize.js";
-import { readTextParts, writeTextParts } from "./text-parts.js";
+import { readTextParts, type TextPart, writeTextParts } from "./text-parts.js";
 import { validateModule } from "./ir/validate.js";
 import { compilerOwnedFileRoots } from "./frontend/dts-paths.js";
 import { loadProgramWithServices } from "./frontend/program-node.js";
@@ -928,6 +928,7 @@ async function compileExecutableNative(
     ...(features.largePages ? { largePages: true } : {}),
     ...(features.webStreams ? { webStreams: true } : {}),
     ...(features.fsWebStream ? { fsWebStream: true } : {}),
+    ...(features.fsUtf8Stream ? { fsUtf8Stream: true } : {}),
     // The C-source link (a sanitized build) compiles the runtime itself, so it
     // needs the same Blob/File body define the runtime pack selects.
     ...(features.webBodies ? { webBodies: true } : {}),
@@ -985,6 +986,7 @@ async function compileExecutableNative(
     x509: features.x509,
     webcrypto: features.webcrypto,
     perfLoop: features.perfLoop,
+    ...(features.webSocket ? { webSocket: true } : {}),
     ...(onArtifactReady === undefined ? {} : { onArtifactReady }),
     ...(ffi === null
       ? {}
@@ -1357,7 +1359,7 @@ async function prepareExecutableInput(
   }
 
   if (outputKind === "llvm" || outputKind === "asm" || outputKind === "obj") {
-    let llvm: string | readonly string[];
+    let llvm: string | readonly TextPart[];
     try {
       llvm = emitLlvmModuleSource(mod, {
         targetTriple: process.env["SCRIPTC_TARGET"] ?? "",

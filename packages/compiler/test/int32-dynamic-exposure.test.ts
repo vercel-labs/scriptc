@@ -112,6 +112,45 @@ job.tags.push("u");
 console.log(total, values, same.tags.join(","), job.name);
 `;
 
+// TextEncoder.encode over a checked-dynamic input converts it with
+// text.encodeInput (undefined is "", otherwise ToString). The helper stores
+// no property, so a program that encodes a dynamic value keeps the int32
+// fields of classes that reach dynamic code: without its read-only entry the
+// analysis treats the call as a dynamic store that can name any field, and
+// every exposed class's number fields become doubles (tsc-ts's
+// check-int32-fields gate).
+const encoding = `
+class Node {
+  kind: number;
+  constructor(kind: number) {
+    this.kind = kind;
+  }
+}
+
+const values: unknown[] = [new Node(1), new Node(2)];
+let total = 0;
+for (const value of values) if (value instanceof Node) total += value.kind;
+const raw: unknown = JSON.parse(process.argv[2] ?? '{"label":"x"}');
+const input: any = raw;
+console.log(total, values, new TextEncoder().encode(input).length);
+`;
+
+test("a dynamic TextEncoder input keeps int32 fields", async () => {
+  const mod = await lowered(encoding);
+  const storing = mod.functions
+    .filter((fn) => dynamicFieldStores({ ...mod, functions: [fn] }).all)
+    .map((fn) => fn.name);
+  expect(storing).toEqual([]);
+  expect(
+    mod.functions.some((fn) => JSON.stringify(fn.body).includes('"fn":"text.encodeInput"')),
+  ).toBe(true);
+  const slots = analyzeInt32Slots(mod);
+  const cls = mod.classes!.find(
+    (c) => (c.jsName ?? c.name) === "Node" || c.name.endsWith(".Node"),
+  )!;
+  expect(slots.isField(cls.name, "kind")).toBe(true);
+});
+
 test("adopting checked casts keep int32 fields of dynamically reached classes", async () => {
   const mod = await lowered(adopting);
   const adopts = mod.functions.filter((fn) =>

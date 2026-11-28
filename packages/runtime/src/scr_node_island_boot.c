@@ -47,10 +47,17 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(_WIN32)
+#include <windows.h>
+#include <io.h>
+#define ni_isatty(fd) _isatty(fd)
+#else
 #include <sys/stat.h>
 #include <unistd.h>
+#define ni_isatty(fd) isatty(fd)
+#endif
 
-#if !defined(_WIN32) && !defined(__wasi__)
+#if !defined(__wasi__)
 
 SCR_COLD static void nb_oom(void) { scr_trap("scriptc: out of memory\n"); }
 
@@ -187,6 +194,55 @@ typedef struct {
 static NbGuardMemo *nb_memo = NULL;
 static size_t nb_nmemo = 0, nb_memo_cap = 0;
 
+/* Sets (or, with `value` NULL, removes) an environment variable for the
+ * module's evaluation: the C runtime's copy, which scr_getenv reads, and
+ * the process's own block, which Node reads through libuv. */
+static void nb_env_set(const char *key, const char *value) {
+#if defined(_WIN32)
+  (void)_putenv_s(key, value != NULL ? value : "");
+  int key_len = MultiByteToWideChar(CP_UTF8, 0, key, -1, NULL, 0);
+  int value_len = value != NULL ? MultiByteToWideChar(CP_UTF8, 0, value, -1, NULL, 0) : 0;
+  if (key_len <= 0 || (value != NULL && value_len <= 0)) return; /* not UTF-8: leave it */
+  wchar_t *wide_key = malloc((size_t)key_len * sizeof *wide_key);
+  wchar_t *wide_value = value_len > 0 ? malloc((size_t)value_len * sizeof *wide_value) : NULL;
+  if (wide_key == NULL || (value != NULL && wide_value == NULL)) nb_oom();
+  MultiByteToWideChar(CP_UTF8, 0, key, -1, wide_key, key_len);
+  if (value != NULL) MultiByteToWideChar(CP_UTF8, 0, value, -1, wide_value, value_len);
+  SetEnvironmentVariableW(wide_key, value != NULL ? wide_value : NULL);
+  free(wide_key);
+  free(wide_value);
+#else
+  if (value != NULL) setenv(key, value, 1);
+  else unsetenv(key);
+#endif
+}
+
+#if defined(_WIN32)
+/* A file's size and last-write time without opening it, as Node's
+ * statSync reports them: nanoseconds since the Unix epoch at the file
+ * system's 100 ns resolution. */
+static bool nb_win_guard(const char *path, uint64_t size, uint64_t mtime_ns) {
+  int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, NULL, 0);
+  if (length <= 0) return false;
+  wchar_t *wide = malloc((size_t)length * sizeof *wide);
+  if (wide == NULL) nb_oom();
+  if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wide, length) <= 0) {
+    free(wide);
+    return false;
+  }
+  WIN32_FILE_ATTRIBUTE_DATA data;
+  bool ok = GetFileAttributesExW(wide, GetFileExInfoStandard, &data) != 0;
+  free(wide);
+  if (!ok) return false;
+  uint64_t file_size = ((uint64_t)data.nFileSizeHigh << 32) | data.nFileSizeLow;
+  uint64_t ticks =
+      ((uint64_t)data.ftLastWriteTime.dwHighDateTime << 32) | data.ftLastWriteTime.dwLowDateTime;
+  /* 1601-01-01 in 100 ns ticks to 1970-01-01. */
+  uint64_t since_epoch = ticks > UINT64_C(116444736000000000) ? ticks - UINT64_C(116444736000000000) : 0;
+  return file_size == size && since_epoch * 100 == mtime_ns;
+}
+#endif
+
 /* Whether the file still has the recorded size and mtime. */
 static bool nb_guard(const char *path, size_t len, uint64_t size, uint64_t mtime_ns) {
   char full[4352];
@@ -196,8 +252,11 @@ static bool nb_guard(const char *path, size_t len, uint64_t size, uint64_t mtime
     snprintf(full, sizeof full, "%.*s", (int)len, path);
   for (size_t i = 0; i < nb_nmemo; i++)
     if (strcmp(nb_memo[i].path, full) == 0) return nb_memo[i].ok;
-  struct stat st;
   bool ok = false;
+#if defined(_WIN32)
+  ok = nb_win_guard(full, size, mtime_ns);
+#else
+  struct stat st;
   if (stat(full, &st) == 0) {
 #if defined(__APPLE__)
     uint64_t m = (uint64_t)st.st_mtimespec.tv_sec * 1000000000u + (uint64_t)st.st_mtimespec.tv_nsec;
@@ -206,6 +265,7 @@ static bool nb_guard(const char *path, size_t len, uint64_t size, uint64_t mtime
 #endif
     ok = (uint64_t)st.st_size == size && m == mtime_ns;
   }
+#endif
   if (!ok && nb_tracing()) fprintf(stderr, "[node-islands] boot guard failed: %s\n", full);
   if (nb_nmemo == nb_memo_cap) {
     size_t cap = nb_memo_cap ? nb_memo_cap * 2 : 16;
@@ -274,14 +334,13 @@ static void nb_env_swap(NbModule *m, NbSavedEnv *saved, bool restore) {
       saved[i].swapped = true;
       if (e->present) {
         char *v = nb_cstr(e->value, e->value_len);
-        setenv(key, v, 1);
+        nb_env_set(key, v);
         free(v);
       } else {
-        unsetenv(key);
+        nb_env_set(key, NULL);
       }
     } else {
-      if (saved[i].value != NULL) setenv(key, saved[i].value, 1);
-      else unsetenv(key);
+      nb_env_set(key, saved[i].value);
       free(saved[i].value);
     }
     free(key);
@@ -502,7 +561,7 @@ ScrDyn *scr_node_island_defer(ScrStr *path, ScrStr *snapshot) {
       int fd = (int)nb_uint(&c);
       bool was = nb_uint(&c) != 0;
       if (c.bad) break;
-      if ((isatty(fd) == 1) != was) {
+      if ((ni_isatty(fd) == 1) != was) {
         if (nb_tracing()) fprintf(stderr, "[node-islands] boot guard failed: isatty(%d)\n", fd);
         return nb_eager(path, "a boot guard failed");
       }
@@ -654,4 +713,4 @@ ScrDyn *scr_node_island_defer(ScrStr *path, ScrStr *snapshot) {
   return scr_ni_require(path);
 }
 
-#endif /* !_WIN32 && !__wasi__ */
+#endif /* !__wasi__ */

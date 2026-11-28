@@ -145,7 +145,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // fact arms it at the top of %main (arrayBuffer.armMutable); every other
   // program keeps the base units' hooks NULL and links no registry.
   ["scr_js_buffers.c", "mutableBuffers"],
-  ["scr_event_target.c", any("eventTarget", "nativeFetch", "abortSignal")],
+  ["scr_event_target.c", any("eventTarget", "nativeFetch", "abortSignal", "webSocket")],
+  // The WebSocket client (the global WebSocket class).
+  ["scr_websocket.c", "webSocket"],
   [
     "scr_async_dyn.c",
     any(
@@ -211,6 +213,7 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_webstreams.c", "webStreams"],
   ["scr_webstream_compress.c", all("webStreams", "zlib", "brotli")],
   ["scr_fs_web_stream.c", "fsWebStream"],
+  ["scr_fs_utf8_stream.c", "fsUtf8Stream"],
   // The class installs (scr_dyn_handle_class_install) that web streams and
   // the stub resolver's Resolver classes need.
   ["scr_dyn_handle_class.c", any("webStreams", "dnsResolve", "moduleClass")],

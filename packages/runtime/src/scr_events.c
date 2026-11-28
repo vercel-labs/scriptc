@@ -1074,6 +1074,13 @@ typedef struct {
   bool *resize_once;
   size_t nresizes;
   double columns, rows;
+  /* 'close' listeners: destroy() tears the stream down and fires them on a
+   * later tick (Node's stream teardown order), once per stream. Writes that
+   * follow still reach the descriptor, as in Node 24. */
+  ScrDyn **closes;
+  bool *close_once;
+  size_t ncloses;
+  bool destroyed;
 } ScrStdio;
 
 static SCR_TL ScrStdio scr_stdio_streams[3] = {{.fd = 0}, {.fd = 1}, {.fd = 2}};
@@ -1382,6 +1389,84 @@ static void scr_stdio_resize_listener(ScrStdio *stream, ScrDyn *listener, bool r
 #endif
 }
 
+/* 'close' on a process stream: Node's destroy() tears the stream down and
+ * emits 'close' on a later tick, after the synchronous code that called it.
+ * The listeners run once per stream, in registration order; a nullish
+ * stream (no listeners) still records the teardown. */
+static void scr_stdio_close_emit(ScrStdio *stream) {
+  size_t n = stream->ncloses;
+  if (n == 0) return;
+  ScrDyn **snap = malloc(n * sizeof *snap);
+  bool *once = malloc(n * sizeof *once);
+  if (!snap || !once) scr_events_oom();
+  for (size_t i = 0; i < n; i++) {
+    snap[i] = scr_dyn_retain(stream->closes[i]);
+    once[i] = stream->close_once[i];
+  }
+  for (size_t i = 0; i < n; i++) {
+    if (once[i]) {
+      /* A once-listener leaves after it runs; on-listeners stay, so a
+       * second destroy() emits again exactly as Node does. */
+      for (size_t j = 0; j < stream->ncloses; j++) {
+        /* The once flag matters: the same function may also be registered
+         * with on(), and that persistent registration must stay. */
+        if (stream->closes[j] == snap[i] && stream->close_once[j]) {
+          scr_dyn_release(stream->closes[j]);
+          memmove(stream->closes + j, stream->closes + j + 1, (stream->ncloses - j - 1) * sizeof *stream->closes);
+          memmove(stream->close_once + j, stream->close_once + j + 1, (stream->ncloses - j - 1) * sizeof *stream->close_once);
+          stream->ncloses--;
+          break;
+        }
+      }
+    }
+    if (!scr_exc_pending()) {
+      scr_dyn_this_push(stream, SCR_DYNH_STDIO);
+      ScrDyn *r = scr_dyn_call(snap[i], NULL, 0, "listener");
+      scr_dyn_this_pop();
+      scr_dyn_release(r);
+    }
+    scr_dyn_release(snap[i]);
+  }
+  free(snap);
+  free(once);
+}
+
+static void scr_stdio_close_tick(ScrClosure *cb) {
+  int fd = (int)scr_box_get_f64(cb->caps[0]);
+  if (fd >= 0 && fd < 3) scr_stdio_close_emit(&scr_stdio_streams[fd]);
+}
+
+static void scr_stdio_schedule_close(ScrStdio *stream) {
+  /* Every destroy() emits 'close' on a later tick, like Node: the listeners
+   * are read when the tick runs, so a registration that happens after
+   * destroy still sees the event, and a second destroy() emits again. */
+  stream->destroyed = true;
+  ScrClosure *cb = scr_closure_new((void *)scr_stdio_close_tick, 1);
+  cb->caps[0] = scr_box_new(SCR_BOX_F64);
+  scr_box_set_f64(cb->caps[0], (double)stream->fd);
+  scr_next_tick(cb);
+}
+
+static void scr_stdio_close_listener(ScrStdio *stream, ScrDyn *listener, bool remove, bool once) {
+  if (remove) {
+    for (size_t i = stream->ncloses; i > 0; i--) {
+      if (scr_dyn_strict_eq(stream->closes[i - 1], listener)) {
+        scr_dyn_release(stream->closes[i - 1]);
+        memmove(stream->closes + i - 1, stream->closes + i, (stream->ncloses - i) * sizeof *stream->closes);
+        memmove(stream->close_once + i - 1, stream->close_once + i, (stream->ncloses - i) * sizeof *stream->close_once);
+        stream->ncloses--;
+        break;
+      }
+    }
+    return;
+  }
+  stream->closes = realloc(stream->closes, (stream->ncloses + 1) * sizeof *stream->closes);
+  stream->close_once = realloc(stream->close_once, (stream->ncloses + 1) * sizeof *stream->close_once);
+  if (!stream->closes || !stream->close_once) scr_events_oom();
+  stream->closes[stream->ncloses] = scr_dyn_retain(listener);
+  stream->close_once[stream->ncloses++] = once;
+}
+
 /* The listener a readline terminal interface keeps on a process output:
  * a function value of the runtime's own, in the same list the program's
  * listeners use, so a resize fires them all in registration order. */
@@ -1525,12 +1610,16 @@ static ScrDyn *scr_stdio_method(ScrClosure *cb, ScrDyn *const *args, size_t argc
                     memcmp(event, "readable", 8) == 0;
     bool resize = stream->fd != 0 && arg->kind == SCR_DYN_STR && arg->v.str->len == 6 &&
                   memcmp(event, "resize", 6) == 0;
-    if ((!data && !end && !error && !readable && !resize) || (stream->fd != 0 && !error && !resize)) {
+    bool close = arg->kind == SCR_DYN_STR && arg->v.str->len == 5 && memcmp(event, "close", 5) == 0;
+    if ((!data && !end && !error && !readable && !resize && !close) ||
+        (stream->fd != 0 && !error && !resize && !close)) {
       result = scr_stdio_refusal("event");
       goto done;
     }
     bool remove = method == STDIO_OFF, once = method == STDIO_ONCE;
-    if (resize) {
+    if (close) {
+      scr_stdio_close_listener(stream, listener, remove, once);
+    } else if (resize) {
       scr_stdio_resize_listener(stream, listener, remove, once);
     } else if (stream->fd == 0) {
       if (!remove) {
@@ -1595,8 +1684,11 @@ static ScrDyn *scr_stdio_method(ScrClosure *cb, ScrDyn *const *args, size_t argc
       scr_str_release(enc);
       result = scr_dyn_retain(self);
     }
-  } else if (stream->fd == 0 && method == STDIO_DESTROY && argc == 0) {
-    scr_stdin_destroy();
+  } else if (method == STDIO_DESTROY && argc == 0) {
+    /* Node's destroy() on stdout/stderr tears the stream down and emits
+     * 'close' later; writes that follow still reach the descriptor. */
+    if (stream->fd == 0) scr_stdin_destroy();
+    scr_stdio_schedule_close(stream);
     result = scr_dyn_retain(self);
   } else result = scr_stdio_refusal(scr_stdio_names[method]);
 done:
@@ -1617,7 +1709,10 @@ static ScrDyn *scr_stdio_get(void *ptr, const char *key, size_t length) {
     return scr_dyn_new_num(scr_stdin_readable_length());
   if (stream->fd == 0 && length == 5 && memcmp(key, "isRaw", 5) == 0)
     return scr_process_is_tty(0) ? scr_dyn_new_bool(scr_process_stdin_raw()) : scr_dyn_retain(scr_dyn_undefined());
-  if (stream->fd == 0 && length == 9 && memcmp(key, "destroyed", 9) == 0) return scr_dyn_new_bool(scr_stdin_destroyed);
+  /* Node's special stdout/stderr streams answer destroyed=false even after
+   * destroy() (the stdin socket flips its own flag). */
+  if (length == 9 && memcmp(key, "destroyed", 9) == 0)
+    return scr_dyn_new_bool(stream->fd == 0 && scr_stdin_destroyed);
   if (length == 3 && memcmp(key, "off", 3) == 0) return scr_dyn_retain(scr_stdio_methods[STDIO_OFF]);
   if (length == 11 && memcmp(key, "addListener", 11) == 0) return scr_dyn_retain(scr_stdio_methods[STDIO_ON]);
   for (int i = 0; i < STDIO_METHOD_COUNT; i++) {
@@ -1625,7 +1720,11 @@ static ScrDyn *scr_stdio_get(void *ptr, const char *key, size_t length) {
     if (i == STDIO_WINDOW_SIZE) return stream->fd != 0 && scr_process_is_tty(stream->fd) ? scr_dyn_retain(scr_stdio_methods[i]) : NULL;
     if (i == STDIO_WRITE) return stream->fd == 0 ? NULL : scr_dyn_retain(stream->write ? stream->write : scr_stdio_methods[i]);
     if (i == STDIO_RAW && !scr_process_is_tty(stream->fd)) return NULL;
-    if (i >= STDIO_PAUSE && stream->fd != 0) return scr_stdio_refusal(scr_stdio_names[i]);
+    /* stdout/stderr serve destroy() too: Node's destroy tears the stream
+     * down and emits 'close' on a later tick (the write path is unchanged,
+     * as in Node 24). */
+    if (i >= STDIO_PAUSE && stream->fd != 0 && i != STDIO_DESTROY)
+      return scr_stdio_refusal(scr_stdio_names[i]);
     return scr_dyn_retain(scr_stdio_methods[i]);
   }
 #ifdef SCR_TTY_COLORS
@@ -1728,6 +1827,10 @@ static void scr_stdio_cleanup(void) {
     for (size_t j = 0; j < stream->nresizes; j++) scr_dyn_release(stream->resizes[j]);
     free(stream->resizes); free(stream->resize_once);
     stream->resizes = NULL; stream->resize_once = NULL; stream->nresizes = 0;
+    for (size_t j = 0; j < stream->ncloses; j++) scr_dyn_release(stream->closes[j]);
+    free(stream->closes); free(stream->close_once);
+    stream->closes = NULL; stream->close_once = NULL; stream->ncloses = 0;
+    stream->destroyed = false;
   }
   scr_dyn_release(scr_stdio_winch);
   scr_stdio_winch = NULL;

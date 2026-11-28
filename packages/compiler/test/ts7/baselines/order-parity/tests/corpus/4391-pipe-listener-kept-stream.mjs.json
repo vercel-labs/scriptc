@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/4391-pipe-listener-kept-stream.mjs"
+ ],
+ "diags": []
+}

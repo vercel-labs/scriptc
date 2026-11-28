@@ -32,4 +32,7 @@ export const moduleNeverThrow: readonly IrLibFn[] = [
   // neither throws, and allocation failure ends the process.
   "module.sourceMapsSupport",
   "module.findSourceMap",
+  // scr_module_cache_object builds the one cache object and the Module views
+  // in it; no program code runs, and running out of memory ends the process.
+  "module.cacheObject",
 ];

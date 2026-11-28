@@ -50,6 +50,7 @@ export const streamSignatures = defineLibFnSignatures({
    * stream with pipe() and on(), a { readable, writable } pair, or a
    * source function's result) instead of piping it as a stream. */
   "stream.dynIterableSource": { argTypes: [DYN], result: BOOL },
+  "stream.dynHandsValue": { argTypes: [DYN], result: BOOL },
   /** The value pipeline() pumps for a checked-dynamic first stage: a
    * source function's result (the flag set), which must be iterable, else
    * a { readable, writable } pair's readable side or the value itself. */

@@ -191,6 +191,7 @@ const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
   "stream.isDyn",
   "stream.stateDyn",
   "stream.dynIterableSource",
+  "stream.dynHandsValue",
   "stream.dynSourceValue",
   "stream.unboxDynStage",
   "stream.dynTransformResult",
@@ -288,6 +289,10 @@ const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
   "fetch.responseError",
   "fetch.responseRedirect",
   "fetch.responseJsonStatic",
+  // Response.blob() is a body collector like the siblings above: a receiver
+  // that is not a fetch response throws "Illegal invocation" before its
+  // promise exists.
+  "fetch.responseBlob",
   "abort.timeout",
   "abort.any",
   "event.new",
@@ -349,6 +354,8 @@ const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
   // proxy trap may run) and raise ECMA-402's RangeError and TypeError;
   // format raises RangeError for a time value out of range.
   "icu.numberFormatNew",
+  "icu.listFormatNew",
+  "icu.listFormatFormat",
   "icu.numberFormatFormat",
   "icu.numberFormatFormatDyn",
 ];
@@ -480,6 +487,7 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "http.resOnWriteFlush",
   "http.resWriteProcessingCb",
   "http.resWriteEarlyHintsCb",
+  "http.resWriteInformationCb",
   "http.validateHeaderName",
   "http.validateHeaderValue",
   "http.setMaxIdleParsers",
@@ -590,6 +598,10 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   // setMaxSendFragment throws Node's ERR_OUT_OF_RANGE for NaN, an infinity
   // or a fraction.
   "tls.sockSetMaxFragment",
+  // setSession throws Node's ERR_INVALID_ARG_TYPE ("Session must be a
+  // buffer") for an argument that is neither a Buffer, a typed array nor a
+  // string.
+  "tls.sockSetSession",
   "net.sockWriteDyn",
   "net.sockEndDyn",
   // socket.write/end(data, encoding): Buffer.from's encoding ladder throws
@@ -937,6 +949,9 @@ const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   "perf.histoLinearView",
   "perf.histoLogView",
   "perf.histoPercentilesAtView",
+  // new WebSocket(url[, protocols]): Node's URL and protocol validation
+  // throw catchably (a SyntaxError for the URL, a TypeError for protocols).
+  "websocket.new",
   // Non-TTY stdin: Node's stdin has no setRawMode member, so the call is
   // the exact catchable TypeError.
   "process.stdinSetRawMode",
@@ -1539,6 +1554,7 @@ const MAY_THROW_LIB_FNS_PART_5: readonly IrLibFn[] = [
   "fs.readFileChk",
   "fs.opendirChk",
   "fs.watchFileChk",
+  "fs.utf8StreamNew",
   "fs.lchmodChk",
   "fs.lchmodSyncChk",
   "fsp.lchmodChk",
@@ -1673,6 +1689,11 @@ const MAY_THROW_LIB_FNS_PART_5: readonly IrLibFn[] = [
   "http.serverOnDropRequest",
   "http2.serverOnStream",
   "http2.serverOnSession",
+  /* goaway() on a destroyed session throws Node's invalid-session error. */
+  "http2.sessionGoaway",
+  "http2.sessionGoawayData",
+  "http2.serverOnTimeout",
+  "http2.serverSetTimeoutCb",
   "http2.serverOnSessionError",
   "tls.serverOnClientError",
   // resetAndDestroy on a TLS socket throws ERR_INVALID_HANDLE_TYPE.

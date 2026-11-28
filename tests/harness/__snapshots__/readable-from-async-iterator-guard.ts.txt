@@ -1,0 +1,17 @@
+readable-from-async-iterator-guard.ts:23:33 - error SC2020: 'Readable.from over a stream whose subclasses override Symbol.asyncIterator' is part of the standard library types but has no scriptc lowering yet
+
+  22 | function firstData(Ctor: typeof Readable): void {
+  23 |   const wrapper = Readable.from(new Ctor());
+     |                                 ^~~~~~~~~~
+  24 |   wrapper.on('data', () => {});
+
+  hint: the iterator is chosen by the value's class at run time; give the source a type that declares its own Symbol.asyncIterator, or iterate the stream directly
+
+readable-from-async-iterator-guard.ts:42:15 - error SC2020: 'Readable.from over a 'Accessor' source' is part of the standard library types but has no scriptc lowering yet
+
+  41 | }
+  42 | Readable.from(new Accessor());
+     |               ^~~~~~~~~~~~~~
+  43 | 
+
+  hint: the supported sources are a string or Buffer, and arrays, Sets, Maps, generators and class iterables of values that convert to checked-dynamic values

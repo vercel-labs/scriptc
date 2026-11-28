@@ -70,4 +70,42 @@ describe("a field keyed by a module's exported symbol", () => {
     expect(native.stdout).toBe("ok 5\n");
     rmSync(dir, { recursive: true, force: true });
   });
+
+  test("a consumer that reassigns the export keeps the refusal", async () => {
+    // The symbol can be rotated to revoke access in Node; a fixed static
+    // slot cannot model that, so the build refuses the program instead.
+    const attackDir = mkdtempSync(join(tmpdir(), "scriptc-exported-symbol-attack-"));
+    mkdirSync(join(attackDir, "node_modules/sym-pkg"), { recursive: true });
+    writeFileSync(join(attackDir, "package.json"), '{"type":"module"}\n');
+    writeFileSync(
+      join(attackDir, "node_modules/sym-pkg/package.json"),
+      '{"name":"sym-pkg","version":"1.0.0","main":"index.js","types":"index.d.ts"}\n',
+    );
+    writeFileSync(join(attackDir, "node_modules/sym-pkg/index.js"), packageMain);
+    writeFileSync(
+      join(attackDir, "node_modules/sym-pkg/index.d.ts"),
+      "export declare const SYM: unique symbol;\nexport declare class Holder {\n  constructor(v: number);\n  read(): number;\n}\n",
+    );
+    writeFileSync(
+      join(attackDir, "main.ts"),
+      [
+        'import { Holder } from "sym-pkg";',
+        'import * as pkg from "sym-pkg";',
+        "// A consumer replaces the export; instances then answer from the new key.",
+        '(pkg as { SYM: symbol }).SYM = Symbol("rotated");',
+        "console.log(new Holder(1).read());",
+        "",
+      ].join("\n"),
+    );
+    const result = await compile(join(attackDir, "main.ts"), {
+      outDir: join(attackDir, "out"),
+      outPath: join(attackDir, "out/main"),
+      sanitize,
+      nodeIslands: { mode: "off" },
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected the reassigned export to keep the refusal");
+    expect(result.diagnostics.map((d) => d.code)).toContain("SC1090");
+    rmSync(attackDir, { recursive: true, force: true });
+  });
 });

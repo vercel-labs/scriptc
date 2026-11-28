@@ -4294,6 +4294,12 @@ function voidCallResultReadDiags7(
   const discarded = (node: ts.Node): boolean => {
     const parent = node.parent;
     if (parent === undefined) return false;
+    // A parenthesized operand is judged where the parentheses are: `(f());`
+    // discards like `f();`.
+    if (ts.isParenthesizedExpression(parent)) return discarded(parent);
+    // A `for` head's initializer and incrementor run for their effects.
+    if (ts.isForStatement(parent) && (parent.initializer === node || parent.incrementor === node))
+      return true;
     if (ts.isExpressionStatement(parent) || ts.isVoidExpression(parent)) return true;
     // A binding's initializer is the held-call shape the truthiness rule
     // already judges (voidTruthinessHeldCall): the binding stores the value

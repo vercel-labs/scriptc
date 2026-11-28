@@ -9277,6 +9277,10 @@ export function lowerStreamSymbolIteratorCall(
   const info = lowerer.classes.get(classT.className);
   const sides = streamSidesOf(lowerer, info);
   if (sides !== "r" && sides !== "rw") return null;
+  // A program that writes Symbol.asyncIterator on an instance or prototype
+  // may hand the call a JS wrapper (an access-checking iterator): the
+  // compiled property read sees it, the stream's own iterator cannot.
+  if (lowerer.replacedSymbolMethods.has("sym:asyncIterator")) return null;
   // Node's member takes no arguments, and iterator(options) would read one
   // as its options: only the argument-less call has this lowering.
   if (call.arguments.nodes.length > 0) {

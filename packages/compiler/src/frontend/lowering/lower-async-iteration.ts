@@ -1398,6 +1398,36 @@ export function lowerForAwaitBuiltin(lowerer: Lowerer, stmt: ts.ForOfStatement):
   if (readline) return lowerReadlineLines(lowerer, stmt, readline);
   const node = nodeReadablePlan(lowerer, stmt.expression);
   if (node) {
+    // A program that wrote Symbol.asyncIterator on an instance or prototype
+    // may hand the loop a JS wrapper: the compiled value's checked protocol
+    // sees it, the stream's own chunk loop cannot.
+    if (lowerer.replacedSymbolMethods.has("sym:asyncIterator")) {
+      // Read the member the way the explicit call does — the compiled
+      // value's checked symbol property — and iterate what it answers: a
+      // wrapper installed on the instance replaces the stream's own member,
+      // which the native chunk loop would bypass.
+      const loc = locOf(stmt);
+      const receiver = lowerer.coerceToExpected(lowerer.lowerExpr(stmt.expression), DYN);
+      const symbol: IrExpr = {
+        kind: "libCall",
+        fn: "sym.wellKnown",
+        args: [{ kind: "strLit", value: "asyncIterator", type: STRING, loc }],
+        type: { kind: "symbol" },
+        loc,
+      };
+      const key = lowerer.coerceToExpected(symbol, DYN);
+      const callee: IrExpr = { kind: "dynKeyGet", value: receiver, key, type: DYN, loc };
+      const iterator: IrExpr = {
+        kind: "dynCall",
+        callee,
+        receiver,
+        calleeName: "value[Symbol.asyncIterator]",
+        args: [],
+        type: DYN,
+        loc,
+      };
+      return lowerForOfDyn(lowerer, stmt, iterator, undefined, true);
+    }
     const overrides = lowerNodeReadableOverrides(lowerer, stmt, node);
     if (overrides) return overrides;
     return lowerNodeReadable(lowerer, stmt, node);

@@ -147,7 +147,6 @@ export interface SemanticLibraryCacheHit {
 
 const BOOLEAN_NATIVE_KEYS = [
   "dynInvoke",
-  "hostAbsentGlobals",
   "regex",
   "assert",
   "inspect",

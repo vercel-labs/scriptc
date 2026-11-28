@@ -6,11 +6,8 @@ import { hostGlobalNameOfIdentifier } from "./host-globals.js";
 import { undeclaredGlobalTypeof } from "./global-object-names.js";
 import { erasedGlobalBindingOf, programMayWriteGlobalName } from "./global-object-writes.js";
 import { isUnresolvedCjsExports } from "./cjs-exports-object.js";
-import {
-  ambientTypesOnlyGlobalSymbolOf,
-  ambientUndefinedFnSymbolOf,
-  ambientUndefinedVarSymbolOf,
-} from "./lower-namespaces.js";
+import { ambientErasedValueSymbolOf, ambientTypesOnlyGlobalSymbolOf } from "./lower-namespaces.js";
+import { nodeGlobalKind } from "./node-values.js";
 
 /** The answer `typeof <operand>` gives without evaluating anything, for
  * the global-detection idioms (`typeof window < "u"`, `typeof global !==
@@ -52,15 +49,22 @@ export function staticTypeofAnswer(lowerer: Lowerer, operand: ts.Expression): st
   if (erasedGlobalBindingOf(lowerer, e) && programMayWriteGlobalName(lowerer, e.text, e))
     return null;
   // A name the program declares ambiently but nothing defines (`declare
-  // const Bun`): undeclared at run time.
-  if (
-    ambientUndefinedVarSymbolOf(lowerer, e) ||
-    ambientUndefinedFnSymbolOf(lowerer, e) ||
-    // A name the program installs on the global object answers at run time
-    // (typeof.ts reads it), so no static answer folds.
-    (ambientTypesOnlyGlobalSymbolOf(lowerer, e) && !programMayWriteGlobalName(lowerer, e.text, e))
-  )
-    return "undefined";
+  // const Bun`, `declare namespace`, `declare class`, `declare enum`):
+  // TypeScript erases it, so the reference is unresolvable at run time and
+  // typeof answers "undefined" — unless Node's global object defines the
+  // name, which the erased declaration leaves the identifier to
+  // (`declare class Buffer {}` still names Node's global Buffer). A name
+  // the program installs on the global object answers at run time
+  // (typeof.ts reads it), so no static answer folds.
+  if (ambientErasedValueSymbolOf(lowerer, e) || ambientTypesOnlyGlobalSymbolOf(lowerer, e)) {
+    if (programMayWriteGlobalName(lowerer, e.text, e)) return null;
+    const kind = nodeGlobalKind(e.text);
+    if (kind === null) return "undefined";
+    const answer = kind.kind === "function" ? "function" : kind.type;
+    // An accessor that throws or a platform-dependent value has no static
+    // answer; typeof.ts reads it at run time.
+    return answer === "throws" || answer === "platform" ? null : answer;
+  }
   return null;
 }
 

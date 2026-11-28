@@ -10633,15 +10633,17 @@ export class Lowerer {
    * reporting is on, delivers the warning (immediately, or on the next
    * tick like process.emitWarning). */
   private punycodeWarn(immediate: boolean, report: boolean, loc: SrcLoc): IrStmt {
+    // Only a deferred REPORT queues a tick, and so keeps the loop live for a
+    // program whose only other work is synchronous (USES_TIMERS_LIB_FNS). A
+    // require that latches the module without reporting does neither.
+    const deferredReport = !immediate && report;
+    const bool = (value: boolean): IrExpr => ({ kind: "boolLit", value, type: BOOL, loc });
     return {
       kind: "exprStmt",
       expr: {
         kind: "libCall",
-        fn: "punycode.warn",
-        args: [
-          { kind: "boolLit", value: immediate, type: BOOL, loc },
-          { kind: "boolLit", value: report, type: BOOL, loc },
-        ],
+        fn: deferredReport ? "punycode.warnDeferred" : "punycode.warn",
+        args: deferredReport ? [bool(true)] : [bool(immediate), bool(report)],
         type: VOID,
         loc,
       },

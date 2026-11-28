@@ -2677,6 +2677,12 @@ void scr_punycode_warn(bool immediate, bool report) {
   scr_str_release(message);
 }
 
+/* The deferred half alone: a require()'s report is queued on the next tick,
+ * so a program whose only other work is synchronous must still run the loop
+ * for it to be delivered (the compiler keeps the loop live from this entry
+ * point; imports report at link time and need none). */
+void scr_punycode_warn_deferred(bool report) { scr_punycode_warn(false, report); }
+
 
 static void scr_timer_this_fire(ScrClosure *self) {
   ScrClosure *cb = scr_box_get_ref(self->caps[0]);

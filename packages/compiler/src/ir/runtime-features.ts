@@ -153,6 +153,9 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.hasUncaughtCapture",
   "process.setUncaughtCapture",
   "punycode.warn",
+  // The require() form of the same report, which scr_async_dyn.c queues on
+  // the next tick.
+  "punycode.warnDeferred",
   // DEP0005 for the deprecated Buffer constructor.
   "buffer.deprecation",
   // DEP0094 for assert.fail's deprecated multi-argument form.

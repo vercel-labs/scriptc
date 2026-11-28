@@ -2089,8 +2089,12 @@ void scr_http_res_write_early_hints_cb(ScrHttpRes *r, ScrArr *pairs /*borrowed*/
   }
   bool wrote = scr_http_res_write_early_hints_head(r, link, pairs);
   scr_str_release(link);
+  /* the head writer's answer is backpressure, not failure: the callback
+   * belongs to the write and must fire once it completes, however much the
+   * socket already has buffered (Node fires it from afterWrite) */
+  (void)wrote;
   if (cb) {
-    if (wrote && !scr_exc_pending()) scr_http_res_on_write_flush(r, cb);
+    if (!scr_exc_pending()) scr_http_res_on_write_flush(r, cb);
     else scr_closure_release(cb);
   }
 }
@@ -2229,7 +2233,9 @@ bool scr_http_res_write_information_cb(ScrHttpRes *r, double status,
                                        ScrClosure *cb /*moves, nullable*/) {
   bool wrote = scr_http_res_write_information(r, status, pairs);
   if (cb) {
-    if (wrote && !scr_exc_pending()) scr_http_res_on_write_flush(r, cb);
+    /* backpressure is not failure: the callback fires once the write
+     * completes, as Node's afterWrite does */
+    if (!scr_exc_pending()) scr_http_res_on_write_flush(r, cb);
     else scr_closure_release(cb);
   }
   return wrote;

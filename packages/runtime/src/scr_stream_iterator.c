@@ -19,6 +19,11 @@ struct SdiCtx {
    * { value: undefined, done: true }, as Node's iterator does. */
   bool finished;
   bool destroy_on_return;
+  /* The most recent next() result still in flight (+1, or NULL): Node's
+   * async generator queues return() behind an outstanding next(), so a
+   * return() that arrives with a read pending destroys the source and
+   * resolves after that read settles. */
+  ScrPromise *pending;
 };
 
 static SdiCtx *sdi_ref(SdiCtx *c) {
@@ -28,6 +33,7 @@ static SdiCtx *sdi_ref(SdiCtx *c) {
 
 static void sdi_unref(SdiCtx *c) {
   if (--c->rc > 0) return;
+  if (c->pending) scr_promise_release(c->pending);
   if (c->s) scr_stream_release(c->s);
   free(c);
 }
@@ -44,13 +50,18 @@ static ScrClosure *sdi_closure(void *fn, SdiCtx *c) {
 
 static SdiCtx *sdi_of(ScrClosure *cl) { return scr_box_get_ref(cl->caps[0]); /* +1 */ }
 
-/* IteratorResult { value: undefined, done: true }, settled. */
-static ScrPromise *sdi_done_promise(void) {
-  ScrPromise *p = scr_promise_new();
+/* IteratorResult { value: undefined, done: true }, +1. */
+static ScrDyn *sdi_done_result(void) {
   ScrDyn *result = scr_dyn_new_obj();
   scr_dyn_obj_set(result, "value", 5, scr_dyn_retain(scr_dyn_undefined()));
   scr_dyn_obj_set(result, "done", 4, scr_dyn_new_bool(true));
-  scr_promise_fulfill_ref(p, result, scr_dyn_retain_v, scr_dyn_release_v, NULL);
+  return result;
+}
+
+/* The same result behind a settled promise (+1). */
+static ScrPromise *sdi_done_promise(void) {
+  ScrPromise *p = scr_promise_new();
+  scr_promise_fulfill_ref(p, sdi_done_result(), scr_dyn_retain_v, scr_dyn_release_v, NULL);
   return p;
 }
 
@@ -67,21 +78,79 @@ static ScrDyn *sdi_next(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
   SdiCtx *c = sdi_of(cl);
   ScrPromise *p = c->s && !c->finished ? scr_stream_next_result_dyn(c->s) : NULL;
   if (!p) p = sdi_done_promise();
+  if (c->pending) scr_promise_release(c->pending);
+  c->pending = scr_promise_retain(p);
   ScrDyn *out = sdi_promise_dyn(p);
   if (scr_exc_pending()) scr_exc_clear();
   sdi_unref(c);
   return out;
 }
 
+/* Whether the iteration's end must leave the source alive: the readable
+ * side ENDED and the source is a half-open duplex whose writable side is
+ * still open. Node's iterator finally re-decides this when return() runs
+ * (preserveHalfOpenDuplex in readable.js's createAsyncIterator), so a read
+ * still in flight when return() arrives is re-checked when it settles. */
+static bool sdi_preserves_half_open(ScrStream *s) {
+  return s != NULL && scr_stream_prop(s, "readableEnded") != 0 &&
+         scr_stream_prop(s, "allowHalfOpen") != 0 && scr_stream_prop(s, "writable") != 0 &&
+         scr_stream_prop(s, "writableEnded") == 0;
+}
+
+/* The deferred half of return(): the outstanding read has settled, so the
+ * source is destroyed unless it ended half-open (a read that completed at
+ * EOF keeps the writable side alive, as Node's finally does), and the
+ * iteration answers { value: undefined, done: true }. */
+static ScrDyn *sdi_return_done(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
+  (void)args;
+  (void)argc;
+  SdiCtx *c = scr_box_get_ref(cl->caps[0]); /* +1 */
+  if (c->s && c->destroy_on_return && scr_stream_prop(c->s, "destroyed") == 0 &&
+      !sdi_preserves_half_open(c->s)) {
+    scr_stream_release(scr_stream_destroy(c->s, NULL));
+    if (scr_exc_pending()) scr_exc_clear();
+  }
+  sdi_unref(c);
+  return sdi_done_result();
+}
+
+/* A dynamic function running sdi_return_done, holding the context alive
+ * until the outstanding read it is chained on settles. */
+static ScrDyn *sdi_return_callback(SdiCtx *c) {
+  ScrClosure *cl = scr_closure_new((void *)sdi_return_done, 1);
+  cl->caps[0] = scr_box_new_obj(&sdi_ref_v, &sdi_unref_v, NULL);
+  scr_box_set_ref(cl->caps[0], sdi_ref(c));
+  return scr_dyn_new_func(cl, sdi_return_done, 0, "()", "return");
+}
+
 /* return(): completes the iteration; the readable is destroyed unless
- * destroyOnReturn is false. */
+ * destroyOnReturn is false, or the readable side already ENDED and the
+ * source is a half-open duplex whose writable side is still open. Node's
+ * async iterator finally keeps that one alive only after EOF
+ * (preserveHalfOpenDuplex requires a clean end in
+ * internal/streams/readable.js), so destroying a Readable.from wrapper
+ * after its source reached EOF leaves the duplex it reads alive, while an
+ * early return() before EOF destroys the source it reads — a file or
+ * socket stream is closed, and a Duplex.from pair's peer is released.
+ * With a read still in flight the destroy waits for it, as the async
+ * generator queues return() behind the outstanding next(), and the return
+ * promise resolves then. */
 static ScrDyn *sdi_return(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
   (void)args;
   (void)argc;
   SdiCtx *c = sdi_of(cl);
   bool first = !c->finished;
   c->finished = true;
-  if (first && c->s && c->destroy_on_return && scr_stream_prop(c->s, "destroyed") == 0) {
+  bool half_open_preserved = sdi_preserves_half_open(c->s);
+  if (first && c->s && c->destroy_on_return && !half_open_preserved &&
+      scr_stream_prop(c->s, "destroyed") == 0) {
+    if (c->pending) {
+      ScrDyn *cb = sdi_return_callback(c);
+      ScrDyn *chained = scr_dyn_promise_then(c->pending, cb, cb, NULL);
+      scr_dyn_release(cb);
+      sdi_unref(c);
+      return chained;
+    }
     scr_stream_release(scr_stream_destroy(c->s, NULL));
     if (scr_exc_pending()) scr_exc_clear();
   }

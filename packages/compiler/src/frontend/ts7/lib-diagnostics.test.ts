@@ -15,6 +15,7 @@ import {
   type SuppliedKind,
 } from "./lib-diagnostics.js";
 import { hostTscTsExecutable } from "./checker-backend.js";
+import { Ts7FrameLimitError } from "./rpc-wire.js";
 import type { Ts7DiagnosticData } from "./session-schema.generated.js";
 import type { Ts7CheckedFileDiagnosticData, Ts7SessionProgram } from "./session.js";
 import { closeSourceParser, parseSourceFile } from "./source-parser-node.js";
@@ -127,6 +128,31 @@ test("a stored answer stands in for checking the supplied files, merged by file 
     global: [],
   });
   expect(full?.semantic).toEqual(reused?.semantic);
+});
+
+test("a cold store whose full semantic response is over the frame limit answers in batches", () => {
+  const store = memoryStore();
+  setLibDiagnosticsStore(store, "checker");
+  const semantic = new Map([
+    [lib, [diagnostic(lib, 1)]],
+    [fallback, []],
+    [main, [diagnostic(main, 5)]],
+  ]);
+  const program = sessionProgram({ semantic });
+  const original = program.diagnosticData;
+  program.diagnosticData = (method: string, file?: string) => {
+    if (method === "getSemanticDiagnostics" && file === undefined)
+      throw new Ts7FrameLimitError("payload exceeds 536870912 bytes (got 591404361)");
+    return original(method, file);
+  };
+  const answer = reusedLibDiagnostics(program, names, supplied, moduleFile);
+  // The checked-file batches answer the full check's diagnostics, in the
+  // checker's file order.
+  expect(answer).toEqual({
+    semantic: [diagnostic(lib, 1), diagnostic(main, 5)],
+    global: [],
+  });
+  expect(program.asked).toContain(`checked ${names.join(",")}`);
 });
 
 test("with kept files, a stored answer needs checking only the kept other files", () => {

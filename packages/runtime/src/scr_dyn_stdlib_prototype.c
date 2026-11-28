@@ -250,6 +250,31 @@ static ScrDyn *dyn_stdlib_prototype_build_array_buffer(const ScrStr *name) {
 /* The prototype object of the named constructor, as a value;
  * dyn.stdlibPrototype's implementation. `name` is a string literal the
  * frontend emitted, so an unknown one is a compiler/runtime mismatch. */
+/* Object.getPrototypeOf's Date arm (scr_json.c): this unit's Date.prototype,
+ * installed at load so the edge shares the object Date.prototype reads. */
+static ScrDyn *scr_dyn_date_proto(void) {
+  ScrStr *name = scr_str_new("Date", 4);
+  ScrDyn *prototype = scr_dyn_stdlib_prototype(name);
+  scr_str_release(name);
+  return prototype;
+}
+__attribute__((constructor)) static void scr_dyn_install_date_proto_hook(void) {
+  scr_dyn_date_proto_hook = scr_dyn_date_proto;
+}
+
+/* Object.getPrototypeOf's ArrayBuffer arm (scr_json.c): this unit's
+ * ArrayBuffer.prototype, installed at load so a buffer answers the object
+ * ArrayBuffer.prototype reads. */
+static ScrDyn *scr_dyn_array_buffer_proto(void) {
+  ScrStr *name = scr_str_new("ArrayBuffer", 11);
+  ScrDyn *prototype = scr_dyn_stdlib_prototype(name);
+  scr_str_release(name);
+  return prototype;
+}
+__attribute__((constructor)) static void scr_dyn_install_array_buffer_proto_hook(void) {
+  scr_dyn_array_buffer_proto_hook = scr_dyn_array_buffer_proto;
+}
+
 ScrDyn *scr_dyn_stdlib_prototype(const ScrStr *name) {
   if (strcmp(name->data, "Date") == 0) {
     if (!dyn_stdlib_prototype_date) {

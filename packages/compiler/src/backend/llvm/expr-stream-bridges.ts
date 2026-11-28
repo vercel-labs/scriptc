@@ -24,7 +24,13 @@ import {
   typeKey,
   type IrClassDef,
 } from "../../ir/ir.js";
-import { mangleFunction, mangleGlobal, mangleRecordStruct } from "../mangle.js";
+import {
+  mangleFunction,
+  mangleGlobal,
+  mangleRecordProtoGet,
+  mangleRecordProtoSet,
+  mangleRecordStruct,
+} from "../mangle.js";
 import { BlockBuilder } from "./blocks.js";
 import {
   type LlClassMeta,
@@ -41,6 +47,7 @@ import {
   elemAccess,
   llFieldType,
   loadStructField,
+  recordPrototypeIndex,
   releaseSym,
   traceAdapter,
   traceArg,
@@ -1679,6 +1686,17 @@ function liveRecordOps(
   const setDefs = host.liveViewsReadOnly ? [] : liveRecordSet(host, t, `${snapshot}_set`, fields);
 
   const literals = fields.map((field) => `ptr ${host.internLiteral(field.name)}`);
+  // A shape the program gives a prototype answers through its hidden slot
+  // (shapes.ts emits the pair); every other table leaves them NULL and the
+  // runtime keeps the instance-prototype table for it.
+  const protoGet =
+    recordPrototypeIndex(host.shapeHost, shape) >= 0
+      ? `@${mangleRecordProtoGet(t.shapeId)}`
+      : "null";
+  const protoSet =
+    recordPrototypeIndex(host.shapeHost, shape) >= 0
+      ? `@${mangleRecordProtoSet(t.shapeId)}`
+      : "null";
   host.resolveThunkDefs.push(
     `define internal zeroext i1 @${has}(ptr %p, ${host.sizeType} %i) ${FN_ATTRS} { ; live field presence of ${typeKey(t)}`,
     H.render(),
@@ -1691,7 +1709,7 @@ function liveRecordOps(
     ...setDefs,
     `@${names} = internal constant [${fields.length} x ptr] [${literals.join(", ")}]`,
     // Mutable: the runtime fills the key-array slot on first use.
-    `@${ops} = internal global { ${host.sizeType}, ptr, ptr, ptr, i8, ptr, ptr, ptr } { ${host.sizeType} ${fields.length}, ptr @${names}, ptr @${has}, ptr @${get}, i8 ${optional.length === 0 ? 1 : 0}, ptr null, ptr null, ptr ${setDefs.length ? `@${snapshot}_set` : "null"} }`,
+    `@${ops} = internal global { ${host.sizeType}, ptr, ptr, ptr, i8, ptr, ptr, ptr, ptr, ptr } { ${host.sizeType} ${fields.length}, ptr @${names}, ptr @${has}, ptr @${get}, i8 ${optional.length === 0 ? 1 : 0}, ptr null, ptr null, ptr ${setDefs.length ? `@${snapshot}_set` : "null"}, ptr ${protoGet}, ptr ${protoSet} }`,
     ``,
   );
 }
@@ -1799,12 +1817,22 @@ function liveRecordOrderSelect(
   const ops = B.tmp();
   B.line(`${ops} = load ptr, ptr ${out}`);
   B.terminate(`ret ptr ${ops}`);
+  // The prototype slot is one per shape, not per key order: the wrapper
+  // names the shape's accessors directly.
+  const protoGet =
+    recordPrototypeIndex(host.shapeHost, shape) >= 0
+      ? `@${mangleRecordProtoGet(shape.id)}`
+      : "null";
+  const protoSet =
+    recordPrototypeIndex(host.shapeHost, shape) >= 0
+      ? `@${mangleRecordProtoSet(shape.id)}`
+      : "null";
   host.resolveThunkDefs.push(
     `define internal ptr @${snapshot}_select(ptr %p) ${FN_ATTRS} { ; live record ops by key order`,
     B.render(),
     `}`,
     ``,
-    `@${snapshot}_rops = internal global { ${host.sizeType}, ptr, ptr, ptr, i8, ptr, ptr, ptr } { ${host.sizeType} 0, ptr null, ptr null, ptr null, i8 0, ptr null, ptr @${snapshot}_select, ptr null }`,
+    `@${snapshot}_rops = internal global { ${host.sizeType}, ptr, ptr, ptr, i8, ptr, ptr, ptr, ptr, ptr } { ${host.sizeType} 0, ptr null, ptr null, ptr null, i8 0, ptr null, ptr @${snapshot}_select, ptr null, ptr ${protoGet}, ptr ${protoSet} }`,
     ``,
   );
 }

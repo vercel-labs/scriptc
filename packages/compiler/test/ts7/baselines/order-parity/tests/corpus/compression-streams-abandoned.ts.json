@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/compression-streams-abandoned.ts"
+ ],
+ "diags": []
+}

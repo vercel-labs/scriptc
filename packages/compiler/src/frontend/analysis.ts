@@ -1,4 +1,5 @@
 import { packageNameOfSpecifier } from "./workspace-registry.js";
+import { isImportFence } from "./import-fences.js";
 import { npmStaticRefusalDiag, type ScrDiagnostic } from "../diagnostics/diagnostic.js";
 import type { AnalyzeOptions, AnalyzeResult } from "../compile-types.js";
 import { loadFfiProfile, type FfiProfile } from "../ffi/ffi-manifest.js";
@@ -91,8 +92,7 @@ export function analyzeWithFrontend(
     // tsc errors, config incompatibilities, circular imports — still stops
     // at preflight (no trustworthy program to lower). Builds are unchanged:
     // compile() fails on every preflight diagnostic exactly as before.
-    const IMPORT_FENCES = new Set(["SC1010", "SC1012", "SC1013", "SC1014", "SC1015", "SC2013"]);
-    if (preflight.some((d) => !IMPORT_FENCES.has(d.code))) {
+    if (preflight.some((d) => !isImportFence(d.code))) {
       return {
         coverage: {
           file: entryPath,
@@ -335,6 +335,7 @@ export function analyzeWithFrontend(
         ...(lowered.runtimeFences.length > 0 ? { runtimeFences: lowered.runtimeFences } : {}),
         ...(divergences !== undefined && divergences.length > 0 ? { divergences } : {}),
         ...(lowered.performance !== undefined ? { performance: lowered.performance } : {}),
+        ...(lowered.strictDynamic !== undefined ? { strictDynamic: lowered.strictDynamic } : {}),
         ...(lowered.dynamicSlots !== undefined ? { dynamicSlots: lowered.dynamicSlots } : {}),
         ...(lowered.typeClaims !== undefined ? { typeClaims: lowered.typeClaims } : {}),
         ...(lowered.unreached ? { unreached: lowered.unreached } : {}),

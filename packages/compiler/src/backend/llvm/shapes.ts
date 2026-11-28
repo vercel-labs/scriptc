@@ -4,6 +4,7 @@
  * and participates in the runtime allocation audit. */
 import type { HeapCensus } from "./heap-census.js";
 import type { IrClassDef, IrModule, IrRecordLink, IrRecordShape, IrType } from "../../ir/ir.js";
+import { bytesOfText, type TextPart, textOfPart } from "../../text-parts.js";
 import {
   isIdentityCollectionKey,
   isRefCounted,
@@ -26,6 +27,8 @@ import {
   mangleRecordGcFree,
   mangleRecordClone,
   mangleRecordNew,
+  mangleRecordProtoGet,
+  mangleRecordProtoSet,
   mangleRecordRelease,
   mangleRecordRetain,
   mangleRecordStruct,
@@ -175,6 +178,21 @@ export interface ShapeHost {
   readonly windowMap?: boolean;
   readonly tracedShapes: Set<string>;
   readonly tracedUnions: Set<string>;
+  /** The SCR_ELEM_* kinds the program gives a prototype
+   * (IrModule.prototypeOverrideArrayKinds): emit-module stamps them into the
+   * runtime before %main, so every array of such a kind is allocated with
+   * the collector header however acyclic its elements are. Their type is
+   * therefore traced: a closure capturing one reports the edge, and a
+   * capsule over one is a traced capsule. Absent: no array carries a
+   * prototype and nothing is forced. */
+  readonly forcedCyclicArrayKinds?: ReadonlySet<number>;
+  /** The record shapes the program gives a prototype with
+   * Object.setPrototypeOf (prototypeOverrides(mod).shapes): each carries one
+   * hidden pointer slot after its declared fields (and its overflow map)
+   * holding the prototype, so the reference is the record's own — traced,
+   * released and cloned with it — and a prototype whose closure captures
+   * the record forms a cycle the collector reclaims. */
+  readonly prototypeOverrideShapes?: ReadonlySet<string>;
   /** Present when the program makes weak-collection entries. `cyclic` holds
    * the shapes that can be on a cycle of counted references
    * (cycle-analysis.ts, computeCyclic). A traced shape outside it carries
@@ -273,7 +291,12 @@ export interface RegionHooks {
  * emit-module.ts functionAttributes). */
 export const FN_ATTRS = "#0";
 
-export { computeCyclic, computeTraced } from "../cycle-analysis.js";
+export {
+  computeCyclic,
+  computeTraced,
+  prototypeOverrides,
+  prototypeShapeIds,
+} from "../cycle-analysis.js";
 
 /* ── RC dispatch ──────────────────────────────────────────────────────── */
 
@@ -856,9 +879,9 @@ export const INLINE_STR_RELEASES_PER_FUNCTION = 8;
  * module, given as parts joined by newlines. A function can span parts
  * (main's lines) and a part can hold several functions. */
 export function limitInlineReleases(
-  parts: readonly string[],
+  parts: readonly TextPart[],
   mode: InlineRcMode | undefined,
-): string[] {
+): TextPart[] {
   const families: readonly ("dyn" | "str")[] = mode === "release" ? ["dyn", "str"] : ["dyn"];
   const limits = families.map((family) =>
     family === "dyn" ? INLINE_DYN_RELEASES_PER_FUNCTION : INLINE_STR_RELEASES_PER_FUNCTION,
@@ -899,7 +922,7 @@ export function limitInlineReleases(
   for (const part of parts) {
     spans.push(fn);
     fn = sites(
-      part,
+      textOfPart(part),
       (_, family, f) => counts[family]!.set(f, (counts[family]!.get(f) ?? 0) + 1),
       fn,
     );
@@ -925,12 +948,13 @@ export function limitInlineReleases(
   return parts.map((part, index) => {
     const from = spans[2 * index]!;
     if (!touches(from, spans[2 * index + 1]!)) return part;
+    const text = textOfPart(part);
     const cuts: { at: number; family: number }[] = [];
     sites(
-      part,
+      text,
       (at, family, f) => {
         if (!over[family]!.has(f)) return;
-        if (family === dynFamily && inLoop(part, at)) {
+        if (family === dynFamily && inLoop(text, at)) {
           const kept = keptInLoops.get(f) ?? 0;
           if (kept < limits[family]!) {
             keptInLoops.set(f, kept + 1);
@@ -945,10 +969,11 @@ export function limitInlineReleases(
     let out = "";
     let next = 0;
     for (const cut of cuts) {
-      out += part.slice(next, cut.at) + runtimes[cut.family]!;
+      out += text.slice(next, cut.at) + runtimes[cut.family]!;
       next = cut.at + head.length + calls[cut.family]!.length;
     }
-    return out + part.slice(next);
+    out += text.slice(next);
+    return typeof part === "string" ? out : bytesOfText(out);
   });
 }
 
@@ -1249,7 +1274,16 @@ export function traceAdapter(host: ShapeHost, t: IrType, inside?: Set<string>): 
       host.declare(`declare void @scr_map_trace_v(ptr, ptr, ptr)`);
       return "@scr_map_trace_v";
     case "array":
-      if (traceAdapter(host, t.elem, inside) === null) return null;
+      // An array the program gives a prototype carries the collector header
+      // even when its elements are acyclic (forcedCyclicArrayKinds): the
+      // stored prototype is a traced child of every such array, so the type
+      // must be traced where it is held — a value capture, a box, a field —
+      // for a cycle through that prototype to be walked and reclaimed.
+      if (
+        traceAdapter(host, t.elem, inside) === null &&
+        host.forcedCyclicArrayKinds?.has(arrayAllocKind(t.elem)) !== true
+      )
+        return null;
       host.declare(`declare void @scr_arr_trace_v(ptr, ptr, ptr)`);
       return "@scr_arr_trace_v";
     default:
@@ -1289,6 +1323,47 @@ export function typedRefConstructor(host: ShapeHost, t: IrType): string {
  * f64 and bool unboxed, everything refcounted through the `_ref` family). */
 export function elemAccess(elem: IrType): "f64" | "bool" | "ref" {
   return elem.kind === "f64" ? "f64" : elem.kind === "bool" ? "bool" : "ref";
+}
+
+/** The SCR_ELEM_* kind an array of `elem` is allocated with, as the frontend
+ * records it for Object.setPrototypeOf (builtins/reflection.ts,
+ * arrayElemKindNumber): the plain scr_arr_new kinds, and SCR_ELEM_REF (5)
+ * for everything else. The forced set also holds CREF (6), which the runtime
+ * stamping forwards from REF. */
+/** SCR_ELEM_ARR: the kind an array of arrays allocates as (scr_array.h). */
+export const SCR_ELEM_ARR_KIND = 3;
+
+/** The largest SCR_ELEM_* kind (SCR_ELEM_I32, scr_array.h). */
+export const SCR_ELEM_LAST_KIND = 7;
+
+/** The kinds whose arrays carry the collector header: the kinds the program
+ * names, and every kind when it names an array-of-arrays kind. The runtime's
+ * scr_arr_force_cyclic_kind expands that way too — a traced outer array
+ * visits its row children, so every row needs the header — and the compiler
+ * expands before it decides layouts, trace adapters and Array-subclass
+ * headers, not only in the allocator. */
+export function expandedForcedArrayKinds(kinds: readonly number[] | undefined): Set<number> {
+  const forced = new Set(kinds ?? []);
+  if (forced.has(SCR_ELEM_ARR_KIND))
+    for (let kind = 0; kind <= SCR_ELEM_LAST_KIND; kind++) forced.add(kind);
+  return forced;
+}
+
+export function arrayAllocKind(elem: IrType): number {
+  switch (elem.kind) {
+    case "f64":
+      return 0; // SCR_ELEM_F64
+    case "bool":
+      return 1; // SCR_ELEM_BOOL
+    case "string":
+      return 2; // SCR_ELEM_STR
+    case "array":
+      return 3; // SCR_ELEM_ARR
+    case "bytes":
+      return 4; // SCR_ELEM_BYTES
+    default:
+      return 5; // SCR_ELEM_REF (CREF arrays are stamped as REF)
+  }
 }
 
 /** The ScrElemKind constant for the plain (non-REF) construction path. */
@@ -1588,6 +1663,16 @@ export function rcMembers(
         ]
       : []),
   ];
+}
+
+/** The struct index of a record shape's hidden prototype slot, or -1 when
+ * the shape has none (ShapeHost.prototypeOverrideShapes). The slot follows
+ * the declared fields and the overflow map, and is not a member:
+ * Object.setPrototypeOf's prototype is not an own property, so nothing that
+ * enumerates fields (the dynamic views, equality, clone) may see it. */
+export function recordPrototypeIndex(host: ShapeHost, shape: IrRecordShape): number {
+  if (host.prototypeOverrideShapes?.has(shape.id) !== true) return -1;
+  return host.nullableUnions.fieldBase(shape.id) + shape.fields.length + (shape.indexValue ? 1 : 0);
 }
 
 /** The integer type a release or retain loads and stores the count as:
@@ -2518,6 +2603,8 @@ export function emitRecordShapes(
       llFieldType(f.type, host.inlineUnions.record(f.type)),
     );
     if (shape.indexValue) fieldTys.push("ptr"); // the overflow ScrMap *
+    // The hidden prototype slot (recordPrototypeIndex), after every field.
+    if (recordPrototypeIndex(host, shape) >= 0) fieldTys.push("ptr");
     // A tagged shape (an arm of a shape union) carries its shape number.
     if (host.nullableUnions.shapeNumber(shape.id) !== 0) fieldTys.unshift("i32");
     typeDefs.push(
@@ -2554,6 +2641,17 @@ export function emitRecordShapes(
     const shapeNumber = host.nullableUnions.shapeNumber(shape.id);
     const members = rcMembers(shape, host.inlineUnions, base);
     const refMembers = members.filter((m) => isRefCounted(m.type));
+    /** The hidden prototype slot's index, or -1. */
+    const proto = recordPrototypeIndex(host, shape);
+    /** Release the prototype the record owns, if it holds one. */
+    const protoRelease = (n: string): string[] =>
+      proto < 0
+        ? []
+        : [
+            `  %${n}f = getelementptr inbounds %${struct}, ptr %o, i64 0, i32 ${proto}`,
+            `  %${n}v = load ptr, ptr %${n}f`,
+            `  call void ${releaseSym(host, DYN)}(ptr %${n}v) ; [Prototype]`,
+          ];
     const sizeOf = `ptrtoint (ptr getelementptr (%${struct}, ptr null, i32 1) to ${host.sizeType})`;
 
     defs.push(...retainBody(host, mangleRecordRetain(shape.id)), ``);
@@ -2625,8 +2723,13 @@ export function emitRecordShapes(
         ...segmentTeardownLines(ownType, (prefix) =>
           refMembers.flatMap((m, i) => release(prefix, m, i)),
         ),
+        ...protoRelease("tdp"),
       );
-    else freeBody.push(...emitObjectFree(host, traced, observers, null, sizeOf));
+    else
+      freeBody.push(
+        ...protoRelease("tdp"),
+        ...emitObjectFree(host, traced, observers, null, sizeOf),
+      );
     // A segmented shape whose every reference field holds its own type, with
     // no collector header and no frozen bit in its count, tears down in one
     // loop (iterativeTeardownDefinitions).
@@ -2740,9 +2843,8 @@ export function emitRecordShapes(
       );
       if (dispose !== null)
         defs.push(
-          ...arenaDisposeLines(
-            newSym,
-            refMembers.flatMap((m, i) =>
+          ...arenaDisposeLines(newSym, [
+            ...refMembers.flatMap((m, i) =>
               disposeFieldLines(
                 i,
                 `getelementptr inbounds %${struct}, ptr %o, i64 0, i32 ${m.index}`,
@@ -2751,7 +2853,16 @@ export function emitRecordShapes(
                 llvmCommentText(m.name),
               ),
             ),
-          ),
+            ...(proto >= 0
+              ? disposeFieldLines(
+                  proto,
+                  `getelementptr inbounds %${struct}, ptr %o, i64 0, i32 ${proto}`,
+                  false,
+                  releaseSym(host, DYN),
+                  "[Prototype]",
+                )
+              : []),
+          ]),
         );
     }
 
@@ -2820,6 +2931,10 @@ export function emitRecordShapes(
         );
         i++;
       }
+      // The hidden prototype slot stays zero (the default Object.prototype):
+      // an object spread copies the source's own enumerable fields, never
+      // its [[Prototype]], so the clone must not inherit a prototype the
+      // source was given.
       clone.push(`  ret ptr %o`, `}`, ``);
       defs.push(...clone);
     }
@@ -2843,6 +2958,11 @@ export function emitRecordShapes(
       tracedMembers.forEach((m, i) => {
         tr.push(...traceFieldVisitLines(struct, m.index, i, llvmCommentText(m.name)));
       });
+      // The prototype slot is an edge of the shape: the weak analysis reads
+      // it here too. For a weak-only shape the collector's descriptor names
+      // no trace, so its gcFree releases the slot (below).
+      if (proto >= 0)
+        tr.push(...traceFieldVisitLines(struct, proto, tracedMembers.length, "[Prototype]"));
       tr.push(`  ret void`, `}`, ``);
       defs.push(...tr);
 
@@ -2857,9 +2977,50 @@ export function emitRecordShapes(
           `  call void ${releaseSym(host, m.type)}(ptr %v${i}) ; ${llvmCommentText(m.name)} (acyclic)`,
         );
       });
+      if (proto >= 0 && weakOnly)
+        gf.push(
+          `  %gfp = getelementptr inbounds %${struct}, ptr %o, i64 0, i32 ${proto}`,
+          `  %gpv = load ptr, ptr %gfp`,
+          `  call void ${releaseSym(host, DYN)}(ptr %gpv) ; [Prototype] (acyclic)`,
+        );
       gf.push(...emitObjectFree(host, true, observers, null, sizeOf), `  ret void`, `}`, ``);
       defs.push(...gf);
     }
+
+    if (proto >= 0)
+      defs.push(
+        `define internal ptr @${mangleRecordProtoGet(shape.id)}(ptr %o) ${FN_ATTRS} { ; [Prototype] of ${shape.id}`,
+        `entry:`,
+        `  %gf = getelementptr inbounds %${struct}, ptr %o, i64 0, i32 ${proto}`,
+        `  %gv = load ptr, ptr %gf`,
+        `  %gn = icmp eq ptr %gv, null`,
+        `  br i1 %gn, label %proto.none, label %proto.some`,
+        `proto.some:`,
+        `  %gr = call ptr ${retainSym(host, DYN)}(ptr %gv)`,
+        `  ret ptr %gr`,
+        `proto.none:`,
+        `  ret ptr null`,
+        `}`,
+        ``,
+        `define internal void @${mangleRecordProtoSet(shape.id)}(ptr %o, ptr %prototype) ${FN_ATTRS} { ; [Prototype] of ${shape.id}`,
+        `entry:`,
+        `  %sf = getelementptr inbounds %${struct}, ptr %o, i64 0, i32 ${proto}`,
+        `  %sv = load ptr, ptr %sf`,
+        `  %sn = icmp eq ptr %prototype, null`,
+        `  br i1 %sn, label %proto.none, label %proto.some`,
+        `proto.some:`,
+        `  %sr = call ptr ${retainSym(host, DYN)}(ptr %prototype)`,
+        `  store ptr %sr, ptr %sf`,
+        `  br label %proto.join`,
+        `proto.none:`,
+        `  store ptr null, ptr %sf`,
+        `  br label %proto.join`,
+        `proto.join:`,
+        `  call void ${releaseSym(host, DYN)}(ptr %sv)`,
+        `  ret void`,
+        `}`,
+        ``,
+      );
   }
   return { typeDefs, defs };
 }

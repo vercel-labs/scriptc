@@ -63,7 +63,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if !defined(_WIN32) && !defined(__wasi__)
+#if !defined(__wasi__)
 
 /* One object of the walk: a headered native object, (NI_REF) the
  * ScrNodeRef of an island handle box, or (NI_TWIN) the native object of a

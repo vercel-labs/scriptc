@@ -28,6 +28,9 @@ export interface BuildWarningOptions {
   copy?: boolean;
   /** `--no-key-order-warning`: SC6014. */
   keyOrder?: boolean;
+  /** `--strict`: keep SC6107, the every-dynamic-function finding ordinary
+   * builds filter out. */
+  strict?: boolean;
 }
 
 /** The warnings a build reports: `warnings` minus the ones its options
@@ -39,6 +42,7 @@ export function buildWarnings(
   return warnings.filter(
     (d) =>
       (options.dynamicTier !== false || !isPerformanceCode(d.code)) &&
+      (options.strict === true || d.code !== "SC6107") &&
       (options.copy !== false || d.code !== "SC6001") &&
       (options.keyOrder !== false || d.code !== "SC6014"),
   );
@@ -86,18 +90,25 @@ export function warningSourceTexts(
   stored: Record<string, string> | undefined,
 ): Map<string, string> {
   const texts = new Map<string, string>();
-  for (const w of warnings) {
-    if (texts.has(w.loc.file)) continue;
-    const kept = stored?.[w.loc.file];
+  const add = (file: string): void => {
+    if (texts.has(file)) return;
+    const kept = stored?.[file];
     if (kept !== undefined) {
-      texts.set(w.loc.file, kept);
-      continue;
+      texts.set(file, kept);
+      return;
     }
     try {
-      texts.set(w.loc.file, readFileSync(w.loc.file, "utf8"));
+      texts.set(file, readFileSync(file, "utf8"));
     } catch {
       // The frame is omitted; the message stands alone.
     }
+  };
+  for (const w of warnings) {
+    add(w.loc.file);
+    // An aggregate's per-function entries live in their own files (SC6101,
+    // SC6107): strict mode's per-line allow comment reads each function's
+    // line, so their texts are needed too.
+    for (const entry of w.dynamicTier?.entries ?? []) add(entry.loc.file);
   }
   return texts;
 }

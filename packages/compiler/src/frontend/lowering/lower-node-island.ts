@@ -2128,12 +2128,52 @@ function classMethodsBuilderOf(
     for (const m of [...(c.def.methods ?? []), ...(c.genericMethods?.keys() ?? [])])
       if (!names.includes(m) && (islandMethodName(m) || islandAccessorName(m))) names.push(m);
   }
+  // A BASE-typed slot builds this table for the STATIC class, while the
+  // value crossing the boundary can be any subclass at run time and the
+  // island dispatches accessors on the instance's own class. A decorated
+  // member declared by a descendant would therefore be bypassed; refuse the
+  // crossing instead of compiling it with the wrapper skipped.
+  for (const candidate of lowerer.classes.values()) {
+    if (candidate === info) continue;
+    if (candidate.legacyMemberDecorations === undefined) continue;
+    if (!lowerer.isSubclassOf(candidate.def.name, info.def.name)) continue;
+    const first = candidate.legacyMemberDecorations[0]!;
+    lowerer.unsupported(
+      "SC1090",
+      first.decorators[0] ?? first.parameters[0]!.decorators[0]!,
+      `an instance crossing into a Node island through a '${className}' slot whose class '${candidate.def.jsName ?? candidate.def.name}' declares legacy member decorations (the island accessor table is built from the static class, so the descendant's decorated member would be bypassed — pass the instance's own class type, or remove the decorations)`,
+    );
+  }
   if (names.length === 0) return null;
+  // A decorated accessor's replacement lives on the reflected prototype,
+  // while this island table can only hold the declared accessor halves: an
+  // island read or write would bypass the decorator's wrapper. Refuse the
+  // crossing instead of compiling it with the guard silently skipped.
+  const decoratedAccessorOn = (owner: typeof info, property: string): boolean => {
+    for (
+      let c = owner as typeof info | undefined;
+      c !== undefined;
+      c = c.def.base ? lowerer.classes.get(c.def.base) : undefined
+    ) {
+      const entry = c.legacyMemberDecorations?.find(
+        (m) => m.kind === "accessor" && m.name === property,
+      );
+      if (entry !== undefined) return true;
+    }
+    return false;
+  };
   const builder = `%island.methods:${className}`;
   if (!lowerer.classMethodValueHelpers.has(builder)) {
     lowerer.classMethodValueHelpers.add(builder);
     const fields: { key: IrExpr; value: IrExpr }[] = [];
     for (const m of names) {
+      const accessorHalf = /^(?:get|set):(.+)$/.exec(m);
+      if (accessorHalf !== null && decoratedAccessorOn(info, accessorHalf[1]!))
+        lowerer.unsupported(
+          "SC1090",
+          blame,
+          `accessor decorators on '${className}' with Node islands (an instance crossing into an island reads the island accessor table, which holds the declared accessor, so a decorator-installed replacement would be bypassed)`,
+        );
       // A generic method a subclass overrides has no value this table can
       // hold — the island dispatches by static class, so the overriding
       // class decides — and the lowering refuses the value: the table leaves
@@ -2817,6 +2857,14 @@ export function lowerIslandExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr |
     if (!isForeignExpr(lowerer, callee)) return null;
     lowerer.usesNodeIsland = true;
     const fn = lowerer.lowerExpr(callee);
+    // A callee the program compiles (a function of a package that is BOTH
+    // statically compiled and named by an island's declarations, such as
+    // the `ai` package's gateway() in ai-cli) lowers to a native function
+    // value. The island bridge would hand Node a native closure it cannot
+    // call, and the IR validator refuses the call outright ("arg 0:
+    // expected dyn, got func"); it is a native call, so decline here and
+    // let the generic call lowering take it.
+    if ((fn.type.kind as string) === "func") return null;
     return fromIsland(
       lowerer,
       {
@@ -3298,15 +3346,46 @@ function memberName(m: ts.ClassElement): string | null {
   return null;
 }
 
+/** Whether a static field initializer reads `this` or `super`, which the
+ * class object's own creation has not made available to the native term that
+ * evaluates it. */
+function staticInitializerUsesClassBinding(initializer: ts.Expression | undefined): boolean {
+  if (initializer === undefined) return false;
+  let found = false;
+  const walk = (node: ts.Node): void => {
+    if (found) return;
+    if (node.kind === ts.SyntaxKind.ThisKeyword || node.kind === ts.SyntaxKind.SuperKeyword) {
+      found = true;
+      return;
+    }
+    ts.forEachChild(node, walk);
+  };
+  walk(initializer);
+  return found;
+}
+
 /** What NI-5b does not build yet, or null. */
 function islandSubclassRefusal(decl: ts.ClassDeclaration): { node: ts.Node; what: string } | null {
   for (const m of decl.members.nodes) {
     if (ts.isSemicolonClassElement(m)) continue;
     const mods = m.modifiers?.nodes ?? [];
-    if (mods.some((x) => x.kind === ts.SyntaxKind.StaticKeyword))
-      return { node: m, what: "static members" };
     if (mods.some((x) => x.kind === ts.SyntaxKind.Decorator))
       return { node: m, what: "decorators" };
+    if (ts.isClassStaticBlockDeclaration(m)) return { node: m, what: "static blocks" };
+    if (mods.some((x) => x.kind === ts.SyntaxKind.StaticKeyword)) {
+      // A static field is a property the JavaScript class object holds, which
+      // `nodeIsland.defineField` gives it (clipanion's `static paths`). The
+      // other static forms need the class's own definition to carry them.
+      if (ts.isPropertyDeclaration(m)) {
+        if (memberName(m) === null || mods.some((x) => x.kind === ts.SyntaxKind.AccessorKeyword))
+          return { node: m, what: "static private, computed or accessor members" };
+        if (staticInitializerUsesClassBinding(m.initializer))
+          return { node: m, what: "a static field initializer that reads 'this' or 'super'" };
+        continue;
+      }
+      if (ts.isClassStaticBlockDeclaration(m)) return { node: m, what: "static blocks" };
+      return { node: m, what: "static methods or accessors" };
+    }
     if (ts.isConstructorDeclaration(m)) {
       if (m.parameters.nodes.some((p) => (p.modifiers?.nodes.length ?? 0) > 0))
         return { node: m, what: "constructor parameter properties" };
@@ -3444,6 +3523,7 @@ export function lowerIslandSubclass(lowerer: Lowerer, decl: ts.ClassDeclaration)
   const getters: { key: IrExpr; value: IrExpr }[] = [];
   const setters: { key: IrExpr; value: IrExpr }[] = [];
   const fields: ts.PropertyDeclaration[] = [];
+  const staticFields: ts.PropertyDeclaration[] = [];
   let ctor: IrExpr = dynUndefinedExpr(loc);
   const key = (name: string): IrExpr => ({ kind: "strLit", value: name, type: STRING, loc });
   for (const m of decl.members.nodes) {
@@ -3468,7 +3548,8 @@ export function lowerIslandSubclass(lowerer: Lowerer, decl: ts.ClassDeclaration)
     } else if (ts.isPropertyDeclaration(m)) {
       const mods = m.modifiers?.nodes ?? [];
       if (mods.some((x) => x.kind === ts.SyntaxKind.DeclareKeyword)) continue;
-      fields.push(m);
+      if (mods.some((x) => x.kind === ts.SyntaxKind.StaticKeyword)) staticFields.push(m);
+      else fields.push(m);
     }
   }
   const fieldsFn: IrExpr =
@@ -3502,7 +3583,7 @@ export function lowerIslandSubclass(lowerer: Lowerer, decl: ts.ClassDeclaration)
     type: DYN,
     loc,
   });
-  return {
+  const create: IrStmt = {
     kind: "assign",
     localId: global.id,
     value: {
@@ -3514,6 +3595,27 @@ export function lowerIslandSubclass(lowerer: Lowerer, decl: ts.ClassDeclaration)
     },
     loc,
   };
+  if (staticFields.length === 0) return create;
+  // Static fields are properties of the class object itself, which the
+  // JavaScript constructor is once `nodeIsland.subclass` returns it. Each
+  // initializer evaluates here, in declaration order, as Node evaluates a
+  // class's static fields when the class definition runs.
+  const defines: IrStmt[] = staticFields.map((f) => ({
+    kind: "exprStmt",
+    expr: {
+      kind: "libCall",
+      fn: "nodeIsland.defineField",
+      args: [
+        varRef(global.id, DYN, locOf(f)),
+        key(memberName(f)!),
+        f.initializer !== undefined ? toIsland(lowerer, f.initializer) : dynUndefinedExpr(locOf(f)),
+      ],
+      type: VOID,
+      loc: locOf(f),
+    },
+    loc: locOf(f),
+  }));
+  return { kind: "block", body: [create, ...defines], loc };
 }
 
 /** The function whose `this` an expression inside a class member sees,

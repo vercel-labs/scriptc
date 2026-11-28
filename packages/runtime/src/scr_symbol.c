@@ -45,7 +45,11 @@ ScrSym *scr_sym_retain(ScrSym *s) {
  * a program with symbols but no emitters references nothing from the
  * emitter. */
 static const ScrSymEventOps scr_sym_event_ops_table = {
-  &scr_sym_retain, &scr_sym_release, &scr_dyn_new_symbol, &scr_sym_to_string,
+  .retain = scr_sym_retain,
+  .release = scr_sym_release,
+  .box = scr_dyn_new_symbol,
+  .to_string = scr_sym_to_string,
+  .registry = scr_sym_for,
 };
 static void scr_sym_well_known_make(const char *name, size_t len);
 __attribute__((constructor)) static void scr_sym_event_install(void) {

@@ -38,13 +38,15 @@ const cases: SpecCase[] = readFileSync(join(import.meta.dirname, "wasm-spec-case
 const accepted = (status: string): boolean => status === "valid" || status === "unsupported";
 
 describe("WebAssembly spec test suite", () => {
-  test("covers the 2.0 core suite and extended constant expressions", () => {
-    expect(cases.length).toBeGreaterThan(3000);
+  test("covers the 2.0 core suite, SIMD and extended constant expressions", () => {
+    expect(cases.length).toBeGreaterThan(3900);
     const extended = cases.filter((c) => c.where.startsWith("extended-const/"));
     expect(extended.length).toBeGreaterThan(10);
     expect(
       extended.filter((c) => analyzeWasm(c.bytes).features.includes("extended-const")).length,
     ).toBeGreaterThan(5);
+    expect(cases.filter((c) => c.where.startsWith("simd/")).length).toBeGreaterThan(800);
+    expect(cases.filter((c) => c.where.startsWith("relaxed-simd/")).length).toBeGreaterThan(5);
   });
 
   test("every module gets V8's verdict and needs no other proposal", () => {
@@ -54,8 +56,15 @@ describe("WebAssembly spec test suite", () => {
       const v8 = v8Validate(c.bytes);
       if ((v8 ? "valid" : "invalid") !== c.v8) wrong.push(`${c.where}: V8 changed its verdict`);
       // Multiple memories are the one proposal outside the translatable set
-      // that 2.0 tests exercise (as invalid; V8 accepts them).
-      const allowed = s.status !== "unsupported" || s.unsupported.join() === "multi-memory";
+      // that 2.0 tests exercise (as invalid; V8 accepts them). SIMD is typed
+      // but still outside the set until its translation lands, so a valid
+      // SIMD module is reported unsupported rather than invalid.
+      const allowed =
+        s.status !== "unsupported" ||
+        s.unsupported.every(
+          (feature) =>
+            feature === "multi-memory" || feature === "simd" || feature === "relaxed-simd",
+        );
       if (accepted(s.status) !== v8 || !allowed) {
         wrong.push(`${c.where}: ${s.status} ${s.error ?? ""} (V8 ${v8 ? "accepts" : "rejects"})`);
       }

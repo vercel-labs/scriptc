@@ -793,3 +793,137 @@ function freeLines(
   );
   return lines;
 }
+
+/** A stackless coroutine's frame, allocated in its prologue before
+ * `llvm.coro.begin`: the same small-block fast paths as emitObjectAlloc,
+ * but for a size only the coroutine split makes constant, so the class
+ * arithmetic and the clear fold per coroutine. `frame` is the value the
+ * lines leave the frame in, in the open block `cfa.done`. Labels and
+ * values are `cfa.*`, so one call per emitted function is assumed (a
+ * coroutine body). */
+export function emitCoroFrameAlloc(
+  host: AllocHost,
+  size: string,
+): { lines: string[]; frame: string } {
+  const S = host.sizeType;
+  host.declare(`declare ptr @scr_rt_calloc(${S})`);
+  if (host.inlineAlloc !== true) {
+    return { lines: [`  %cfa.o = call ptr @scr_rt_calloc(${S} ${size})`], frame: "%cfa.o" };
+  }
+  declareState(host);
+  host.declare(`declare i1 @llvm.expect.i1(i1, i1)`);
+  host.declare(`declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)`);
+  const lines = [
+    `  %cfa.n = add i64 ${size}, 0`,
+    `  %cfa.nm1 = sub i64 %cfa.n, 1`,
+    `  %cfa.small = icmp ult i64 %cfa.nm1, ${SA_MAX}`,
+    `  %cfa.smallx = call i1 @llvm.expect.i1(i1 %cfa.small, i1 true)`,
+    `  br i1 %cfa.smallx, label %cfa.class, label %cfa.slow`,
+    `cfa.class:`,
+    `  %cfa.k = lshr i64 %cfa.nm1, 3`,
+    `  %cfa.fine = icmp ule i64 %cfa.n, ${SA_FINE_MAX}`,
+    `  %cfa.kc = add i64 %cfa.k, ${SA_FINE_MAX / 8}`,
+    `  %cfa.cc = lshr i64 %cfa.kc, 1`,
+    `  %cfa.c = select i1 %cfa.fine, i64 %cfa.k, i64 %cfa.cc`,
+    `  %cfa.c8 = shl i64 %cfa.c, 3`,
+    `  %cfa.fo = add i64 %cfa.c8, ${SA_FREE}`,
+    `  %cfa.fp = getelementptr inbounds i8, ptr @scr_sa, i64 %cfa.fo`,
+    `  %cfa.b = load ptr, ptr %cfa.fp`,
+    `  %cfa.hit = icmp ne ptr %cfa.b, null`,
+    `  %cfa.hitx = call i1 @llvm.expect.i1(i1 %cfa.hit, i1 true)`,
+    `  br i1 %cfa.hitx, label %cfa.pop, label %cfa.bump`,
+    `cfa.pop: ; recycled blocks are dirty`,
+    `  %cfa.next = load ptr, ptr %cfa.b`,
+    `  store ptr %cfa.next, ptr %cfa.fp`,
+    `  call void @llvm.memset.p0.i64(ptr align 8 %cfa.b, i8 0, i64 %cfa.n, i1 false)`,
+    `  br label %cfa.done`,
+    `cfa.bump: ; fresh reservation memory is already zero`,
+    `  %cfa.c1 = add i64 %cfa.c, 1`,
+    `  %cfa.wide = icmp eq i64 %cfa.c, ${SA_WIDE}`,
+    `  %cfa.widez = zext i1 %cfa.wide to i64`,
+    `  %cfa.c1w = add i64 %cfa.c1, %cfa.widez`,
+    `  %cfa.szf = shl i64 %cfa.c1w, 3`,
+    `  %cfa.cs = sub i64 %cfa.c1, ${SA_FINE_MAX / 16}`,
+    `  %cfa.szc = shl i64 %cfa.cs, 4`,
+    `  %cfa.sz = select i1 %cfa.fine, i64 %cfa.szf, i64 %cfa.szc`,
+    `  %cfa.bo = add i64 %cfa.c8, ${SA_BUMP}`,
+    `  %cfa.bp = getelementptr inbounds i8, ptr @scr_sa, i64 %cfa.bo`,
+    `  %cfa.lo = add i64 %cfa.c8, ${SA_LIM}`,
+    `  %cfa.lp = getelementptr inbounds i8, ptr @scr_sa, i64 %cfa.lo`,
+    `  %cfa.p = load ptr, ptr %cfa.bp`,
+    `  %cfa.l = load ptr, ptr %cfa.lp`,
+    `  %cfa.pi = ptrtoint ptr %cfa.p to i64`,
+    `  %cfa.li = ptrtoint ptr %cfa.l to i64`,
+    `  %cfa.room = sub i64 %cfa.li, %cfa.pi`,
+    `  %cfa.fits = icmp uge i64 %cfa.room, %cfa.sz`,
+    `  %cfa.fitsx = call i1 @llvm.expect.i1(i1 %cfa.fits, i1 true)`,
+    `  br i1 %cfa.fitsx, label %cfa.carve, label %cfa.slow`,
+    `cfa.carve:`,
+    `  %cfa.np = getelementptr inbounds i8, ptr %cfa.p, i64 %cfa.sz`,
+    `  store ptr %cfa.np, ptr %cfa.bp`,
+    `  br label %cfa.done`,
+    `cfa.slow:`,
+    `  %cfa.o = call ptr @scr_rt_calloc(${S} %cfa.n)`,
+    `  br label %cfa.done`,
+    `cfa.done:`,
+    `  %cfa.f = phi ptr [ %cfa.b, %cfa.pop ], [ %cfa.p, %cfa.carve ], [ %cfa.o, %cfa.slow ]`,
+  ];
+  return { lines, frame: "%cfa.f" };
+}
+
+/** A stackless coroutine's frame, released after `llvm.coro.free`: a block
+ * of the calling thread's arena goes onto its class's free list (`cff.*`
+ * labels), any other block to the out-of-line free. Ends in the open block
+ * `cff.done`. */
+export function emitCoroFrameFree(host: AllocHost, blk: string): string[] {
+  host.declare(`declare void @scr_rt_free(ptr)`);
+  if (host.inlineAlloc !== true || host.threadLocalAlloc === true)
+    return [`  call void @scr_rt_free(ptr ${blk})`];
+  declareState(host);
+  host.declare(`declare i1 @llvm.expect.i1(i1, i1)`);
+  if (host.windowMap === true) {
+    // The window below 32 GiB: a block's offset names its class's slice.
+    host.declare(`@scr_sa_slice_span = external global i64`);
+    return [
+      `  %cff.sb = load i64, ptr @scr_sa`,
+      `  %cff.sp = ptrtoint ptr ${blk} to i64`,
+      `  %cff.so = sub i64 %cff.sp, %cff.sb`,
+      `  %cff.ss = load i64, ptr @scr_sa_slice_span`,
+      `  %cff.sin = icmp ult i64 %cff.so, %cff.ss`,
+      `  %cff.sinx = call i1 @llvm.expect.i1(i1 %cff.sin, i1 true)`,
+      `  br i1 %cff.sinx, label %cff.slice, label %cff.sys`,
+      `cff.slice: ; the calling thread's arena owns the block`,
+      `  %cff.sc = lshr i64 %cff.so, ${SA_SLICE_SHIFT}`,
+      `  %cff.c8 = shl i64 %cff.sc, 3`,
+      `  %cff.fo = add i64 %cff.c8, ${SA_FREE}`,
+      `  %cff.fp = getelementptr inbounds i8, ptr @scr_sa, i64 %cff.fo`,
+      `  %cff.head = load ptr, ptr %cff.fp`,
+      `  store ptr %cff.head, ptr ${blk}`,
+      `  store ptr ${blk}, ptr %cff.fp`,
+      `  br label %cff.done`,
+      `cff.sys:`,
+      `  call void @scr_rt_free(ptr ${blk})`,
+      `  br label %cff.done`,
+      `cff.done:`,
+    ];
+  }
+  // Elsewhere the chunk table names the block's class when the chunk carries
+  // the thread's tag, as scr_mem_free tests it.
+  return [
+    ...blockEntryLines(host, "cff", blk),
+    `  %cff.tagp = getelementptr inbounds i8, ptr @scr_sa, i64 ${SA_TAG}`,
+    `  %cff.tag = load i32, ptr %cff.tagp`,
+    `  %cff.x = xor i32 %cff.e, %cff.tag`,
+    `  %cff.mine = icmp ult i32 %cff.x, 256`,
+    `  %cff.minex = call i1 @llvm.expect.i1(i1 %cff.mine, i1 true)`,
+    `  br i1 %cff.minex, label %cff.push, label %cff.sys`,
+    `cff.push:`,
+    `  %cff.xc = zext i32 %cff.x to i64`,
+    ...freeListPushLines("cff", blk, blk, "%cff.xc"),
+    `  br label %cff.done`,
+    `cff.sys:`,
+    `  call void @scr_rt_free(ptr ${blk})`,
+    `  br label %cff.done`,
+    `cff.done:`,
+  ];
+}

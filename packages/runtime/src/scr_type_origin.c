@@ -152,6 +152,35 @@ void scr_type_origin_note(const char *origin) {
       }
     }
   }
+  /* A cast origin (`value as unknown as T`): names the cast, where it is,
+   * and the expression it applies to. There is no declaration to patch, so
+   * the package note below does not apply. */
+  const char *kind;
+  size_t kind_len = scr_origin_field(origin, 0, &kind);
+  if (kind_len == 4 && memcmp(kind, "cast", 4) == 0) {
+    const char *cast, *cast_where, *cast_source;
+    size_t cast_len = scr_origin_field(origin, 1, &cast);
+    size_t cast_where_len = scr_origin_field(origin, 2, &cast_where);
+    size_t cast_source_len = scr_origin_field(origin, 3, &cast_source);
+    ScrOriginBuf note = {0};
+    scr_origin_put(&note, msg, mlen);
+    scr_origin_puts(&note, "\n    the cast '");
+    scr_origin_put(&note, cast, cast_len);
+    scr_origin_puts(&note, "' (");
+    scr_origin_put(&note, cast_where, cast_where_len);
+    scr_origin_puts(&note, ") applies to '");
+    scr_origin_put(&note, cast_source, cast_source_len);
+    scr_origin_puts(&note, "'");
+    ScrStr *next = scr_str_new(note.data, note.len);
+    free(note.data);
+    scr_str_release(e->message);
+    e->message = next;
+    if (e->stack != NULL) {
+      scr_str_release(e->stack);
+      e->stack = NULL;
+    }
+    return;
+  }
   const char *pkg, *version, *selector, *where, *declared;
   size_t pkg_len = scr_origin_field(origin, 0, &pkg);
   size_t version_len = scr_origin_field(origin, 1, &version);

@@ -2,6 +2,8 @@
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { cjsLexedExportsOfFile, cjsVisibleNames } from "./cjs-syntax.js";
 import type { Ts7SourceParser } from "./ts7/source-parser.js";
+import type { SourceFile } from "./ts7/ast-types.js";
+import * as ts from "./ts7/syntax.js";
 import {
   isVirtualSource,
   trackedDirectoryExists,
@@ -152,6 +154,43 @@ function requireTargetEsModuleStamped(
 /** The Node-visible named-export set of a star-re-export TARGET file:
  * its recursive lexer-visible names (relative edges only — exactly what
  * the emitted member entries must enumerate). */
+/** Whether the file is an ES module: an import or export declaration, an
+ * export assignment, or an export modifier on any other statement. */
+function hasEsmSyntax(sf: SourceFile): boolean {
+  for (const stmt of sf.statements.nodes) {
+    if (ts.isImportDeclaration(stmt) || ts.isExportDeclaration(stmt)) return true;
+    if (stmt.kind === ts.SyntaxKind.ExportAssignment) return true;
+    if (ts.getModifiers(stmt)?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword))
+      return true;
+  }
+  return false;
+}
+
+/** Whether a resolved star target provably exports nothing: its own lexer
+ * names are empty, it carries no ES-module export syntax, and every module
+ * it star re-exports is itself provably empty. Anything unprobed (a bare
+ * package, a JSON or non-JavaScript target, an unresolved specifier) makes
+ * the answer false. */
+function provablyEmpty(parser: Ts7SourceParser, file: string, seen: Set<string>): boolean {
+  if (seen.has(file)) return true;
+  seen.add(file);
+  if (!/\.(c|m)?js$/.test(file)) return false;
+  const source = trackedReadFile(file);
+  if (source === null) return false;
+  const sf = parser.parse(file, source, "js");
+  // An ES module's exports are not the CommonJS lexer's to enumerate. The
+  // parser answers, so compact forms (`export{a}`, `export*from"x"`, a
+  // minified `export default`) count too.
+  if (hasEsmSyntax(sf)) return false;
+  const lexed = cjsLexedExportsOfFile(sf);
+  if (lexed.exports.size > 0) return false;
+  for (const spec of lexed.reexports) {
+    const next = resolveRelativeCjs(file, spec);
+    if (next === null || !provablyEmpty(parser, next, seen)) return false;
+  }
+  return true;
+}
+
 function starTargetNames(parser: Ts7SourceParser, file: string): Set<string> {
   try {
     return cjsVisibleNames(
@@ -192,6 +231,10 @@ export function rewriteBundlerCjsWithParser(
     lexerVisibleNames,
     requireOnly: isVirtualSource,
     requireTargetEsModuleStamped: (from, spec) => requireTargetEsModuleStamped(parser, from, spec),
+    starTargetProvablyEmpty: (from, spec) => {
+      const target = resolveRelativeCjs(from, spec);
+      return target !== null && provablyEmpty(parser, target, new Set<string>());
+    },
     starTargetNames: (from, spec) => {
       const target = resolveRelativeCjs(from, spec);
       return target === null ? new Set<string>() : starTargetNames(parser, target);

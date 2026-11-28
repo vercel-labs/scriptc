@@ -38,6 +38,7 @@ import {
   typeKey,
 } from "../../../ir/ir.js";
 import { staticForkModulePath } from "../../fork-target.js";
+import { resolveWorkerEntrySource } from "../../resolve.js";
 import { tsgoPath } from "../../dts-paths.js";
 import { optionMember } from "./arguments.js";
 import { knownBufEncoding } from "../containers/bytes.js";
@@ -2018,8 +2019,14 @@ export function lowerForkCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Sr
     );
   }
   const targetPath = staticForkModulePath(lowerer.program, expr.arguments.nodes[0]!);
+  // The embedded target is keyed by the source it is built from: a fork
+  // spelled `./child.js` selects child.ts when that is the file on disk, the
+  // same substitution a relative import of `./child.js` gets.
+  const targetSource = targetPath === null ? null : resolveWorkerEntrySource(targetPath);
   const targetId =
-    targetPath === null ? undefined : lowerer.forkTargetIdByPath.get(tsgoPath(resolve(targetPath)));
+    targetSource === null
+      ? undefined
+      : lowerer.forkTargetIdByPath.get(tsgoPath(resolve(targetSource)));
   if (targetId === undefined) {
     lowerer.noLowering(
       "fork with a runtime-valued module path",

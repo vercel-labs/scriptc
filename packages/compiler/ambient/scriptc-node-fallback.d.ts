@@ -23,19 +23,6 @@
  * has a lowering (throw sites stamp the errno name — "ENOENT" and
  * friends; reads answer `string | undefined`), errno/syscall/path
  * typecheck and fence per member. */
-/* A typed array or a DataView as a builtin's parameter: the three members
- * every view has, so each of them, a Buffer and a value typed with the ES
- * library's `ArrayBufferView` are arguments. The builtin declarations use
- * this interface instead of the library's: that one is the type of a
- * program's own values and maps to the checked-dynamic value wherever one
- * flows, and a builtin's signature keeps its shape whatever a program's
- * values are. It has no value representation of its own: a builtin lowers
- * its view argument at the call. */
-interface ScriptcBufferView<TArrayBuffer extends ArrayBufferLike = ArrayBufferLike> {
-  readonly buffer: TArrayBuffer;
-  readonly byteLength: number;
-  readonly byteOffset: number;
-}
 declare namespace NodeJS {
   /* The type of process.stdout and process.stderr, under the name
    * @types/node gives it. */
@@ -572,7 +559,7 @@ declare var process: {
   prependListener(event: "beforeExit", listener: (code: number) => void): void;
   prependListener(
     event: "uncaughtException" | "uncaughtExceptionMonitor",
-    listener: (err: unknown, origin: string) => void,
+    listener: (err: unknown, origin: "uncaughtException" | "unhandledRejection") => void,
   ): void;
   /* 'warning' — Node's process-warning channel: listeners receive the
    * warning Error (as a dyn value); emitWarning and the runtime's
@@ -583,14 +570,17 @@ declare var process: {
    * suppressing the default report. 'rejectionHandled' — the sibling
    * event, fired once when a delivered promise later gains a handler
    * (promise payload, Node's shape). */
-  on(event: "unhandledRejection", listener: (reason: unknown, promise: unknown) => void): void;
-  on(event: "rejectionHandled", listener: (promise: unknown) => void): void;
+  on(
+    event: "unhandledRejection",
+    listener: (reason: unknown, promise: Promise<unknown>) => void,
+  ): void;
+  on(event: "rejectionHandled", listener: (promise: Promise<unknown>) => void): void;
   /* 'multipleResolves' — a resolution or rejection that reached a promise
    * which already resolved: (type, promise, value), delivered on the tick
    * queued at that settle, with Node's one-time DEP0160 warning. */
   on(
     event: "multipleResolves",
-    listener: (type: "resolve" | "reject", promise: unknown, value: unknown) => void,
+    listener: (type: "resolve" | "reject", promise: Promise<unknown>, value: unknown) => void,
   ): void;
   /* 'uncaughtException' and 'uncaughtExceptionMonitor' — Node's process
    * error channel: the monitor listener observes a thrown error before the
@@ -598,34 +588,40 @@ declare var process: {
    * channel that raised it. */
   on(
     event: "uncaughtException" | "uncaughtExceptionMonitor",
-    listener: (err: unknown, origin: string) => void,
+    listener: (err: unknown, origin: "uncaughtException" | "unhandledRejection") => void,
   ): void;
   once(event: "SIGINT" | "SIGTERM", listener: () => void): void;
   once(event: "exit", listener: (code: number) => void): void;
   once(event: "beforeExit", listener: (code: number) => void): void;
-  once(event: "unhandledRejection", listener: (reason: unknown, promise: unknown) => void): void;
-  once(event: "rejectionHandled", listener: (promise: unknown) => void): void;
+  once(
+    event: "unhandledRejection",
+    listener: (reason: unknown, promise: Promise<unknown>) => void,
+  ): void;
+  once(event: "rejectionHandled", listener: (promise: Promise<unknown>) => void): void;
   once(
     event: "multipleResolves",
-    listener: (type: "resolve" | "reject", promise: unknown, value: unknown) => void,
+    listener: (type: "resolve" | "reject", promise: Promise<unknown>, value: unknown) => void,
   ): void;
   once(
     event: "uncaughtException" | "uncaughtExceptionMonitor",
-    listener: (err: unknown, origin: string) => void,
+    listener: (err: unknown, origin: "uncaughtException" | "unhandledRejection") => void,
   ): void;
   off(event: "SIGINT" | "SIGTERM", listener: () => void): void;
   off(event: "exit", listener: (code: number) => void): void;
   off(event: "beforeExit", listener: (code: number) => void): void;
   off(event: "warning", listener: (warning: Error & { code?: string }) => void): void;
-  off(event: "unhandledRejection", listener: (reason: unknown, promise: unknown) => void): void;
-  off(event: "rejectionHandled", listener: (promise: unknown) => void): void;
+  off(
+    event: "unhandledRejection",
+    listener: (reason: unknown, promise: Promise<unknown>) => void,
+  ): void;
+  off(event: "rejectionHandled", listener: (promise: Promise<unknown>) => void): void;
   off(
     event: "multipleResolves",
-    listener: (type: "resolve" | "reject", promise: unknown, value: unknown) => void,
+    listener: (type: "resolve" | "reject", promise: Promise<unknown>, value: unknown) => void,
   ): void;
   off(
     event: "uncaughtException" | "uncaughtExceptionMonitor",
-    listener: (err: unknown, origin: string) => void,
+    listener: (err: unknown, origin: "uncaughtException" | "unhandledRejection") => void,
   ): void;
   /* removeListener IS off — Node aliases them; both lower identically. */
   removeListener(event: "SIGINT" | "SIGTERM", listener: () => void): void;
@@ -634,16 +630,16 @@ declare var process: {
   removeListener(event: "warning", listener: (warning: Error & { code?: string }) => void): void;
   removeListener(
     event: "unhandledRejection",
-    listener: (reason: unknown, promise: unknown) => void,
+    listener: (reason: unknown, promise: Promise<unknown>) => void,
   ): void;
-  removeListener(event: "rejectionHandled", listener: (promise: unknown) => void): void;
+  removeListener(event: "rejectionHandled", listener: (promise: Promise<unknown>) => void): void;
   removeListener(
     event: "multipleResolves",
-    listener: (type: "resolve" | "reject", promise: unknown, value: unknown) => void,
+    listener: (type: "resolve" | "reject", promise: Promise<unknown>, value: unknown) => void,
   ): void;
   removeListener(
     event: "uncaughtException" | "uncaughtExceptionMonitor",
-    listener: (err: unknown, origin: string) => void,
+    listener: (err: unknown, origin: "uncaughtException" | "unhandledRejection") => void,
   ): void;
   /* emitWarning — Node's full grammar (string or Error warning; type/
    * ctor/options second; code/ctor third). */
@@ -915,6 +911,7 @@ type KeyFormat =
   | "raw"
   | "raw-private"
   | "raw-public"
+  | "raw-seed"
   | "raw-secret"
   | "raw-seed"
   | "spki";
@@ -1064,7 +1061,11 @@ interface SubtleCrypto {
       | "X25519"
       | { name: "X25519" }
       | "X448"
-      | { name: "X448" },
+      | { name: "X448" }
+      | "ML-KEM-512"
+      | "ML-KEM-768"
+      | "ML-KEM-1024"
+      | { name: "ML-KEM-512" | "ML-KEM-768" | "ML-KEM-1024" },
     extractable: boolean,
     keyUsages: readonly KeyUsage[],
   ): Promise<CryptoKeyPair>;
@@ -1138,6 +1139,30 @@ interface SubtleCrypto {
     wrappingKey: CryptoKey,
     wrapAlgorithm: AlgorithmIdentifier | AesGcmParams | AesCbcParams | AesCtrParams | RsaOaepParams,
   ): Promise<ArrayBuffer>;
+  encapsulateBits(
+    algorithm: AlgorithmIdentifier,
+    encapsulationKey: CryptoKey,
+  ): Promise<{ sharedKey: ArrayBuffer; ciphertext: ArrayBuffer }>;
+  encapsulateKey(
+    algorithm: AlgorithmIdentifier,
+    encapsulationKey: CryptoKey,
+    keyAlgorithm: AlgorithmIdentifier,
+    extractable: boolean,
+    keyUsages: readonly KeyUsage[],
+  ): Promise<{ sharedKey: CryptoKey; ciphertext: ArrayBuffer }>;
+  decapsulateBits(
+    algorithm: AlgorithmIdentifier,
+    decapsulationKey: CryptoKey,
+    ciphertext: BufferSource,
+  ): Promise<ArrayBuffer>;
+  decapsulateKey(
+    algorithm: AlgorithmIdentifier,
+    decapsulationKey: CryptoKey,
+    ciphertext: BufferSource,
+    keyAlgorithm: AlgorithmIdentifier,
+    extractable: boolean,
+    keyUsages: readonly KeyUsage[],
+  ): Promise<CryptoKey>;
 }
 interface Crypto {
   readonly subtle: SubtleCrypto;
@@ -1418,6 +1443,36 @@ declare var CloseEvent: {
   ): CloseEvent;
   readonly prototype: CloseEvent;
 };
+
+/* The global WebSocket client (scr_websocket.c). The instance is a native
+ * handle: the lowering supports construction, the readyState constants and
+ * instanceof, and the members below dispatch at run time. */
+interface WebSocket extends EventTarget {
+  readonly CONNECTING: 0;
+  readonly OPEN: 1;
+  readonly CLOSING: 2;
+  readonly CLOSED: 3;
+  readonly url: string;
+  readonly readyState: number;
+  readonly protocol: string;
+  readonly extensions: string;
+  readonly bufferedAmount: number;
+  binaryType: string;
+  onopen: ((this: WebSocket, ev: Event) => unknown) | null;
+  onmessage: ((this: WebSocket, ev: MessageEvent) => unknown) | null;
+  onerror: ((this: WebSocket, ev: Event) => unknown) | null;
+  onclose: ((this: WebSocket, ev: CloseEvent) => unknown) | null;
+  send(data: string | ArrayBufferLike | Blob | ArrayBufferView): void;
+  close(code?: number, reason?: string): void;
+}
+declare var WebSocket: {
+  new (url: string | URL, protocols?: string | string[]): WebSocket;
+  readonly prototype: WebSocket;
+  readonly CONNECTING: 0;
+  readonly OPEN: 1;
+  readonly CLOSING: 2;
+  readonly CLOSED: 3;
+};
 interface AddEventListenerOptions {
   capture?: boolean;
   once?: boolean;
@@ -1500,249 +1555,6 @@ declare var AbortSignal: {
   timeout(ms: number): AbortSignal;
 };
 
-interface QueuingStrategySize<T = unknown> {
-  (chunk: T): number;
-}
-interface QueuingStrategy<T = unknown> {
-  highWaterMark?: number;
-  size?: QueuingStrategySize<T>;
-}
-interface ReadableStreamReadValueResult<T> {
-  done: false;
-  value: T;
-}
-interface ReadableStreamReadDoneResult<T> {
-  done: true;
-  value: T | undefined;
-}
-type ReadableStreamReadResult<T> =
-  | ReadableStreamReadValueResult<T>
-  | ReadableStreamReadDoneResult<T>;
-interface ReadableStreamDefaultReader<T = unknown> {
-  readonly closed: Promise<void>;
-  read(): Promise<ReadableStreamReadResult<T>>;
-  cancel(reason?: unknown): Promise<void>;
-  releaseLock(): void;
-}
-interface ReadableStreamDefaultController<T = unknown> {
-  readonly desiredSize: number | null;
-  enqueue(chunk?: T): void;
-  close(): void;
-  error(reason?: unknown): void;
-}
-interface StreamPipeOptions {
-  preventAbort?: boolean;
-  preventCancel?: boolean;
-  preventClose?: boolean;
-  signal?: AbortSignal;
-}
-interface UnderlyingSource<T = unknown> {
-  start?(controller: ReadableStreamDefaultController<T>): unknown;
-  pull?(controller: ReadableStreamDefaultController<T>): unknown;
-  cancel?(reason?: unknown): unknown;
-}
-/* A byte stream's source and its controller, request and reader
- * (@types/node's stream/web shapes). */
-interface UnderlyingByteSource {
-  type: "bytes";
-  autoAllocateChunkSize?: number;
-  start?(controller: ReadableByteStreamController): unknown;
-  pull?(controller: ReadableByteStreamController): unknown;
-  cancel?(reason?: unknown): unknown;
-}
-interface ReadableStreamBYOBRequest {
-  readonly view: Uint8Array | null;
-  respond(bytesWritten: number): void;
-  respondWithNewView(view: Uint8Array): void;
-}
-interface ReadableByteStreamController {
-  readonly byobRequest: ReadableStreamBYOBRequest | null;
-  readonly desiredSize: number | null;
-  enqueue(chunk?: ArrayBufferView): void;
-  close(): void;
-  error(reason?: unknown): void;
-}
-interface ReadableStreamBYOBReadValueResult<T extends ArrayBufferView> {
-  done: false;
-  value: T;
-}
-interface ReadableStreamBYOBReadDoneResult<T extends ArrayBufferView> {
-  done: true;
-  value: T | undefined;
-}
-type ReadableStreamBYOBReadResult<T extends ArrayBufferView> =
-  | ReadableStreamBYOBReadValueResult<T>
-  | ReadableStreamBYOBReadDoneResult<T>;
-interface ReadableStreamBYOBReader {
-  readonly closed: Promise<void>;
-  read<T extends ArrayBufferView>(
-    view: T,
-    options?: { min?: number },
-  ): Promise<ReadableStreamBYOBReadResult<T>>;
-  cancel(reason?: unknown): Promise<void>;
-  releaseLock(): void;
-}
-interface ReadableStream<T = unknown> {
-  readonly locked: boolean;
-  cancel(reason?: unknown): Promise<void>;
-  getReader(): ReadableStreamDefaultReader<T>;
-  getReader(options: { mode: "byob" }): ReadableStreamBYOBReader;
-  tee(): [ReadableStream<T>, ReadableStream<T>];
-  pipeTo(destination: WritableStream<T>, options?: StreamPipeOptions): Promise<void>;
-  pipeThrough<O>(
-    transform: { readable: ReadableStream<O>; writable: WritableStream<T> },
-    options?: StreamPipeOptions,
-  ): ReadableStream<O>;
-  [Symbol.asyncIterator](options?: { preventCancel?: boolean }): AsyncIterableIterator<T>;
-  values(options?: { preventCancel?: boolean }): AsyncIterableIterator<T>;
-}
-declare var ReadableStream: {
-  /* Two constructor signatures, like @types/node's: a union of the two
-   * source shapes in one signature would drop the contextual type of a
-   * `pull(controller)` callback, since TypeScript gives no contextual
-   * signature for a property whose type differs across the union. */
-  new (
-    source: UnderlyingByteSource,
-    strategy?: QueuingStrategy<Uint8Array>,
-  ): ReadableStream<Uint8Array>;
-  new <T = unknown>(source?: UnderlyingSource<T>, strategy?: QueuingStrategy<T>): ReadableStream<T>;
-  from<T>(iterable: readonly T[]): ReadableStream<T>;
-  from(iterable: Uint8Array): ReadableStream<number>;
-  from(iterable: string): ReadableStream<string>;
-  from<T>(iterable: Iterable<T> | AsyncIterable<T>): ReadableStream<T>;
-  readonly prototype: ReadableStream<unknown>;
-};
-declare var ReadableStreamBYOBReader: {
-  new (stream: ReadableStream<Uint8Array>): ReadableStreamBYOBReader;
-  readonly prototype: ReadableStreamBYOBReader;
-};
-declare var ReadableByteStreamController: {
-  new (): ReadableByteStreamController;
-  readonly prototype: ReadableByteStreamController;
-};
-declare var ReadableStreamBYOBRequest: {
-  new (): ReadableStreamBYOBRequest;
-  readonly prototype: ReadableStreamBYOBRequest;
-};
-/* The writable side of a TransformStream and its writer. A program that
- * constructs a WritableStream, or a TransformStream with a transformer,
- * builds its streams with the web stream classes (scr_webstreams.c). */
-interface WritableStreamDefaultWriter<W = unknown> {
-  readonly closed: Promise<void>;
-  readonly desiredSize: number | null;
-  readonly ready: Promise<void>;
-  abort(reason?: unknown): Promise<void>;
-  close(): Promise<void>;
-  releaseLock(): void;
-  write(chunk?: W): Promise<void>;
-}
-interface WritableStream<W = unknown> {
-  readonly locked: boolean;
-  abort(reason?: unknown): Promise<void>;
-  close(): Promise<void>;
-  getWriter(): WritableStreamDefaultWriter<W>;
-}
-/* Without a transformer, the identity transform: chunks written to
- * `writable` are read from `readable`, and a write completes when its chunk
- * is read. */
-interface TransformStream<I = unknown, O = unknown> {
-  readonly readable: ReadableStream<O>;
-  readonly writable: WritableStream<I>;
-}
-interface Transformer<I = unknown, O = unknown> {
-  start?(controller: TransformStreamDefaultController<O>): unknown;
-  transform?(chunk: I, controller: TransformStreamDefaultController<O>): unknown;
-  flush?(controller: TransformStreamDefaultController<O>): unknown;
-  cancel?(reason?: unknown): unknown;
-}
-declare var TransformStream: {
-  new <I = unknown, O = I>(
-    transformer?: Transformer<I, O>,
-    writableStrategy?: QueuingStrategy<I>,
-    readableStrategy?: QueuingStrategy<O>,
-  ): TransformStream<I, O>;
-  readonly prototype: TransformStream<unknown, unknown>;
-};
-/* The other web stream interfaces. JavaScript sources construct and read
- * them as checked-dynamic values (scr_webstreams.c); TypeScript sources
- * have no static lowering for them. */
-declare var ReadableStreamDefaultReader: {
-  new <T = unknown>(stream: ReadableStream<T>): ReadableStreamDefaultReader<T>;
-  readonly prototype: ReadableStreamDefaultReader<unknown>;
-};
-declare var ReadableStreamDefaultController: {
-  new (): ReadableStreamDefaultController<unknown>;
-  readonly prototype: ReadableStreamDefaultController<unknown>;
-};
-interface WritableStreamDefaultController {
-  readonly signal: AbortSignal;
-  error(reason?: unknown): void;
-}
-interface UnderlyingSink<W = unknown> {
-  start?(controller: WritableStreamDefaultController): unknown;
-  write?(chunk: W, controller: WritableStreamDefaultController): unknown;
-  close?(): unknown;
-  abort?(reason?: unknown): unknown;
-}
-declare var WritableStream: {
-  new <W = unknown>(sink?: UnderlyingSink<W>, strategy?: QueuingStrategy<W>): WritableStream<W>;
-  readonly prototype: WritableStream<unknown>;
-};
-declare var WritableStreamDefaultWriter: {
-  new <W = unknown>(stream: WritableStream<W>): WritableStreamDefaultWriter<W>;
-  readonly prototype: WritableStreamDefaultWriter<unknown>;
-};
-declare var WritableStreamDefaultController: {
-  new (): WritableStreamDefaultController;
-  readonly prototype: WritableStreamDefaultController;
-};
-interface TransformStreamDefaultController<O = unknown> {
-  readonly desiredSize: number | null;
-  enqueue(chunk?: O): void;
-  error(reason?: unknown): void;
-  terminate(): void;
-}
-declare var TransformStreamDefaultController: {
-  new (): TransformStreamDefaultController<unknown>;
-  readonly prototype: TransformStreamDefaultController<unknown>;
-};
-interface CountQueuingStrategy extends QueuingStrategy<unknown> {
-  readonly highWaterMark: number;
-  readonly size: QueuingStrategySize<unknown>;
-}
-declare var CountQueuingStrategy: {
-  new (init: { highWaterMark: number }): CountQueuingStrategy;
-  readonly prototype: CountQueuingStrategy;
-};
-interface ByteLengthQueuingStrategy extends QueuingStrategy<ScriptcBufferView> {
-  readonly highWaterMark: number;
-  readonly size: QueuingStrategySize<ScriptcBufferView>;
-}
-declare var ByteLengthQueuingStrategy: {
-  new (init: { highWaterMark: number }): ByteLengthQueuingStrategy;
-  readonly prototype: ByteLengthQueuingStrategy;
-};
-interface TextEncoderStream {
-  readonly encoding: "utf-8";
-  readonly readable: ReadableStream<Uint8Array>;
-  readonly writable: WritableStream<string>;
-}
-declare var TextEncoderStream: {
-  new (): TextEncoderStream;
-  readonly prototype: TextEncoderStream;
-};
-interface TextDecoderStream {
-  readonly encoding: string;
-  readonly fatal: boolean;
-  readonly ignoreBOM: boolean;
-  readonly readable: ReadableStream<string>;
-  readonly writable: WritableStream<Uint8Array>;
-}
-declare var TextDecoderStream: {
-  new (label?: string, options?: { fatal?: boolean; ignoreBOM?: boolean }): TextDecoderStream;
-  readonly prototype: TextDecoderStream;
-};
-
 /* fetch, typed as the native JSON + readable-stream slice: one URL, an
  * optional init with the members CLI requests carry, and a Response
  * whose body is the same stream consumed by json(). json() returns
@@ -1774,6 +1586,7 @@ declare var Headers: {
 };
 interface Response {
   readonly ok: boolean;
+  readonly type: "basic" | "cors" | "default" | "error" | "opaque" | "opaqueredirect";
   readonly status: number;
   readonly statusText: string;
   readonly url: string;
@@ -1789,6 +1602,9 @@ interface Response {
    * direct use and points at bytes(). */
   arrayBuffer(): Promise<ArrayBuffer>;
   bytes(): Promise<Uint8Array>;
+  /* The body collected into a Blob whose type is the response's content
+   * type ("" when it carries none). */
+  blob(): Promise<Blob>;
   /* A copy whose body is one branch of the body's tee; the original keeps
    * the other. */
   clone(): Response;
@@ -2092,6 +1908,23 @@ declare module "node:perf_hooks" {
     ): EventLoopUtilization;
   }
   export const performance: Performance;
+  /* perf_hooks.constants: the GC kind and flag values a 'gc' entry's detail
+   * carries, as @types/node declares them. Every name reads its Node v24
+   * value at the access site (the zlib.constants stance); the object value
+   * walks the same enumerable GC numbers. */
+  export namespace constants {
+    const NODE_PERFORMANCE_GC_MAJOR: number;
+    const NODE_PERFORMANCE_GC_MINOR: number;
+    const NODE_PERFORMANCE_GC_INCREMENTAL: number;
+    const NODE_PERFORMANCE_GC_WEAKCB: number;
+    const NODE_PERFORMANCE_GC_FLAGS_NO: number;
+    const NODE_PERFORMANCE_GC_FLAGS_CONSTRUCT_RETAINED: number;
+    const NODE_PERFORMANCE_GC_FLAGS_FORCED: number;
+    const NODE_PERFORMANCE_GC_FLAGS_SYNCHRONOUS_PHANTOM_PROCESSING: number;
+    const NODE_PERFORMANCE_GC_FLAGS_ALL_AVAILABLE_GARBAGE: number;
+    const NODE_PERFORMANCE_GC_FLAGS_ALL_EXTERNAL_MEMORY: number;
+    const NODE_PERFORMANCE_GC_FLAGS_SCHEDULE_IDLE: number;
+  }
   /* Event-loop metrics: utilization (idle/active ms since the loop started)
    * and monitorEventLoopDelay's sampling histogram (nanoseconds). */
   export interface EventLoopUtilization {
@@ -2661,6 +2494,12 @@ declare module "node:readline/promises" {
  * and the supported structural view of a process output stream. */
 declare module "tty" {
   export interface WriteStream extends NodeJS.WritableStream, __scriptcTerminalStream.Methods {
+    /* Node's destroy() tears the stream down and emits 'close' on a later
+     * tick; the compiled stream does the same (writes that follow still
+     * reach the descriptor, as in Node 24). Node's special stdout/stderr
+     * streams answer destroyed=false even after destroy. */
+    destroy(): void;
+    readonly destroyed: boolean;
     write(data: string | Uint8Array, callback?: (error?: Error | null) => void): boolean;
     write(
       data: string | Uint8Array,

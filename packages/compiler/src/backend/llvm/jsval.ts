@@ -406,6 +406,124 @@ export function emitJsLibCall(host: Host, e: LibCallExpr): LlValue {
       );
       return { name: out, type: e.type };
     }
+    case "js.toNumberOrNaN": {
+      // ToNumber with the values a missing or null dictionary entry answers:
+      // undefined is NaN (what `undefined + n` computes) and null is 0.
+      // Undefined reaches here as its immediate word or as a dyn cell of kind
+      // SCR_DYN_UNDEF, null as its word or kind SCR_DYN_NULL; a present
+      // number unboxes on js.toF64's inline fast path, and every other value
+      // keeps js.toF64's checked TypeError.
+      const a = operand(host, e.args[0]!);
+      const word = a.word();
+      const slot = B.slot();
+      B.entryAllocas.push(`${slot} = alloca double`);
+      const undefBlock = B.newLabel("js.non.u");
+      const nullBlock = B.newLabel("js.non.z");
+      const classify = B.newLabel("js.non.y");
+      const classifyAfterNull = B.newLabel("js.non.y2");
+      const doubleBlock = B.newLabel("js.non.d");
+      const cellBlock = B.newLabel("js.non.c");
+      const live = B.newLabel("js.non.l");
+      const kindCheck = B.newLabel("js.non.k");
+      const numBlock = B.newLabel("js.non.n");
+      const slowBlock = B.newLabel("js.non.s");
+      const done = B.newLabel("js.non.j");
+      let cell = word;
+      if (jsImmediates(host)) {
+        const bits = bitsOf(host, word);
+        const isUndef = B.tmp();
+        B.line(`${isUndef} = icmp eq i64 ${bits}, ${JS_BITS.undefined}`);
+        B.condBr(isUndef, undefBlock, classify);
+        B.startBlock(classify);
+        const isNull = B.tmp();
+        B.line(`${isNull} = icmp eq i64 ${bits}, ${JS_BITS.null}`);
+        B.condBr(isNull, nullBlock, classifyAfterNull);
+        B.startBlock(classifyAfterNull);
+        const isDouble = B.tmp();
+        const tagBlock = B.newLabel("js.non.t");
+        B.line(`${isDouble} = icmp ult i64 ${bits}, ${JS_BITS.limit}`);
+        B.condBr(isDouble, doubleBlock, tagBlock);
+        B.startBlock(tagBlock);
+        const tag = B.tmp();
+        const isCell = B.tmp();
+        B.line(`${tag} = lshr i64 ${bits}, 48`);
+        B.line(`${isCell} = icmp eq i64 ${tag}, ${JS_TAGS.cell}`);
+        const addr = B.tmp();
+        const p = B.tmp();
+        B.line(`${addr} = and i64 ${bits}, ${JS_BITS.payloadMask}`);
+        B.line(`${p} = inttoptr i64 ${addr} to ptr`);
+        B.condBr(isCell, cellBlock, slowBlock);
+        cell = p;
+      } else {
+        B.br(cellBlock);
+      }
+      B.startBlock(undefBlock);
+      B.line(`store double 0x7FF8000000000000, ptr ${slot}`);
+      B.br(done);
+      B.startBlock(nullBlock);
+      B.line(`store double 0x0000000000000000, ptr ${slot}`);
+      B.br(done);
+      if (jsImmediates(host)) {
+        B.startBlock(doubleBlock);
+        const bits = bitsOf(host, word);
+        const d = B.tmp();
+        B.line(`${d} = bitcast i64 ${bits} to double`);
+        B.line(`store double ${d}, ptr ${slot}`);
+        B.br(done);
+      }
+      B.startBlock(cellBlock);
+      const nonNull = B.tmp();
+      B.line(`${nonNull} = icmp ne ptr ${cell}, null`);
+      // A missing dictionary key arrives as a cell-tagged null payload: the
+      // checked-dynamic tree's absent value, which is undefined.
+      B.condBr(nonNull, live, undefBlock);
+      B.startBlock(live);
+      const kp = B.tmp();
+      const kind = B.tmp();
+      B.line(
+        `${kp} = getelementptr inbounds i8, ptr ${cell}, i64 ${host.abiOffset(8, 4)} ; ->kind`,
+      );
+      B.line(`${kind} = load i32, ptr ${kp}`);
+      const isNum = B.tmp();
+      B.line(`${isNum} = icmp eq i32 ${kind}, 2`);
+      B.condBr(isNum, numBlock, kindCheck);
+      B.startBlock(kindCheck);
+      const isUndefKind = B.tmp();
+      // SCR_DYN_UNDEF: the checked-dynamic tree's undefined.
+      B.line(`${isUndefKind} = icmp eq i32 ${kind}, 6`);
+      const nullKindBlock = B.newLabel("js.non.m");
+      B.condBr(isUndefKind, undefBlock, nullKindBlock);
+      B.startBlock(nullKindBlock);
+      // SCR_DYN_NULL: ToNumber(null) is 0.
+      const isNullKind = B.tmp();
+      B.line(`${isNullKind} = icmp eq i32 ${kind}, 0`);
+      B.condBr(isNullKind, nullBlock, slowBlock);
+      B.startBlock(numBlock);
+      const np = B.tmp();
+      const n = B.tmp();
+      B.line(
+        `${np} = getelementptr inbounds i8, ptr ${cell}, i64 ${host.abiOffset(16, 8)} ; ->v.num`,
+      );
+      B.line(`${n} = load double, ptr ${np}`);
+      B.line(`store double ${n}, ptr ${slot}`);
+      B.br(done);
+      B.startBlock(slowBlock);
+      // js.toF64's checked conversion: box the jsval as a dyn cell (a no-op
+      // for a cell), then dynCheck's number test, so a string or BigInt
+      // reports the same TypeError as a direct checked read.
+      const boxed = call(host, "ptr", "scr_js_to_dyn_borrow", [["ptr", word]]);
+      const helper = host.dyn.dynCheckHelper(e.type, undefined);
+      const d = B.tmp();
+      B.line(`${d} = call double @${helper}(ptr ${boxed}, ptr null)`);
+      B.line(`call void ${releaseSym(host.shapeHost, DYN)}(ptr ${boxed})`);
+      B.line(`store double ${d}, ptr ${slot}`);
+      host.emitPendingCheck(undefined, false, undefined, host.conversionTraceAt(e.loc));
+      B.br(done);
+      B.startBlock(done);
+      const result = B.tmp();
+      B.line(`${result} = load double, ptr ${slot}`);
+      return { name: result, type: e.type };
+    }
     case "js.add":
     case "js.arithmetic": {
       const op = e.fn === "js.add" ? "+" : literalOp(e.args[2]!);
@@ -624,6 +742,54 @@ function emitBoxedJsLibCall(host: Host, e: LibCallExpr): LlValue {
       // A checked conversion to a number: a dev build reports its failure.
       host.emitPendingCheck(undefined, false, undefined, host.conversionTraceAt(e.loc));
       return { name: d, type: e.type };
+    }
+    case "js.toNumberOrNaN": {
+      // The cell form (no immediates): the undefined kind answers NaN, every
+      // other value keeps js.toF64's checked unbox.
+      const v = host.emitExpr(e.args[0]!).name;
+      const slot = B.slot();
+      B.entryAllocas.push(`${slot} = alloca double`);
+      const undefBlock = B.newLabel("js.non.u");
+      const nullBlock = B.newLabel("js.non.z");
+      const kindBlock = B.newLabel("js.non.k");
+      const numberBlock = B.newLabel("js.non.n");
+      const done = B.newLabel("js.non.j");
+      const nonNull = B.tmp();
+      B.line(`${nonNull} = icmp ne ptr ${v}, null`);
+      // A missing dictionary key arrives as a null cell: undefined.
+      B.condBr(nonNull, kindBlock, undefBlock);
+      B.startBlock(kindBlock);
+      const kp = B.tmp();
+      const kind = B.tmp();
+      const undef = B.tmp();
+      B.line(`${kp} = getelementptr inbounds i8, ptr ${v}, i64 ${host.abiOffset(8, 4)} ; ->kind`);
+      B.line(`${kind} = load i32, ptr ${kp}`);
+      // SCR_DYN_UNDEF is the checked-dynamic tree's undefined, SCR_DYN_NULL
+      // its null (ToNumber(null) is 0).
+      B.line(`${undef} = icmp eq i32 ${kind}, 6`);
+      const nullKindCheck = B.newLabel("js.non.m");
+      const nullKind = B.tmp();
+      B.line(`${nullKind} = icmp eq i32 ${kind}, 0`);
+      B.condBr(undef, undefBlock, nullKindCheck);
+      B.startBlock(nullKindCheck);
+      B.condBr(nullKind, nullBlock, numberBlock);
+      B.startBlock(undefBlock);
+      B.line(`store double 0x7FF8000000000000, ptr ${slot}`);
+      B.br(done);
+      B.startBlock(nullBlock);
+      B.line(`store double 0x0000000000000000, ptr ${slot}`);
+      B.br(done);
+      B.startBlock(numberBlock);
+      const helper = host.dyn.dynCheckHelper(e.type, undefined);
+      const d = B.tmp();
+      B.line(`${d} = call double @${helper}(ptr ${v}, ptr null)`);
+      host.emitPendingCheck(undefined, false, undefined, host.conversionTraceAt(e.loc));
+      B.line(`store double ${d}, ptr ${slot}`);
+      B.br(done);
+      B.startBlock(done);
+      const result = B.tmp();
+      B.line(`${result} = load double, ptr ${slot}`);
+      return { name: result, type: e.type };
     }
     case "js.add": {
       const [a, b] = args();

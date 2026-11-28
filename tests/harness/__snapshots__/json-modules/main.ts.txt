@@ -1,8 +1,0 @@
-json-modules/main.ts:3:8 - error SC1012: named imports from JSON modules are not supported yet
-
-  2 |  * ESM rule); named bindings fence at preflight. */
-  3 | import { version } from "./pkg.json" with { type: "json" };
-    |        ^~~~~~~~~~~
-  4 | 
-
-  hint: use named exports: export function f() {} / import { f } from "./m"

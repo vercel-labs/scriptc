@@ -1119,7 +1119,21 @@ export function lowerPromiseStaticCall(
         "an entry is a promise, a value whose type shows no `then` (it fulfils as itself), or `cond ? promise : value` — a thenable, a value that may hold a `then` its type does not show, and a spread have no lowering",
       );
     }
-    const entries = lowerer.lowerExpr(argNode);
+    let entries = lowerer.lowerExpr(argNode);
+    // `Promise.all(set)` — Node takes any iterable. A same-element Set
+    // drains (setIntrinsic toArray) into the array form below; its elements
+    // are the values iteration reads, and the countdown combinator treats
+    // them as the array's entries.
+    if (entries.type.kind === "set") {
+      entries = {
+        kind: "setIntrinsic",
+        method: "toArray",
+        receiver: entries,
+        args: [],
+        type: arrayOf(entries.type.elem),
+        loc,
+      };
+    }
     if (entries.type.kind === "dyn") return checkedPromiseAll(lowerer, entries, loc);
     // An 'any'-typed argument that holds a typed value (`const xs: any =
     // []`): the combinator reads it as the runtime value it is.
@@ -1298,6 +1312,21 @@ export function lowerPromiseStaticCall(
     if (member === "allSettled") {
       const settled = lowerTupleAllSettled(lowerer, call, entriesArgument(argNode));
       if (settled) return settled;
+    }
+    // A TypeScript source whose argument lowers to a checked-dynamic value
+    // (an `.map` over a dynamic collection, an untyped array): Node builds
+    // the input at run time, so the checked combinator serves it, exactly
+    // like the JavaScript lane's. The argument lowers ONCE; a typed promise
+    // array keeps the typed combinator with that same value.
+    const probe = entriesArgument(argNode);
+    // An array literal keeps typedPromiseEntries' element-wise lowering: the
+    // checker types a uniform literal by the combinator's tuple overload, so
+    // lowering it as one expression yields a tuple record and refuses. Only
+    // a non-literal argument is probed for the checked-dynamic path.
+    if (probe !== null && !ts.isArrayLiteralExpression(probe)) {
+      const lowered = lowerer.lowerExpr(probe);
+      if (lowered.type.kind === "dyn") return checkedPromiseAll(lowerer, lowered, loc, member);
+      return lowerTypedSettledCombinator(lowerer, call, probe, member, lowered);
     }
     return lowerTypedSettledCombinator(lowerer, call, argNode, member);
   }

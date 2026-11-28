@@ -36,15 +36,48 @@ static const char *const scr_error_names[SCR_ERR_COUNT] = {
     "Error", "ReferenceError", "EvalError", "URIError", "AggregateError", "AssertionError",
     "SuppressedError"};
 
+/* The Error hierarchy's trace: the cause is the one cycle-capable edge the
+ * shared layout carries (the strings are never collector-headered). A
+ * causeless error visits nothing. The wider layouts add their own edges in
+ * their own entries below. */
 void scr_error_trace(void *e, ScrTraceVisit visit, void *ctx) {
-  /* name/message are strings — never collector-headered; nothing to visit. */
-  (void)e;
-  (void)visit;
-  (void)ctx;
+  ScrError *err = (ScrError *)e;
+  if (err->error_cause != NULL) visit(err->error_cause, ctx);
+}
+
+/* DOMException: the WebIDL `cause` slot (its options form) and the shared
+ * prefix's own slot, which stays NULL for this layout. */
+static void scr_domex_trace(void *obj, ScrTraceVisit visit, void *ctx) {
+  ScrDomException *d = (ScrDomException *)obj;
+  if (d->error_cause != NULL) visit(d->error_cause, ctx);
+  if (d->cause != NULL) visit(d->cause, ctx);
+}
+
+/* AggregateError: the prefix's cause and the `errors` list. */
+static void scr_aggregate_trace(void *obj, ScrTraceVisit visit, void *ctx) {
+  ScrAggregateError *a = (ScrAggregateError *)obj;
+  if (a->base.error_cause != NULL) visit(a->base.error_cause, ctx);
+  if (a->errors != NULL) visit(a->errors, ctx);
+}
+
+/* SuppressedError: the prefix's cause and the two snapshots the disposal
+ * records in scr_exception.c's side table (a `using` block that failed
+ * while the body error was pending). Both snapshots are collector-headered
+ * boxes, so the collector owns those edges once they are visited. */
+static void scr_suppressed_trace(void *obj, ScrTraceVisit visit, void *ctx) {
+  ScrError *e = (ScrError *)obj;
+  if (e->error_cause != NULL) visit(e->error_cause, ctx);
+  const ScrCaught *error = NULL, *suppressed = NULL;
+  if (!scr_exc_suppressed_values(obj, &error, &suppressed)) return;
+  if (error != NULL) visit((void *)error, ctx);
+  if (suppressed != NULL) visit((void *)suppressed, ctx);
 }
 
 static void scr_error_gcfree(void *obj) {
   ScrError *e = (ScrError *)obj;
+  /* The strings are untraced and released here; the cause is a traced
+   * edge the collector releases (dead cycles) or leaves alone (survivors),
+   * so it is not released here. */
   scr_str_release(e->name);
   scr_str_release(e->message);
   scr_str_release(e->code); /* NULL-safe: absent on most errors */
@@ -55,7 +88,6 @@ static void scr_error_gcfree(void *obj) {
   scr_str_release(e->system_dest);
   scr_str_release(e->system_message);
   scr_str_release(e->system_code);
-  if (e->error_cause && scr_error_cause_drop) scr_error_cause_drop(obj);
   scr_obj_free_note();
   scr_cyc_free(e);
 }
@@ -72,8 +104,8 @@ void scr_domex_install_cause_drop(void (*fn)(void *obj)) {
 }
 
 static void scr_domex_gcfree(void *obj) {
-  ScrDomException *d = (ScrDomException *)obj;
-  if (d->cause != NULL && scr_domex_cause_drop != NULL) scr_domex_cause_drop(obj);
+  /* The cause is a traced edge (scr_domex_trace): the collector releases
+   * it when it is part of the dead cycle. */
   scr_error_gcfree(obj);
 }
 
@@ -87,8 +119,8 @@ void scr_aggregate_install_errors_drop(void (*fn)(void *obj)) {
 }
 
 static void scr_aggregate_gcfree(void *obj) {
-  ScrAggregateError *a = (ScrAggregateError *)obj;
-  if (a->errors != NULL && scr_aggregate_errors_drop != NULL) scr_aggregate_errors_drop(obj);
+  /* The errors list is a traced edge (scr_aggregate_trace): the collector
+   * releases it when it is part of the dead cycle. */
   scr_error_gcfree(obj);
 }
 
@@ -145,10 +177,13 @@ static void scr_aggregate_destroy(void *obj) {
   scr_error_destroy(obj);
 }
 
-/* SuppressedError teardown: the ScrError fields plus the disposal
- * snapshots scr_exc_suppress recorded for its `error` and `suppressed`. */
+/* SuppressedError's collected teardown: the ScrError fields, and the
+ * disposal snapshots scr_exc_suppress recorded for its `error` and
+ * `suppressed` leave the side table WITHOUT a release — they are traced
+ * edges (scr_suppressed_trace), so the collector releases exactly the ones
+ * that are dead with it. */
 static void scr_suppressed_gcfree(void *obj) {
-  scr_exc_suppressed_forget(obj);
+  scr_exc_suppressed_detach(obj);
   scr_error_gcfree(obj);
 }
 
@@ -234,9 +269,11 @@ static ScrError *scr_error_alloc(int kind) {
                 : kind == SCR_ERR_AGGREGATE ? sizeof(ScrAggregateError)
                                             : sizeof(ScrError);
   static ScrCycType error_type = { &scr_error_trace, &scr_error_gcfree, SCR_CYC_KIND_ERROR };
-  static ScrCycType domex_type = { &scr_error_trace, &scr_domex_gcfree, SCR_CYC_KIND_DOMEXCEPTION };
-  static ScrCycType aggregate_type = { &scr_error_trace, &scr_aggregate_gcfree, SCR_CYC_KIND_ERROR };
-  static ScrCycType suppressed_type = { &scr_error_trace, &scr_suppressed_gcfree, SCR_CYC_KIND_ERROR };
+  static ScrCycType domex_type = { &scr_domex_trace, &scr_domex_gcfree, SCR_CYC_KIND_DOMEXCEPTION };
+  static ScrCycType aggregate_type = { &scr_aggregate_trace, &scr_aggregate_gcfree,
+                                       SCR_CYC_KIND_ERROR };
+  static ScrCycType suppressed_type = { &scr_suppressed_trace, &scr_suppressed_gcfree,
+                                        SCR_CYC_KIND_ERROR };
   ScrError *e;
   if (scr_error_traced) {
     e = scr_cyc_alloc(size, kind == SCR_ERR_DOMEX       ? &domex_type
@@ -433,6 +470,12 @@ const char *scr_error_message_code(const ScrStr *msg) {
     { "certificate signature failure", true, "CERT_SIGNATURE_FAILURE" },
     { "path length constraint exceeded", true, "PATH_LENGTH_EXCEEDED" },
     { "certificate revoked", true, "CERT_REVOKED" },
+    { "CRL has expired", true, "CRL_HAS_EXPIRED" },
+    { "CRL is not yet valid", true, "CRL_NOT_YET_VALID" },
+    { "CRL signature failure", true, "CRL_SIGNATURE_FAILURE" },
+    { "unable to get certificate CRL", true, "UNABLE_TO_GET_CRL" },
+    { "key usage does not include CRL signing", true, "UNSPECIFIED" },
+    { "certificate has expired", true, "CERT_HAS_EXPIRED" },
     { "self-signed certificate in certificate chain", true, "SELF_SIGNED_CERT_IN_CHAIN" },
     { "self-signed certificate", false, "DEPTH_ZERO_SELF_SIGNED_CERT" },
     { "unable to verify the first certificate", false, "UNABLE_TO_VERIFY_LEAF_SIGNATURE" },

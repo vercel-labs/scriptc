@@ -60,6 +60,7 @@ import {
   typeKey,
 } from "../../ir/ir.js";
 import { dynDesc, streamTypedRefEligible } from "../../ir/analysis.js";
+import { classValueSlot, classValueSlotBits } from "../../ir/class-key-index.js";
 import { mangleClassHeldTest, mangleRecordNew, mangleRecordStruct } from "../mangle.js";
 import { BlockBuilder } from "./blocks.js";
 import {
@@ -448,6 +449,7 @@ export class LlDyn {
           args[0] as IrType,
           args[1] as boolean,
           args[2] as boolean,
+          args[3] === true,
         );
       case "dyn.toDynHelper":
         return this.toDynHelper(args[0] as IrType);
@@ -3379,25 +3381,46 @@ export class LlDyn {
    * unit (a library), the type has no live capsule, or the adoption could
    * reach a record without fields, which would lose its source's properties
    * (adoptsAtTypedSlot). */
-  dynCheckAdoptingHelper(t: IrType, preserveRefs: boolean, borrowed: boolean): string {
+  dynCheckAdoptingHelper(
+    t: IrType,
+    preserveRefs: boolean,
+    borrowed: boolean,
+    keyIdentity = false,
+  ): string {
     const plain = this.dynCheckHelper(t, preserveRefs);
     const host = this.host;
-    if (host.declAdopt?.() !== true) return plain;
     const adopts = adoptsAtTypedSlot(
       t,
       (id) => host.recordsById.get(id),
       (id) => host.unionsById.get(id),
     );
-    if (!adopts) return plain;
+    // A library build does not link the adoption unit, and a target with no
+    // live capsule cannot adopt: the conversion would store a copy. A
+    // collection key cannot take that copy (no other name would share it),
+    // so it refuses at run time instead; every other conversion keeps the
+    // copy as before.
+    if (host.declAdopt?.() !== true || !adopts)
+      return keyIdentity ? this.dynKeyRefusedHelper(plain) : plain;
     // Named after the plain helper, one name per (plain helper, borrowed):
     // the variant takes no number of the `sc_dc_<n>` sequence, so a program
     // that adopts differs from the same program without the flag only in
     // its flagged sites and the helpers added for them.
-    const name = `${plain}_adopt${borrowed ? "_held" : ""}`;
+    const name = `${plain}_adopt${borrowed ? "_held" : ""}${keyIdentity ? "_key" : ""}`;
     if (this.dynAdopters.has(name)) return name;
     this.dynAdopters.add(name);
-    host.journalAllocated?.(name, "dyn.dynCheckAdoptingHelper", [t, preserveRefs, borrowed]);
-    host.declare(`declare void @scr_dyn_adopt_whole(ptr, ptr)`);
+    host.journalAllocated?.(name, "dyn.dynCheckAdoptingHelper", [
+      t,
+      preserveRefs,
+      borrowed,
+      keyIdentity,
+    ]);
+    // A key's adoption is strict: the runtime refuses a source it cannot
+    // make one object with the built key instead of leaving the copy.
+    host.declare(
+      keyIdentity
+        ? `declare void @scr_dyn_adopt_key(ptr, ptr)`
+        : `declare void @scr_dyn_adopt_whole(ptr, ptr)`,
+    );
     host.declare(`declare void @scr_dyn_release(ptr)`);
     host.declare(`declare zeroext i1 @scr_exc_pending()`);
     const B = new BlockBuilder();
@@ -3414,9 +3437,21 @@ export class LlDyn {
     const lDone = B.newLabel("dca.done");
     B.condBr(plainData, lData, lOther);
     B.startBlock(lOther);
-    const passed = B.tmp();
-    B.line(`${passed} = tail call ptr @${plain}(ptr %d, ptr %path)`);
-    B.terminate(`ret ptr ${passed}`);
+    if (keyIdentity) {
+      // A capsule or other non-plain source is not adopted by the walk
+      // below: the plain conversion answers its own object where it can
+      // (the capsule fast path, a view), and a copy otherwise. The key
+      // check names the copy instead of storing it.
+      const got = B.tmp();
+      B.line(`${got} = call ptr @${plain}(ptr %d, ptr %path)`);
+      host.declare(`declare void @scr_dyn_key_check(ptr, ptr)`);
+      B.line(`call void @scr_dyn_key_check(ptr %d, ptr ${got})`);
+      B.terminate(`ret ptr ${got}`);
+    } else {
+      const passed = B.tmp();
+      B.line(`${passed} = tail call ptr @${plain}(ptr %d, ptr %path)`);
+      B.terminate(`ret ptr ${passed}`);
+    }
     B.startBlock(lData);
     const built = B.tmp();
     B.line(`${built} = call ptr @${plain}(ptr %d, ptr %path)`);
@@ -3427,7 +3462,9 @@ export class LlDyn {
     const capsule = this.liveToDyn(B, t, built);
     if (capsule !== null) {
       const held = borrowed ? this.retainDyn(B, "%d") : null;
-      B.line(`call void @scr_dyn_adopt_whole(ptr %d, ptr ${capsule})`);
+      B.line(
+        `call void @${keyIdentity ? "scr_dyn_adopt_key" : "scr_dyn_adopt_whole"}(ptr %d, ptr ${capsule})`,
+      );
       if (held !== null) B.line(`call void @scr_dyn_release(ptr ${held})`);
       B.line(`call void @scr_dyn_release(ptr ${capsule})`);
     }
@@ -3441,6 +3478,29 @@ export class LlDyn {
       ``,
     );
     host.journalBuilt?.();
+    return name;
+  }
+
+  /** The conversion of a collection key whose source cannot be adopted: it
+   * throws the named refusal and answers NULL instead of storing a copy no
+   * other name shares. Emitted for a library build (no adoption unit) and
+   * for a target with no live capsule. */
+  private dynKeyRefusedHelper(plain: string): string {
+    const name = `${plain}_key_refused`;
+    if (this.dynAdopters.has(name)) return name;
+    this.dynAdopters.add(name);
+    const host = this.host;
+    const message =
+      "a dynamic collection key whose value cannot be adopted as the key type is not supported yet";
+    host.declare(`declare void @scr_throw_error_msg_code(i32, ptr, ${host.sizeType}, ptr)`);
+    this.defs.push(
+      `define internal ptr @${name}(ptr %d, ptr %path) ${FN_ATTRS} {`,
+      `entry:`,
+      `  call void @scr_throw_error_msg_code(i32 0, ptr ${host.cstr(message)}, ${host.sizeType} ${Buffer.byteLength(message, "utf8")}, ptr ${host.cstr("SC2020")})`,
+      `  ret ptr null`,
+      `}`,
+      ``,
+    );
     return name;
   }
 
@@ -3476,10 +3536,56 @@ export class LlDyn {
       // construction through the slot can call its thunk with the base
       // constructor's arguments; any other subclass fails the check.
       const subclasses = host.classValueSubtypes(t.className);
-      if (subclasses.length > 0) {
+      const subKeyOf = (className: string) => host.cstr(typeKey({ kind: "classval", className }));
+      if (subclasses.length >= 8) {
+        // An indexed table rather than one exact key test per subclass: the
+        // class value's key selects a slot with the same fold the generated
+        // class tables use, and the slot's classes keep their exact key
+        // tests, so a slot shared by two keys, and a value that is no
+        // compiled class, reach the base check exactly as the chain did.
+        host.declare(`declare zeroext i1 @scr_dyn_class_is(ptr, ptr)`);
+        host.declare(`declare i32 @scr_dyn_class_value_slot(ptr, i32)`);
+        const keys = subclasses.map(subKeyOf);
+        const slotBits = classValueSlotBits(subclasses.length + 1);
+        const bySlot = new Map<number, number[]>();
+        for (let i = 0; i < subclasses.length; i++) {
+          const slot = classValueSlot(
+            typeKey({ kind: "classval", className: subclasses[i]! }),
+            slotBits,
+          );
+          const ofSlot = bySlot.get(slot);
+          if (ofSlot === undefined) bySlot.set(slot, [i]);
+          else ofSlot.push(i);
+        }
+        const hashed = B.tmp();
+        B.line(`${hashed} = call i32 @scr_dyn_class_value_slot(ptr %d, i32 ${slotBits})`);
+        const base = B.newLabel("cv.base");
+        const cases = [...bySlot.keys()].sort((left, right) => left - right);
+        const entries = cases.map((slot) => `i32 ${slot}, label %${B.newLabel("cv.c")}`);
+        const caseLabels = entries.map((entry) => entry.slice(entry.indexOf("label %") + 7));
+        B.line(`switch i32 ${hashed}, label %${base} [ ${entries.join(" ")} ]`);
+        cases.forEach((slot, at) => {
+          const ofSlot = bySlot.get(slot)!;
+          // Every key of a slot keeps its exact test, in the chain's order;
+          // the last one falls through to the base check.
+          const tests = ofSlot.map((_, k) => (k === 0 ? caseLabels[at]! : B.newLabel("cv.n")));
+          ofSlot.forEach((i, k) => {
+            B.startBlock(tests[k]!);
+            const matched = B.tmp();
+            B.line(`${matched} = call zeroext i1 @scr_dyn_class_is(ptr %d, ptr ${keys[i]})`);
+            const yes = B.newLabel("cv.yes");
+            B.condBr(matched, yes, k + 1 < ofSlot.length ? tests[k + 1]! : base);
+            B.startBlock(yes);
+            const sub = B.tmp();
+            B.line(`${sub} = call ptr @scr_dyn_class_check(ptr %d, ptr ${keys[i]}, ptr %path)`);
+            B.line(`ret ptr ${sub}`);
+          });
+        });
+        B.startBlock(base);
+      } else if (subclasses.length > 0) {
         host.declare(`declare zeroext i1 @scr_dyn_class_is(ptr, ptr)`);
         for (const className of subclasses) {
-          const subKey = host.cstr(typeKey({ kind: "classval", className }));
+          const subKey = subKeyOf(className);
           const matched = B.tmp();
           B.line(`${matched} = call zeroext i1 @scr_dyn_class_is(ptr %d, ptr ${subKey})`);
           const yes = B.newLabel("sub.yes");

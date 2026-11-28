@@ -1752,6 +1752,10 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
       // arguments, results converted to the call site's type.
       createPrivateKey: { fn: "crypto.createPrivateKey", params: [DYN], result: DYN },
       createPublicKey: { fn: "crypto.createPublicKey", params: [DYN], result: DYN },
+      // Special-cased (lowerParsePKCS12): the parsed bundle's parts compose
+      // the result record, whose X509Certificate members are records built
+      // from the certificates' DER.
+      parsePKCS12: { fn: "crypto.parsePKCS12", params: [], result: VOID },
       createSign: { fn: "crypto.createSign", params: [DYN, DYN], result: DYN },
       createVerify: { fn: "crypto.createVerify", params: [DYN, DYN], result: DYN },
       generateKeyPairSync: { fn: "crypto.generateKeyPairSync", params: [], result: DYN },
@@ -2373,10 +2377,53 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
         valueParams: [{ mode: "optional", type: DYN, defaultValue: undefined }],
         valueLength: 0,
       },
+      // node:module's source-map support (lowerSourceMapsCall in
+      // builtins/module-resolution.ts completes a call; these rows carry the
+      // function values). A compiled program registers no source map: the
+      // record answers the flags the program set, exactly as Node's frozen
+      // { enabled, nodeModules, generatedCode } answers them, and
+      // findSourceMap answers undefined.
+      getSourceMapsSupport: {
+        fn: "module.sourceMapsSupport",
+        params: [],
+        result: DYN,
+        valueParams: [],
+      },
+      setSourceMapsSupport: {
+        fn: "module.setSourceMapsSupport",
+        params: [DYN, DYN],
+        result: VOID,
+        valueParams: [
+          { mode: "required", type: DYN },
+          { mode: "optional", type: DYN, defaultValue: undefined },
+        ],
+        // Node's options parameter is defaulted, so the function's length is
+        // one even though the adapter takes two.
+        valueLength: 1,
+      },
+      findSourceMap: {
+        fn: "module.findSourceMap",
+        params: [DYN],
+        result: DYN,
+        valueParams: [{ mode: "required", type: DYN }],
+      },
     },
     // node:stream/web re-exports the web stream globals (the same objects);
-    // its members lower through the globals' own paths.
-    "stream/web": {},
+    // its members lower through the globals' own paths. ReadableStreamTee is
+    // the one function beside them (webstream.tee), the default tee with an
+    // optional structuredClone of the second branch's chunks.
+    "stream/web": {
+      ReadableStreamTee: {
+        fn: "webstream.tee",
+        params: [DYN, DYN],
+        result: DYN,
+        valueParams: [
+          { mode: "required", type: DYN },
+          { mode: "optional", type: DYN, defaultValue: undefined },
+        ],
+        valueLength: 1,
+      },
+    },
     // node:assert lowers ENTIRELY through the assert spoke (lower-assert.ts
     // — every call shape is special-cased: optional messages complete, the
     // comparisons pick per-type libCalls, deep equality synthesizes
@@ -2512,7 +2559,11 @@ export const BUILTIN_MODULE_CONSTS: Record<
   http: { maxHeaderSize: 16384 },
   // Node's default protocol range, the TLS 1.2 to 1.3 range the bundled
   // mbedTLS negotiates
-  tls: { DEFAULT_MIN_VERSION: "TLSv1.2", DEFAULT_MAX_VERSION: "TLSv1.3" },
+  tls: {
+    DEFAULT_MIN_VERSION: "TLSv1.2",
+    DEFAULT_MAX_VERSION: "TLSv1.3",
+    DEFAULT_ECDH_CURVE: "auto",
+  },
   path: { sep: "/", delimiter: ":" },
   "path/posix": { sep: "/", delimiter: ":" },
   "path/win32": { sep: "\\", delimiter: ";" },
@@ -2570,6 +2621,7 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     pathToFileURL: ["url.pathToFileURL", "url.pathToFileURLPlatform", "url.pathToFileURLWin32"],
   },
   fs: {
+    openAsBlob: ["fs.openAsBlob"],
     // Every flag and mode spelling the lowering selects: inline numeric O_*
     // flags (the target-neutral mask), raw open(2) bits, the octal-string
     // creation mode, and the forms whose flags or mode only the runtime
@@ -2916,13 +2968,17 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
         "webcrypto.decrypt",
         "webcrypto.wrapKey",
         "webcrypto.unwrapKey",
+        "webcrypto.encapsulateBits",
+        "webcrypto.encapsulateKey",
+        "webcrypto.decapsulateBits",
+        "webcrypto.decapsulateKey",
         "webcrypto.deriveBits",
         "webcrypto.deriveKey",
         "webcrypto.sign",
         "webcrypto.verify",
         "webcrypto.digest",
       ],
-      note: "importKey, generateKey and exportKey (raw and jwk) for HMAC and AES keys, importKey for PBKDF2 and HKDF keys, AES-GCM, AES-CBC and AES-CTR encrypt and decrypt, wrapKey and unwrapKey of secret keys with AES-KW or those ciphers, PBKDF2 and HKDF deriveBits and deriveKey, HMAC sign and verify, generateKey, importKey, exportKey, sign and verify for ECDSA, Ed25519, RSASSA-PKCS1-v1_5 and RSA-PSS, and SHA-1/SHA-2 digest; other methods, algorithms and key formats are refused",
+      note: "importKey, generateKey and exportKey (raw and jwk) for HMAC and AES keys, importKey for PBKDF2 and HKDF keys, AES-GCM, AES-CBC and AES-CTR encrypt and decrypt, wrapKey and unwrapKey of secret keys with AES-KW or those ciphers, PBKDF2 and HKDF deriveBits and deriveKey, HMAC sign and verify, generateKey, importKey, exportKey, sign and verify for ECDSA, Ed25519, RSASSA-PKCS1-v1_5 and RSA-PSS, ML-KEM encapsulateBits and decapsulateBits with their *Key forms, and SHA-1/SHA-2 digest; other methods, algorithms and key formats are refused",
     },
     {
       id: "stdlib.webcrypto.CryptoKey",
@@ -2945,6 +3001,15 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       fns: ["fs.callbackValue", "fs.callbackCall", "fs.callbackGlob"],
       note: "native filesystem callbacks, including stored platform adapter functions",
     },
+    // fs.Utf8Stream lowers in lowerUtf8StreamNew, ahead of the module
+    // table (the ambient declaration's constructor value).
+    {
+      id: "node-builtin.fs.utf8Stream",
+      kind: "node-builtin",
+      name: "fs.Utf8Stream",
+      fns: ["fs.utf8StreamNew"],
+      note: "Node's buffered file writer: write/end/flush/flushSync/destroy/reopen, the ready/write/drop/drain/finish/close events, and its option and property surface",
+    },
     // fs.watchFile/fs.unwatchFile lower in lowerFsWatchFileCall, ahead of
     // the module table.
     {
@@ -2953,6 +3018,13 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       name: "fs.watchFile",
       fns: ["fs.watchFile", "statWatcher.ref", "statWatcher.unref"],
       note: "stat polling of a resolved path with Stats listeners, answering the StatWatcher whose ref()/unref() move that registration's loop liveness; bigint: true is refused",
+    },
+    {
+      id: "node-builtin.fs.openAsBlob",
+      kind: "node-builtin",
+      name: "fs.openAsBlob",
+      fns: ["fs.openAsBlob"],
+      note: "a Blob over a file's bytes, read on demand: the open and fstat happen at the call, and every read re-checks the file's size and modification time",
     },
     {
       id: "node-builtin.fs.unwatchFile",
@@ -4268,12 +4340,13 @@ export function stdlibMemberFence(lowerer: Lowerer, access: ts.PropertyAccessExp
     member === "toLocaleUpperCase"
   ) {
     hint =
-      "collation and locale negotiation stay outside the static runtime (the localeCompare " +
-      "stance: code-unit order, no collation) — what lowers: Intl.NumberFormat and " +
-      "Intl.DateTimeFormat objects with format(), the toLocaleString(), toLocaleDateString() " +
-      'and toLocaleTimeString() forms with a locale and options (the default locale, "en-US" ' +
-      'or "en"), and Intl.Segmenter with grapheme or word granularity; sentence segmentation, ' +
-      "resolvedOptions, and the remaining Intl constructors remain unsupported";
+      "collation and the remaining Intl surfaces stay outside the static runtime (the " +
+      "localeCompare stance: code-unit order, no collation) — what lowers: Intl.NumberFormat " +
+      "and Intl.DateTimeFormat objects with format(), the toLocaleString(), " +
+      "toLocaleDateString() and toLocaleTimeString() forms with a locale and options (the " +
+      "default locale, or one string tag validated and negotiated as Node does), and " +
+      "Intl.Segmenter with grapheme or word granularity; sentence segmentation, " +
+      "resolvedOptions, locale lists, and the remaining Intl constructors remain unsupported";
   } else if (container === "Object" && member === "assign") {
     hint =
       "spread instead: { ...a, ...b } builds the merged record; what lowers: the empty-target " +
@@ -4582,11 +4655,51 @@ export function stdlibGlobalMember(
  * nothing. Only the globals with lowered member surfaces alias this
  * way; aliasing, say, `Math` would change nothing (its members lower
  * by receiver too). Returns true when recognized. */
+/** The WebCrypto object a `const` initializer names: the `subtle` member of
+ * a Crypto receiver ("crypto.subtle"), or node:crypto's `webcrypto` member
+ * ("crypto", the Crypto object). Null for anything else. */
+function webcryptoAliasNameOf(lowerer: Lowerer, expr: ts.Expression): string | null {
+  let e = expr;
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  if (!ts.isPropertyAccessExpression(e) || e.questionDotToken) return null;
+  if (e.name.text === "subtle") {
+    const member = lowerer.builtinMemberOf(e);
+    if (member?.module === "crypto" && member.member === "subtle") return "crypto.subtle";
+    if (stdlibGlobalNameOf(lowerer, e.expression) === "crypto") return "crypto.subtle";
+    if (ts.isPropertyAccessExpression(e.expression)) {
+      const receiver = lowerer.builtinMemberOf(e.expression);
+      if (receiver?.module === "crypto" && receiver.member === "webcrypto") return "crypto.subtle";
+    }
+    return null;
+  }
+  const member = lowerer.builtinMemberOf(e);
+  if (member?.module === "crypto" && member.member === "webcrypto") return "crypto";
+  return null;
+}
+
+/** Whether an expression contains an await. An alias declaration emits no
+ * code, so an awaited initializer (a literal import's microtask hop) would
+ * be dropped; such declarations keep their ordinary lane. */
+function containsAwait(node: ts.Node): boolean {
+  let found = false;
+  const visit = (n: ts.Node): void => {
+    if (found) return;
+    if (ts.isAwaitExpression(n)) {
+      found = true;
+      return;
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(node);
+  return found;
+}
+
 export function stdlibGlobalAliasNameOf(
   lowerer: Lowerer,
   init: ts.Expression | undefined,
 ): string | null {
   if (!init) return null;
+  if (containsAwait(init)) return null;
   // CommonJS packages commonly guard Node's always-present globals for
   // browser bundlers (`let p = process || {}`). In the Node execution
   // model the left object is unconditionally truthy, so the fallback is
@@ -4609,6 +4722,8 @@ export function stdlibGlobalAliasNameOf(
   // globalThis.process`. Preflight admits exactly this shape
   // (processModuleAliasRequire7); commander's lib/command.js opens with
   // it.
+  const webcrypto = webcryptoAliasNameOf(lowerer, aliasExpr);
+  if (webcrypto !== null) return webcrypto;
   const requireSpec = requireSpecOf(aliasExpr);
   const name =
     requireSpec === "process" || requireSpec === "node:process"
@@ -4659,6 +4774,14 @@ export function stdlibGlobalAliasDecl(
   if (!ts.isIdentifier(nameNode)) return false;
   const name = stdlibGlobalAliasNameOf(lowerer, init);
   if (name === null) return false;
+  // The WebCrypto snapshots name an immutable object; a mutable binding can
+  // be reassigned, so it keeps its ordinary storage.
+  if (
+    (name === "crypto.subtle" || name === "crypto") &&
+    ts.isVariableDeclaration(nameNode.parent) &&
+    (ts.getCombinedNodeFlags(nameNode.parent) & ts.NodeFlags.Const) === 0
+  )
+    return false;
   // Mutable global-object bindings keep real storage, even when never
   // reassigned: var can be observed before initialization and let has TDZ.
   if (

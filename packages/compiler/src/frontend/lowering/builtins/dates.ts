@@ -74,7 +74,7 @@ const DATE_TEXT_FNS: ReadonlyMap<string, IrLibFn> = new Map([
 ]);
 
 export const DATE_METHOD_HINT =
-  'getTime(), valueOf(), toISOString(), toUTCString(), toJSON(), toString(), toDateString(), toTimeString(), toLocaleString(), toLocaleDateString(), toLocaleTimeString() (with the default locale, "en-US" or "en", and options), the local/UTC calendar getters and setters, setTime(), and getTimezoneOffset() are supported';
+  "getTime(), valueOf(), toISOString(), toUTCString(), toJSON(), toString(), toDateString(), toTimeString(), toLocaleString(), toLocaleDateString(), toLocaleTimeString() (with the default locale or a string locale tag, and options), the local/UTC calendar getters and setters, setTime(), and getTimezoneOffset() are supported";
 
 /** Date statics and methods on Date objects (a TimeClip'd millisecond
  * time value with identity): getters, text forms and setters.
@@ -145,7 +145,13 @@ export function lowerDateCall(
       : raw;
   if (receiver.type.kind !== "date")
     lowerer.badType(access.expression, lowerer.typeOf(access.expression));
-  if (localeForm) return lowerDateToLocale(lowerer, call, name, receiver);
+  if (localeForm)
+    return lowerDateToLocale(
+      lowerer,
+      call,
+      name,
+      raw.type.kind === "dyn" ? { dynSource: raw } : receiver,
+    );
   const result = dateValueMethod(name, receiver, loc);
   if (result) return result;
   lowerer.noLowering(

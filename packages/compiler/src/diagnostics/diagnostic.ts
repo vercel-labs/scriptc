@@ -111,6 +111,7 @@
  *   SC9xxx  internal compiler errors (still source-anchored)
  */
 import type { SrcLoc } from "../ir/ir.js";
+import type { DynamicTierEntry, DynamicTierPackageCount } from "./dynamic-tier.js";
 import type { NodeIslandPackageMark, NodeIslandPathMark } from "../node-islands/policy.js";
 import type { DiagnosticCode } from "./codes.js";
 
@@ -123,6 +124,12 @@ export interface ScrDiagnostic {
   code: DiagnosticCode;
   message: string;
   loc: SrcLoc;
+  /** Set when the diagnostic's severity differs from what its code implies:
+   * strict mode promotes a performance or divergence finding to an error. */
+  severity?: "error" | "warning";
+  /** SC6101 only: the entries and package counts behind the aggregate
+   * message, so strict mode can drop the functions a line allows. */
+  dynamicTier?: { entries: DynamicTierEntry[]; packages: DynamicTierPackageCount[] };
   milestone?: Milestone;
   hint?: string;
   /** Embedder-authored guidance riding a refusal (the ask-5 teaching
@@ -430,6 +437,28 @@ export function strandedInstanceArmDiag(
     message: `this statement throws when it runs with a value of another layout (this generic instance's binding holds ${others} other ${others === 1 ? "layout" : "layouts"} beside '${target}', and the statement takes the value as '${target}'), where it would have completed under Node; a program that never reaches it with such a value runs as it does under Node`,
     loc,
     hint: "give the values one layout by declaring each with the binding's type (`const item: Item = …`), or read the members from the variable of a `for…of` loop (`item.member`), which keeps every layout",
+  };
+}
+
+/** SC6016 — a double assertion (`value as unknown as T`) whose target is a
+ * layout type the source's static type cannot have: the checker relates the
+ * two only through `unknown`, Node erases both assertions and the value
+ * flows on as it is, and the compiled program checks it when the cast runs,
+ * throwing the TypeError of a value that does not fit. The build names the
+ * cast before run time; the check itself stays (erasing it is not
+ * representable at a typed slot). */
+export function castThroughUnknownDiag(
+  cast: string,
+  source: string,
+  from: string,
+  to: string,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  return {
+    code: "SC6016",
+    message: `'${cast}' asserts '${source}' (of type '${from}') to '${to}' through 'unknown': Node erases both assertions and the value flows on as it is, while the compiled program still has to produce a '${to}' from it and throws a TypeError when the value has another layout`,
+    loc,
+    hint: `narrow '${source}' to a value that can be checked against '${to}' (a type guard or a schema check), or convert it explicitly; an assertion through 'unknown' is still checked at run time`,
   };
 }
 

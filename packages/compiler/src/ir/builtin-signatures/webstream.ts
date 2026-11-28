@@ -41,6 +41,14 @@ export const webstreamSignatures = defineLibFnSignatures({
   "webstream.toWebDuplexDyn": { argTypes: [DYN, F64], result: DYN },
   "webstream.class": { argTypes: [F64], result: DYN },
   "webstream.from": { argTypes: [DYN], result: DYN },
+  /** ReadableStreamTee(stream, cloneForBranch2) (scr_webstreams.c): the
+   * two branches as an array (dyn), the second reading a structuredClone
+   * of each chunk when cloneForBranch2 is truthy (undefined for absent). */
+  "webstream.tee": { argTypes: [DYN, DYN], result: DYN },
   "webstream.instanceOf": { argTypes: [DYN, F64], result: BOOL },
   "webstream.install": { argTypes: [], result: VOID },
+  /** The compression streams' class and brand test
+   * (scr_webstream_compress.c; kinds 15 and 16 of WEB_STREAM_CLASSES). */
+  "webstream.compressClass": { argTypes: [F64], result: DYN },
+  "webstream.compressInstanceOf": { argTypes: [DYN, F64], result: BOOL },
 });

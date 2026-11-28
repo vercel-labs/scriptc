@@ -20,7 +20,21 @@
  * by name (ERR_SCRIPTC_LOCKS_THREAD) rather than granted unsafely. A
  * callback runs one microtask after its grant, as Node's wrapped callback
  * does, and a callback that returns a promise keeps the lock until that
- * promise settles. */
+ * promise settles.
+ *
+ * Steal grants at once and marks every current holder stolen: each holder's
+ * request rejects with an AbortError and the name stops being held (a grant
+ * left behind by an earlier callback throw is cleared too). Requests already
+ * queued keep waiting for the steal's own release, as Node's queue does.
+ * ifAvailable answers a null lock when the name is busy, holding and
+ * queueing nothing, and settles the request with the callback's own result.
+ *
+ * A callback that throws settles its request with the value after Node's
+ * convertLockError step: the value's `message` is read (a proxy get trap or
+ * an accessor can throw there, and that error becomes the reason), a
+ * LOCK_STOLEN message becomes an AbortError, and every other value stays the
+ * reason. Without a signal Node leaves the grant held after that rejection,
+ * so a later same-name request waits; the signal path releases it first. */
 #include "scr_worker.h"
 
 #ifdef SCR_WORKERS
@@ -58,10 +72,13 @@ struct ScrLockReq {
   ScrDyn *signal;      /* +1 when the request carries one */
   ScrDyn *dispose;     /* +1, the abort listener's remover */
   bool shared;
-  bool granted;
+  bool granted; /* in the entry's holder list right now */
   bool started; /* the callback has begun: an abort from here does nothing */
   bool aborted;
-  ScrLockReq *next;
+  bool stolen; /* a steal detached it: its callback's result is discarded */
+  bool leaked; /* callback threw with no signal: Node leaves the name held */
+  ScrLockReq *next;      /* the queue's link */
+  ScrLockReq *hold_next; /* the holder list's link */
 };
 
 typedef struct ScrLockEntry {
@@ -69,6 +86,7 @@ typedef struct ScrLockEntry {
   size_t name_len;
   int holders;
   bool holder_shared;
+  ScrLockReq *holder_head; /* one entry per held grant, oldest first */
   ScrLockReq *queue;
   ScrLockReq *tail;
   struct ScrLockEntry *next;
@@ -147,6 +165,41 @@ static ScrBox *scr_locks_req_box(ScrLockReq *req) {
   return box;
 }
 
+/* ── the holder list ─────────────────────────────────────────────────
+ * An entry keeps one reference per held grant, so `query()` lists a row per
+ * held lock (shared holders side by side) and a steal can find and abort each
+ * holder. A grant left behind by a callback throw keeps its entry reference
+ * until a steal clears it, which is Node's leak. */
+
+static void scr_locks_hold(ScrLockEntry *entry, ScrLockReq *req) {
+  req->granted = true;
+  req->entry = entry;
+  req->hold_next = NULL;
+  ScrLockReq **slot = &entry->holder_head;
+  while (*slot != NULL) slot = &(*slot)->hold_next;
+  *slot = req;
+  entry->holders++;
+  entry->holder_shared = req->shared;
+  scr_locks_req_retain(req);
+}
+
+/* Takes the grant back and drops the holder list's reference. The caller
+ * keeps its own reference (the start job's, the wait context's) for the rest
+ * of the operation. */
+static void scr_locks_unhold(ScrLockEntry *entry, ScrLockReq *req) {
+  if (!req->granted) return;
+  req->granted = false;
+  for (ScrLockReq **slot = &entry->holder_head; *slot != NULL; slot = &(*slot)->hold_next) {
+    if (*slot != req) continue;
+    *slot = req->hold_next;
+    break;
+  }
+  req->hold_next = NULL;
+  if (entry->holders > 0) entry->holders--;
+  if (entry->holder_head == NULL) entry->holder_shared = false;
+  scr_locks_req_release(req);
+}
+
 /* Removes the request's abort listener, as Node's finally does once the
  * callback starts or the request settles. */
 static void scr_locks_dispose_signal(ScrLockReq *req) {
@@ -173,6 +226,66 @@ static void scr_locks_reject_aborted(ScrLockReq *req) {
 
 static void scr_locks_drain(ScrLockEntry *entry);
 
+/* Node's convertLockError reads the thrown value's `message` and maps its
+ * LOCK_STOLEN sentinel to an AbortError. The read is program code (a Proxy
+ * get trap, an accessor), so it can throw; that error then becomes the
+ * request's reason, exactly as the throw out of Node's own catch block does. */
+static bool scr_locks_message_is_stolen(const ScrDyn *message) {
+  static const char sentinel[] = "LOCK_STOLEN";
+  return message != NULL && message->kind == SCR_DYN_STR &&
+         message->v.str->len == sizeof sentinel - 1 &&
+         memcmp(message->v.str->data, sentinel, sizeof sentinel - 1) == 0;
+}
+
+/* Rejects `promise` with the pending exception, converted as above. The
+ * exception leaves the cell first: the runtime's reads require a clean cell,
+ * and a trap or accessor the read runs is itself program code whose throw
+ * leaves its own error behind. The original value is re-raised as the same
+ * snapshot, so a catch binding keeps its identity. With `signal_path` the
+ * conversion runs inside Node's rejection handler, so a read that throws
+ * leaves the request promise unsettled and the error is an unhandled
+ * rejection; every other path rejects with that error. */
+static void scr_locks_reject_thrown(ScrPromise *promise, bool signal_path) {
+  if (!scr_exc_pending()) return;
+  ScrCaught *caught = scr_exc_take(); /* +1, the cell is clean now */
+  bool stolen = false;
+  if (caught->kind == SCR_EXC_REF || caught->kind == SCR_EXC_PRIMITIVE_REF) {
+    /* The checked-dynamic payload keeps its identity here, so the message
+     * read runs against the program's own object (proxies included). */
+    const ScrDyn *value = caught->payload;
+    if (caught->retain_fn == scr_dyn_retain_v && value != NULL &&
+        value->kind != SCR_DYN_NULL && value->kind != SCR_DYN_UNDEF) {
+      ScrDyn *message = scr_dyn_obj_read(value, "message", 7);
+      if (message == NULL && scr_exc_pending()) {
+        /* The read threw: that error is what the program sees. */
+        scr_caught_release(caught);
+        if (signal_path) {
+          ScrPromise *report = scr_promise_new();
+          scr_promise_reject_pending(report);
+          scr_promise_release(report); /* the unhandled ledger keeps it until report */
+        } else {
+          scr_promise_reject_pending(promise);
+        }
+        return;
+      }
+      stolen = scr_locks_message_is_stolen(message);
+      scr_dyn_release(message);
+    }
+  } else if (caught->kind == SCR_EXC_OBJ && scr_error_is(caught->payload)) {
+    const ScrError *error = caught->payload;
+    stolen = error->message != NULL && error->message->len == sizeof "LOCK_STOLEN" - 1 &&
+             memcmp(error->message->data, "LOCK_STOLEN", sizeof "LOCK_STOLEN" - 1) == 0;
+  }
+  if (stolen) {
+    scr_caught_release(caught);
+    scr_throw_domex("AbortError", "The operation was aborted");
+  } else {
+    scr_rethrow(caught); /* borrows; raises a retained copy */
+    scr_caught_release(caught);
+  }
+  scr_promise_reject_pending(promise);
+}
+
 /* The abort listener: a request whose callback has not started yet rejects
  * with the signal's reason, and the queue place or the grant it held goes
  * back to the entry. A request already running its callback keeps going,
@@ -198,8 +311,8 @@ static ScrDyn *scr_locks_abort_fire(ScrClosure *clo, ScrDyn *const *args, size_t
     entry->tail = NULL;
     for (ScrLockReq *queued = entry->queue; queued != NULL; queued = queued->next)
       entry->tail = queued;
-  } else if (entry->holders > 0) {
-    entry->holders--;
+  } else {
+    scr_locks_unhold(entry, req);
   }
   scr_locks_reject_aborted(req);
   scr_locks_dispose_signal(req);
@@ -220,17 +333,23 @@ typedef struct {
 static void scr_locks_wait_react(void *ctx, ScrPromise *settled) {
   ScrLocksWait *wait = ctx;
   ScrLockReq *req = wait->req;
+  /* A steal already took the grant back and settled this request: Node skips
+   * settling a stolen lock's promise and just processes the queue. */
+  if (req->stolen) return;
   ScrLockEntry *entry = req->entry;
-  /* The queue advances before this request's promise settles, as Node's
-   * release does: the next granted callback runs in its own turn ahead of
-   * this promise's consumers. */
-  if (entry->holders > 0) entry->holders--;
-  scr_locks_drain(entry);
+  if (req->granted) {
+    /* The queue advances before this request's promise settles, as Node's
+     * release does: the next granted callback runs in its own turn ahead of
+     * this promise's consumers. An ifAvailable miss never held the name, so
+     * it has nothing to release and no entry to touch. */
+    scr_locks_unhold(entry, req);
+    scr_locks_drain(entry);
+  }
   if (scr_promise_is_rejected(settled)) {
     ScrDyn *reason = scr_promise_reason_dyn(settled); /* +1, moved to the throw */
     if (reason != NULL)
       scr_throw_ref(reason, scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
-    scr_promise_reject_pending(req->promise);
+    scr_locks_reject_thrown(req->promise, req->signal != NULL);
   } else {
     scr_promise_fulfill_like(req->promise, settled);
   }
@@ -258,6 +377,7 @@ static ScrDyn *scr_locks_start_job(ScrClosure *clo, ScrDyn *const *args, size_t 
     scr_locks_req_release(req);
     return scr_dyn_retain(scr_dyn_undefined());
   }
+  bool stolen = req->stolen;
   req->started = true;
   scr_locks_dispose_signal(req);
   ScrLockEntry *entry = req->entry;
@@ -269,11 +389,35 @@ static ScrDyn *scr_locks_start_job(ScrClosure *clo, ScrDyn *const *args, size_t 
   scr_dyn_release(lock);
   scr_dyn_release(req->callback);
   req->callback = NULL;
-  if (scr_exc_pending()) {
-    /* Node rejects the request with the callback's error and leaves the lock
-     * held, so a later same-name request stays pending. */
+  if (stolen) {
+    /* A steal released this request before its callback's turn. Node's
+     * wrapped callback still runs and its outcome is dropped: the lock was
+     * already detached and the request already settled by the steal. */
+    scr_exc_clear();
     scr_dyn_release(result);
-    scr_promise_reject_pending(req->promise);
+    scr_locks_req_release(req);
+    return scr_dyn_retain(scr_dyn_undefined());
+  }
+  if (scr_exc_pending()) {
+    scr_dyn_release(result);
+    bool signal_path = req->signal != NULL;
+    if (signal_path) {
+      /* The wrapped callback's promise carries the throw to the lock, which
+       * Node releases before the rejection reaches the request. */
+      scr_locks_unhold(entry, req);
+      scr_locks_drain(entry);
+    } else {
+      /* Node rejects the request but never releases the grant, so the name
+       * stays held and a later same-name request waits (Node's leak). The
+       * request's settled promise is dropped afterwards: the grant, not the
+       * request, is what Node keeps alive. */
+      req->leaked = true;
+    }
+    scr_locks_reject_thrown(req->promise, signal_path);
+    if (req->leaked) {
+      scr_promise_release(req->promise);
+      req->promise = NULL;
+    }
     scr_locks_req_release(req);
     return scr_dyn_retain(scr_dyn_undefined());
   }
@@ -287,7 +431,7 @@ static ScrDyn *scr_locks_start_job(ScrClosure *clo, ScrDyn *const *args, size_t 
     scr_promise_react(wait->source, &scr_locks_wait_reaction, wait);
     scr_dyn_release(result);
   } else {
-    if (entry->holders > 0) entry->holders--;
+    scr_locks_unhold(entry, req);
     scr_locks_drain(entry);
     /* settle_ref takes the value's reference. */
     scr_promise_fulfill_ref(req->promise, result, scr_dyn_retain_v, scr_dyn_release_v,
@@ -297,14 +441,11 @@ static ScrDyn *scr_locks_start_job(ScrClosure *clo, ScrDyn *const *args, size_t 
   return scr_dyn_retain(scr_dyn_undefined());
 }
 
-/* Grants a request: the holder count and the mode are recorded now (query()
- * reports the lock as held), and the callback runs one microtask later.
- * Takes the request's reference. */
+/* Grants a request: the holder list records it now (query() reports the lock
+ * as held), and the callback runs one microtask later. Takes the request's
+ * reference for the start job's box. */
 static void scr_locks_grant(ScrLockEntry *entry, ScrLockReq *req) {
-  req->granted = true;
-  req->entry = entry;
-  entry->holders++;
-  entry->holder_shared = req->shared;
+  scr_locks_hold(entry, req);
   ScrClosure *job = scr_closure_new((void *)&scr_locks_start_job, 1);
   job->caps[0] = scr_locks_req_box(req);
   scr_queue_microtask(job);
@@ -376,6 +517,35 @@ static const char *scr_locks_mode_of(const ScrDyn *options, bool *shared) {
   (void)len;
   scr_dyn_release(value);
   return message;
+}
+
+/* ifAvailable when the name is busy: Node calls the callback right away with
+ * a null lock, holds nothing (query() lists neither a held nor a pending
+ * row for it), and settles the request with the callback's own result; a
+ * returned promise settles it later. The rejection conversion is the same as
+ * for a granted request, and no lock is released on the way. */
+static void scr_locks_if_available_miss(ScrLockReq *req) {
+  ScrDyn *null_lock = scr_dyn_new_null();
+  ScrDyn *args[] = {null_lock};
+  ScrDyn *result = scr_dyn_call(req->callback, args, 1, "locks.request callback");
+  scr_dyn_release(null_lock);
+  scr_dyn_release(req->callback);
+  req->callback = NULL;
+  if (scr_exc_pending()) {
+    scr_dyn_release(result);
+    scr_locks_reject_thrown(req->promise, false);
+  } else if (result != NULL && result->kind == SCR_DYN_PROMISE) {
+    ScrLocksWait *wait = malloc(sizeof *wait);
+    if (wait == NULL) scr_trap("out of memory");
+    wait->req = scr_locks_req_retain(req);
+    wait->source = scr_promise_retain(result->v.promise);
+    scr_promise_react(wait->source, &scr_locks_wait_reaction, wait);
+    scr_dyn_release(result);
+  } else {
+    scr_promise_fulfill_ref(req->promise, result, scr_dyn_retain_v, scr_dyn_release_v,
+                            scr_dyn_trace_v);
+  }
+  scr_locks_req_release(req);
 }
 
 ScrPromise *scr_worker_locks_request(ScrStr *name, const ScrDyn *options, const ScrDyn *callback) {
@@ -503,26 +673,38 @@ ScrPromise *scr_worker_locks_request(ScrStr *name, const ScrDyn *options, const 
     req->dispose = dispose;
   }
   if (steal) {
-    /* The request is granted at once; whatever waited for the name is
-     * rejected with AbortError, as Node does. */
-    while (entry->queue != NULL) {
-      ScrLockReq *aborted = entry->queue;
-      entry->queue = aborted->next;
-      if (entry->queue == NULL) entry->tail = NULL;
-      aborted->next = NULL;
-      scr_locks_dispose_signal(aborted);
-      scr_throw_domex("AbortError", "The lock was stolen");
-      scr_promise_reject_pending(aborted->promise);
-      scr_locks_req_release(aborted);
+    /* Node grants a steal ahead of the queue and marks every current holder
+     * stolen: each holder's request rejects with an AbortError and the name
+     * stops being held (a grant left behind by an earlier callback throw is
+     * cleared too). Requests already queued are not aborted; they wait for
+     * the steal's own release. */
+    ScrLockReq *victim = entry->holder_head;
+    entry->holder_head = NULL;
+    entry->holders = 0;
+    entry->holder_shared = false;
+    while (victim != NULL) {
+      ScrLockReq *next = victim->hold_next;
+      victim->hold_next = NULL;
+      victim->granted = false;
+      victim->stolen = true;
+      if (victim->promise != NULL && scr_promise_is_pending(victim->promise)) {
+        scr_throw_domex("AbortError", "The operation was aborted");
+        scr_promise_reject_pending(victim->promise);
+      }
+      /* A grant an earlier callback throw leaked keeps its (settled) promise:
+       * there is nothing left to reject. */
+      scr_locks_req_release(victim); /* the holder list's reference */
+      victim = next;
     }
     scr_locks_grant(entry, req);
-    scr_locks_drain(entry);
   } else if (entry->holders == 0 && entry->queue == NULL) {
     scr_locks_grant(entry, req);
     scr_locks_drain(entry);
   } else if (entry->holders > 0 && entry->holder_shared && shared && entry->queue == NULL) {
     scr_locks_grant(entry, req);
     scr_locks_drain(entry);
+  } else if (if_available) {
+    scr_locks_if_available_miss(req);
   } else {
     if (entry->tail == NULL)
       entry->queue = req;
@@ -541,9 +723,9 @@ ScrPromise *scr_worker_locks_query(void) {
                             scr_context_thread_number());
   for (ScrLockEntry *entry = scr_locks; entry != NULL; entry = entry->next) {
     int row_len = 0;
-    if (entry->holders > 0) {
+    for (ScrLockReq *holder = entry->holder_head; holder != NULL; holder = holder->hold_next) {
       ScrDyn *row = scr_locks_object(entry->name, entry->name_len,
-                                     scr_locks_mode_name(entry->holder_shared));
+                                     scr_locks_mode_name(holder->shared));
       ScrStr *id = scr_str_new(client, (size_t)client_len);
       scr_dyn_obj_set(row, "clientId", 8, scr_dyn_new_str(id));
       scr_str_release(id);

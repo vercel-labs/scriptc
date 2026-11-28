@@ -125976,6 +125976,7 @@
           "tests/corpus/worker-locks-async-callback.mjs",
           "tests/corpus/worker-locks-callback-throw.mjs",
           "tests/corpus/worker-locks-errors.ts",
+          "tests/corpus/worker-locks-if-available.mjs",
           "tests/corpus/worker-locks-nested-requests.mjs",
           "tests/corpus/worker-locks-option-errors.ts",
           "tests/corpus/worker-locks-query.ts",
@@ -125983,7 +125984,11 @@
           "tests/corpus/worker-locks-shared.ts",
           "tests/corpus/worker-locks-signal-abort.mjs",
           "tests/corpus/worker-locks-signal-option.ts",
+          "tests/corpus/worker-locks-signal-throw.mjs",
+          "tests/corpus/worker-locks-signal-thrown-value.mjs",
+          "tests/corpus/worker-locks-steal-bookkeeping.mjs",
           "tests/corpus/worker-locks-steal-option.ts",
+          "tests/corpus/worker-locks-thrown-value.mjs",
           "tests/corpus/worker-messageerror-events.ts",
           "tests/corpus/worker-messageerror-surface.ts",
           "tests/corpus/worker-performance.ts",
@@ -127866,7 +127871,12 @@
           "tests/corpus/worker-locks-nested-requests.mjs",
           "tests/corpus/worker-locks-async-callback.mjs",
           "tests/corpus/worker-locks-signal-abort.mjs",
-          "tests/corpus/worker-locks-callback-throw.mjs"
+          "tests/corpus/worker-locks-callback-throw.mjs",
+          "tests/corpus/worker-locks-thrown-value.mjs",
+          "tests/corpus/worker-locks-steal-bookkeeping.mjs",
+          "tests/corpus/worker-locks-if-available.mjs",
+          "tests/corpus/worker-locks-signal-throw.mjs",
+          "tests/corpus/worker-locks-signal-thrown-value.mjs"
         ]
       },
       "anchorSource": "exact"

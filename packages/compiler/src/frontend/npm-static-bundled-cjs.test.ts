@@ -1,5 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { expect, test } from "vitest";
 import { rewriteBundlerCjsExports } from "./npm-static-rewrite.js";
 
@@ -132,5 +134,37 @@ Object.defineProperty(exports, "__esModule", { value: true });
 __exportStar(require(${JSON.stringify(spec)}), exports);
 `;
     expect(rewritten(source), spec).toContain(`...require(${JSON.stringify(spec)})`);
+  }
+});
+
+test("a forwarding or ES-module star target is not provably empty", () => {
+  const dir = mkdtempSync(join(tmpdir(), "star-forward-"));
+  try {
+    const pkg = join(dir, "node_modules", "forward-kit", "dist");
+    mkdirSync(pkg, { recursive: true });
+    // A target whose names come from a bare package the probe cannot follow.
+    writeFileSync(
+      join(pkg, "forward.js"),
+      `"use strict";
+var __exportStar = (m, exports2) => { for (var p in m) if (p !== "default" && !Object.prototype.hasOwnProperty.call(exports2, p)) Object.defineProperty(exports2, p, { enumerable: true, get: function () { return m[p]; } }); };
+__exportStar(require("dep-unprobed"), exports);
+`,
+    );
+    // A target that is an ES module: the CommonJS lexer cannot enumerate it.
+    writeFileSync(join(pkg, "esm.js"), "export const x = 1;\n");
+    const index = (spec: string) => `"use strict";
+var __exportStar = (m, exports2) => { for (var p in m) if (p !== "default" && !Object.prototype.hasOwnProperty.call(exports2, p)) Object.defineProperty(exports2, p, { enumerable: true, get: function () { return m[p]; } }); };
+Object.defineProperty(exports, "__esModule", { value: true });
+__exportStar(require(${JSON.stringify(spec)}), exports);
+`;
+    for (const spec of ["./forward.js", "./esm.js"]) {
+      const file = join(pkg, "index.js");
+      writeFileSync(file, index(spec));
+      const result = rewriteBundlerCjsExports(readFileSync(file, "utf8"), file);
+      expect(typeof result, spec).toBe("string");
+      expect(result as string, spec).toContain(`...require(${JSON.stringify(spec)})`);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });

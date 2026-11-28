@@ -152,6 +152,28 @@ function requireTargetEsModuleStamped(
 /** The Node-visible named-export set of a star-re-export TARGET file:
  * its recursive lexer-visible names (relative edges only — exactly what
  * the emitted member entries must enumerate). */
+/** Whether a resolved star target provably exports nothing: its own lexer
+ * names are empty, it carries no ES-module export syntax, and every module
+ * it star re-exports is itself provably empty. Anything unprobed (a bare
+ * package, a JSON or non-JavaScript target, an unresolved specifier) makes
+ * the answer false. */
+function provablyEmpty(parser: Ts7SourceParser, file: string, seen: Set<string>): boolean {
+  if (seen.has(file)) return true;
+  seen.add(file);
+  if (!/\.(c|m)?js$/.test(file)) return false;
+  const source = trackedReadFile(file);
+  if (source === null) return false;
+  // An ES module's exports are not the CommonJS lexer's to enumerate.
+  if (/(^|\n)\s*(export|import)\s/.test(source)) return false;
+  const lexed = cjsLexedExportsOfFile(parser.parse(file, source, "js"));
+  if (lexed.exports.size > 0) return false;
+  for (const spec of lexed.reexports) {
+    const next = resolveRelativeCjs(file, spec);
+    if (next === null || !provablyEmpty(parser, next, seen)) return false;
+  }
+  return true;
+}
+
 function starTargetNames(parser: Ts7SourceParser, file: string): Set<string> {
   try {
     return cjsVisibleNames(
@@ -194,8 +216,7 @@ export function rewriteBundlerCjsWithParser(
     requireTargetEsModuleStamped: (from, spec) => requireTargetEsModuleStamped(parser, from, spec),
     starTargetProvablyEmpty: (from, spec) => {
       const target = resolveRelativeCjs(from, spec);
-      if (target === null || !/\.(c|m)?js$/.test(target)) return false;
-      return starTargetNames(parser, target).size === 0;
+      return target !== null && provablyEmpty(parser, target, new Set<string>());
     },
     starTargetNames: (from, spec) => {
       const target = resolveRelativeCjs(from, spec);

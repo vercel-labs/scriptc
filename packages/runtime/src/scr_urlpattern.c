@@ -1471,18 +1471,80 @@ static ScrStr *ws_escape_pattern(ScrStr *value) {
   return ws_buf_finish(&b);
 }
 
+/* The index just past the pattern part that starts at `at`: a `:name`, a
+ * single `*`, or a `(...)` regexp group (balanced, its escapes respected). */
+static size_t ws_pattern_part_end(const ScrStr *seg, size_t at) {
+  char c = seg->data[at];
+  if (c == ':') {
+    size_t i = at + 1;
+    bool first = true;
+    while (i < seg->len && ws_is_name_cp(seg->data[i], first)) {
+      i++;
+      first = false;
+    }
+    return i;
+  }
+  if (c == '(') {
+    size_t i = at + 1;
+    int depth = 1;
+    bool in_class = false;
+    while (i < seg->len && depth > 0) {
+      char d = seg->data[i];
+      if (d == '\\' && i + 1 < seg->len) {
+        i += 2;
+        continue;
+      }
+      if (in_class) {
+        if (d == ']') in_class = false;
+      } else if (d == '[') {
+        in_class = true;
+      } else if (d == '(') {
+        depth++;
+      } else if (d == ')') {
+        depth--;
+      }
+      i++;
+    }
+    return i;
+  }
+  return at + 1;
+}
+
 /* Encode one pathname pattern segment for the URL path: its literal bytes
  * take the path percent-encode set, while a `\`-escaped pattern character
  * and a `(...)` regexp group stay exactly as written, so encoding never
- * changes what a custom class or group matches. */
-static ScrStr *ws_encode_pattern_segment(const ScrStr *seg) {
+ * changes what a custom class or group matches. An escaped slash is the one
+ * escape that spells a separator: it keeps its fixed meaning by rendering as
+ * the `/` it spells, and a pattern part right after it is wrapped in a group,
+ * because at the start of a rendered segment a bare `:id+`, `*` or `(\d+)`
+ * would take the shape of a segment-level part and match across segments. */
+static ScrStr *ws_encode_pattern_segment(const ScrStr *seg, bool after_escaped_slash) {
   static const char hex[] = "0123456789ABCDEF";
   WsBuf b = {0};
   size_t i = 0;
   while (i < seg->len) {
     char c = seg->data[i];
+    if (after_escaped_slash) {
+      after_escaped_slash = false;
+      if (c == ':' || c == '*' || c == '(') {
+        size_t end = ws_pattern_part_end(seg, i);
+        ws_buf_add(&b, "{", 1);
+        ws_buf_add(&b, seg->data + i, end - i);
+        ws_buf_add(&b, "}", 1);
+        i = end;
+        continue;
+      }
+    }
     if (c == '\\' && i + 1 < seg->len) {
       char next = seg->data[i + 1];
+      if (next == '/') {
+        /* a fixed slash: the separator it spells, with the part after it at
+         * the start of the rendered segment */
+        ws_buf_add(&b, "/", 1);
+        after_escaped_slash = true;
+        i += 2;
+        continue;
+      }
       /* An escape before a name character delimits the parameter name from
        * the literal suffix that follows it (`/:id\_suffix` requires the
        * suffix); before pattern syntax it is the literal spelling of the
@@ -1624,8 +1686,18 @@ static ScrStr *ws_canonicalize_pattern_path(ScrStr *value, ScrUrl *base) {
     value = empty_dot;
   }
   bool absolute = value->len > 0 && value->data[0] == '/';
+  bool escaped_start = false;
+  size_t start = absolute ? 1 : 0;
+  if (!absolute && value->len > 1 && value->data[0] == '\\' && value->data[1] == '/') {
+    /* the standard's first-token test: an escaped slash is the fixed "/"
+     * that starts the path, so the base's directory does not apply — and
+     * the part right after it is still mid-segment, so it is wrapped */
+    absolute = true;
+    escaped_start = true;
+    start = 2;
+  }
   size_t n = 0;
-  ScrStr **mine = ws_split_pattern_path(value, absolute ? 1 : 0, &n);
+  ScrStr **mine = ws_split_pattern_path(value, start, &n);
   ScrStr **base_segs = NULL;
   size_t base_n = 0;
   if (!absolute && base != NULL) {
@@ -1688,7 +1760,7 @@ static ScrStr *ws_canonicalize_pattern_path(ScrStr *value, ScrUrl *base) {
       scr_str_release(seg);
       continue;
     }
-    out[out_n] = ws_encode_pattern_segment(seg);
+    out[out_n] = ws_encode_pattern_segment(seg, escaped_start && i == 0);
     out_literal[out_n++] = literal;
     scr_str_release(seg);
   }

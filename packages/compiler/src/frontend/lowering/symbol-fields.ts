@@ -203,6 +203,15 @@ export function classSymbolKeyOfSymbol(lowerer: Lowerer, sym: ts.Symbol): ClassS
     if (key) cache.set(sym, key);
     return key;
   }
+  // `exports.KEY = Symbol("…")`: a CommonJS module's exported symbol key
+  // (the form @nestjs/common's constants take). The export's global holds
+  // the symbol value, so the member assignment is as stable as a
+  // module-scope const.
+  if (decls.length === 1 && decl && ts.isBinaryExpression(decl)) {
+    const key = cjsMemberSymbolKeyOf(lowerer, sym, decl);
+    if (key) cache.set(sym, key);
+    return key;
+  }
   if (decls.length !== 1 || !decl || !ts.isVariableDeclaration(decl) || !ts.isIdentifier(decl.name))
     return null;
   const list = decl.parent;
@@ -349,6 +358,35 @@ function literalSymbolCallOf(
  * can run code (a require there could close a cycle and publish the
  * initial empty exports object instead). Any write to the property, or
  * replacement through `exports`/`module.exports`, keeps it unstable. */
+/** `exports.KEY = Symbol("…")` (or `module.exports.KEY = …`) at a
+ * CommonJS module's top level: the exported member's symbol is one identity
+ * for the module's evaluation, held by the export's global. */
+function cjsMemberSymbolKeyOf(
+  lowerer: Lowerer,
+  sym: ts.Symbol,
+  decl: ts.BinaryExpression,
+): ClassSymbolKey | null {
+  if (decl.operatorToken.kind !== ts.SyntaxKind.EqualsToken) return null;
+  const left = decl.left;
+  if (!ts.isPropertyAccessExpression(left) || !ts.isIdentifier(left.name)) return null;
+  const receiver = left.expression;
+  const moduleExports =
+    (ts.isIdentifier(receiver) && receiver.text === "exports") ||
+    (ts.isPropertyAccessExpression(receiver) &&
+      receiver.name.text === "exports" &&
+      ts.isIdentifier(receiver.expression) &&
+      receiver.expression.text === "module");
+  if (!moduleExports) return null;
+  const stmt = decl.parent;
+  if (stmt === undefined || !ts.isExpressionStatement(stmt) || !ts.isSourceFile(stmt.parent))
+    return null;
+  const call = literalSymbolCallOf(lowerer, decl.right);
+  if (!call) return null;
+  const sf = ts.getSourceFileOfNode(decl);
+  if (bindingWritten(lowerer, sym, sf)) return null;
+  return symbolKeyOf(lowerer, sym, call.registered, call.description);
+}
+
 function cjsTableSymbolKeyOf(
   lowerer: Lowerer,
   sym: ts.Symbol,

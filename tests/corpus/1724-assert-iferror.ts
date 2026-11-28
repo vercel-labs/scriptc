@@ -30,6 +30,12 @@ console.log("I ", JSON.stringify(messageOf(() => assert.ifError([1, 2, 3]))));
 console.log("J ", JSON.stringify(messageOf(() => assert.ifError(new Map([["a", 1]])))));
 console.log("K ", JSON.stringify(messageOf(() => assert.ifError(function namedFn() {}))));
 console.log("L ", JSON.stringify(messageOf(() => assert.ifError(Symbol("s")))));
+// A plain object's message is used the way an error's is (Node reads
+// err.message for any object, and the constructor's name for an empty one).
+console.log("M ", JSON.stringify(messageOf(() => assert.ifError({ message: "boom" }))));
+console.log("N ", JSON.stringify(messageOf(() => assert.ifError({ message: "" }))));
+console.log("O ", JSON.stringify(messageOf(() => assert.ifError({ message: 42 }))));
+console.log("P ", JSON.stringify(messageOf(() => assert.ifError({ name: "MyErr", message: "boom" }))));
 
 // The callback-error idiom: Error | null | undefined per arm.
 function viaUnion(e: Error | null | undefined): string {

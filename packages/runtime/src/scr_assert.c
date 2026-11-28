@@ -703,6 +703,8 @@ static bool scr_assert_dyn_same_value(const ScrDyn *a, const ScrDyn *b) {
 static const ScrDyn *scr_assert_loose_error_prop(const ScrDyn *d, const char *key, size_t len);
 /* Node's error arm under the strict walk (defined with the loose helpers). */
 static bool scr_assert_dyn_error(const ScrDyn *a, const ScrDyn *b);
+/* The class name Node's error rendering prints (defined with ifError). */
+static ScrDyn *scr_assert_constructor_name(const ScrDyn *v);
 
 /* Node's strict prototype test for two error views: an error's observable
  * prototype (Error.prototype, a subclass's own class prototype) compares
@@ -3399,16 +3401,89 @@ void scr_assert_iferror_bool(bool v) {
  * caughtToDyn encoding) throw with the error's message (its name when
  * the message is empty, Node's rule), everything else throws with the
  * value's inspection. */
+/* Node's `err.constructor.name` for ifError's empty message. A class
+ * instance answers its class; a runtime error answers its constructor
+ * token's name; the runtime's own Object.prototype is a method table with
+ * no data `constructor`, so a plain body whose prototype is not null
+ * answers the builtin class Node would (Object, Array). +1, or NULL when
+ * there is no name (a null-prototype body, a nameless constructor) or a
+ * getter threw. */
+static ScrDyn *scr_assert_constructor_name(const ScrDyn *v) {
+  if (v->kind == SCR_DYN_TYPED_REF) {
+    const ScrStr *cls = scr_dyn_typed_ref_class_name(v);
+    if (cls != NULL && cls->len > 0) return scr_dyn_new_str(scr_str_retain((ScrStr *)cls));
+  }
+  ScrDyn *ctor = scr_dyn_obj_read((ScrDyn *)v, "constructor", 11);
+  if (ctor != NULL && scr_exc_pending()) {
+    scr_dyn_release(ctor);
+    return NULL;
+  }
+  if (ctor != NULL && ctor->kind == SCR_DYN_FUNC) {
+    ScrDyn *name = scr_dyn_fn_get(ctor, "name", 4);
+    scr_dyn_release(ctor);
+    if (name != NULL) return name;
+  } else {
+    if (ctor != NULL && ctor->kind != SCR_DYN_UNDEF && ctor->kind != SCR_DYN_NULL) {
+      /* A data constructor that is not a function: Node reads `.name` off
+       * it, which is undefined for a plain value. */
+      scr_dyn_release(ctor);
+      return NULL;
+    }
+    scr_dyn_release(ctor);
+    /* The runtime's own Object.prototype carries no data constructor, so a
+     * body whose prototype is not null answers the builtin class Node
+     * would (Object, Array). */
+    const char *builtin =
+        v->kind == SCR_DYN_ARR ? "Array" : v->kind == SCR_DYN_OBJ ? "Object" : NULL;
+    if (builtin == NULL) return NULL;
+    ScrDyn *proto = scr_dyn_get_prototype((ScrDyn *)v);
+    const bool no_proto = proto == NULL || proto->kind == SCR_DYN_NULL;
+    scr_dyn_release(proto);
+    if (no_proto) return NULL;
+    ScrStr *text = scr_str_new(builtin, strlen(builtin));
+    ScrDyn *name = scr_dyn_new_str(text);
+    scr_str_release(text);
+    return name;
+  }
+  return NULL;
+}
+
+
+/* assert.js's ifError: for an object whose `message` reads as a string the
+ * message is that string — the constructor's name when the string is empty
+ * — and every other value renders with util.inspect's defaults (compact,
+ * depth 2). An error is not special-cased: a plain object with a message
+ * answers the same way. The reads are property reads (prototype chain and
+ * getters); a getter's throw is the exception the assertion propagates. */
 void scr_assert_iferror_dyn(const ScrDyn *v) {
   if (v->kind == SCR_DYN_UNDEF || v->kind == SCR_DYN_NULL) return;
-  if (v->kind == SCR_DYN_OBJ && scr_dyn_obj_get(v, "%error", 6) != NULL) {
-    const ScrDyn *msg = scr_dyn_obj_get(v, "message", 7);
-    const ScrDyn *name = scr_dyn_obj_get(v, "name", 4);
-    const ScrDyn *d = msg != NULL && msg->kind == SCR_DYN_STR && msg->v.str->len > 0 ? msg : name;
-    if (d != NULL && d->kind == SCR_DYN_STR) {
-      scr_assert_iferror_fail(d->v.str->data, d->v.str->len, scr_dyn_retain((ScrDyn *)v));
+  if (scr_assert_dyn_is_object(v)) {
+    ScrDyn *message = scr_dyn_obj_read((ScrDyn *)v, "message", 7);
+    if (message == NULL) return; /* the getter threw */
+    if (message->kind == SCR_DYN_STR) {
+      if (message->v.str->len > 0) {
+        scr_assert_iferror_fail(message->v.str->data, message->v.str->len,
+                                scr_dyn_retain((ScrDyn *)v));
+        scr_dyn_release(message);
+        return;
+      }
+      /* `err.message.length === 0 && err.constructor`: its name. */
+      ScrDyn *name = scr_assert_constructor_name(v);
+      if (name != NULL && name->kind == SCR_DYN_STR) {
+        scr_assert_iferror_fail(name->v.str->data, name->v.str->len,
+                                scr_dyn_retain((ScrDyn *)v));
+        scr_dyn_release(name);
+        scr_dyn_release(message);
+        return;
+      }
+      scr_dyn_release(name);
+      /* No constructor name to add: Node appends the empty message. */
+      scr_assert_iferror_fail(message->v.str->data, message->v.str->len,
+                              scr_dyn_retain((ScrDyn *)v));
+      scr_dyn_release(message);
       return;
     }
+    scr_dyn_release(message);
   }
   /* Node's ifError renders any other value with util.inspect's defaults
    * (compact, depth 2), so a short object or array stays on one line. */

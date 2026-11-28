@@ -1,0 +1,8 @@
+fs-promises-stat-runtime-bigint.ts:9:9 - error SC2020: 'fs.promises.stat where the result is not Stats, BigIntStats, Stats | undefined or BigIntStats | undefined' is part of the standard library types but has no scriptc lowering yet
+
+   8 |   const bigint = process.argv.length > 2;
+   9 |   await stat("/tmp", { bigint });
+     |         ^~~~~~~~~~~~~~~~~~~~~~~~
+  10 | }
+
+  hint: the bigint option must be the literal true or false: a runtime-valued flag chooses the member table at the call, and a union of both has no static member table

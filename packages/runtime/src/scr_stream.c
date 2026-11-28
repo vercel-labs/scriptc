@@ -606,6 +606,7 @@ static void scr_stream_gcfree(void *obj) {
 static void scr_stream_release_direct(void *obj) {
   ScrStream *s = obj;
   if (--s->rc == 0) {
+    scr_stream_live_remove(s);
     scr_cyc_dead(s);
     scr_emitter_reg_drop(s->reg);
     scr_stream_state_drop(s->st, false);
@@ -9859,10 +9860,12 @@ static void scr_stream_live_add(const void *ptr) {
   if ((scr_stream_live_count + scr_stream_live_tombs + 1) * 2 >= scr_stream_live_cap)
     scr_stream_live_rehash(scr_stream_live_cap ? scr_stream_live_cap * 2 : 64);
   size_t slot = scr_stream_live_bucket(ptr, scr_stream_live_cap);
-  while (scr_stream_live[slot] != NULL && scr_stream_live[slot] != scr_stream_live_tomb)
+  while (scr_stream_live[slot] != NULL && scr_stream_live[slot] != scr_stream_live_tomb &&
+         scr_stream_live[slot] != ptr)
     slot = (slot + 1) & (scr_stream_live_cap - 1);
-  if (scr_stream_live[slot] == NULL) scr_stream_live_count++;
-  else scr_stream_live_tombs--;
+  if (scr_stream_live[slot] == ptr) return; /* already registered */
+  if (scr_stream_live[slot] == scr_stream_live_tomb) scr_stream_live_tombs--;
+  scr_stream_live_count++;
   scr_stream_live[slot] = (void *)ptr;
 }
 

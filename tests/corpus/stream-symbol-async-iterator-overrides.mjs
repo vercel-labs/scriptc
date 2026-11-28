@@ -52,3 +52,13 @@ for (let i = 0; i < 8; i++) {
   instances.push(new Plain());
 }
 console.log("instances", instances.map((v) => typeof v[Symbol.asyncIterator]).join(","));
+
+// Streams released through their own reference count leave the live set with
+// them: the registry does not accumulate entries for destroyed streams.
+let alive = 0;
+for (let i = 0; i < 200; i += 1) {
+  const released = Readable.from(["s"]);
+  if (typeof released[Symbol.asyncIterator] === "function") alive += 1;
+  released.destroy();
+}
+console.log("alive", alive);

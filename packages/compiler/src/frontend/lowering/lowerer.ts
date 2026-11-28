@@ -25939,6 +25939,13 @@ export class Lowerer {
     ) {
       return pathModuleValue(this, `path/${bi.member}`, loc);
     }
+    // node:punycode's ucs2 object and its two methods as values: the one
+    // object Node's lib/punycode.js builds and its native functions.
+    if (bi.module === "punycode") {
+      if (bi.member === "ucs2") return this.punycodeUcs2ObjectValue(loc);
+      if (bi.member === "ucs2.decode" || bi.member === "ucs2.encode")
+        return this.lowerPunycodeUcs2MethodValue(bi.member === "ucs2.decode", loc);
+    }
     // url.Url as a value: the legacy Url constructor (JavaScript sources;
     // @types/node declares Url as a type only). Its prototype is the one
     // url.parse() results carry.
@@ -26409,6 +26416,9 @@ export class Lowerer {
     if (module === "crypto" && member === "constants") return cryptoConstantsValue(this, loc);
     if (module === "perf_hooks" && member === "constants")
       return perfHooksConstantsValue(this, loc);
+    // node:punycode's ucs2 object as a value, the same singleton the
+    // property form and a named import answer.
+    if (module === "punycode" && member === "ucs2") return this.punycodeUcs2ObjectValue(loc);
     return null;
   }
 
@@ -26609,6 +26619,106 @@ export class Lowerer {
       this.builtinCheckedValues.set(fnName, { fn, display, loc, type: funcType });
     }
     return { kind: "closure", fnName, captures: [], type: funcType, loc };
+  }
+
+  /** node:punycode's ucs2.decode / ucs2.encode as function values. Direct
+   * calls keep their libCall lowering; a read of the member (or of the ucs2
+   * object's own property) is the native function Node's lib/punycode.js
+   * builds, named ucs2decode/ucs2encode with length 1. */
+  lowerPunycodeUcs2MethodValue(decode: boolean, loc: SrcLoc): IrExpr {
+    const libFn = decode ? "punycode.ucs2Decode" : "punycode.ucs2Encode";
+    const paramType: IrType = decode ? STRING : arrayOf(F64);
+    const resultType: IrType = decode ? arrayOf(F64) : STRING;
+    const valueName = decode ? "ucs2decode" : "ucs2encode";
+    const cacheKey = `%builtin.value.punycode.${libFn}`;
+    let fnName = this.builtinCallableValueFns.get(cacheKey);
+    if (fnName === undefined) {
+      fnName = cacheKey;
+      this.builtinCallableValueFns.set(cacheKey, fnName);
+      this.builtinCallableValueNames.set(fnName, valueName);
+      this.builtinCallableValueLengths.set(fnName, 1);
+      this.liftedFns.push({
+        name: fnName,
+        displayName: valueName,
+        params: [{ localId: "input", name: "input", type: paramType }],
+        returnType: resultType,
+        locals: [{ id: "input", name: "input", type: paramType, mutable: false }],
+        body: [
+          {
+            kind: "return",
+            value: {
+              kind: "libCall",
+              fn: libFn,
+              args: [varRef("input", paramType, loc)],
+              type: resultType,
+              loc,
+            },
+            loc,
+          },
+        ],
+        loc,
+      });
+    }
+    return {
+      kind: "closure",
+      fnName,
+      captures: [],
+      type: { kind: "func", params: [paramType], ret: resultType },
+      loc,
+    };
+  }
+
+  /** node:punycode's ucs2 object as a value: one plain object holding the
+   * two native function values, as Node's lib/punycode.js builds it once
+   * (`ucs2 = { decode: ucs2decode, encode: ucs2encode }`). The runtime
+   * caches the object, so every read is the same value. */
+  punycodeUcs2ObjectValue(loc: SrcLoc): IrExpr {
+    const name = "%builtin.punycode.ucs2";
+    if (!this.builtinCallableValueFns.has(name)) {
+      this.builtinCallableValueFns.set(name, name);
+      const field = (member: string, decode: boolean): { key: IrExpr; value: IrExpr } => ({
+        key: { kind: "strLit", value: member, type: STRING, loc },
+        value: {
+          kind: "dynFrom",
+          value: this.checkedBuiltinValue(this.lowerPunycodeUcs2MethodValue(decode, loc)),
+          type: DYN,
+          loc,
+        },
+      });
+      this.liftedFns.push({
+        name,
+        params: [],
+        returnType: DYN,
+        locals: [],
+        body: [
+          {
+            kind: "return",
+            value: {
+              kind: "dynObjLit",
+              fields: [field("decode", true), field("encode", false)],
+              type: DYN,
+              loc,
+            },
+            loc,
+          },
+        ],
+        loc,
+      });
+    }
+    const table: IrExpr = {
+      kind: "closure",
+      fnName: name,
+      captures: [],
+      type: { kind: "func", params: [], ret: DYN },
+      loc,
+    };
+    return {
+      kind: "libCall",
+      fn: "punycode.ucs2Object",
+      args: [{ kind: "dynFrom", value: table, type: DYN, loc }],
+      type: DYN,
+      loc,
+    };
   }
 
   /** A builtin function value about to become untyped: its checked twin

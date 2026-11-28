@@ -1,4 +1,4 @@
-import { arrayOf, BOOL, F64, STRING, VOID } from "../ir.js";
+import { arrayOf, BOOL, DYN, F64, STRING, VOID } from "../ir.js";
 import { defineLibFnSignatures } from "./shared.js";
 
 /** The punycode builtin call slots. */
@@ -15,5 +15,8 @@ export const punycodeSignatures = defineLibFnSignatures({
   "punycode.toUnicode": { argTypes: [STRING], result: STRING },
   "punycode.ucs2Decode": { argTypes: [STRING], result: arrayOf(F64) },
   "punycode.ucs2Encode": { argTypes: [arrayOf(F64)], result: STRING },
+  /** The module's ucs2 object as a value (scr_url.c): Node builds it once,
+   * from a thunk over the two function values above. */
+  "punycode.ucs2Object": { argTypes: [DYN], result: DYN },
   "punycode.warn": { argTypes: [BOOL, BOOL], result: VOID },
 });

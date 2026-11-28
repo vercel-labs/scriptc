@@ -76,6 +76,9 @@ ScrStr *scr_punycode_encode(const ScrStr *input);
 ScrStr *scr_punycode_to_ascii(const ScrStr *input);
 ScrStr *scr_punycode_to_unicode(const ScrStr *input);
 ScrArr *scr_punycode_ucs2_decode(const ScrStr *input);
+/* node:punycode's ucs2 object as a value: one plain object (Node builds it
+ * once), made by calling `table`, a thunk over the two function values. +1. */
+ScrDyn *scr_punycode_ucs2_object(const ScrDyn *table);
 ScrStr *scr_url_domain_to_unicode(const ScrDyn *domain, bool missing);
 ScrStr *scr_url_to_path(ScrUrl *u);      /* +1, or throws */
 /* scr_url_to_path as a value: the path string, or the error it would throw

@@ -3109,6 +3109,26 @@ ScrArr *scr_punycode_ucs2_decode(const ScrStr *input) {
   return out;
 }
 
+/* node:punycode's ucs2 object as a value. Node builds it once in
+ * lib/punycode.js (`ucs2 = { decode: ucs2decode, encode: ucs2encode }`), so
+ * every read of it is the same plain object; the compiler passes a thunk
+ * that builds it with the two native function values. */
+static SCR_TL ScrDyn *scr_punycode_ucs2_value;
+static void scr_punycode_ucs2_clear(void) {
+  ScrDyn *value = scr_punycode_ucs2_value;
+  scr_punycode_ucs2_value = NULL;
+  scr_dyn_release(value);
+}
+
+ScrDyn *scr_punycode_ucs2_object(const ScrDyn *table) {
+  if (scr_punycode_ucs2_value) return scr_dyn_retain(scr_punycode_ucs2_value);
+  ScrDyn *object = scr_dyn_call(table, NULL, 0, "punycode.ucs2");
+  if (!object) return NULL;
+  scr_punycode_ucs2_value = object;
+  scr_atexit(scr_punycode_ucs2_clear);
+  return scr_dyn_retain(object);
+}
+
 /* mapDomain: only the part after the first '@' maps (and only up to a
  * second one — punycode.js keeps parts[0] and parts[1]); the RFC 3490
  * separators U+002E, U+3002, U+FF0E and U+FF61 all split labels, and the

@@ -1927,7 +1927,12 @@ static void scr_http_client_set_header_thunk(void *ctx, ScrStr *name, ScrDyn *va
 /* ClientRequest.setHeaders(headers): Node's OutgoingMessage form — a Headers
  * or Map of names to values, each set through setHeader (arrays keep their
  * several lines, a request has no set-cookie join). */
+static bool scr_http_client_header_mutable(struct ScrHttpClientReq *c, const char *what);
+
 void scr_http_client_set_headers_dyn(ScrHttpClientReq *c, const ScrDyn *headers /*borrowed*/) {
+  /* Node's setHeaders checks headersSent before it iterates: an empty Map or
+   * Headers still throws ERR_HTTP_HEADERS_SENT once the head went out */
+  if (!scr_http_client_header_mutable(c, "set")) return;
   scr_http_set_headers_apply(c, headers, scr_http_client_set_header_thunk);
 }
 

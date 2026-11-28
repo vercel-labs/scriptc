@@ -113,18 +113,25 @@ export function buildUnitSummary(
         a.kind.localeCompare(b.kind),
     );
   // Two files one unit holds can share a relative module path (a merged SCC
-  // of two copies); their export names join rather than overwrite.
-  const exportNames = new Map<string, Set<string>>();
+  // of two copies); their export names join rather than overwrite. Plain
+  // arrays keep the merge inside what the compiler itself lowers.
+  const exportNames = new Map<string, string[]>();
+  const exportModules: string[] = [];
   for (const entry of lowering.exports) {
     if (!members.has(entry.file)) continue;
-    const names = exportNames.get(entry.module) ?? new Set<string>();
-    for (const name of entry.names) names.add(name);
-    exportNames.set(entry.module, names);
+    let names = exportNames.get(entry.module);
+    if (names === undefined) {
+      names = [];
+      exportNames.set(entry.module, names);
+      exportModules.push(entry.module);
+    }
+    for (const name of entry.names) if (!names.includes(name)) names.push(name);
   }
+  exportModules.sort();
   const exportsOut: Record<string, readonly string[]> = {};
-  for (const module of Array.from(exportNames.keys()).sort()) {
+  for (const module of exportModules) {
     const names = exportNames.get(module);
-    exportsOut[module] = names === undefined ? [] : Array.from(names).sort();
+    exportsOut[module] = names === undefined ? [] : names.sort();
   }
   const generics = summaryGenerics(lowering, members, unitOfFile);
   const classes: UnitClassFact[] = observation.classes

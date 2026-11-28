@@ -214,3 +214,71 @@ test(
     expect(stdout).toContain("TypeError");
   },
 );
+
+test(
+  "a package type merely named Error is not the global Error",
+  { timeout: 600_000 },
+  async () => {
+    const dir = project(
+      {
+        types:
+          "export interface Error { code: number }\n" +
+          'export type PollItem = { _tag: "Error"; error: Error };\n' +
+          "export declare function poll(): AsyncGenerator<PollItem, void, void>;\n",
+        js:
+          "export async function* poll() {\n" +
+          '  yield { _tag: "Error", error: { code: "7" } };\n' +
+          "}\n",
+      },
+      'import { poll } from "sdk-pkg";\n' +
+        "async function main() {\n" +
+        "  for await (const event of poll()) {\n" +
+        '    if (event._tag === "Error") console.log(event.error.code / 2);\n' +
+        "  }\n" +
+        "}\n" +
+        "main();\n",
+    );
+    const { result, plan } = await compileCapturingPlan(join(dir, "main.ts"), dir);
+    // The package interface is not the global Error: naming it as one would
+    // check instanceof the global class at run time. The element type must
+    // stay unprojected (the site then refuses by name).
+    expect(plan).not.toContain("error: Error");
+    expect(plan).not.toContain("iterate poll()");
+    if (result.ok) throw new Error("compiled; the package Error was treated as the global one");
+    expect(result.diagnostics.map((d) => d.code)).toContain("SC1043");
+  },
+);
+
+test(
+  "a quoted method name prints quoted in the boundary declaration",
+  { timeout: 600_000 },
+  async () => {
+    const dir = project(
+      {
+        types:
+          'export type Item = { _tag: "R"; "read-text"(): string };\n' +
+          "export declare function poll(): AsyncGenerator<Item, void, void>;\n",
+        js:
+          "export async function* poll() {\n" +
+          '  yield { _tag: "R", "read-text": () => "hi" };\n' +
+          "}\n",
+      },
+      'import { poll } from "sdk-pkg";\n' +
+        "async function main() {\n" +
+        "  for await (const event of poll()) {\n" +
+        '    if (event._tag === "R") console.log(event["read-text"]());\n' +
+        "  }\n" +
+        "}\n" +
+        "main();\n",
+    );
+    const { result, plan } = await compileCapturingPlan(join(dir, "main.ts"), dir);
+    // A quoted member name must stay quoted in the generated declaration or
+    // it is not valid TypeScript.
+    expect(plan).toContain('"read-text"(): string');
+    expect(plan).not.toContain("read-text(): string;");
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const { stdout } = await execFileAsync(result.binaryPath, [], { encoding: "utf8" });
+    expect(stdout).toBe("hi\n");
+  },
+);

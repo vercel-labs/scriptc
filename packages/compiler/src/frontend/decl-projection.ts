@@ -391,6 +391,21 @@ class TypePrinter {
     return this.checker.getBaseTypes(target).every((base) => this.userInterface(base, seen));
   }
 
+  /** Whether a symbol is declared by the TypeScript standard library (a
+   * lib.*.d.ts or a bundled library), not by a package or a user file: the
+   * element-mode names for the global Error and Promise apply only there,
+   * never to a package type that merely shares the name. */
+  private isStandardLibrarySymbol(symbol: ts.Symbol): boolean {
+    const declarations = symbol.declarations ?? [];
+    return (
+      declarations.length > 0 &&
+      declarations.every((d) => {
+        const file = ts.getSourceFileOfNode(d).fileName.split("\\").join("/");
+        return /(^|\/)lib(\.[\w.-]+)?\.d\.ts$/.test(file) || file.startsWith("bundled:");
+      })
+    );
+  }
+
   private printObject(type: ts.Type, depth: number): string | null {
     const checker = this.checker;
     if (checker.isArrayType(type)) {
@@ -421,6 +436,7 @@ class TypePrinter {
       if (
         this.elementMode &&
         (symbol.flags & ts.SymbolFlags.Class) !== 0 &&
+        this.isStandardLibrarySymbol(symbol) &&
         RUNTIME_ERROR_CLASSES.has(`%${ts.symbolName(symbol)}`)
       )
         return ts.symbolName(symbol);
@@ -431,12 +447,18 @@ class TypePrinter {
       if (
         this.elementMode &&
         (symbol.flags & ts.SymbolFlags.Interface) !== 0 &&
+        this.isStandardLibrarySymbol(symbol) &&
         RUNTIME_ERROR_CLASSES.has(`%${ts.symbolName(symbol)}`)
       )
         return ts.symbolName(symbol);
       // A Promise in an element position is the lowering's promise kind:
       // the per-element check tests it is a promise and unwraps it.
-      if (this.elementMode && ts.symbolName(symbol) === "Promise" && type.isTypeReference()) {
+      if (
+        this.elementMode &&
+        ts.symbolName(symbol) === "Promise" &&
+        this.isStandardLibrarySymbol(symbol) &&
+        type.isTypeReference()
+      ) {
         const [inner] = checker.getTypeArguments(type);
         if (inner !== undefined) {
           const text = this.print(inner, depth + 1);
@@ -469,10 +491,13 @@ class TypePrinter {
         const key = String(prop.escapedName);
         if (key.startsWith("__@")) continue; // symbol-keyed (brands)
         if (prop.flags & (ts.SymbolFlags.GetAccessor | ts.SymbolFlags.SetAccessor)) return null;
+        // A member name that is not an identifier (`"read-text"`) prints
+        // quoted or the generated declaration is not valid TypeScript.
+        const name = /^[A-Za-z_$][\w$]*$/.test(key) ? key : JSON.stringify(key);
         if (prop.flags & ts.SymbolFlags.Method) {
           if (!this.elementMode) return null;
           const propType = checker.getTypeOfSymbol(prop);
-          const method = this.printMethodSignature(propType, key, depth);
+          const method = this.printMethodSignature(propType, name, depth);
           if (method === null) return null;
           members.push(method);
           continue;
@@ -483,7 +508,6 @@ class TypePrinter {
         if (p === null) return null;
         const readonly = (prop.checkFlags & READONLY_CHECK_FLAG) !== 0 || hasReadonlyModifier(prop);
         if (readonly) readonlyCount++;
-        const name = /^[A-Za-z_$][\w$]*$/.test(key) ? key : JSON.stringify(key);
         if (optional && !/\bundefined\b/.test(p)) p = `${p} | undefined`;
         members.push(`${readonly ? "readonly " : ""}${name}${optional ? "?" : ""}: ${p}`);
       }

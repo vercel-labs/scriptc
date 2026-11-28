@@ -20746,20 +20746,49 @@ export class Lowerer {
     }
   }
 
-  /** coerceIntoTyped, with the one exception to a typed slot keeping one
-   * object with the dynamic value it takes (sharedDynConversion): a value
-   * the program types itself and the compiler holds dynamically, such as an
-   * evolving empty array that takes another element type later, keeps the
-   * copy. Adoption would hold the source to the slot's type, a claim the
-   * program makes only for a value it left untyped. */
+  /** coerceIntoTyped, with one exception to a typed slot keeping one object
+   * with the dynamic value it takes (sharedDynConversion): a conversion AT A
+   * CALL reads the value for the call. A callee's typed parameter does not
+   * become the array's storage, and a value the program still writes keeps
+   * its dynamic element representation — an evolving empty array passed to a
+   * number[] parameter and given a string afterwards keeps working (7006).
+   * Every other typed slot STORES the value — a record field, an array
+   * element, a binding, an assignment, a return — where JavaScript keeps one
+   * object: adopting there makes a write through the program's other name
+   * (a returned closure pushing into the array it collected) visible through
+   * the stored one, as in Node. Without it the store kept a snapshot of the
+   * array. */
   coerceInto(node: ts.Node, expr: IrExpr, expected: IrType, payloadSite?: IrType): IrExpr {
     const out = this.coerceIntoTyped(node, expr, expected, payloadSite);
     if (out.kind !== "dynCheck" || out.shared !== true) return out;
     const untyped = (ts.TypeFlags.Any | ts.TypeFlags.Unknown) as number;
     if ((this.typeOf(node).flags & untyped) !== 0) return out;
+    if (!this.callBoundaryValue(node)) return out;
     const copied = { ...out };
     delete copied.shared;
     return copied;
+  }
+
+  /** Whether `node` is a call's argument, through parentheses, a `satisfies`
+   * and a non-null assertion: the conversion there reads the value for the
+   * call rather than storing it (coerceInto). */
+  private callBoundaryValue(node: ts.Node): boolean {
+    let n: ts.Node = node;
+    while (
+      n.parent !== undefined &&
+      (ts.isParenthesizedExpression(n.parent) ||
+        ts.isSatisfiesExpression(n.parent) ||
+        ts.isNonNullExpression(n.parent))
+    )
+      n = n.parent;
+    const parent = n.parent;
+    if (parent === undefined) return false;
+    const args = ts.isCallExpression(parent)
+      ? parent.arguments.nodes
+      : ts.isNewExpression(parent)
+        ? (parent.arguments?.nodes ?? [])
+        : undefined;
+    return args !== undefined && args.some((arg) => arg === n);
   }
 
   coerceIntoTyped(node: ts.Node, expr: IrExpr, expected: IrType, payloadSite?: IrType): IrExpr {

@@ -99,7 +99,9 @@ declare module "http" {
     readonly signal: AbortSignal;
     resume(): void;
     pause(): void;
-    destroy(): void;
+    /* destroy([error]): the error, when given, reaches the message's
+     * 'error' listeners before 'close'. */
+    destroy(error?: Error): void;
     setTimeout(msecs: number, callback?: () => void): this;
     /* setEncoding('utf8'): 'data' delivers strings (other real encodings
      * throw a "not supported yet" Error at runtime; unknown names throw
@@ -198,7 +200,9 @@ declare module "http" {
       callback?: (() => void) | undefined,
     ): void;
     end(callback: () => void): void;
-    destroy(): void;
+    /* destroy([error]): the connection teardown; Node reports the error
+     * nowhere on the response. */
+    destroy(error?: Error): void;
     /* 'prefinish' fires inside end(), before 'finish'; 'drain' follows a
      * write() that answered false once its bytes are out. */
     on(event: "close" | "finish" | "prefinish" | "drain", listener: () => void): void;

@@ -15,6 +15,7 @@
  */
 import { execFile } from "node:child_process";
 import {
+  chmodSync,
   existsSync,
   globSync,
   mkdirSync,
@@ -190,8 +191,12 @@ async function build(
   cacheDir: string,
   observe: boolean,
 ): Promise<BuildOutcome | { failed: string }> {
+  // The compiler refuses a shared cache root that a process with another
+  // user's umask made visible; without a private root it stores no summary,
+  // and an empty determinism comparison would pass vacuously.
   rmSync(cacheDir, { recursive: true, force: true });
-  mkdirSync(cacheDir, { recursive: true });
+  mkdirSync(cacheDir, { recursive: true, mode: 0o700 });
+  chmodSync(cacheDir, 0o700);
   const outDir = join(cacheRoot, safeName(program.name), observe ? "observe" : "plain");
   mkdirSync(outDir, { recursive: true });
   const outPath = join(outDir, observe ? "observed" : "plain");
@@ -325,6 +330,8 @@ describe("SCRIPTC_UNITS=observe over the package corpus", () => {
       }
       const firstDigests = unitDigests(join(cacheRoot, "cache", `${name}-observe-1`));
       const secondDigests = unitDigests(join(cacheRoot, "cache", `${name}-observe-2`));
+      expect(firstDigests.size, "observe build stored its summaries").toBeGreaterThan(0);
+      expect(secondDigests.size, "second observe build stored its summaries").toBeGreaterThan(0);
       const same =
         firstDigests.size === secondDigests.size &&
         [...firstDigests].every(([id, digest]) => secondDigests.get(id) === digest);

@@ -5165,10 +5165,15 @@ export class ClassDynamicDispatch {
             lowerer.liftedFns.push(helper);
             changed = true;
           }
+          // The helper's parameters are the dynamic ABI: a typed receiver
+          // or value (a narrowed use, a primitive argument) converts here,
+          // so a typed argument never reaches the dynamic helper as-is.
+          const dynArg = (arg: IrExpr): IrExpr =>
+            arg.type.kind === "dyn" ? arg : lowerer.coerceToExpected(arg, DYN);
           return {
             kind: "call",
             callee: dispatch.fn.name,
-            args: read ? [read.value] : [write!.args[0]!, write!.args[2]!],
+            args: read ? [dynArg(read.value)] : [dynArg(write!.args[0]!), dynArg(write!.args[2]!)],
             type: dispatch.fn.returnType,
             loc: expr.loc,
           };

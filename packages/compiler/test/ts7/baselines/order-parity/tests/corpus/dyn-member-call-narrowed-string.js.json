@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/dyn-member-call-narrowed-string.js"
+ ],
+ "diags": []
+}

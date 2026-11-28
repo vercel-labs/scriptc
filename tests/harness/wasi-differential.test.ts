@@ -222,6 +222,9 @@ describe.skipIf(!zigOnPath() || !wasmPackInstalled())("wasm32-wasi differential"
     "dyn-private-write-brand.js",
     // A file-scope binding from a checked-dynamic CommonJS export.
     "cjs-dynamic-export-file-binding/main.cjs",
+    // A narrowed dynamic receiver's member read converts to the dynamic ABI.
+    "dyn-member-call-narrowed-string.js",
+    "dyn-member-call-narrowed-bytes.js",
     "record-key-order.ts",
     "typed-array-bulk-conversion.mjs",
     "typed-array-numeric-import.ts",

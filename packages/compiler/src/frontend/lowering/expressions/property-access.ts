@@ -3,7 +3,7 @@ import { reboundRequireBindingOf } from "../rebindable-requires.js";
 import { reprototypedGuard } from "../reprototyped-reads.js";
 import { lowerIteratorMemberValue } from "../iterator-prototype.js";
 import { widensReducedRecords } from "../function-returns.js";
-import { nullishReadTypeError, throwAfterEach } from "../primitive-throws.js";
+import { isPrimitiveValueType, nullishReadTypeError, throwAfterEach } from "../primitive-throws.js";
 import { lowerStaticPrivateRead } from "../private-statics.js";
 import { widthNarrowHelper } from "../coercions/unions.js";
 /* Property reads (`a.b`): lowerExprInner's property-access branch, intrinsic and union properties, field reads and targets, and match-group reads. */
@@ -592,13 +592,22 @@ export function lowerPropertyAccessExpr(
     const storage =
       lowerer.peekLocal(expr.expression)?.type ?? lowerer.globalOf(expr.expression)?.type;
     if (storage?.kind === "dyn") {
-      return {
-        kind: "dynKeyGet",
-        value: lowerer.lowerExpr(expr.expression),
-        key: { kind: "strLit", value: expr.name.text, type: STRING, loc },
-        type: DYN,
-        loc,
-      };
+      const value = lowerer.lowerExpr(expr.expression);
+      // A narrowed use gives the binding a static type (a typeof or
+      // instanceof guard, a checked assertion). A primitive value's
+      // members are its own, so the static lowering below answers the
+      // read exactly and never reaches the dynamic helper with a typed
+      // argument; anything wider keeps the own-property read, with a
+      // checked value converted into the dynamic ABI the read takes.
+      if (!isPrimitiveValueType(value.type)) {
+        return {
+          kind: "dynKeyGet",
+          value: value.type.kind === "dyn" ? value : lowerer.coerceToExpected(value, DYN),
+          key: { kind: "strLit", value: expr.name.text, type: STRING, loc },
+          type: DYN,
+          loc,
+        };
+      }
     }
   }
   // `require.cache[file].member` (and the same read through a binding): the

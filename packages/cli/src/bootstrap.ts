@@ -372,6 +372,14 @@ async function coverageFastPath(
       );
       coverage.diagnostics = [...coverage.diagnostics, ...promoted];
     }
+    // The cached replay keeps the same visible warning for a finding every
+    // function of which is allowed (see command.ts): a performance note, not
+    // a diagnostic the blocker gates fail on.
+    if (coverage.strictDynamic !== undefined && !promoted.some((d) => d.code === "SC6107"))
+      coverage.performance = [
+        ...(coverage.performance ?? []),
+        { ...coverage.strictDynamic, severity: "warning" },
+      ];
   }
   if (print === "diagnostics") {
     const envelope = startup.coverageEnvelope(coverage, {

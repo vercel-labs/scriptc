@@ -659,10 +659,12 @@ async function main(args: string[], host: CliHost): Promise<number> {
         coverage.diagnostics = [...coverage.diagnostics, ...promoted];
       }
       // A finding every function of which is allowed stays visible as a
-      // warning: strict mode keeps the finding, only the failure goes.
+      // warning: strict mode keeps the finding, only the failure goes. It
+      // joins the performance notes, never `diagnostics`: a warning must not
+      // trip the blocker gates.
       if (coverage.strictDynamic !== undefined && !promoted.some((d) => d.code === "SC6107"))
-        coverage.diagnostics = [
-          ...coverage.diagnostics,
+        coverage.performance = [
+          ...(coverage.performance ?? []),
           { ...coverage.strictDynamic, severity: "warning" },
         ];
     }

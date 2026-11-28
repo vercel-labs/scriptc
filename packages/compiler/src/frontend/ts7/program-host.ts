@@ -17,9 +17,11 @@ import { InternalCompilerError } from "../../errors.js";
  * process transport; program and filesystem behavior is shared by the Node
  * and statically compiled clients. */
 
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { Ts7Api } from "./api.js";
+import { Ts7FrameLimitError } from "./rpc-wire.js";
+import { checkedFileDiagnosticDataBatched } from "./session.js";
 import type { Ts7TimingInfo } from "./session-timing.js";
 import type { Ts7FileSystem } from "./rpc-filesystem.js";
 import type { Diagnostic, SourceFileMetadata } from "./semantic-types.js";
@@ -391,6 +393,22 @@ export class Ts7Host {
     this.aliasMembers.clear();
   }
 
+  /** The checker server's resident set size in megabytes, or 0 when the
+   * transport does not name the process or the host is not Linux. The
+   * caller uses it to decide whether the server is worth keeping for the
+   * next load (services.ts). */
+  serverRssMb(): number {
+    const pid = this.api.serverPid;
+    if (pid === undefined) return 0;
+    try {
+      const status = readFileSync(`/proc/${pid}/status`, "utf8");
+      const match = /^VmRSS:\s+(\d+) kB$/m.exec(status);
+      return match === null ? 0 : Math.round(Number(match[1]) / 1024);
+    } catch {
+      return 0;
+    }
+  }
+
   /** Close the server connection, even when the host is pooled. */
   closeConnection(): void {
     this.release = undefined;
@@ -625,16 +643,25 @@ export class Ts7Program {
  * stored diagnostics of the supplied declaration files, and their
  * diagnostics come in the full check's order. A global diagnostic can come
  * from checking any file, so when that partial check reports one, the full
- * check answers. */
+ * check answers.
+ *
+ * A large program asks for its semantic diagnostics in batches: one
+ * getDiagnosticsOfCheckedFiles response for every file can exceed the
+ * transport's frame limit before the first diagnostic is read (nitro's
+ * 3500-file program does). A batch that overflows is halved and retried;
+ * the merged file map restores the checker's file order, and the global
+ * diagnostics still come from getGlobalDiagnostics, so the answer matches
+ * the single full check. */
 export function getPreEmitDiagnostics(
   program: Ts7Program,
   keep?: (fileName: string) => boolean,
 ): readonly Diagnostic[] {
   const config = program.getConfigFileParsingDiagnostics();
   const options = program.getProgramDiagnostics();
+  const all = program.getSourceFileNames();
   if (keep !== undefined) {
-    const kept = program.getSourceFileNames().filter((name) => keep(name));
-    if (kept.length < program.getSourceFileNames().length) {
+    const kept = all.filter((name) => keep(name));
+    if (kept.length < all.length) {
       const partial =
         program.reusedKeptLibDiagnostics(new Set(kept)) ?? keptFileDiagnostics(program, kept);
       if (partial !== null && partial.global.length === 0)
@@ -655,13 +682,36 @@ export function getPreEmitDiagnostics(
       ...program.getSyntacticDiagnostics(),
       ...reused.semantic.map(ts7Diagnostic),
     ];
-  return [
-    ...config,
-    ...options,
-    ...program.getGlobalDiagnostics(),
-    ...program.getSyntacticDiagnostics(),
-    ...program.getSemanticDiagnostics(),
-  ];
+  return fullProgramDiagnostics(program, config, options);
+}
+
+/** The full check, and the batched answer when its one response is over
+ * the frame limit: the caller cannot tell which produced it. */
+function fullProgramDiagnostics(
+  program: Ts7Program,
+  config: readonly Diagnostic[],
+  options: readonly Diagnostic[],
+): readonly Diagnostic[] {
+  try {
+    return [
+      ...config,
+      ...options,
+      ...program.getGlobalDiagnostics(),
+      ...program.getSyntacticDiagnostics(),
+      ...program.getSemanticDiagnostics(),
+    ];
+  } catch (error) {
+    if (!(error instanceof Ts7FrameLimitError)) throw error;
+    const partial = keptFileDiagnostics(program, program.getSourceFileNames());
+    if (partial === null) throw error;
+    return [
+      ...config,
+      ...options,
+      ...program.getGlobalDiagnostics(),
+      ...program.getSyntacticDiagnostics(),
+      ...partial.semantic.map(ts7Diagnostic),
+    ];
+  }
 }
 
 /** The semantic diagnostics of the kept files, in the full check's order,
@@ -671,7 +721,7 @@ function keptFileDiagnostics(
   program: Ts7Program,
   kept: readonly string[],
 ): { semantic: Ts7DiagnosticData[]; global: Ts7DiagnosticData[] } | null {
-  const checked = program.project.program.checkedFileDiagnosticData(kept);
+  const checked = checkedFileDiagnosticDataBatched(program.project.program, kept);
   if (checked === null) return null;
   const byFile = new Map(kept.map((name, index) => [name, checked.files[index] ?? []]));
   return { semantic: inFileOrder(byFile), global: checked.global };

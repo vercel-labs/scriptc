@@ -2,12 +2,20 @@
  * (scr_fs_blob.c — linked only when the program uses it). Node opens and
  * fstats the file when the call is made, so its errors throw
  * synchronously, and answers a promise of a Blob whose size is that stat's
- * size. The bytes are not read then: every read of the Blob opens the path
- * again, checks that the file still has the size and modification time the
- * call saw, and reads its range. A file that changed, disappeared or
- * cannot be read rejects the read with Node's NotReadableError
- * ("The blob could not be read"), which is what Node's blob reader does
- * when the fstat it takes at each read differs from the one at creation. */
+ * size. The bytes are not read then: every read of the Blob checks that the
+ * file still has the size and modification time the call saw, and reads its
+ * range. A file that changed, disappeared or cannot be read rejects the
+ * read with Node's NotReadableError ("The blob could not be read"), which
+ * is what Node's blob reader does when the fstat it takes at each read
+ * differs from the one at creation.
+ *
+ * The descriptor is the one the creation open took, held for the Blob's
+ * life. Node closes it after the creation stat and re-opens the path with a
+ * blocking open at the first read; for a FIFO with no writer that open parks
+ * the event loop forever (a FIFO's stat size is 0, and Node 24.22.1 hangs
+ * when its bytes are requested). Reading through the held descriptor — taken
+ * with a non-blocking open — completes instead: the 0-byte Blob reports no
+ * bytes and the loop keeps running. */
 #include "scr_runtime.h"
 
 #include <stdio.h>
@@ -24,11 +32,11 @@ typedef struct ScrFsBlob {
   size_t size;
   uint64_t mtime_ns;
   uint64_t ctime_ns;
-  /* The file the Blob reads is the one its first read opened: the
+  /* The file the Blob reads is the one the creation open took: the
    * descriptor is held, and every read checks that the path still names
    * that file (its device and inode), so a path swapped under a Blob
    * cannot change the bytes it answers. */
-  ScrFileHandle *handle; /* +1, opened on the first read */
+  ScrFileHandle *handle; /* +1, the descriptor the creation open took */
   double dev, ino;
 } ScrFsBlob;
 
@@ -149,33 +157,15 @@ static void scr_fs_blob_close_on_exec(ScrFileHandle *h) {
 #endif
 }
 
-/* ScrBlobSource.read: the file's [off, off + len) bytes. The first read
- * opens the path and holds the descriptor; every read then takes the
- * held file's stat (it must still have the size and modification time the
- * Blob was created with), checks the path still names that same file, and
- * reads from the held descriptor — never from a path opened afterwards. */
+/* ScrBlobSource.read: the file's [off, off + len) bytes, read from the
+ * descriptor the creation open took (never from a path opened afterwards).
+ * Every read takes the held file's stat (it must still have the size and
+ * modification time the Blob was created with) and checks that the path
+ * still names the same file (its device and inode). */
 static bool scr_fs_blob_read(void *ctx, size_t off, size_t len, uint8_t *dst) {
   ScrFsBlob *b = ctx;
   int error = 0;
-  if (b->handle == NULL) {
-    ScrStr *flags = scr_str_new("r", 1);
-    ScrFileHandle *opened = scr_file_handle_open(b->path, flags, 0);
-    scr_str_release(flags);
-    if (opened == NULL) {
-      scr_exc_clear(); /* the read reports NotReadableError instead */
-      return false;
-    }
-    b->handle = opened;
-    scr_fs_blob_close_on_exec(b->handle);
-    ScrStats *held = scr_stats_of_fd((int)scr_file_handle_fd(b->handle), &error);
-    if (held == NULL) {
-      scr_exc_clear();
-      return false;
-    }
-    b->dev = scr_stats_dev(held);
-    b->ino = scr_stats_ino(held);
-    scr_stats_release(held);
-  }
+  if (b->handle == NULL) return false;
   bool ok = true;
   ScrStats *st = scr_stats_of_fd((int)scr_file_handle_fd(b->handle), &error);
   if (st == NULL) {
@@ -254,9 +244,10 @@ ScrDyn *scr_fs_open_as_blob(ScrDyn *path, ScrDyn *options) {
     scr_str_release(type);
     return NULL;
   }
-  ScrStr *flags = scr_str_new("r", 1);
-  ScrFileHandle *h = scr_file_handle_open(resolved, flags, 0);
-  scr_str_release(flags);
+  /* The creation stat opens the path without blocking and KEEPS the
+   * descriptor: the Blob's reads use it instead of re-opening the path, so
+   * a FIFO cannot park the loop on its first read. */
+  ScrFileHandle *h = scr_file_handle_open_read_only_nonblocking(resolved);
   if (h != NULL) scr_fs_blob_close_on_exec(h);
   if (h == NULL) {
     scr_str_release(type);
@@ -283,9 +274,10 @@ ScrDyn *scr_fs_open_as_blob(ScrDyn *path, ScrDyn *options) {
   file->size = (size_t)scr_stats_size(st);
   file->mtime_ns = scr_fs_blob_mtime_ns(st);
   file->ctime_ns = scr_fs_blob_ctime_ns(st);
+  file->dev = scr_stats_dev(st);
+  file->ino = scr_stats_ino(st);
+  file->handle = h; /* the creation descriptor, held for the Blob's life */
   scr_stats_release(st);
-  scr_file_handle_close(h);
-  scr_file_handle_release(h);
   ScrDyn *blob = scr_blob_from_source(&file->source, (double)file->size, type);
   scr_str_release(type);
   if (blob == NULL) return NULL;

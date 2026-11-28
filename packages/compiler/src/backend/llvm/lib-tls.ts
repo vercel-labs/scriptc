@@ -109,12 +109,20 @@ export function emitTlsLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValu
       ]);
     case "tls.sockAuthorized":
       return finishRuntimeCall(host, e, "scr_tls_sock_authorized", a);
+    case "tls.sockIsSessionReused":
+      return finishRuntimeCall(host, e, "scr_tls_sock_is_session_reused", a);
+    case "tls.sockSetSession":
+      return finishRuntimeCall(host, e, "scr_tls_sock_set_session", a);
     case "tls.sockGetProtocol":
       return finishRuntimeCall(host, e, "scr_tls_sock_get_protocol", a);
     case "tls.sockGetCipher":
       return finishRuntimeCall(host, e, "scr_tls_sock_get_cipher", a);
     case "tls.sockGetTlsTicket":
       return finishRuntimeCall(host, e, "scr_tls_sock_get_tls_ticket", a);
+    case "tls.sockEphemeralKeyInfo":
+      return finishRuntimeCall(host, e, "scr_tls_sock_ephemeral_key_info", a);
+    case "tls.sockSetMaxFragment":
+      return finishRuntimeCall(host, e, "scr_tls_sock_set_max_fragment", a);
     case "tls.sockAlpnProtocol":
       return finishRuntimeCall(host, e, "scr_tls_sock_alpn_protocol", a);
     case "tls.serverAddContext":

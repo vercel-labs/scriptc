@@ -91,6 +91,10 @@ export const http2Signatures = defineLibFnSignatures({
   "http2.createServerReqOpts": { argTypes: [null, BOOL], result: NETSERVER_T },
   "http2.serverOnStream": { argTypes: [NETSERVER_T, null, BOOL], result: VOID },
   "http2.serverOnSession": { argTypes: [NETSERVER_T, null, BOOL], result: VOID },
+  /* The h2 server's own idle timeout: the listeners hear the session and
+   * setTimeout(ms, cb) adds one (Node's Http2Server). */
+  "http2.serverOnTimeout": { argTypes: [NETSERVER_T, null, BOOL], result: VOID },
+  "http2.serverSetTimeoutCb": { argTypes: [NETSERVER_T, F64, null], result: VOID },
   // connect(authority, reject, ca[, cb]): the TLS client knobs an https
   // authority reads (inert on http ones, exactly Node); ca is a PEM
   // string/Buffer ("" = the system anchors).
@@ -116,6 +120,15 @@ export const http2Signatures = defineLibFnSignatures({
   "http2.sessionDestroy": { argTypes: [HTTP2SESSION_T], result: VOID },
   "http2.sessionSetLocalWindowSize": { argTypes: [HTTP2SESSION_T, F64], result: VOID },
   "http2.sessionOnClose": { argTypes: [HTTP2SESSION_T, null, BOOL], result: VOID },
+  "http2.sessionOnTimeout": { argTypes: [HTTP2SESSION_T, null, BOOL], result: VOID },
+  /** goaway([code][, lastStreamID][, opaqueData]) — -1 is the default
+   * "last processed stream". */
+  "http2.sessionGoaway": { argTypes: [HTTP2SESSION_T, F64, F64], result: VOID },
+  "http2.sessionGoawayData": { argTypes: [HTTP2SESSION_T, F64, F64, BYTES_U8], result: VOID },
+  "http2.sessionSetTimeout": { argTypes: [HTTP2SESSION_T, F64], result: VOID },
+  "http2.sessionSetTimeoutCb": { argTypes: [HTTP2SESSION_T, F64, null], result: VOID },
+  "http2.sessionRef": { argTypes: [HTTP2SESSION_T], result: VOID },
+  "http2.sessionUnref": { argTypes: [HTTP2SESSION_T], result: VOID },
   "http2.sessionOnError": { argTypes: [HTTP2SESSION_T, null, BOOL], result: VOID },
   "http2.sessionOnConnect": { argTypes: [HTTP2SESSION_T, null, BOOL], result: VOID },
   "http2.sessionOnStream": { argTypes: [HTTP2SESSION_T, null, BOOL], result: VOID },

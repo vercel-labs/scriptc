@@ -4447,7 +4447,11 @@ function validateFunction(
       e.fn === "http.serverListeners" ||
       // The typed encodeInto answers the call site's own { read, written }
       // record shape.
-      e.fn === "text.encodeIntoStr";
+      e.fn === "text.encodeIntoStr" ||
+      // fs.promises.stat/lstat(path, options) answer the call's own promise:
+      // Stats, BigIntStats, or either with undefined for a suppressed miss.
+      e.fn === "fsp.statOpts" ||
+      e.fn === "fsp.lstatOpts";
     if (!variableResult && !typeEquals(e.type, sig.result)) {
       // The stat calls answer the SAME snapshot under either member table:
       // their `bigint` option picks BigIntStats' reads over Stats'. The
@@ -6211,6 +6215,8 @@ function validateFunction(
       e.fn === "stream.duplexFromGen" ||
       e.fn === "stream.duplexFromGenNoSource" ||
       e.fn === "stream.duplexFromDyn" ||
+      e.fn === "stream.composeStageDyn" ||
+      e.fn === "stream.composeTailDyn" ||
       e.fn === "stream.duplexifyReadable" ||
       e.fn === "stream.duplexifyWritable" ||
       e.fn === "stream.duplexifyPair" ||
@@ -6312,6 +6318,8 @@ function validateFunction(
         e.fn === "stream.duplexFromGen" ||
         e.fn === "stream.duplexFromGenNoSource" ||
         e.fn === "stream.duplexFromDyn" ||
+        e.fn === "stream.composeStageDyn" ||
+        e.fn === "stream.composeTailDyn" ||
         e.fn === "stream.duplexFromAsyncFn" ||
         e.fn === "stream.duplexFromAsyncFnNoSource" ||
         e.fn === "stream.duplexFromGenSignal" ||

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/view-write-frees-borrowed-string.ts"
+ ],
+ "diags": []
+}

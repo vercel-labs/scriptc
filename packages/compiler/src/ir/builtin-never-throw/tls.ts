@@ -21,4 +21,10 @@ export const tlsNeverThrow: readonly IrLibFn[] = [
   // scr_tls_sock_get_tls_ticket copies the session's ticket into a Buffer,
   // or answers undefined; no program code runs.
   "tls.sockGetTlsTicket",
+  // scr_tls_sock_ephemeral_key_info builds a fresh object or answers null;
+  // no program code runs.
+  "tls.sockEphemeralKeyInfo",
+  // scr_tls_sock_is_session_reused reads whether this handshake resumed a
+  // session; no program code runs.
+  "tls.sockIsSessionReused",
 ];

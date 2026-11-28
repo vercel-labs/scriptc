@@ -27,6 +27,21 @@ beforeAll(async () => {
     join(import.meta.dirname, "scr_async.test.c"),
     // The gated async unit: the AsyncResource handle and its payload.
     join(import.meta.dirname, "scr_async_dyn.c"),
+    // The off-loop lookup test links the net unit; POSIX only, since the test
+    // interposes getaddrinfo (Winsock's on Windows). The net unit dials
+    // through the platform poller, reaches listeners through the dynamic
+    // handle unit, and reads the stream defaults for its write accounting.
+    ...(process.platform === "win32"
+      ? []
+      : [
+          join(import.meta.dirname, "scr_net.c"),
+          join(import.meta.dirname, "scr_dyn_handle.c"),
+          join(import.meta.dirname, "scr_stream_defaults.c"),
+          join(
+            import.meta.dirname,
+            process.platform === "darwin" ? "scr_loop_kqueue.c" : "scr_loop_epoll.c",
+          ),
+        ]),
     ...EXECUTABLE_RUNTIME_SOURCES.filter((name) => name !== "scr_async.c").map((name) =>
       join(import.meta.dirname, name),
     ),
@@ -141,6 +156,26 @@ test("a timer armed during a turn runs after that turn's immediates", async () =
       "a timer armed by an I/O callback runs after that turn's immediates\n" +
       "a timer armed by a startup tick runs before that turn's immediates\n",
   );
+  expect(withoutContextWarning(result.stderr)).toBe("");
+});
+
+// The WebSocket dial's name lookup rides the worker pool, so the loop keeps
+// turning while the resolver waits and timers armed before it fire first. The
+// C test interposes getaddrinfo with a slow answer, which is POSIX-only.
+test.skipIf(process.platform === "win32")(
+  "the dial's lookup runs off the loop thread",
+  async () => {
+    const result = await execFileAsync(bin, ["resolve"]);
+    expect(result.stdout).toBe("the dial's lookup runs off the loop thread\n");
+    expect(withoutContextWarning(result.stderr)).toBe("");
+  },
+);
+// The sequence is the heap's FIFO tiebreak and the key a turn's eligibility
+// snapshot compares against: it must keep counting past 2^32 arms, where a
+// 32-bit counter (unsigned long on Windows) wraps and strands a live timer.
+test("the timer sequence orders past the 32-bit boundary", async () => {
+  const result = await execFileAsync(bin, ["timerwrap"]);
+  expect(result.stdout).toBe("timer sequence orders past the 32-bit boundary\n");
   expect(withoutContextWarning(result.stderr)).toBe("");
 });
 

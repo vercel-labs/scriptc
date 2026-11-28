@@ -1039,6 +1039,10 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       `module namespace objects as values (access '${expr.text}' members directly)`,
     );
   }
+  {
+    const webStream = lowerWebStreamClassRead(lowerer, expr);
+    if (webStream) return webStream;
+  }
   if (lowerer.stdlibGlobalFnOf(expr)) {
     // JavaScript reads the global functions with values as those values
     // (global-function-values.ts).
@@ -1172,10 +1176,6 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
   // flows (the harness's knownGlobals Set, === comparisons) and `typeof`
   // are exact; any other value is refused by name where it is read
   // (node-value-reads.ts).
-  {
-    const webStream = lowerWebStreamClassRead(lowerer, expr);
-    if (webStream) return webStream;
-  }
   if (stdlibGlobalNameOf(lowerer, expr) === "globalThis") {
     return lowerGlobalValue(lowerer, expr);
   }

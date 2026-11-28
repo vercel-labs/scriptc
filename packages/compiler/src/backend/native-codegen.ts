@@ -45,7 +45,7 @@ import {
   type NativeProfileMatch,
   type NativeProfileOptions,
 } from "./native-profile.js";
-import { writeTextParts } from "../text-parts.js";
+import { type TextPart, writeTextParts } from "../text-parts.js";
 import { ensureExecutable } from "../executable-mode.js";
 
 import {
@@ -100,8 +100,9 @@ export interface LlvmFile {
   readonly bytes: number;
 }
 
-/** LLVM text as a string, as parts to concatenate, or as a file. */
-export type LlvmInput = string | readonly string[] | LlvmFile;
+/** LLVM text as a string, as parts to concatenate (each a string or its UTF-8
+ * bytes, which a large build keeps off the V8 heap), or as a file. */
+export type LlvmInput = string | readonly TextPart[] | LlvmFile;
 
 export function isLlvmFile(llvm: LlvmInput): llvm is LlvmFile {
   return typeof llvm === "object" && !Array.isArray(llvm);
@@ -143,7 +144,7 @@ export interface NativeCodegenOptions {
 /** Writes LLVM text in large batches; see `writeTextParts`. */
 export async function writeLlvmSource(
   path: string,
-  llvm: string | readonly string[],
+  llvm: string | readonly TextPart[],
   mode = 0o666,
 ): Promise<void> {
   await writeTextParts(path, llvm, mode);

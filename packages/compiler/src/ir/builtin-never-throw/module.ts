@@ -20,8 +20,19 @@ export const moduleNeverThrow: readonly IrLibFn[] = [
   // neither takes an argument, and running out of memory ends the process.
   "module.compileCacheDir",
   "module.compileCacheConstants",
+  // require.extensions: the shared table's first read builds it; reads after
+  // that are a retain.
+  "module.extensions",
   // scr_module_namespace_copy_value retains the module's namespace object,
   // marks it as one and records it: no program code runs, and allocation
   // failure ends the process.
   "module.namespaceCopy",
+  // getSourceMapsSupport retains the thread's frozen record (building it on
+  // first use), and findSourceMap answers the immortal undefined value;
+  // neither throws, and allocation failure ends the process.
+  "module.sourceMapsSupport",
+  "module.findSourceMap",
+  // scr_module_cache_object builds the one cache object and the Module views
+  // in it; no program code runs, and running out of memory ends the process.
+  "module.cacheObject",
 ];

@@ -30,6 +30,10 @@ declare module "stream/web" {
   export const ByteLengthQueuingStrategy: typeof globalThis.ByteLengthQueuingStrategy;
   export type ByteLengthQueuingStrategy = globalThis.ByteLengthQueuingStrategy;
   export const TextEncoderStream: typeof globalThis.TextEncoderStream;
+  export const CompressionStream: typeof globalThis.CompressionStream;
+  export type CompressionStream = globalThis.CompressionStream;
+  export const DecompressionStream: typeof globalThis.DecompressionStream;
+  export type DecompressionStream = globalThis.DecompressionStream;
   export type TextEncoderStream = globalThis.TextEncoderStream;
   export const TextDecoderStream: typeof globalThis.TextDecoderStream;
   export type TextDecoderStream = globalThis.TextDecoderStream;

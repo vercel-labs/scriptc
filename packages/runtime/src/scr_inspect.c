@@ -59,6 +59,10 @@ static void ib_grow(InspBuf *b, size_t need) {
 }
 
 static void ib_bytes(InspBuf *b, const char *s, size_t len) {
+  /* An empty append touches nothing: the buffer has no storage yet, so the
+   * copy would name a null destination (undefined behavior UBSan reports,
+   * and the fuzz lane has to switch the check off for). */
+  if (len == 0) return;
   ib_grow(b, len);
   memcpy(b->data + b->len, s, len);
   b->len += len;
@@ -6374,6 +6378,18 @@ ScrStr *scr_insp_console_format(ScrDyn *pack, ScrDyn *inspect_options, const cha
     insp_console_colors(&o, colors_mode);
   }
   return insp_fmt_pack(pack, &o);
+}
+
+ScrStr *scr_insp_console_format_argv(ScrDyn *const *args, size_t argc, ScrDyn *inspect_options,
+                                     const char *surface, int colors_mode) {
+  ScrInspFormatOptions o;
+  scr_insp_format_defaults(&o, surface);
+  if (!insp_console_read_options(&o, inspect_options)) return NULL;
+  if (!insp_console_options_has_colors(inspect_options)) {
+    if (scr_exc_pending()) return NULL;
+    insp_console_colors(&o, colors_mode);
+  }
+  return scr_insp_format(args, argc, &o);
 }
 
 ScrStr *scr_insp_console_inspect(ScrDyn *value, ScrDyn *inspect_options, ScrDyn *call_options,

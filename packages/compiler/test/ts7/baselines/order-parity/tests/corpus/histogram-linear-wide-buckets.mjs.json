@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/histogram-linear-wide-buckets.mjs"
+ ],
+ "diags": []
+}

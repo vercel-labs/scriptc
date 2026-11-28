@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/port-event-name-coercion.mjs"
+ ],
+ "diags": []
+}

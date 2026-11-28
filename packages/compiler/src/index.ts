@@ -181,7 +181,11 @@ import {
   type ScrDiagnostic,
 } from "./diagnostics/diagnostic.js";
 import { libnodeCacheKey, libnodeTarget } from "./node-islands/libnode.js";
-import { loadLibraryProfile, type LibraryProfile } from "./library/library-profile.js";
+import {
+  emittedSourcePath,
+  loadLibraryProfile,
+  type LibraryProfile,
+} from "./library/library-profile.js";
 import { clearFenceEvalCaches, decorateLibraryRefusals } from "./library/fence-eval.js";
 import {
   canonicalModuleGraph,
@@ -193,7 +197,7 @@ import {
 import { type IrModule, type SrcLoc } from "./ir/ir.js";
 import { jsObjectModelFact, moduleRuntimeFeatures } from "./ir/runtime-features.js";
 import { serializeModuleParts } from "./ir/serialize.js";
-import { readTextParts, writeTextParts } from "./text-parts.js";
+import { readTextParts, type TextPart, writeTextParts } from "./text-parts.js";
 import { validateModule } from "./ir/validate.js";
 import { compilerOwnedFileRoots } from "./frontend/dts-paths.js";
 import { loadProgramWithServices } from "./frontend/program-node.js";
@@ -367,6 +371,7 @@ export {
   type ResolvedLibraryFence,
 } from "./library/fence-eval.js";
 export {
+  emittedSourcePath,
   loadLibraryProfile,
   profileTeaching,
   profileRemediation,
@@ -863,6 +868,7 @@ async function compileExecutableNative(
     ...(features.fsFlags ? { fsFlags: true } : {}),
     ...(features.fsExistsValue ? { fsExistsValue: true } : {}),
     ...(features.moduleCompileCache ? { moduleCompileCache: true } : {}),
+    ...(features.sourceMap ? { sourceMap: true } : {}),
     ...(features.fnMemberProps ? { fnMemberProps: true } : {}),
     ...(features.fsBytesWrites ? { fsBytesWrites: true } : {}),
     ...(features.strdecDyn ? { strdecDyn: true } : {}),
@@ -922,6 +928,7 @@ async function compileExecutableNative(
     ...(features.largePages ? { largePages: true } : {}),
     ...(features.webStreams ? { webStreams: true } : {}),
     ...(features.fsWebStream ? { fsWebStream: true } : {}),
+    ...(features.fsUtf8Stream ? { fsUtf8Stream: true } : {}),
     // The C-source link (a sanitized build) compiles the runtime itself, so it
     // needs the same Blob/File body define the runtime pack selects.
     ...(features.webBodies ? { webBodies: true } : {}),
@@ -979,6 +986,7 @@ async function compileExecutableNative(
     x509: features.x509,
     webcrypto: features.webcrypto,
     perfLoop: features.perfLoop,
+    ...(features.webSocket ? { webSocket: true } : {}),
     ...(onArtifactReady === undefined ? {} : { onArtifactReady }),
     ...(ffi === null
       ? {}
@@ -1351,7 +1359,7 @@ async function prepareExecutableInput(
   }
 
   if (outputKind === "llvm" || outputKind === "asm" || outputKind === "obj") {
-    let llvm: string | readonly string[];
+    let llvm: string | readonly TextPart[];
     try {
       llvm = emitLlvmModuleSource(mod, {
         targetTriple: process.env["SCRIPTC_TARGET"] ?? "",
@@ -3102,6 +3110,9 @@ async function compileLibraryTracked(
       // A dev library carries the sources a dev executable does, so native
       // debuggers and stack frames name the TypeScript lines.
       ...(carriesDebugSources(profile.optimization, false) ? { debugSources: sourceTexts } : {}),
+      ...(profile.filePrefixMap.length === 0
+        ? {}
+        : { sourcePathMap: (file: string) => emittedSourcePath(profile, file) }),
     });
     timing("llvm-emit", {
       output_bytes:

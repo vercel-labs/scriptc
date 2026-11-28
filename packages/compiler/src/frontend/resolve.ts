@@ -728,7 +728,13 @@ export function resolveProjectImport(fromFile: string, specifier: string): strin
   }
   if (target === null) return null;
   const path = join(pkgDir, target);
-  return normalizeResolvedAnswer(loadAsFile(path) ?? (isFile(path) ? path : null));
+  // A target spelling `./x.mjs` beside `x.d.mts` answers the declaration:
+  // bundler resolution substitutes .mjs -> .mts -> .d.mts. Node loads the
+  // .mjs, so project code takes the declaration's runtime sibling (the
+  // same rule relative imports and tsconfig paths apply), while a
+  // third-party declaration keeps its types-only answer.
+  const answer = normalizeResolvedAnswer(loadAsFile(path) ?? (isFile(path) ? path : null));
+  return answer === null ? null : (projectDtsRuntimeSibling(answer) ?? answer);
 }
 
 /** The one resolver entry point for source modules that compile into the

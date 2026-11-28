@@ -27,7 +27,7 @@ import {
   UNDEFINED_T,
 } from "../../../ir/ir.js";
 
-export type IntlFormatter = "NumberFormat" | "DateTimeFormat";
+export type IntlFormatter = "NumberFormat" | "DateTimeFormat" | "ListFormat";
 
 /** The string the lowering passes for the default locale (an absent or
  * undefined locales argument). A locale the program supplies is validated
@@ -36,14 +36,14 @@ export type IntlFormatter = "NumberFormat" | "DateTimeFormat";
 export const INTL_DEFAULT_LOCALE = "\u0001scriptc-default-locale";
 
 export const INTL_FORMATTER_HINT =
-  "what compiles: new Intl.NumberFormat(locale, options) and new Intl.DateTimeFormat(locale, options) with their format() method, and the toLocaleString(), toLocaleDateString() and toLocaleTimeString() forms with a locale and options, at the default locale (no locale argument, or undefined) or any locale string the program holds (ICU canonicalizes it; an invalid tag throws Node's RangeError); lists of locales, formatToParts, formatRange and resolvedOptions remain unsupported";
+  "what compiles: new Intl.NumberFormat(locale, options), new Intl.DateTimeFormat(locale, options) and new Intl.ListFormat(locale, options) with their format() method, and the toLocaleString(), toLocaleDateString() and toLocaleTimeString() forms with a locale and options, at the default locale (no locale argument, or undefined) or any locale string the program holds (ICU canonicalizes it; an invalid tag throws Node's RangeError); lists of locales, formatToParts, formatRange and resolvedOptions remain unsupported";
 
 /** The formatter interface of the standard library that `type` names, or
  * null. */
 export function intlFormatterOf(lowerer: Lowerer, type: ts.Type): IntlFormatter | null {
   const symbol = type.getSymbol();
   const name = ts.symbolNameOf(symbol);
-  if (name !== "NumberFormat" && name !== "DateTimeFormat") return null;
+  if (name !== "NumberFormat" && name !== "DateTimeFormat" && name !== "ListFormat") return null;
   return lowerer.isStdlibSymbol(symbol) ? name : null;
 }
 
@@ -260,7 +260,12 @@ export function lowerIntlFormatterNew(
     effects,
     {
       kind: "libCall",
-      fn: which === "NumberFormat" ? "icu.numberFormatNew" : "icu.dateTimeFormatNew",
+      fn:
+        which === "NumberFormat"
+          ? "icu.numberFormatNew"
+          : which === "DateTimeFormat"
+            ? "icu.dateTimeFormatNew"
+            : "icu.listFormatNew",
       args: [locale.locale, optionsArg],
       type: DYN,
       loc,
@@ -365,6 +370,30 @@ export function lowerIntlFormatterMethodCall(
   const receiver = lowerer.lowerExpr(access.expression);
   if (receiver.type.kind !== "dyn")
     lowerer.badType(access.expression, lowerer.typeOf(access.expression));
+  // ListFormat.format sets its list: an iterable whose elements must be
+  // strings, read by the runtime (a non-string element is Node's TypeError).
+  // No argument (or an undefined one) formats the empty list.
+  if (which === "ListFormat") {
+    const listNode = args[0];
+    const list: IrExpr =
+      listNode === undefined
+        ? lowerer.coerceToExpected(
+            { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc },
+            DYN,
+          )
+        : (() => {
+            const value = lowerer.lowerExprExpecting(listNode, DYN);
+            if (value.type.kind === "void") lowerer.badType(listNode, lowerer.typeOf(listNode));
+            return value.type.kind === "dyn" ? value : lowerer.coerceInto(listNode, value, DYN);
+          })();
+    return {
+      kind: "libCall",
+      fn: "icu.listFormatFormat",
+      args: [receiver, list],
+      type: STRING,
+      loc,
+    };
+  }
   const argNode = args[0];
   // An argument whose value is undefined (it may be any expression) runs
   // after the receiver and formats what no argument formats.

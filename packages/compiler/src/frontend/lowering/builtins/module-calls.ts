@@ -62,6 +62,7 @@ import { withIgnoredArguments } from "./call-arguments.js";
 import {
   lowerFsWatchCall,
   lowerFsReaddirTypesCall,
+  lowerFspStatOptionsCall,
   lowerFsStatFdOptionsCall,
   lowerFsStatOptionsCall,
 } from "./filesystem.js";
@@ -240,6 +241,15 @@ export function lowerBuiltinModuleCall(
   }
   if (bi.module === "fs" && bi.member === "fstatSync" && expr.arguments.nodes.length === 2) {
     return lowerFsStatFdOptionsCall(lowerer, expr, loc);
+  }
+  // fs.promises.stat/lstat(path, options): bigint and throwIfNoEntry, read
+  // at run time like the synchronous ladder.
+  if (
+    bi.module === "fs/promises" &&
+    (bi.member === "stat" || bi.member === "lstat") &&
+    expr.arguments.nodes.length === 2
+  ) {
+    return lowerFspStatOptionsCall(lowerer, expr, loc, bi.member === "lstat");
   }
   if (bi.module === "os" && bi.member === "userInfo") {
     return lowerOsUserInfoCall(lowerer, expr, loc);

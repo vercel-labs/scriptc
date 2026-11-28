@@ -38,6 +38,14 @@ export const ADOPTED_OPTIONS = [
   "jsxFragmentFactory",
   "jsxImportSource",
   "reactNamespace",
+  // Decorator semantics: the checker must grade a legacy decorator against
+  // the legacy signature (`(target, key, descriptor)`), not the standard
+  // context call; `emitDecoratorMetadata` also changes the declared design
+  // types the checker admits. Programs with the latter setting are refused
+  // until the metadata lowering lands, but the checker still answers as the
+  // project's tsc would.
+  "experimentalDecorators",
+  "emitDecoratorMetadata",
 ] as const;
 
 /* ── The early-error boundary (read this before relaxing a code) ────────
@@ -594,9 +602,9 @@ const newTargetInMethod = (node: ts.Node, _d: ts.Diagnostic): boolean => {
 };
 
 /** TS1345 at a PREFIX `!` whose boolean is discarded (`!register();`,
- * `!function () { … }();`): the operand still evaluates once for its
- * effects and any exception, while the value the negation would read is
- * never consumed. */
+ * `!function () { … }();`, `!!callback();`, `!!!(callback());`): the operand
+ * still evaluates once for its effects and any exception, while the value
+ * the negation chain would read is never consumed. */
 const discardedVoidNegation = (node: ts.Node): boolean => {
   // The diagnostic's span is the void-typed OPERAND (the call), so climb
   // to the `!` that tests it, then out of any parentheses.
@@ -610,9 +618,26 @@ const discardedVoidNegation = (node: ts.Node): boolean => {
     negation.operator !== ts.SyntaxKind.ExclamationToken
   )
     return false;
+  // Every enclosing `!` and parenthesis shares the innermost negation's
+  // discarded fate: the chain answers one boolean and nothing reads it.
+  // A consumed chain (`const b = !!callback()`) keeps the refusal.
   let outer: ts.Node = negation;
-  while (outer.parent !== undefined && ts.isParenthesizedExpression(outer.parent))
-    outer = outer.parent;
+  for (;;) {
+    const parent = outer.parent;
+    if (parent !== undefined && ts.isParenthesizedExpression(parent)) {
+      outer = parent;
+      continue;
+    }
+    if (
+      parent !== undefined &&
+      ts.isPrefixUnaryExpression(parent) &&
+      parent.operator === ts.SyntaxKind.ExclamationToken
+    ) {
+      outer = parent;
+      continue;
+    }
+    break;
+  }
   return outer.parent !== undefined && ts.isExpressionStatement(outer.parent);
 };
 
@@ -1170,6 +1195,8 @@ const IMPLICIT_ANY =
   "a JavaScript value with no annotation is whatever the caller passes: Node has no types to check, and the lowering maps the value dynamically";
 const NULLISH_DEMAND =
   "strict-null's demand is an inference, not a rule: Node reads whatever the value is, and the use site re-checks or throws as Node does";
+const NULLISH_REACHABILITY =
+  "the checker's nullish reachability claim is dead-code analysis, not a rule: Node evaluates the chain left to right, and the ?? lowering tests every operand at run time";
 const DYNAMIC_SHAPE =
   "assignability, arity and callability of an inferred shape are checker opinions: Node calls the value, and the lowering re-checks every lowered form per site";
 const JSDOC_CLAIM =
@@ -1195,6 +1222,25 @@ const UNDECLARED_NAME_READ = THROW(
 );
 
 const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
+  // 1320, `await` on a value with a callable `then` (JavaScript): Node
+  // calls it. The lowering adopts the thenable through the checked-dynamic
+  // path (the result is checked into the awaited type where it is used),
+  // and refuses by name when the value has no checked-dynamic form. A
+  // checked project keeps the diagnostic: it asked tsc to judge the await.
+  [
+    1320,
+    inCheckedJs(
+      CHECKER(
+        "Node awaits a thenable by calling its 'then'; the lowering adopts it and checks what it hands over, and a thenable with no checked-dynamic form is refused by name",
+        [
+          "tests/corpus/js-await-class-thenable/main.mjs",
+          "tests/corpus/js-await-function-thenable/main.mjs",
+          "tests/corpus/js-await-object-thenable/main.mjs",
+          "tests/corpus/js-await-thenable-errors/main.mjs",
+        ],
+      ),
+    ),
+  ],
   // legacy decimal escapes in non-Unicode regex literals
   [1533, LEGACY_REGEX_ESCAPE],
   [1534, LEGACY_REGEX_ESCAPE],
@@ -1807,6 +1853,14 @@ const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
   // meaning and the lowerer already builds it. TypeScript input keeps every
   // one of them.
   //
+  // 2869, the right operand of a `??` chain the checker calls unreachable:
+  // the reachability answer is dead-code analysis, not a rule. `files.get(k)`
+  // on an untyped Map answers `any`, and a middle arm spelled `void 0`
+  // makes the checker report the LAST operand as unreachable; Node evaluates
+  // the chain left to right and the `??` lowering tests each operand at run
+  // time, so the fallback's side effects stay Node's.
+  [2869, CHECKER(NULLISH_REACHABILITY, ["tests/corpus/js-nullish-coalesce-unreachable.js"])],
+  //
   // 2695, an unused comma-operand left side (`(0, fn)`, `(0, [[x]] = [])`):
   // the operator evaluates the left operand for its effects and yields the
   // right one; the lowerer emits a sequence expression for it.
@@ -2355,6 +2409,10 @@ const TRIAGE_ROWS: readonly (readonly [number, JsTscCodeTriage])[] = [
   [1010, KEEP(KEEP_GRAMMAR)],
   [1014, KEEP(KEEP_GRAMMAR)],
   [1042, KEEP(KEEP_GRAMMAR)],
+  // A JavaScript setter's default parameter is admitted in preflight
+  // (program.ts, jsSetterParameterInitializerSuppressed): the TypeScript
+  // grammar rule forbids it, Node applies the default. The row stays as the
+  // table's decision for the code.
   [1052, KEEP(KEEP_GRAMMAR)],
   [1054, KEEP(KEEP_GRAMMAR)],
   [1089, KEEP(KEEP_GRAMMAR)],
@@ -2392,13 +2450,6 @@ const TRIAGE_ROWS: readonly (readonly [number, JsTscCodeTriage])[] = [
   [1260, KEEP(KEEP_GRAMMAR)],
   [1262, KEEP(KEEP_GRAMMAR)],
   [1312, KEEP(KEEP_GRAMMAR)],
-  [
-    1320,
-    REWRITE(
-      "an 'await' operand the checker cannot prove is a promise",
-      "Node awaits any value and ignores a non-callable 'then'; the await lowering needs the hostile-'then' path",
-    ),
-  ],
   [1329, KEEP(KEEP_GRAMMAR)],
   [1341, KEEP(KEEP_GRAMMAR)],
   // The 1345 opinion row admits the sites whose truthiness is known; any
@@ -2612,7 +2663,7 @@ const TRIAGE_ROWS: readonly (readonly [number, JsTscCodeTriage])[] = [
     2629,
     REWRITE(
       "assigning to a class binding",
-      "a class declaration's outer binding is mutable, so Node replaces it; only a named class expression's inner binding is immutable, where strict code throws a TypeError. The class lowering does not model either assignment",
+      "a class declaration's outer binding is mutable, so Node replaces it, but the class's name inside its own body is an immutable inner binding for a declaration and a named class expression alike: strict code throws a TypeError assigning it once initialized, and a ReferenceError assigning (or reading) it before initialization, which a computed member name runs in. The class lowering does not model the assignment",
     ),
   ],
   [
@@ -2707,13 +2758,6 @@ const TRIAGE_ROWS: readonly (readonly [number, JsTscCodeTriage])[] = [
     ),
   ],
   [2855, KEEP(KEEP_GRAMMAR)],
-  [
-    2869,
-    REFUSE(
-      "the right operand of '??' the checker proves unreachable",
-      "the construct is legal JavaScript: admitting it needs a differential proof that the lowering is Node-exact — the checker's refusal stands until then",
-    ),
-  ],
   [
     2871,
     REFUSE(

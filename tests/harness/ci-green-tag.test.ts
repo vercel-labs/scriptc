@@ -14,11 +14,16 @@ import {
   tagRequest,
 } from "../../scripts/ci/green-tag.mjs";
 
+// The tag job lives beside CI (green-tag.yml): ci.yml is a reusable workflow the
+// post-merge lanes call read-only, and a `contents: write` job inside it would make
+// every such call invalid (postmerge.test.ts pins the ceiling).
 const workflow = load(
-  readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8"),
+  readFileSync(new URL("../../.github/workflows/green-tag.yml", import.meta.url), "utf8"),
 ) as {
-  on: { push: { branches: string[] }; pull_request: { branches?: string[] } };
-  concurrency: { group: string };
+  on: {
+    workflow_run: { workflows: string[]; types: string[]; branches: string[] };
+  };
+  concurrency: { group: string; "cancel-in-progress": boolean };
   jobs: Record<
     string,
     {
@@ -123,24 +128,25 @@ test("every request writes one green tag and nothing else", () => {
   ]);
 });
 
-test("a passing push moves that branch's tag; a failing or non-push run never does", () => {
-  // Push runs on both integration branches; pull requests run on every base (stacks target their lower branch),
-  // and a push's run is not cancelled by the other branch's.
-  expect(workflow.on.push.branches).toEqual(["main", "canary"]);
-  expect(workflow.on.pull_request.branches).toBeUndefined();
-  expect(workflow.concurrency.group).toContain("format('push-{0}', github.ref_name)");
-  const job = workflow.jobs.green_tag!;
-  expect(job.name).toBe("tag green-${{ github.ref_name }}");
-  expect(job.needs).toEqual(["test"]);
-  expect(job.if).toBe("${{ github.event_name == 'push' && needs.test.result == 'success' }}");
+test("a passing canary push moves the green-canary tag; a failing or non-push run never does", () => {
+  // The CI run on a canary push moves the tag; a pull request's or merge queue's run never does, and a push's
+  // run is not cancelled by the other branch's (ci.yml's per-branch pre-merge groups).
+  expect(workflow.on.workflow_run).toEqual({
+    workflows: ["CI"],
+    types: ["completed"],
+    branches: ["canary"],
+  });
+  expect(workflow.concurrency).toEqual({ group: "green-canary", "cancel-in-progress": false });
+  const job = workflow.jobs.green_canary!;
+  expect(job.name).toBe("tag green-canary");
+  expect(job.if).toContain("github.event.workflow_run.event == 'push'");
+  expect(job.if).toContain("github.event.workflow_run.conclusion == 'success'");
   // The one permission is the tag write; the job is not part of the required check.
   expect(job.permissions).toEqual({ contents: "write" });
-  expect(workflow.jobs.test!.needs).not.toContain("green_tag");
   const step = job.steps!.find((candidate) => candidate.run?.includes("green-tag.mjs"))!;
-  expect(step.run).toBe('node scripts/ci/green-tag.mjs "$SHA" --branch "$BRANCH"');
+  expect(step.run).toBe('node scripts/ci/green-tag.mjs "$SHA" --branch canary');
   expect(step.env).toEqual({
     GH_TOKEN: "${{ github.token }}",
-    SHA: "${{ github.sha }}",
-    BRANCH: "${{ github.ref_name }}",
+    SHA: "${{ github.event.workflow_run.head_sha }}",
   });
 });

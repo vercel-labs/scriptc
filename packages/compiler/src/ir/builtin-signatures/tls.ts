@@ -90,10 +90,23 @@ export const tlsSignatures = defineLibFnSignatures({
    * evaluated (and its exceptions still surface). */
   "tls.sockDisableRenegotiation": { argTypes: [NETSOCKET_T], result: VOID },
   "tls.sockGetProtocol": { argTypes: [NETSOCKET_T], result: DYN },
+  /** isSessionReused(): the standing handshake resumed a session. */
+  "tls.sockIsSessionReused": { argTypes: [NETSOCKET_T], result: BOOL },
+  /** setSession(session): Node's latin1 conversion and reuse filter; the
+   * engine offers the bytes only before the handshake starts. */
+  "tls.sockSetSession": { argTypes: [NETSOCKET_T, DYN], result: VOID },
   "tls.sockGetCipher": { argTypes: [NETSOCKET_T], result: DYN },
   /** getTLSTicket(): the received session ticket as a dyn Buffer, or
    * undefined (a server socket, or a client without one yet). */
   "tls.sockGetTlsTicket": { argTypes: [NETSOCKET_T], result: DYN },
+  /** getEphemeralKeyInfo(): the negotiated ephemeral key's facts, null on a
+   * server-side or not-yet-established socket. MAY THROW is not needed:
+   * the answer is a fresh object or null. */
+  "tls.sockEphemeralKeyInfo": { argTypes: [NETSOCKET_T], result: DYN },
+  /** setMaxSendFragment(size): Node's validate ladder (a non-integer,
+   * NaN or an infinity throws ERR_OUT_OF_RANGE) then true for 512..16384,
+   * false outside it. MAY THROW. */
+  "tls.sockSetMaxFragment": { argTypes: [NETSOCKET_T, F64], result: BOOL },
   "tls.sockAlpnProtocol": { argTypes: [NETSOCKET_T], result: DYN },
   /** getPeerCertificate(detailed) and getCertificate() (the legacy object,
    * {} or null; scr_tls_x509.c), and the DER behind getPeerX509Certificate()

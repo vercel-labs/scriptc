@@ -49,7 +49,7 @@ import { usesCjsTopLevelThis } from "./lower-node-module.js";
 import { v8CalleeText } from "./expressions/narrowing.js";
 import { DYN, VOID, type IrExpr, type IrGlobal, type IrStmt } from "../../ir/ir.js";
 import type { SrcLoc } from "../../ir/ir.js";
-import { dynUndefinedExpr, strLit, varRef } from "../../ir/build.js";
+import { dynUndefinedExpr, numLit, strLit, varRef } from "../../ir/build.js";
 
 /** The modules whose `module.exports` object some code takes as a value, by
  * their export table's own file (the target a forwarding
@@ -397,12 +397,44 @@ export function cjsExportsObjectWrites(
  * `exports.a = exports.b = v` chain sets each member, innermost first,
  * reading back what the statement stored. Empty when the module has no
  * object. */
+/** Whether a whole-export assignment statement precedes `stmt` in the file:
+ * after `module.exports = …`, a member write targets the replacement, and the
+ * original top-level `this` object is a separate object Node never writes it
+ * to. */
+function wholeExportReplacedBefore(
+  lowerer: Lowerer,
+  sf: ts.SourceFile,
+  stmt: ts.Statement,
+): boolean {
+  for (const sibling of sf.statements.nodes) {
+    if (sibling === stmt) return false;
+    const assignment = cjsExportAssignmentOf(sibling);
+    if (assignment !== null && assignment.kind !== "member") return true;
+  }
+  return false;
+}
+
 export function cjsExportStatementObjectWrites(lowerer: Lowerer, stmt: ts.Statement): IrStmt[] {
   const sf = ts.getSourceFileOfNode(stmt);
-  const g = cjsExportsObjectOf(lowerer, sf);
-  if (g === null) return [];
   const cjs = cjsExportAssignmentOf(stmt);
   if (cjs === null) return [];
+  // A module that observes its exports object's identity keeps the object:
+  // a write through `module.exports.<name>` therefore lands on the object a
+  // view reads (`require.cache[file].exports`, another module's handle), not
+  // only in the static member slots. A whole-table replacement is not
+  // mirrored onto it — that would replace the registered object instead of
+  // filling it.
+  const thisObject = lowerer.cjsExportsThis.get(sf);
+  // A table replacement assigns a NEW object: onto the module's materialized
+  // exports object when it has one, never onto top-level `this`, which Node
+  // keeps as the original exports object for the module's life (the
+  // replacement does not rebind it).
+  const g =
+    cjsExportsObjectOf(lowerer, sf) ??
+    (cjs.kind === "table" || wholeExportReplacedBefore(lowerer, sf, stmt)
+      ? null
+      : (thisObject ?? null));
+  if (g === null) return [];
   // A statement Node discards writes onto the exports object a
   // `module.exports =` assignment replaced: the module's object no longer
   // names that one, so there is nothing to mirror.
@@ -444,6 +476,22 @@ export function cjsExportStatementObjectWrites(lowerer: Lowerer, stmt: ts.Statem
       if (key === null) continue;
       out.push(keySet(g, key, readBack(key, prop), loc));
     }
+    // The module's registry entry follows the replacement: a view of it
+    // (require.cache[file].exports) reads the object Node's module.exports
+    // holds now, not the original one.
+    const moduleId = lowerer.cjsModuleIdOf.get(sf);
+    if (moduleId !== undefined)
+      out.push({
+        kind: "exprStmt",
+        expr: {
+          kind: "libCall",
+          fn: "module.setExportsDyn",
+          args: [numLit(moduleId, loc), varRef(g.id, DYN, loc)],
+          type: { kind: "void" },
+          loc,
+        },
+        loc,
+      });
     return out;
   }
   // The chain's members, outermost first, and the value they all take.

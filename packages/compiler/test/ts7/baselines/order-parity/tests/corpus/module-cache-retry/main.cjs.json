@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/module-cache-retry/throws.cjs",
+  "<repo>/tests/corpus/module-cache-retry/main.cjs"
+ ],
+ "diags": []
+}

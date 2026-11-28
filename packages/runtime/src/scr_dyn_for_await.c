@@ -14,6 +14,15 @@ static SCR_TL bool scr_for_await_sync;
  * scr_dyn_async_iterator_was_sync answers which protocol it follows. */
 ScrDyn *scr_dyn_async_iterator_open(ScrDyn *value, ScrStr *spell) {
   scr_for_await_sync = false;
+  /* The loop asks for Symbol.asyncIterator even when the program never
+   * names it: the well-known symbol must exist for a value whose
+   * [Symbol.asyncIterator] is its own member (node:http2's stream
+   * handle). The symbol unit makes and installs it on demand. */
+  if (scr_sym_well_known_make_hook != NULL) {
+    ScrDyn *symbol = scr_dyn_async_iterator_symbol_value();
+    if (symbol != NULL) scr_dyn_release(symbol);
+    else scr_sym_well_known_make_hook("asyncIterator", 13);
+  }
   if (value->kind == SCR_DYN_TYPED_REF && value->v.typed_ref.type_key) {
     const char *key = value->v.typed_ref.type_key;
     if (!strncmp(key, "async-generator<", 16)) return scr_dyn_retain(value);

@@ -771,6 +771,10 @@ struct ScrH2Stream {
    * client stream (+1, NULL outside a store); NULL on server streams,
    * whose own events Node runs with no store. */
   ScrAlsCtx *als;
+  /* `for await` over the stream: the iterator reading its body (borrowed;
+   * it clears this backlink when released). While it exists the body's
+   * paused-mode queue is drained by its next(), not by 'data' listeners. */
+  struct ScrH2Iter *iter;
 };
 
 /* The server-side ctx (the ScrHttpSrvCtx shape; `proto` FIRST — the
@@ -1420,11 +1424,13 @@ static void scr_h2_stream_fire_data(ScrH2Stream *st, const char *data, size_t n)
   scr_bytes_release(chunk);
 }
 
-static void scr_h2_stream_maybe_emit_end(ScrH2Stream *st) {
+static void scr_h2_stream_maybe_emit_end_reader(ScrH2Stream *st, bool reader) {
   if (st->end_emitted || !st->end_recv || st->rq_head != NULL) return;
   /* FLOWING is Node's consumption gate — except an EMPTY body, which has
-   * nothing to consume: Node emits 'end' there without a reader. */
-  if (!st->flowing && st->had_data) return;
+   * nothing to consume: Node emits 'end' there without a reader. An async
+   * iterator is a reader too: it drains the queue itself, so its last
+   * next() makes the body consumed. */
+  if (!reader && !st->flowing && st->had_data) return;
   if (st->destroyed) return;
   st->end_emitted = true;
   scr_net_fire0_this(&st->end_ls, st, SCR_DYNH_H2_STREAM);
@@ -1435,6 +1441,10 @@ static void scr_h2_stream_maybe_emit_end(ScrH2Stream *st) {
     if (st->want_end && st->wbuf.len == 0) scr_h2_stream_settle(st);
     else if (st->state == SCR_H2_S_CLOSED) scr_h2_stream_settle(st);
   }
+}
+
+static void scr_h2_stream_maybe_emit_end(ScrH2Stream *st) {
+  scr_h2_stream_maybe_emit_end_reader(st, false);
 }
 
 /* Drain the paused-mode queue into 'data' listeners (flowing only). */
@@ -1515,6 +1525,283 @@ static void scr_h2_session_cancel_pings(ScrH2Session *s) {
  * closing and the receiving side). */
 static SCR_TL ScrError *scr_h2_err_override = NULL;
 
+/* ── async iteration (for await over the stream) ──────────────────────
+ * Node's streams are Duplexes, so the stream handle answers
+ * Symbol.asyncIterator: next() hands the loop one body chunk per call (a
+ * Buffer, or a string after setEncoding), return() destroys the stream the
+ * way Node's destroyOnReturn does (RST_STREAM CANCEL) and answers done,
+ * and a stream error rejects a parked next(). The iterator is the body's
+ * reader: frames queue in the paused-mode rq and next() takes them, so the
+ * stream's own flow-control window still bounds an unread body. */
+
+typedef struct ScrH2Iter {
+  size_t rc;
+  ScrH2Stream *st;     /* +1: the iterator may outlive its boxes */
+  ScrPromise *waiting; /* +1: next() parked for the body's next event */
+  ScrError *error;     /* +1: a stream error no next() was waiting for */
+  bool done;           /* the loop saw, or must see, {done: true} */
+} ScrH2Iter;
+
+static void *scr_h2_iter_retain_v(void *p) {
+  ScrH2Iter *it = (ScrH2Iter *)p;
+  it->rc++;
+  return it;
+}
+
+static void scr_h2_iter_release_v(void *p) {
+  ScrH2Iter *it = (ScrH2Iter *)p;
+  if (--it->rc > 0) return;
+  if (it->st != NULL && it->st->iter == it) it->st->iter = NULL;
+  scr_promise_release(it->waiting);
+  scr_error_release(it->error);
+  scr_http2_stream_release(it->st);
+  free(it);
+}
+
+static ScrH2Iter *scr_h2_iter_of(ScrClosure *clo) {
+  return (ScrH2Iter *)scr_box_get_ref(clo->caps[0]); /* +1 */
+}
+
+/* Node's stream error: ERR_HTTP2_STREAM_ERROR with the message the wire
+ * code spells, or the error a local destroy carried. +1. */
+static ScrError *scr_h2_stream_error(ScrStr *msg) {
+  if (scr_h2_err_override != NULL) return scr_error_retain(scr_h2_err_override);
+  ScrError *error = scr_error_new(0 /* Error */, msg);
+  scr_error_set_code(error, "ERR_HTTP2_STREAM_ERROR");
+  return error;
+}
+
+/* One iterator result, the protocol's shape. Consumes both. */
+static void scr_h2_iter_settle_result(ScrPromise *p, ScrDyn *value, bool done) {
+  ScrDyn *result = scr_dyn_new_obj();
+  scr_dyn_obj_set(result, "value", 5, value);
+  scr_dyn_obj_set(result, "done", 4, scr_dyn_new_bool(done));
+  scr_promise_fulfill_ref(p, result, scr_dyn_retain_v, scr_dyn_release_v, NULL);
+}
+
+static void scr_h2_iter_settle_done(ScrPromise *p) {
+  scr_h2_iter_settle_result(p, scr_dyn_retain(scr_dyn_undefined()), true);
+}
+
+static void scr_h2_iter_reject(ScrPromise *p, ScrError *err) {
+  scr_throw_obj(scr_error_retain(err), &scr_error_retain_v, &scr_error_release_v,
+                scr_error_trace_arg());
+  scr_promise_reject_pending(p);
+}
+
+/* The body's next chunk as the loop sees it: a Buffer, or the decoded
+ * string in a stream the program put in string mode. +1. */
+static ScrDyn *scr_h2_iter_chunk(ScrH2Stream *st, const char *data, size_t n) {
+  if (st->enc_utf8) {
+    ScrStr *text = scr_str_new(data, n);
+    ScrDyn *out = scr_dyn_new_str(text);
+    scr_str_release(text);
+    return out;
+  }
+  ScrBytes *chunk = scr_bytes_new(SCR_BYTES_U8, (double)n);
+  chunk->is_buffer = true; /* Node delivers a Buffer */
+  memcpy(chunk->data, data, n);
+  ScrDyn *out = scr_dyn_new_bytes(chunk);
+  scr_bytes_release(chunk);
+  return out;
+}
+
+/* Pop the oldest queued chunk and give its flow-control credit back. +1,
+ * NULL when the queue is empty. */
+static ScrDyn *scr_h2_iter_take(ScrH2Stream *st) {
+  ScrH2Chunk *c = st->rq_head;
+  if (c == NULL) return NULL;
+  st->rq_head = c->next;
+  if (!st->rq_head) st->rq_tail = NULL;
+  ScrDyn *value = scr_h2_iter_chunk(st, c->data, c->len);
+  size_t n = c->len;
+  free(c);
+  scr_h2_stream_consume(st, n);
+  return value;
+}
+
+/* A frame landed in the paused queue while next() was parked: hand it over
+ * now (the iterator, not a 'data' listener, is the reader). */
+static void scr_h2_iter_notify(ScrH2Stream *st) {
+  ScrH2Iter *it = st->iter;
+  if (it == NULL || it->waiting == NULL || it->done || it->error != NULL) return;
+  if (st->rq_head == NULL) return;
+  ScrPromise *p = it->waiting;
+  it->waiting = NULL;
+  scr_h2_iter_settle_result(p, scr_h2_iter_take(st), false);
+  scr_promise_release(p);
+}
+
+/* END_STREAM with next() parked and nothing left to read: 'end' first
+ * (Node's order), then the loop's done result. */
+static void scr_h2_iter_notify_end(ScrH2Stream *st) {
+  ScrH2Iter *it = st->iter;
+  if (it == NULL || it->waiting == NULL || it->done || it->error != NULL) return;
+  if (st->rq_head != NULL) return;
+  it->done = true;
+  ScrPromise *p = it->waiting;
+  it->waiting = NULL;
+  scr_h2_stream_maybe_emit_end_reader(st, true);
+  scr_h2_iter_settle_done(p);
+  scr_promise_release(p);
+}
+
+/* The stream failed: a parked next() rejects with the error, or the error
+ * waits for the next call. Node's iterator is the stream's internal error
+ * listener, so an iterated stream never takes the unhandled path. */
+static void scr_h2_iter_error(ScrH2Stream *st, ScrStr *msg) {
+  ScrH2Iter *it = st->iter;
+  if (it == NULL || it->done) return;
+  ScrError *err = scr_h2_stream_error(msg);
+  if (it->waiting != NULL) {
+    ScrPromise *p = it->waiting;
+    it->waiting = NULL;
+    it->done = true;
+    scr_h2_iter_reject(p, err);
+    scr_promise_release(p);
+  } else if (it->error == NULL) {
+    it->error = scr_error_retain(err);
+  }
+  scr_error_release(err);
+}
+
+/* The stream closed under the loop without an error: a parked next()
+ * answers done instead of hanging (Node's iterator ends there). */
+static void scr_h2_iter_close(ScrH2Stream *st) {
+  ScrH2Iter *it = st->iter;
+  if (it == NULL || it->done) return;
+  it->done = true;
+  ScrPromise *p = it->waiting;
+  it->waiting = NULL;
+  if (p != NULL) {
+    scr_h2_iter_settle_done(p);
+    scr_promise_release(p);
+  }
+}
+
+static ScrDyn *scr_h2_iter_next(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
+  (void)args;
+  (void)argc;
+  ScrH2Iter *it = scr_h2_iter_of(clo); /* +1 */
+  ScrH2Stream *st = it->st;
+  ScrPromise *p = scr_promise_new();
+  if (it->done) {
+    scr_h2_iter_settle_done(p);
+  } else if (it->error != NULL) {
+    ScrError *err = it->error;
+    it->error = NULL;
+    it->done = true;
+    scr_h2_iter_reject(p, err);
+    scr_error_release(err);
+  } else if (st->rq_head != NULL) {
+    scr_h2_iter_settle_result(p, scr_h2_iter_take(st), false);
+  } else if (st->end_recv) {
+    it->done = true;
+    scr_h2_stream_maybe_emit_end_reader(st, true);
+    scr_h2_iter_settle_done(p);
+  } else if (st->destroyed || st->close_queued || st->close_emitted) {
+    it->done = true;
+    scr_h2_iter_settle_done(p);
+  } else {
+    scr_promise_release(it->waiting);
+    it->waiting = scr_promise_retain(p);
+  }
+  scr_h2_iter_release_v(it);
+  ScrDyn *out = scr_dyn_new_promise(p);
+  scr_promise_release(p);
+  return out;
+}
+
+/* return(): the loop left early. Node's destroyOnReturn destroys the
+ * stream, and its destroyAbort sends RST_STREAM(CANCEL, 8) — the code the
+ * peer sees and the close reports. */
+static ScrDyn *scr_h2_iter_return(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
+  (void)args;
+  (void)argc;
+  ScrH2Iter *it = scr_h2_iter_of(clo); /* +1 */
+  ScrH2Stream *st = it->st;
+  it->done = true;
+  ScrPromise *parked = it->waiting;
+  it->waiting = NULL;
+  if (parked != NULL) {
+    scr_h2_iter_settle_done(parked);
+    scr_promise_release(parked);
+  }
+  if (!st->destroyed && !st->close_queued && !st->close_emitted) {
+    st->api_destroyed = true;
+    scr_http2_stream_close(st, 8.0 /* NGHTTP2_CANCEL */, NULL);
+  }
+  scr_h2_iter_release_v(it);
+  ScrPromise *p = scr_promise_new();
+  scr_h2_iter_settle_done(p);
+  ScrDyn *out = scr_dyn_new_promise(p);
+  scr_promise_release(p);
+  return out;
+}
+
+/* throw(err): rejects with the thrown value; Node's iterator does not
+ * destroy the stream for it. */
+static ScrDyn *scr_h2_iter_throw(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
+  ScrH2Iter *it = scr_h2_iter_of(clo); /* +1 */
+  it->done = true;
+  ScrPromise *p = scr_promise_new();
+  ScrDyn *value = argc > 0 && args[0] != NULL ? scr_dyn_retain(args[0])
+                                              : scr_dyn_retain(scr_dyn_undefined());
+  scr_throw_obj(value, scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
+  scr_promise_reject_pending(p);
+  scr_h2_iter_release_v(it);
+  ScrDyn *out = scr_dyn_new_promise(p);
+  scr_promise_release(p);
+  return out;
+}
+
+static ScrDyn *scr_h2_iter_method(ScrH2Iter *it, ScrDynThunk thunk, const char *name) {
+  ScrClosure *clo = scr_closure_new((void *)thunk, 1);
+  clo->caps[0] = scr_box_new_obj(scr_h2_iter_retain_v, scr_h2_iter_release_v, NULL);
+  scr_box_set_ref(clo->caps[0], scr_h2_iter_retain_v(it));
+  return scr_dyn_new_func(clo, thunk, 0, "()", name);
+}
+
+/* `stream[Symbol.asyncIterator]()`: one iterator per stream — a second
+ * read answers an object over the same iterator (the readline precedent). */
+static ScrDyn *scr_h2_stream_async_iterator(ScrH2Stream *st) {
+  ScrH2Iter *it = st->iter;
+  if (it == NULL) {
+    it = calloc(1, sizeof *it);
+    if (!it) scr_h2_oom();
+    it->rc = 1;
+    it->st = scr_http2_stream_retain(st);
+    st->iter = it; /* borrowed: the iterator clears it on release */
+  }
+  ScrDyn *object = scr_dyn_new_obj();
+  scr_dyn_obj_set(object, "next", 4, scr_h2_iter_method(it, scr_h2_iter_next, "next"));
+  scr_dyn_obj_set(object, "return", 6, scr_h2_iter_method(it, scr_h2_iter_return, "return"));
+  scr_dyn_obj_set(object, "throw", 5, scr_h2_iter_method(it, scr_h2_iter_throw, "throw"));
+  /* the object's method closures own the iterator from here */
+  scr_h2_iter_release_v(it);
+  return object;
+}
+
+/* The Symbol.asyncIterator method value the handle answers; the protocol
+ * calls it with the stream handle as `this`. */
+static ScrDyn *scr_h2_stream_async_iterator_thunk(ScrClosure *clo, ScrDyn *const *args,
+                                                  size_t argc) {
+  (void)clo;
+  (void)args;
+  (void)argc;
+  ScrDyn *self = scr_dyn_this_get(); /* +1 */
+  ScrDyn *out = NULL;
+  if (self != NULL && self->kind == SCR_DYN_HANDLE && self->v.handle.tag == SCR_DYNH_H2_STREAM) {
+    out = scr_h2_stream_async_iterator((ScrH2Stream *)self->v.handle.ptr);
+  }
+  scr_dyn_release(self);
+  if (out == NULL) {
+    static const char message[] = "Http2Stream.prototype[Symbol.asyncIterator] called on a non-stream";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+  }
+  return out;
+}
+
 static void scr_h2_stream_fire_error(ScrH2Stream *st) {
   uint32_t code = st->rst_code;
   if (st->suppress_rst_error) {
@@ -1531,10 +1818,17 @@ static void scr_h2_stream_fire_error(ScrH2Stream *st) {
    * Node, so an unlistened stream error throws there — an empty list here
    * takes the fatal path on purpose. A compatibility stream swallows it
    * (Node's compat layer listens), which is why a compat-only server
-   * survives a peer reset. */
-  if (st->err_ls.n > 0 || (st->compat_req == NULL && st->compat_res == NULL)) {
+   * survives a peer reset; so does an async iterator, which is Node's
+   * internal stream listener while the loop reads. */
+  if (st->err_ls.n > 0 ||
+      (st->compat_req == NULL && st->compat_res == NULL && st->iter == NULL)) {
     ScrStr *m = scr_str_new(msg, (size_t)n);
+    scr_h2_iter_error(st, m);
     scr_net_fire_err_this(&st->err_ls, m, st, SCR_DYNH_H2_STREAM);
+    scr_str_release(m);
+  } else if (st->iter != NULL) {
+    ScrStr *m = scr_str_new(msg, (size_t)n);
+    scr_h2_iter_error(st, m);
     scr_str_release(m);
   }
 }
@@ -1542,6 +1836,8 @@ static void scr_h2_stream_fire_error(ScrH2Stream *st) {
 /* The stream's own 'close' listeners, after its 'error' and after the
  * compatibility pair's close. */
 static void scr_h2_stream_fire_close(ScrH2Stream *st) {
+  /* A loop parked on next() ends here rather than outliving the stream. */
+  scr_h2_iter_close(st);
   if (!scr_exc_pending()) scr_net_fire0_this(&st->close_ls, st, SCR_DYNH_H2_STREAM);
   /* The sent-header readbacks stay on the stream for its lifetime (Node
    * keeps them after 'close' too); its final release frees them. */
@@ -2002,12 +2298,15 @@ static bool scr_h2_on_frame_in(ScrH2Session *s, uint8_t type, uint8_t flags, int
       } else {
         scr_h2_stream_rq_push(st, (const char *)p, n);
         if (st->flowing) scr_h2_stream_queue_drain(st);
+        else scr_h2_iter_notify(st);
       }
     }
     if (flags & SCR_H2_FLAG_END_STREAM) {
       st->end_recv = true;
       st->state = st->state == SCR_H2_S_CLOSED_LOCAL ? SCR_H2_S_CLOSED : SCR_H2_S_CLOSED_REMOTE;
       scr_h2_stream_maybe_emit_end(st);
+      if (scr_exc_pending()) return false;
+      scr_h2_iter_notify_end(st);
       if (scr_exc_pending()) return false;
       if (st->state == SCR_H2_S_CLOSED && st->end_emitted) scr_h2_stream_settle(st);
     }
@@ -2404,7 +2703,7 @@ static void scr_h2_stream_both_closed(ScrH2Stream *st) {
     scr_h2_stream_settle(st);
     return;
   }
-  if (!st->sess->client && !st->flowing && !st->user_paused) {
+  if (!st->sess->client && !st->flowing && !st->user_paused && st->iter == NULL) {
     st->flowing = true;
     scr_h2_stream_queue_drain(st);
   }
@@ -4164,8 +4463,11 @@ static void scr_h2_reject_stream_error(ScrH2Session *s, ScrH2Stream *st, int32_t
     int n = snprintf(msg, sizeof msg, "Stream closed with error code %s",
                      name != NULL ? name : "NGHTTP2_PROTOCOL_ERROR");
     ScrStr *m = scr_str_new(msg, (size_t)n);
-    /* listeners, or — for a raw stream — Node's unhandled 'error' */
-    if (st->err_ls.n > 0 || (st->compat_req == NULL && st->compat_res == NULL)) {
+    scr_h2_iter_error(st, m);
+    /* listeners, or — for a raw stream — Node's unhandled 'error'; an async
+     * iterator is Node's internal listener while the loop reads */
+    if (st->err_ls.n > 0 ||
+        (st->compat_req == NULL && st->compat_res == NULL && st->iter == NULL)) {
       scr_net_fire_err_this(&st->err_ls, m, st, SCR_DYNH_H2_STREAM);
     }
     scr_str_release(m);
@@ -6042,13 +6344,7 @@ void scr_http2_resp_thunk(ScrClosure *cb, ScrArr *pairs, double status, double f
  * code is ERR_HTTP2_STREAM_ERROR and whose message carries the code name
  * ("Stream closed with error code NGHTTP2_PROTOCOL_ERROR"). */
 void scr_http2_stream_err_thunk(ScrClosure *cb, ScrStr *msg) {
-  ScrError *error;
-  if (scr_h2_err_override != NULL) {
-    error = scr_error_retain(scr_h2_err_override);
-  } else {
-    error = scr_error_new(0 /* Error */, msg);
-    scr_error_set_code(error, "ERR_HTTP2_STREAM_ERROR");
-  }
+  ScrError *error = scr_h2_stream_error(msg);
   ((void (*)(ScrClosure *, ScrError *))cb->fn)(cb, error);
 }
 
@@ -6159,13 +6455,7 @@ static void scr_h2_dyn_fire_stream(ScrClosure *cb, ScrH2Stream *st, ScrArr *pair
 /* A stream error for a dyn listener: Node's ERR_HTTP2_STREAM_ERROR. */
 static void scr_h2_dyn_fire_stream_err(ScrClosure *cb, ScrStr *msg) {
   ScrDyn *fn = scr_dyn_listener_fn(cb);
-  ScrError *e;
-  if (scr_h2_err_override != NULL) {
-    e = scr_error_retain(scr_h2_err_override);
-  } else {
-    e = scr_error_new(0 /* Error */, msg);
-    scr_error_set_code(e, "ERR_HTTP2_STREAM_ERROR");
-  }
+  ScrError *e = scr_h2_stream_error(msg);
   ScrDyn *arg = scr_dyn_from_error(e);
   ScrDyn *args[1] = { arg };
   ScrDyn *r = scr_dyn_call(fn, args, 1, "listener");
@@ -6466,6 +6756,15 @@ static bool scr_h2_dynh_stream_set(void *h, const char *key, size_t key_len, con
   return false;
 }
 
+/* Symbol.asyncIterator: the stream is a Duplex, so `for await` and the
+ * protocol's own open (dyn.asyncIteratorOpen) find the iterator here. */
+static ScrDyn *scr_h2_dynh_stream_symbol_get(void *h, const ScrDyn *key) {
+  (void)h;
+  if (!scr_dyn_is_async_iterator_symbol(key)) return NULL;
+  return scr_dyn_new_func(scr_closure_new(NULL, 0), scr_h2_stream_async_iterator_thunk, 0, "",
+                          "[Symbol.asyncIterator]");
+}
+
 /* ── session ops ─────────────────────────────────────────────────────── */
 
 static ScrDyn *scr_h2_dynh_session_invoke(void *h, ScrDyn *self, const char *method,
@@ -6609,6 +6908,7 @@ static bool scr_h2_dynh_session_set(void *h, const char *key, size_t key_len, co
 static const ScrDynHandleOps scr_h2_dynh_stream_ops = {
   "Http2Stream", &scr_http2_stream_retain_v, &scr_http2_stream_release_v,
   &scr_h2_dynh_stream_invoke, &scr_h2_dynh_stream_get, &scr_h2_dynh_stream_set, NULL,
+  .symbol_get = scr_h2_dynh_stream_symbol_get,
 };
 
 static const ScrDynHandleOps scr_h2_dynh_session_ops = {

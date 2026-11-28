@@ -15033,11 +15033,17 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
       !classAsync &&
       lowerer.findMethodOn(headClass, "sym:iterator") !== null;
     const classIterable = classAsync || classSync;
+    // An http2 stream is Node's Duplex: the loop opens the runtime
+    // Symbol.asyncIterator over the boxed stream handle (scr_http2.c).
+    const h2Stream = headT?.kind === "http2Stream";
     const syncGenerator =
       (headT?.kind === "generator" && headT.async !== true) ||
       classIterable ||
       isJsSourceFile(stmt.getSourceFile());
-    if (lowerer.ctx.isAsync && (syncGenerator || isUntypedIterable(lowerer, stmt.expression))) {
+    if (
+      lowerer.ctx.isAsync &&
+      (syncGenerator || h2Stream || isUntypedIterable(lowerer, stmt.expression))
+    ) {
       const iterable = lowerer.lowerExpr(stmt.expression);
       if (iterable.type.kind === "generator" && iterable.type.async)
         return lowerForAwaitGenerator(
@@ -15049,6 +15055,7 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
       if (iterable.type.kind === "dyn") return lowerForOfDyn(lowerer, stmt, iterable, labels, true);
       if (
         (iterable.type.kind === "generator" ||
+          h2Stream ||
           classIterable ||
           isJsSourceFile(stmt.getSourceFile())) &&
         lowerer.dynConvertible(iterable.type)

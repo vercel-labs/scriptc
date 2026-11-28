@@ -826,23 +826,32 @@ static void scr_map_compact(ScrMap *m, bool reindex) {
  * range. */
 #define SCR_MAP_MAX_ENTRIES ((size_t)1 << 30)
 
-/* The entry capacity after `cap`: 1, 2, 3, 4, 6, 8, 12, 16, then doubling.
- * Most maps hold one to four entries, so a small map keeps at most a third
- * of its slots unused, and appends stay amortized constant. */
+/* The entry capacity after `cap`: 2, 4, 8, 16, then doubling. Most maps
+ * hold one to four entries, so a map that grows one entry at a time pays
+ * three reallocs to reach four entries; a map seeded from an array reserves
+ * its size up front (scr_set_add_all), and the larger steps leave a small
+ * map at most half its slots unused while keeping appends amortized. */
 static size_t scr_map_next_ecap(size_t cap) {
-  if (cap < 4) return cap + 1;
-  if (cap < 16) return cap < 8 ? cap + 2 : cap + 4;
-  return cap * 2;
+  return cap < 2 ? 2 : cap * 2;
 }
 
-static void scr_map_grow_entries(ScrMap *m) {
-  size_t cap = scr_map_next_ecap(m->ecap);
-  while (cap < m->nentries + 1) cap = scr_map_next_ecap(cap);
+/* Make room for `want` entries in one realloc: seeding a Set from an array
+ * of n elements reaches n entries without walking the growth chain. */
+static void scr_map_reserve_entries(ScrMap *m, size_t want) {
+  if (want <= m->ecap) return;
+  size_t cap = m->ecap;
+  do {
+    cap = scr_map_next_ecap(cap);
+  } while (cap < want);
   if (cap > SCR_MAP_MAX_ENTRIES) scr_map_oom();
   ScrMapEntry *entries = scr_mem_realloc(m->entries, cap * scr_map_entry_size(m));
   if (!entries) scr_map_oom();
   m->entries = entries;
   m->ecap = (uint32_t)cap;
+}
+
+static void scr_map_grow_entries(ScrMap *m) {
+  scr_map_reserve_entries(m, m->nentries + 1);
 }
 
 /* Make room to append one entry. Prefers compaction (tombstone-heavy maps
@@ -1424,19 +1433,16 @@ static __attribute__((noinline)) const ScrMapEntry *scr_map_entry_str_bytes(cons
   return scr_map_entry_str_slow(m, key);
 }
 
-/* Every string-key read of generated code lands here. The common shapes, a
- * key with a cached hash probing linear or compact-bucket storage, run
- * without a stack frame: a hash match on another string object tail-calls
- * the byte comparison, and anything else (an uncached hash, wide buckets)
- * the complete lookup. */
-const ScrMapEntry *scr_map_entry_str(const ScrMap *m, const ScrStr *key) {
-#if SCR_STR_HASH_CACHE
-  uint32_t h = key->hash;
+/* Every string-key read of generated code with a cached hash lands here,
+ * the second half of scr_map_entry_str: the caller tested the map's
+ * absent-key filter already, so only the probe remains. The common shapes,
+ * linear or compact-bucket storage, run without a stack frame: a hash match
+ * on another string object tail-calls the byte comparison, and anything
+ * else (wide buckets) the complete lookup. */
+const ScrMapEntry *scr_map_entry_str_h(const ScrMap *m, const ScrStr *key, uint32_t h) {
   size_t nbuckets = m->nbuckets;
   if (__builtin_expect(h != 0 && scr_map_compact_buckets(nbuckets), 1)) {
     uint64_t hash = scr_map_hash_widen(h);
-    uint64_t bits = scr_map_filter_bits(hash);
-    if ((m->filter & bits) != bits) return NULL;
     const ScrMapEntry *entries = m->entries;
     if (nbuckets == 0) {
       for (size_t e = 0, n = m->nentries; e < n; e++) {
@@ -1459,13 +1465,30 @@ const ScrMapEntry *scr_map_entry_str(const ScrMap *m, const ScrStr *key) {
       return scr_map_entry_str_bytes(m, key, e);
     }
   }
+  return scr_map_entry_str_slow(m, key);
+}
+
+/* The complete string-key entry lookup for callers without the key's cached
+ * hash (32-bit targets) and for wide bucket tables. Generated code on
+ * 64-bit targets tests the filter and passes the hash to scr_map_entry_str_h
+ * itself. */
+const ScrMapEntry *scr_map_entry_str(const ScrMap *m, const ScrStr *key) {
+#if SCR_STR_HASH_CACHE
+  uint32_t h = key->hash;
+  if (__builtin_expect(h != 0, 1)) {
+    uint64_t bits = scr_map_filter_bits(scr_map_hash_widen(h));
+    if ((m->filter & bits) != bits) return NULL;
+    return scr_map_entry_str_h(m, key, h);
+  }
 #endif
   return scr_map_entry_str_slow(m, key);
 }
 
 static __attribute__((noinline)) const ScrMapCEntry *scr_map_entry_str_c_slow(const ScrMap *m,
                                                                               const ScrStr *key) {
-  size_t e = scr_map_find_str(m, key);
+  if (m->nlive == 0) return NULL;
+  size_t e = scr_map_find_with(m, scr_map_hash_str(key), scr_map_slot_from_ptr((void *)key),
+                               SCR_MAP_LOOKUP_STR_C);
   return e == SCR_MAP_EMPTY ? NULL : scr_map_c_at(m, e);
 }
 
@@ -1478,15 +1501,12 @@ static __attribute__((noinline)) const ScrMapCEntry *scr_map_entry_str_c_bytes(c
 }
 
 /* scr_map_entry_str over a SCR_MAP_VAL_CREF map's 16-byte entries, whose
- * hash is the low half of the widened one. */
-const ScrMapCEntry *scr_map_entry_str_c(const ScrMap *m, const ScrStr *key) {
-#if SCR_STR_HASH_CACHE
-  uint32_t h = key->hash;
+ * hash is the low half of the widened one: the filter test stays with the
+ * caller, as it does for scr_map_entry_str_h. */
+const ScrMapCEntry *scr_map_entry_str_c_h(const ScrMap *m, const ScrStr *key, uint32_t h) {
   size_t nbuckets = m->nbuckets;
   if (__builtin_expect(h != 0 && scr_map_compact_buckets(nbuckets), 1)) {
     uint64_t hash = scr_map_hash_widen(h);
-    uint64_t bits = scr_map_filter_bits(hash);
-    if ((m->filter & bits) != bits) return NULL;
     const ScrMapCEntry *entries = (const ScrMapCEntry *)m->entries;
     if (nbuckets == 0) {
       for (size_t e = 0, n = m->nentries; e < n; e++) {
@@ -1508,6 +1528,20 @@ const ScrMapCEntry *scr_map_entry_str_c(const ScrMap *m, const ScrStr *key) {
       if (e->key == scr_map_slot_from_ptr((void *)key)) return e;
       return scr_map_entry_str_c_bytes(m, key, e);
     }
+  }
+  return scr_map_entry_str_c_slow(m, key);
+}
+
+/* The complete lookup for callers without the key's cached hash (32-bit
+ * targets); 64-bit generated code passes the hash to
+ * scr_map_entry_str_c_h. */
+const ScrMapCEntry *scr_map_entry_str_c(const ScrMap *m, const ScrStr *key) {
+#if SCR_STR_HASH_CACHE
+  uint32_t h = key->hash;
+  if (__builtin_expect(h != 0, 1)) {
+    uint64_t bits = scr_map_filter_bits(scr_map_hash_widen(h));
+    if ((m->filter & bits) != bits) return NULL;
+    return scr_map_entry_str_c_h(m, key, h);
   }
 #endif
   return scr_map_entry_str_c_slow(m, key);
@@ -1811,6 +1845,11 @@ void scr_map_iter_exit(ScrMap *m) {
 
 /* ── seeded Set construction ───────────────────────────────────────────── */
 
+/* Upper bound on the entries a seeded Set reserves up front: 24 bytes of
+ * entry per element of the seed array, so a small array's duplicates never
+ * cost more than this many slots. */
+#define SCR_MAP_SEED_RESERVE_MAX 256
+
 /* `new Set(values)`: add() every element of one borrowed T[] in order —
  * duplicates overwrite the unit value in place, so first insertion
  * position wins (SameValueZero, exactly JS). The map is a set (value kind
@@ -1818,6 +1857,14 @@ void scr_map_iter_exit(ScrMap *m) {
  * f64, string, or an identity reference matching the array's element kind. */
 void scr_set_add_all(ScrMap *set, ScrArr *values) {
   size_t n = values->len;
+  /* The seed array's size is the entry count's upper bound, so reserve it
+   * once instead of growing through the capacity chain. Capped: a heavily
+   * duplicated seed array would otherwise over-allocate, and past the cap
+   * the usual geometric growth is a handful of reallocs. */
+  if (n > 2) {
+    size_t want = n < SCR_MAP_SEED_RESERVE_MAX ? n : SCR_MAP_SEED_RESERVE_MAX;
+    scr_map_reserve_entries(set, set->nentries + want);
+  }
   for (size_t i = 0; i < n; i++) {
     /* Packed values stay owned by the seed array throughout construction.
      * Avoid taking a temporary owner only to release it after insertion.

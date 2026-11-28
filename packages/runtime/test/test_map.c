@@ -142,6 +142,52 @@ static void test_string_keys(void) {
   scr_map_release(m);
 }
 
+/* scr_set_add_all: `new Set(values)` seeds in order and reserves the seed
+ * length up front, so construction does not walk the capacity chain; a
+ * duplicate-heavy seed array stays bounded instead of sizing to its length. */
+static void test_seeded_set(void) {
+  char buf[16];
+  ScrArr *values = scr_arr_new(SCR_ELEM_STR, 0);
+  for (int i = 0; i < 600; i++) {
+    snprintf(buf, sizeof buf, "s%d", i % 400); /* 400 distinct, 200 duplicates */
+    (void)scr_arr_push_ref(values, S(buf));
+  }
+  ScrMap *set = scr_map_new(SCR_MAP_KEY_STR, SCR_MAP_VAL_F64, NULL);
+  scr_set_add_all(set, values);
+  check(scr_map_size(set) == 400, "seeded Set holds one entry per distinct value");
+  check(set->nentries == 400 && set->ecap >= 400, "seeded Set reserved its entries up front");
+  ScrStr *probe = S("s399"), *absent = S("absent");
+  check(scr_map_has_str(set, probe), "seeded Set contains a seeded value");
+  check(!scr_map_has_str(set, absent), "seeded Set rejects an absent value");
+
+  ScrArr *three = scr_arr_new(SCR_ELEM_STR, 0);
+  for (int i = 0; i < 3; i++) {
+    snprintf(buf, sizeof buf, "t%d", i);
+    (void)scr_arr_push_ref(three, S(buf));
+  }
+  ScrMap *small = scr_map_new(SCR_MAP_KEY_STR, SCR_MAP_VAL_F64, NULL);
+  scr_set_add_all(small, three);
+  check(scr_map_size(small) == 3 && small->ecap == 4, "a three-element seed grows once");
+
+  ScrArr *dup = scr_arr_new(SCR_ELEM_STR, 0);
+  for (int i = 0; i < 900; i++) {
+    snprintf(buf, sizeof buf, "d%d", i % 3);
+    (void)scr_arr_push_ref(dup, S(buf));
+  }
+  ScrMap *capped = scr_map_new(SCR_MAP_KEY_STR, SCR_MAP_VAL_F64, NULL);
+  scr_set_add_all(capped, dup);
+  check(scr_map_size(capped) == 3 && capped->ecap <= 256, "duplicate-heavy seed stays bounded");
+
+  scr_str_release(probe);
+  scr_str_release(absent);
+  scr_map_release(capped);
+  scr_map_release(small);
+  scr_map_release(set);
+  scr_arr_release(dup);
+  scr_arr_release(three);
+  scr_arr_release(values);
+}
+
 /* scr_map_entry_str: the entry of a string key, for generated code that
  * reads the value slot and retains it with the value type's own retain. The
  * lookup itself takes no reference, in linear and bucketed maps alike. */
@@ -161,6 +207,12 @@ static void test_string_entries(void) {
     ScrStr *v = (ScrStr *)(uintptr_t)e->val;
     check(v->len == 4 && memcmp(v->data, "key0", 4) == 0, "entry value slot holds the value");
     check(v->rc == 1, "entry lookup takes no reference");
+#if SCR_STR_HASH_CACHE
+    /* The hash-carrying flavor the compiler emits after its inline filter
+     * test agrees with the complete lookup. */
+    check(probe->hash != 0 && scr_map_entry_str_h(m, probe, probe->hash) == e,
+          "hash-carrying entry lookup agrees");
+#endif
     scr_str_release(probe);
   }
   check(scr_map_entry_str(m, missing) == NULL, "absent key has no entry");
@@ -887,6 +939,11 @@ static void test_compact_values(void) {
   check(all, "cref: get and entry_str_c find every value");
   ScrStr *missing = S("absent");
   check(!scr_map_get_str_ref(m, missing) && !scr_map_entry_str_c(m, missing), "cref: absent key");
+#if SCR_STR_HASH_CACHE
+  check(keys[7]->hash != 0 &&
+            scr_map_entry_str_c_h(m, keys[7], keys[7]->hash) == scr_map_entry_str_c(m, keys[7]),
+        "cref: hash-carrying lookup agrees");
+#endif
   check(scr_map_get_span_ref(m, "k7", 2) == cref_ref(7), "cref: span lookup");
   /* A key object other than the stored one, equal bytes. */
   ScrStr *again = S("k42");
@@ -950,6 +1007,7 @@ int main(void) {
   test_key_bytes();
   test_string_bucket_collisions();
   test_string_keys();
+  test_seeded_set();
   test_string_entries();
   test_compact_values();
   test_same_value_zero();

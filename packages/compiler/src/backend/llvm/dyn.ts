@@ -229,18 +229,18 @@ const MAP_HEADER_FIELDS: readonly { name: string; type: string | null }[] = [
   { name: "val_kind", type: "i8" },
   { name: "traced", type: "i8" },
   { name: "flags", type: "i8" },
-  { name: "iter_depth", type: "i32" },
-  { name: "ops", type: "ptr" },
-  { name: "dyn_ops", type: "ptr" },
   { name: "nentries", type: "i32" },
   { name: "nlive", type: "i32" },
-  { name: "filter", type: "i64" },
-  { name: "entries", type: "ptr" },
-  { name: "ecap", type: "i32" },
   { name: "nbuckets", type: "i32" },
+  { name: "entries", type: "ptr" },
   { name: "buckets", type: "ptr" },
+  { name: "filter", type: "i64" },
   { name: "dense", type: "ptr" },
   { name: "ndense", type: "i32" },
+  { name: "ecap", type: "i32" },
+  { name: "ops", type: "ptr" },
+  { name: "dyn_ops", type: "ptr" },
+  { name: "iter_depth", type: "i32" },
   { name: "head", type: "i32" },
 ];
 const MAP_HEADER = {
@@ -248,15 +248,15 @@ const MAP_HEADER = {
   keyKind: 1,
   valKind: 2,
   traced: 3,
-  iterDepth: 5,
-  dynOps: 7,
-  nentries: 8,
-  nlive: 9,
+  iterDepth: 16,
+  dynOps: 15,
+  nentries: 5,
+  nlive: 6,
 } as const;
 /** The header fields that describe a storage's layout and hold its entries:
  * everything but the reference count, `traced`, the flags and the iteration
  * depth, which belong to the collection object. */
-const MAP_HEADER_LAYOUT: readonly number[] = [1, 2, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17];
+const MAP_HEADER_LAYOUT: readonly number[] = [1, 2, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 17];
 
 /** Union arm kinds whose matchers reject every plain dyn object
  * (trustedArmByLiteral). */
@@ -1504,7 +1504,7 @@ export class LlDyn {
   private mapHeaderField(B: BlockBuilder, map: string, index: number): string {
     const p = B.tmp();
     B.line(
-      `${p} = getelementptr inbounds { ${this.S}, i8, i8, i8, i8, i32, ptr, ptr, i32, i32, i64, ptr, i32, i32, ptr, ptr, i32, i32 }, ptr ${map}, i32 0, i32 ${index} ; ${MAP_HEADER_FIELDS[index]!.name}`,
+      `${p} = getelementptr inbounds { ${this.S}, i8, i8, i8, i8, i32, i32, i32, ptr, ptr, i64, ptr, i32, i32, ptr, ptr, i32, i32 }, ptr ${map}, i32 0, i32 ${index} ; ${MAP_HEADER_FIELDS[index]!.name}`,
     );
     return p;
   }

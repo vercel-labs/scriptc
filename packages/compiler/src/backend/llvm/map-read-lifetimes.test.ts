@@ -272,7 +272,10 @@ test("string-key lookups test the absent-key filter inline on 64-bit targets onl
   expect(wide).toContain("lshr i64 %cap, 44");
   expect(wide).toContain("lshr i64 %cap, 50");
   expect(wide).toContain("ret ptr null");
-  expect(wide).toContain("call ptr @scr_map_entry_str(ptr %m, ptr %k)");
+  // A possible hit passes the cached hash (the capacity word's high half) to
+  // the hash-carrying probe, which skips the second hash load and filter test.
+  expect(wide).toContain("lshr i64 %cap, 32");
+  expect(wide).toContain("call ptr @scr_map_entry_str_h(ptr %m, ptr %k, i32 %h)");
   // 32-bit strings cache no hash: every lookup takes the runtime.
   const narrow = helper(32);
   expect(narrow).not.toContain("%ScrMapIx");

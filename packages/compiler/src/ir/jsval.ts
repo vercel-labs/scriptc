@@ -92,6 +92,7 @@ const PRODUCERS: Readonly<Record<string, string>> = {
 const CONSUMERS: Readonly<Record<string, string>> = {
   "dyn.compare": "js.compare",
   "dyn.toNumberCoerce": "js.toNumberCoerce",
+  "dyn.toNumberOrNaN": "js.toNumberOrNaN",
 };
 
 function isProducerCall(e: IrExpr): boolean {

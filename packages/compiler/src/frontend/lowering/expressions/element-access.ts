@@ -1239,6 +1239,10 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
   // and narrowing. The helper performs one length/proof check and then
   // uses the dense getter for the proven-present path, so this does not
   // change the storage representation or the low-level getter itself.
+  // Consumers decide the operation from the CHECKER's type: a member call
+  // on a read the checker types as present resolves its receiver through
+  // checkerTypedReceiver (lower-calls.ts), which throws Node's member-read
+  // TypeError for this undefined arm and lowers the present arm statically.
   if (arr.type.kind === "array") {
     // A non-null assertion is the explicit proven-present form. Preserve
     // the dense getter's established bounds trap where the asserted value

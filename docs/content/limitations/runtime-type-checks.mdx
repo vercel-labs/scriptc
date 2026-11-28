@@ -1,5 +1,6 @@
 Casts from values whose type is only known at runtime validate the value.
 For example, `JSON.parse(s) as Config` throws a catchable error if the data does not match `Config`, identifying the offending path, such as `expected number at $.port, got string`.
+An assertion through `unknown`, such as `value as unknown as Config`, is checked the same way, and a failing check names the cast, where it is, and the expression it applies to; the build warns about one whose target layout the value's static type cannot have (`SC6016`).
 A TypeScript assertion alone does not perform this validation when run under Node.js.
 A program that catches that error without reading it therefore takes the handler's path for data that Node.js accepts, and prints nothing.
 In the program below, the second line is valid JSON without `usage.total`: Node.js prints `message 1` for it, and the compiled program prints `skipped`.

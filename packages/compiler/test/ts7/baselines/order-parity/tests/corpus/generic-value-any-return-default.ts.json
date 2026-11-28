@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/generic-value-any-return-default.ts"
+ ],
+ "diags": []
+}

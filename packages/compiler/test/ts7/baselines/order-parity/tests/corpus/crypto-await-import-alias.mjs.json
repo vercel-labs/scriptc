@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/crypto-await-import-alias.mjs"
+ ],
+ "diags": []
+}

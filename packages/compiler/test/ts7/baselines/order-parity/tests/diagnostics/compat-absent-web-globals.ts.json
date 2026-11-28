@@ -5,11 +5,20 @@
  "diags": [
   {
    "code": "SC0001",
-   "message": "Cannot find name 'WebSocket'. Did you mean 'socket'?",
+   "message": "Module '\"node:http\"' has no exported member 'WebSocket'.",
    "loc": {
     "file": "<repo>/tests/diagnostics/compat-absent-web-globals.ts",
-    "start": 510,
-    "end": 519
+    "start": 594,
+    "end": 603
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Cannot find name 'FormData'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-absent-web-globals.ts",
+    "start": 629,
+    "end": 637
    }
   }
  ]

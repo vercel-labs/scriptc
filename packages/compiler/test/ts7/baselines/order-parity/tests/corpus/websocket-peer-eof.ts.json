@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/websocket-peer-eof.ts"
+ ],
+ "diags": []
+}

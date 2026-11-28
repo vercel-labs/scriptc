@@ -36,6 +36,8 @@ export interface NativeLinkFeatures {
   fetch: boolean;
   /** The URLPattern global: scr_urlpattern.c. */
   urlPattern?: boolean;
+  /** The WebSocket client (the global WebSocket class): scr_websocket.c. */
+  webSocket?: boolean;
   eventTarget?: boolean;
   /** The WebAssembly API (scr_wasm.c). Absent when unused, so programs
    * without it keep their link identity. */
@@ -505,6 +507,10 @@ export const LINK_FEATURE_REQUIREMENTS: readonly LinkFeatureRequirement[] = [
   // scr_urlpattern.c compiles each component pattern through the regex
   // engine (scr_regex.c) at construction, as the standard requires.
   { feature: "urlPattern", requires: ["regex"] },
+  // scr_websocket.c dials through scr_net.c and sc_http.c's client, wraps
+  // wss connections with scr_tls.c, and dispatches its events through
+  // scr_event_target.c (with the emitter and symbol units that unit needs).
+  { feature: "webSocket", requires: ["net", "http", "tls", "emitter", "symbol", "dynAsync"] },
   // A Blob (built, or produced by a body read) is a native handle of the
   // blob unit, which the checked-dynamic tier links; the fetch unit's
   // SCR_WEB_BODIES build reads its bytes through that unit.

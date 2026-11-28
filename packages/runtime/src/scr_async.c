@@ -2478,7 +2478,10 @@ static void scr_next_tick_raw_first(void (*fn)(void)) {
   if (scr_nt_tail == NULL) scr_nt_tail = t;
 }
 
-void (*scr_raw_tick_teardown_hook)(void) = NULL;
+/* Thread-local like every other piece of a script thread's loop state: the
+ * queues a hook releases belong to the exiting thread, so one thread's
+ * teardown must not disarm another's registration. */
+SCR_TL void (*scr_raw_tick_teardown_hook)(void) = NULL;
 
 void scr_nticks_teardown(void) {
   while (scr_nt_head != NULL) {
@@ -2704,16 +2707,15 @@ static SCR_TL void *scr_main_fake_stack; /* fake-stack slot for the main context
  * single-threaded, so one lazy conversion covers the process). Also the
  * loop-home keeper: whenever main is the caller this IS scr_loop_ctx's
  * value — assigned at the conversion so parked fibers can always switch
- * back to it. */
+ * back to it. The island runtime converts the same thread for Node's stack
+ * (scr_node_island.c), so the thread may already be a fiber. */
 static void *scr_win_self(void) {
-  static bool converted = false;
-  if (!converted) {
-    scr_loop_ctx = ConvertThreadToFiber(NULL);
+  if (scr_loop_ctx == NULL) {
+    scr_loop_ctx = IsThreadAFiber() ? GetCurrentFiber() : ConvertThreadToFiber(NULL);
     if (scr_loop_ctx == NULL) {
       fputs("scriptc: ConvertThreadToFiber failed\n", stderr);
       abort();
     }
-    converted = true;
   }
   return GetCurrentFiber();
 }

@@ -178,6 +178,7 @@ export function executableLinkFeatures(
     webcrypto: features.webcrypto,
     perfLoop: features.perfLoop,
     ...(features.urlPattern ? { urlPattern: true } : {}),
+    ...(features.webSocket ? { webSocket: true } : {}),
     ...(features.icu ? { intl: true } : {}),
   });
 }

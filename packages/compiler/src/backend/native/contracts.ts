@@ -83,6 +83,8 @@ export interface CcOptions {
   fetch?: boolean;
   /** The URLPattern global (scr_urlpattern.c). */
   urlPattern?: boolean;
+  /** The WebSocket client (scr_websocket.c): the global WebSocket class. */
+  webSocket?: boolean;
   /** The program uses zlib (index.ts detects zlib.* libCalls on the IR):
    * compiles scr_zlib.c — the regex gating precedent, so zlib-free
    * binaries keep their exact link line. Every driver compiles the vendored

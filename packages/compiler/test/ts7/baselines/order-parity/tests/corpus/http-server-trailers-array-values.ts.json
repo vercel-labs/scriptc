@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/http-server-trailers-array-values.ts"
+ ],
+ "diags": []
+}

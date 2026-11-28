@@ -122,7 +122,8 @@ typedef enum {
  * links byte-identical objects. Raising the capacity is a program-wide
  * layout change; do it in a change of its own, measured as neutral, and
  * only when the tags outgrow it. 160: the tags added since the last pin (the
- * URLPattern class's and the compression streams' among them) took the list
+ * URLPattern class's, the WebSocket client's and the compression streams'
+ * among them) took the list
  * past 128. The tables are thread-local pointer rows, so the capacity
  * changes no per-value representation. */
 #define SCR_DYNH_CAPACITY 160
@@ -293,6 +294,7 @@ typedef enum {
   Y(URL_PATTERN) /* the global URLPattern class (scr_urlpattern.c) */ \
   Y(UTF8_STREAM) /* fs.Utf8Stream (scr_fs_utf8_stream.c) */ \
   Y(WEAK_REF) /* WeakRef (scr_json.c) */ \
+  Y(WEBSOCKET) /* the global WebSocket client (scr_websocket.c) */ \
   Y(WS_COMPRESSION) /* CompressionStream (scr_webstream_compress.c) */ \
   Y(WS_DECOMPRESSION) /* DecompressionStream (scr_webstream_compress.c) */
 
@@ -1381,6 +1383,10 @@ ScrDyn *scr_dyn_negate(const ScrDyn *value);
 /* Internal constructor consumes a retained symbol with its native operations. */
 ScrDyn *scr_dyn_symbol_ref(ScrSym *value, void (*release)(ScrSym *), ScrStr *(*render)(ScrSym *), ScrStr *(*description)(ScrSym *));
 ScrDyn *scr_dyn_new_str(ScrStr *s);
+/* Throws Node's DataCloneError for a value the clone cannot carry:
+ * "<rendered> could not be cloned." with the structured clone's rendering
+ * (defined in scr_json.c). */
+void scr_clone_value_error(const ScrDyn *v);
 ScrDyn *scr_dyn_new_arr(void);
 ScrDyn *scr_dyn_array_constructor(void);
 /* Gives a builtin constructor value (Object, Array, Error) its builtin
@@ -1505,6 +1511,9 @@ ScrDyn *scr_dyn_async_iterator_symbol_value(void);
 /* True when key is Symbol.asyncDispose (registered by the symbol unit when
  * the program names it); handle symbol_get ops outside that unit use it. */
 bool scr_dyn_is_async_dispose_symbol(const ScrDyn *key);
+/* Symbol.asyncDispose as the symbol unit installed it (borrowed), or NULL
+ * before the program names it. */
+ScrDyn *scr_dyn_async_dispose_symbol_value(void);
 /* Whether key is Symbol.dispose (registered by the symbol unit when the
  * program names it). */
 bool scr_dyn_is_dispose_symbol(const ScrDyn *key);
@@ -1664,6 +1673,10 @@ ScrDyn *scr_dyn_new_typed_ref_traced(
     const char *type_key, size_t type_key_len,
     ScrDyn *(*materialize)(void *),
     void (*commit)(void *, const ScrDyn *));
+/* Intern a type key built at run time (a stack buffer): the typed reference
+ * stores the returned pointer, which lives as long as the process. */
+const char *scr_dyn_type_key_intern(const char *key, size_t len);
+
 ScrDyn *scr_dyn_new_typed_ref_observed(
     void *ptr, void *(*retain)(void *), void (*release)(void *),
     const char *type_key, size_t type_key_len,

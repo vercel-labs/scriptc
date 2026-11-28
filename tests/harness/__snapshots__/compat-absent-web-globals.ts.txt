@@ -1,6 +1,13 @@
-compat-absent-web-globals.ts:8:20 - error SC0001: Cannot find name 'WebSocket'. Did you mean 'socket'?
+compat-absent-web-globals.ts:9:10 - error SC0001: Module '"node:http"' has no exported member 'WebSocket'.
 
-  7 | // all: neither is an absence this ledger can cite.)
-  8 | const socket = new WebSocket("ws://localhost:1");
-    |                    ^~~~~~~~~
-  9 | socket.close();
+   8 | // cite. The global FormData and node:http's WebSocket export still are.)
+   9 | import { WebSocket } from "node:http";
+     |          ^~~~~~~~~
+  10 | 
+
+compat-absent-web-globals.ts:11:5 - error SC0001: Cannot find name 'FormData'.
+
+  10 | 
+  11 | new FormData();
+     |     ^~~~~~~~
+  12 | const socket = new WebSocket("ws://localhost:1");

@@ -10,9 +10,8 @@
  * every value native code can produce (the constructor's `prototype` is an
  * object no value's prototype chain reaches), and constructing or calling it
  * throws the SC2020 fence its direct use reports — native code can never
- * produce an instance. Reads that ARE a use (`new WebSocket(url)`,
- * `FormData()`) keep the compile fence, which a JavaScript source defers to
- * exactly that throw.
+ * produce an instance. Reads that ARE a use (`new FormData()`) keep the
+ * compile fence, which a JavaScript source defers to exactly that throw.
  *
  * The constructor is a zero-parameter closure whose function is marked
  * `ownsPrototype`: the runtime gives every such function its own

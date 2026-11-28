@@ -44,7 +44,6 @@ export const NODE_GLOBALS_WITHOUT_NATIVE: ReadonlySet<string> = new Set([
   "FormData",
   "Navigator",
   "Performance",
-  "WebSocket",
 ]);
 
 /** Whether the read is the callee of a call or `new` — the one use a listed

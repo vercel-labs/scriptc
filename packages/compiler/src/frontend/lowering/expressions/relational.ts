@@ -55,6 +55,7 @@ import { nodeThrowExpr, numLit, strLit, varRef } from "../../../ir/build.js";
 import { lowerDisposableStackInstanceOf } from "../builtins/disposable-stack.js";
 import { lowerAbortSignalInstanceOf } from "../builtins/abort-signal.js";
 import { lowerUrlPatternInstanceOf } from "../builtins/urlpattern.js";
+import { lowerWebSocketInstanceOf } from "../builtins/websocket.js";
 import { lowerBlobInstanceof } from "../builtins/blob.js";
 import { lowerReadlineInstanceof } from "../builtins/readline.js";
 import { lowerKeyObjectInstanceof } from "../builtins/key-object.js";
@@ -465,6 +466,9 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
   // `value instanceof URLPattern`: only the runtime pattern handles are.
   const urlPatternTest = lowerUrlPatternInstanceOf(lowerer, expr);
   if (urlPatternTest !== null) return urlPatternTest;
+  // `value instanceof WebSocket`: only the runtime's socket handles are.
+  const webSocketTest = lowerWebSocketInstanceOf(lowerer, expr);
+  if (webSocketTest !== null) return webSocketTest;
   // A listed Node global's value is a constructor native code never created
   // an instance from, so `x instanceof X` is false for every value — an
   // ordinary function's [[Prototype]] included, which the generic walk

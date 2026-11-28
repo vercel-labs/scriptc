@@ -215,6 +215,8 @@ void scr_http_set_h2_upgrade_hook(void (*hook)(void *h2ctx, ScrClosure *cb, void
 
 /* ── the request handle ──────────────────────────────────────────────── */
 
+typedef struct ScrHttpBodyBridge ScrHttpBodyBridge;
+
 struct ScrHttpReq {
   size_t rc;
   /* The AsyncLocalStorage context of its creation (+1, NULL outside a
@@ -254,6 +256,9 @@ struct ScrHttpReq {
   ScrHttpRes *pipe_res;
   struct ScrHttpClientReq *pipe_client;
   ScrNetSocket *pipe_sock;
+  /* the for-await bridge Readable (borrowed; NULL until the body is
+   * iterated) — see scr_http_req_body_stream */
+  struct ScrHttpBodyBridge *body_bridge;
   bool ended; /* body complete (or connection dead): data/end drop */
   bool end_consumed; /* 'end' fired on a body read through data listeners or a pipe */
   bool enc_utf8; /* setEncoding('utf8'): 'data' delivers strings */
@@ -284,6 +289,11 @@ struct ScrHttpReq {
   bool received;  /* the whole body arrived (req.complete) */
   bool body_seen; /* body bytes arrived */
   bool destroyed; /* req.destroy()/the teardown ran — req.destroyed */
+  /* the program called destroy(): Node's IncomingMessage._destroy settles a
+   * pending iterator as a stream destroy without an error, which rejects
+   * with ERR_STREAM_PREMATURE_CLOSE — a peer teardown rejects with
+   * "aborted" (ECONNRESET) instead */
+  bool local_destroy;
   /* req.headers as untyped code reads it: built on the first read and
    * kept (+1), so writes to it persist as on Node's cached object */
   struct ScrDyn *headers_view;
@@ -854,6 +864,8 @@ ScrNetSocket *scr_http_req_socket(ScrHttpReq *r) {
  * drain rides it; the parser's deliver and the cork flush live below
  * their callers too */
 static void scr_http_emit_push(int kind, void *h /*moves +1*/);
+static void scr_http_req_mark_destroyed(ScrHttpReq *r);
+static void scr_http_req_teardown_transport(ScrHttpReq *r);
 static void scr_http_req_deliver(ScrHttpReq *r, const char *data, size_t n);
 static void scr_http_res_cork_flush(ScrHttpRes *r);
 static void scr_http_res_drop_finish_box(ScrHttpRes *res);
@@ -862,6 +874,7 @@ static void scr_http_res_drop_box(ScrBox **slot);
 static void *scr_http_ptr_keep_v(void *p);
 static void scr_http_ptr_drop_v(void *p);
 #define SCR_HTTP_EMIT_REQ_DRAIN_K 6
+#define SCR_HTTP_EMIT_REQ_ITER_DESTROY_K 16
 
 static bool scr_http_req_holding(const ScrHttpReq *r) {
   return r->paused || (r->gated && !r->flowing);
@@ -957,7 +970,13 @@ void scr_http_req_unpipe_sock(ScrHttpReq *r, ScrNetSocket *dst /*borrowed*/) {
 
 /* resume(): releases what pause() or the initial paused state held. */
 void scr_http_req_resume(ScrHttpReq *r) {
-  if (!scr_http_req_holding(r)) return;
+  if (!scr_http_req_holding(r)) {
+    /* Node's resume() starts the flow even before a body chunk arrives (a
+     * client response whose callback resumes immediately): later chunks are
+     * delivered, or discarded when nothing consumes them, and 'end' fires. */
+    if (r->status >= 0 && !r->ended) scr_http_req_flow(r);
+    return;
+  }
   scr_http_req_flow(r);
 }
 
@@ -1004,6 +1023,185 @@ void scr_http_req_set_timeout_plain(ScrHttpReq *r, double ms) {
   scr_http_req_set_timeout(r, ms, NULL);
 }
 
+/* ── for-await over an IncomingMessage ─────────────────────────────────
+ * The body is a push stream (data/end listeners), while the compiled
+ * `for await (const chunk of req)` consumes a Readable's pull protocol.
+ * A bridge Readable is created on demand: the request pushes each body
+ * chunk into it, a full bridge pauses the request until the bridge's
+ * _read asks for more, and the body's end closes it. The bridge holds
+ * the request (+1), so the request outlives the bridge; the request
+ * keeps only a borrowed pointer, which the bridge's destroy clears. */
+struct ScrHttpBodyBridge {
+  int rc;
+  ScrHttpReq *req;   /* +1 */
+  ScrStream *stream; /* borrowed while the bridge lives */
+  bool destroyed;
+};
+
+static ScrHttpBodyBridge *scr_http_body_bridge_retain(ScrHttpBodyBridge *b) {
+  b->rc++;
+  return b;
+}
+
+static void scr_http_body_bridge_release(ScrHttpBodyBridge *b) {
+  if (--b->rc > 0) return;
+  if (b->req != NULL) scr_http_req_release(b->req);
+  free(b);
+}
+
+static void *scr_http_body_bridge_retain_v(void *p) { return scr_http_body_bridge_retain(p); }
+static void scr_http_body_bridge_release_v(void *p) { scr_http_body_bridge_release(p); }
+
+/* The bridge Readable's _read: the consumer drained below the high-water
+ * mark, so a paused request delivers its held body again. */
+static void scr_http_body_bridge_read_inv(ScrClosure *cb, ScrStream *s, double size) {
+  (void)s;
+  (void)size;
+  ScrHttpBodyBridge *b = scr_box_get_ref(cb->caps[0]);
+  if (b->req != NULL && !b->destroyed) scr_http_req_resume(b->req);
+  scr_http_body_bridge_release(b);
+}
+
+/* Whether an error carries `code`. */
+static bool scr_http_error_code_is(const ScrError *err, const char *code) {
+  size_t len = strlen(code);
+  return err->code != NULL && err->code->len == len && memcmp(err->code->data, code, len) == 0;
+}
+
+/* Node's ConnResetException for a message the peer tore down ("aborted",
+ * code ECONNRESET): the error an IncomingMessage is destroyed with, which
+ * its async iterator rejects with instead of reaching the end. */
+static ScrError *scr_http_req_aborted_error(void) {
+  ScrStr *text = scr_str_new("aborted", 7);
+  ScrError *err = scr_error_new(SCR_ERR_ERROR, text);
+  scr_str_release(text);
+  scr_error_set_code(err, "ECONNRESET");
+  return err;
+}
+
+/* A message the program itself destroyed: its stream is destroyed without an
+ * error before the end, which Node's async iterator reports as the eos
+ * premature close. */
+static ScrError *scr_http_req_premature_close_error(void) {
+  ScrStr *text = scr_str_new("Premature close", 15);
+  ScrError *err = scr_error_new(SCR_ERR_ERROR, text);
+  scr_str_release(text);
+  scr_error_set_code(err, "ERR_STREAM_PREMATURE_CLOSE");
+  return err;
+}
+
+/* The error a torn-down message's iterator rejects with. */
+static ScrError *scr_http_req_abort_error(const ScrHttpReq *r) {
+  return r->local_destroy ? scr_http_req_premature_close_error() : scr_http_req_aborted_error();
+}
+
+/* Settle the for-await bridge with that error: a held body is dropped (Node
+ * discards a destroyed message's buffer) and a parked or later next()
+ * rejects. The error always reaches the iterator, so it must not also be an
+ * unhandled 'error' event on the bridge. */
+static void scr_http_body_bridge_fail(ScrHttpBodyBridge *b /*borrowed*/, const ScrHttpReq *r) {
+  if (b == NULL || b->stream == NULL || b->destroyed) return;
+  ScrStream *s = b->stream;
+  scr_stream_next_error_consumed(s);
+  ScrError *err = scr_http_req_abort_error(r);
+  scr_stream_release(scr_stream_destroy(s, err));
+  scr_error_release(err);
+}
+
+/* The bridge Readable's _destroy: detach from the request. A completed
+ * iteration and an early break both land here. An early break is the
+ * iterator's close (AbortError): Node's iterator return destroys the
+ * IncomingMessage, which destroys its socket, so the request goes with it.
+ * A completed body is left to the response's own teardown. */
+static void scr_http_body_bridge_destroy_inv(ScrClosure *cb, ScrStream *s, ScrError *err) {
+  (void)s;
+  bool iterator_closed = err != NULL && scr_http_error_code_is(err, "ABORT_ERR");
+  ScrHttpBodyBridge *b = scr_box_get_ref(cb->caps[0]);
+  if (!b->destroyed) {
+    b->destroyed = true;
+    b->stream = NULL;
+    if (b->req != NULL) {
+      ScrHttpReq *req = b->req;
+      b->req = NULL;
+      if (req->body_bridge == b) req->body_bridge = NULL;
+      if (iterator_closed && !req->destroyed) {
+        /* The flags and 'aborted' are Node's synchronous destroy() state;
+         * the transport closes a pass later. */
+        scr_http_req_mark_destroyed(req);
+        scr_http_emit_push(SCR_HTTP_EMIT_REQ_ITER_DESTROY_K, scr_http_req_retain(req));
+      }
+      scr_http_req_release(req);
+    }
+  }
+  scr_http_body_bridge_release(b);
+  /* a native _destroy answers its callback: the error/close ticks settle a
+   * parked iterator and report the destroyed state. destroy_done owns the
+   * error it is handed. */
+  scr_stream_destroy_done(s, err ? scr_error_retain(err) : NULL);
+}
+
+static ScrClosure *scr_http_body_bridge_closure(void *fn) {
+  ScrClosure *c = scr_closure_new(fn, 1);
+  c->caps[0] = scr_box_new_obj(scr_http_body_bridge_retain_v, scr_http_body_bridge_release_v, NULL);
+  return c;
+}
+
+/* req[Symbol.asyncIterator](): the Readable the compiled for-await loop
+ * consumes. The first call creates the bridge and starts the body flow;
+ * a request whose body already completed answers an ended Readable. */
+ScrStream *scr_http_req_body_stream(ScrHttpReq *r) {
+  if (r->body_bridge != NULL) return scr_stream_retain(r->body_bridge->stream);
+  ScrHttpBodyBridge *b = calloc(1, sizeof *b);
+  if (!b) scr_http_oom();
+  b->req = scr_http_req_retain(r);
+  ScrClosure *read = scr_http_body_bridge_closure((void *)&scr_http_body_bridge_read_inv);
+  ScrClosure *destroy = scr_http_body_bridge_closure((void *)&scr_http_body_bridge_destroy_inv);
+  scr_box_set_ref(read->caps[0], scr_http_body_bridge_retain(b));
+  scr_box_set_ref(destroy->caps[0], scr_http_body_bridge_retain(b));
+  ScrStream *s = scr_stream_new_readable(-1, true, false, read,
+                                         (ScrStreamReadInv)&scr_http_body_bridge_read_inv, destroy,
+                                         (ScrStreamErrInv)&scr_http_body_bridge_destroy_inv);
+  b->stream = s;
+  r->body_bridge = b;
+  if (r->enc_utf8) {
+    /* setEncoding('utf8'): the iterator's chunks are strings, Node's
+     * readable's encoded mode (setEncoding answers the receiver +1) */
+    ScrStr *enc = scr_str_new("utf8", 4);
+    ScrStream *chained = scr_stream_set_encoding(s, enc);
+    scr_stream_release(chained);
+    scr_str_release(enc);
+  }
+  if (r->aborted) {
+    /* The message was torn down before its body completed; Node discards the
+     * bytes it held. The iterator settles as the message's stream does: an
+     * h2 compat request whose stream reset or whose session went away
+     * completes, while an HTTP/1 message destroyed by the peer rejects with
+     * "aborted" (ECONNRESET) and one the program destroyed itself with the
+     * stream's premature close. */
+    free(r->pend);
+    r->pend = NULL;
+    r->pend_len = r->pend_cap = 0;
+    r->end_pending = false;
+    if (r->http2 && !r->local_destroy) {
+      scr_stream_push_null(s);
+    } else {
+      scr_http_body_bridge_fail(b, r);
+    }
+  } else if (r->pend_len > 0 || r->end_pending) {
+    /* The body bytes are held for a consumer, and the response may already
+     * have closed: hand the held body to the iterator, as Node yields the
+     * buffered chunks, instead of ending it empty. */
+    scr_http_req_flow(r);
+  } else if (r->ended || r->destroyed || r->close_emitted) {
+    scr_stream_push_null(s);
+  } else {
+    scr_http_req_consume(r);
+  }
+  /* the constructor's +1 is the caller's reference; the bridge keeps only a
+   * borrowed pointer */
+  return s;
+}
+
 bool scr_http_req_destroyed_flag(ScrHttpReq *r) { return r->destroyed; }
 bool scr_http_req_readable(ScrHttpReq *r) { return !r->ended && !r->destroyed; }
 
@@ -1011,16 +1209,17 @@ bool scr_http_req_readable(ScrHttpReq *r) { return !r->ended && !r->destroyed; }
  * events flow through the socket's native hooks like a peer close. */
 static void scr_http_queue_req_close(ScrHttpReq *req);
 
-void scr_http_req_destroy(ScrHttpReq *r) {
-  /* Abort listeners run user code: hold the request across the abort and the
-   * teardown so a listener that destroys the connection cannot free it while
-   * this call still reads its fields. */
-  scr_http_req_retain(r);
+/* The synchronous half of destroy(): the flags, the 'aborted' event and the
+ * signal, which Node reports before destroy() returns. The transport goes
+ * separately, so a caller can close it a pass later (the iterator's early
+ * return lets the response's end() run first). */
+static void scr_http_req_mark_destroyed(ScrHttpReq *r) {
+  if (r->destroyed) return;
   r->destroyed = true;
   /* Node's _destroy: an unfinished message is reported 'aborted' and has
    * its signal aborted before destroy() returns, in that order — the
    * 'aborted' listeners run with the signal still unaborted, then the
-   * signal's abort listeners run. The socket teardown follows. */
+   * signal's abort listeners run. */
   if (!r->received || !r->ended) {
     if (!r->aborted) {
       r->aborted = true;
@@ -1029,9 +1228,13 @@ void scr_http_req_destroy(ScrHttpReq *r) {
     }
     scr_http_req_abort_signal(r);
   }
+}
+
+/* The transport half: the h2 stream or the socket, whichever backs the
+ * message. */
+static void scr_http_req_teardown_transport(ScrHttpReq *r) {
   if (r->h2_stream != NULL) {
     scr_http_h2_ops->destroy(r->h2_stream);
-    scr_http_req_release(r);
     return;
   }
   /* Node's order for a destroyed request: 'aborted', then the request's
@@ -1039,6 +1242,16 @@ void scr_http_req_destroy(ScrHttpReq *r) {
    * queued here, before the socket teardown queues the response's. */
   scr_http_queue_req_close(r);
   if (r->sock) scr_net_sock_destroy(r->sock);
+}
+
+void scr_http_req_destroy(ScrHttpReq *r) {
+  /* Abort listeners run user code: hold the request across the abort and the
+   * teardown so a listener that destroys the connection cannot free it while
+   * this call still reads its fields. */
+  scr_http_req_retain(r);
+  r->local_destroy = true;
+  scr_http_req_mark_destroyed(r);
+  scr_http_req_teardown_transport(r);
   scr_http_req_release(r);
 }
 
@@ -1103,6 +1316,17 @@ static void scr_http_req_finish(ScrHttpReq *r, bool fire) {
   }
   r->ended = true;
   scr_http_req_update_hold(r);
+  if (r->body_bridge != NULL && r->body_bridge->stream != NULL) {
+    if (!fire && r->aborted) {
+      /* The body never completed: Node's IncomingMessage was destroyed (a
+       * peer teardown with "aborted"/ECONNRESET, the program's own destroy()
+       * with the stream's premature close), so the iterator rejects instead
+       * of reading a clean EOF, and bytes still held for it are dropped. */
+      scr_http_body_bridge_fail(r->body_bridge, r);
+    } else {
+      scr_stream_push_null(r->body_bridge->stream);
+    }
+  }
   r->end_consumed = fire && (r->data_ls.n > 0 || r->pipe_res || r->pipe_client || r->pipe_sock);
   if (fire) scr_net_fire0_this(&r->end_ls, r, SCR_DYNH_HTTP_REQ);
   scr_net_ls_drop(&r->data_ls);
@@ -3700,7 +3924,11 @@ enum {
   SCR_HTTP_EMIT_CLIENT_WAE = 12, /* ScrHttpClientReq: a write after end() */
   SCR_HTTP_EMIT_CLIENT_WCB = 13, /* ScrHttpClientReq: write(chunk, cb) callbacks */
   SCR_HTTP_EMIT_CLIENT_WAE_CB = 14, /* ScrHttpWaeCb: the late write callback, ahead of WAE */
-  SCR_HTTP_EMIT_CLIENT_DRAIN = 15 /* ScrHttpClientReq: 'drain', off the write stack */
+  SCR_HTTP_EMIT_CLIENT_DRAIN = 15, /* ScrHttpClientReq: 'drain', off the write stack */
+  /* The iterator's early return destroys the message (Node's iterator
+   * return destroys its stream); off the returning stack so code after the
+   * loop, such as the response's end(), still runs first. */
+  SCR_HTTP_EMIT_REQ_ITER_DESTROY = SCR_HTTP_EMIT_REQ_ITER_DESTROY_K /* ScrHttpReq */
 };
 
 typedef struct {
@@ -3773,6 +4001,7 @@ static void scr_http_emit_release(ScrHttpEmit *e) {
   case SCR_HTTP_EMIT_RES_FINISH: scr_http_res_release((ScrHttpRes *)e->h); break;
   case SCR_HTTP_EMIT_REQ_CLOSE:
   case SCR_HTTP_EMIT_REQ_DRAIN:
+  case SCR_HTTP_EMIT_REQ_ITER_DESTROY:
   case SCR_HTTP_EMIT_REQ_ABORTED: scr_http_req_release((ScrHttpReq *)e->h); break;
   case SCR_HTTP_EMIT_CLIENT_CLOSE:
   case SCR_HTTP_EMIT_CLIENT_SOCKET:
@@ -3972,6 +4201,7 @@ static ScrAlsCtx *scr_http_emit_ctx(const ScrHttpEmit *e) {
   case SCR_HTTP_EMIT_RES_WCB: return ((ScrHttpRes *)e->h)->als;
   case SCR_HTTP_EMIT_REQ_CLOSE:
   case SCR_HTTP_EMIT_REQ_DRAIN:
+  case SCR_HTTP_EMIT_REQ_ITER_DESTROY:
   case SCR_HTTP_EMIT_REQ_ABORTED: return ((ScrHttpReq *)e->h)->als;
   case SCR_HTTP_EMIT_CLIENT_WAE_CB: return scr_http_client_ctx(((ScrHttpWaeCb *)e->h)->c);
   default: return scr_http_client_ctx((struct ScrHttpClientReq *)e->h);
@@ -4174,6 +4404,10 @@ static void scr_http_proto_sweep(void) {
           scr_http_req_finish(req, true);
         }
       }
+      break;
+    }
+    case SCR_HTTP_EMIT_REQ_ITER_DESTROY: {
+      scr_http_req_teardown_transport((ScrHttpReq *)e.h);
       break;
     }
     case SCR_HTTP_EMIT_REQ_ABORTED: {
@@ -5373,7 +5607,18 @@ static void scr_http_req_deliver(ScrHttpReq *r, const char *data, size_t n) {
     return;
   }
   bool piped = r->pipe_res != NULL || r->pipe_client != NULL || r->pipe_sock != NULL;
-  if (r->data_ls.n == 0 && !piped) {
+  if (r->data_ls.n == 0 && !piped && r->body_bridge == NULL) {
+    if (!r->flowing && r->status >= 0) {
+      /* A client response starts paused, like Node's IncomingMessage: held
+       * body bytes wait for a consumer (a data listener, a pipe or a
+       * for-await loop) instead of being discarded, so a consumer attached
+       * a turn later reads the whole body. resume() sets flowing, and the
+       * discard below is the path it takes. Re-entering deliver buffers
+       * through the holding branch above. */
+      r->gated = true;
+      scr_http_req_deliver(r, data, n);
+      return;
+    }
     /* nobody reads this body: the bytes are discarded, so their receive
      * credit returns now rather than stalling the peer's window */
     scr_http_req_h2_consume(r, n);
@@ -5396,6 +5641,13 @@ static void scr_http_req_deliver(ScrHttpReq *r, const char *data, size_t n) {
     free(snap);
   }
   if (!scr_exc_pending()) {
+    if (r->body_bridge != NULL && r->body_bridge->stream != NULL) {
+      /* the for-await bridge: a full Readable pauses the request, and the
+       * bridge's _read resumes it once the consumer drained. An encoded
+       * bridge (req.setEncoding) decodes the bytes itself, so a multi-byte
+       * character split across body slices stays whole. */
+      if (!scr_stream_push(r->body_bridge->stream, chunk)) scr_http_req_pause(r);
+    }
     if (r->pipe_res) scr_http_res_write_bytes(r->pipe_res, chunk);
     if (r->pipe_client) scr_http_client_write_bytes(r->pipe_client, chunk);
     if (r->pipe_sock) scr_net_sock_write_bytes(r->pipe_sock, chunk);
@@ -6779,12 +7031,48 @@ bool scr_http_req_complete(ScrHttpReq *r) {
  * aborted so its signal and flag are right from that moment, and this is
  * the event that reports the abort the destroy started. The listener list
  * drops after the first fire, so a repeat call emits nothing. */
-void scr_http_h2_req_aborted(ScrHttpReq *r) {
+/* A body bridge whose message was reset: the compat request's iterator ends
+ * the way Node's does for a stream reset (the readable completes). */
+void scr_http_h2_req_body_end(ScrHttpReq *r) {
+  if (r->body_bridge == NULL || r->body_bridge->stream == NULL) return;
+  if (r->body_bridge->destroyed) return;
+  scr_stream_push_null(r->body_bridge->stream);
+}
+
+/* A body bridge whose session went away under it: Node's stream iterator
+ * rejects with ERR_STREAM_PREMATURE_CLOSE ("Premature close"), which also
+ * releases the request the bridge holds. */
+void scr_http_h2_req_body_premature_close(ScrHttpReq *r) {
+  ScrHttpBodyBridge *b = r->body_bridge;
+  if (b == NULL || b->stream == NULL || b->destroyed || r->ended) return;
+  scr_stream_next_error_consumed(b->stream);
+  ScrError *err = scr_http_req_premature_close_error();
+  scr_stream_release(scr_stream_destroy(b->stream, err));
+  scr_error_release(err);
+}
+
+/* 'aborted' on a message whose body did not complete: the flag, then its
+ * listeners, then the message's signal (Node's _destroy order). The caller
+ * decides what happens to a body iterator. */
+static void scr_http_req_fire_aborted(ScrHttpReq *r) {
   if (r->close_emitted) return;
   r->aborted = true;
   scr_net_fire0_this(&r->aborted_ls, r, SCR_DYNH_HTTP_REQ);
   scr_net_ls_drop(&r->aborted_ls);
   scr_http_req_abort_signal(r);
+}
+
+void scr_http_h2_req_aborted(ScrHttpReq *r) {
+  if (r->close_emitted) return;
+  /* A message the PROGRAM destroyed rejects its iterator with the stream's
+   * premature close (Node's eos on a destroyed stream); a peer reset or
+   * session loss completes the readable, as Node's stream reset does. */
+  if (r->local_destroy) {
+    scr_http_body_bridge_fail(r->body_bridge, r);
+  } else {
+    scr_http_h2_req_body_end(r);
+  }
+  scr_http_req_fire_aborted(r);
 }
 
 void scr_http_h2_req_close(ScrHttpReq *r) { scr_http_queue_req_close(r); }
@@ -8975,9 +9263,15 @@ static void scr_http_client_response_done(ScrHttpConn *conn) {
 static void scr_http_client_settle_response(ScrHttpConn *conn) {
   ScrHttpReq *res = conn->req;
   if (res == NULL) return;
-  scr_http_h2_req_aborted(res);
+  /* HTTP/1 response: 'aborted' now; the body iterator is settled with the
+   * destroy error by finish() below, not completed (an h2 reset completes
+   * the compat request's bridge instead, see scr_http_h2_req_aborted). */
+  scr_http_req_fire_aborted(res);
   if (!res->destroyed) scr_http_queue_req_aborted(res);
   scr_http_queue_req_close(res);
+  /* Node's destroy() state: destroyed reads true from the moment the
+   * response is settled, including inside the iterator's rejection. */
+  res->destroyed = true;
   scr_http_req_finish(res, false); /* body never completes */
   conn->req = NULL;
   scr_http_req_release(res);

@@ -24,7 +24,9 @@ const href = pathToFileURL(process.cwd()).href;
 const error = new Error("boom");
 error.stack = `Error: boom\n    at demo (${href}/main.ts:1:1)\n    at other (${href}/x y.js:2:2)`;
 const rendered = util.inspect(error, { colors: true, depth: 0 });
-const marker = root.slice(root.lastIndexOf("/") + 1);
+// The random directory component, whichever separator the platform's tmpdir
+// uses (win32 answers with backslashes).
+const marker = root.split(/[\\/]/).pop() ?? root;
 console.log(rendered.split(marker).join("<TMP>"));
 
 process.chdir(tmpdir());

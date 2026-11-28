@@ -2947,6 +2947,10 @@ static void scr_promise_cb_run(struct ScrPromiseCbWaiter *cb, ScrPromise *src) {
   if (async_tracked) async_scope = scr_async_prom_scope_enter(src);
   if (SCR_PROMISE_IS_REACTION(cb)) {
     scr_promise_reaction_run(cb, src);
+    /* The scope this waiter entered closes with it, as every other branch
+     * here does: an early return left one async-hook scope open per
+     * reaction. */
+    if (async_tracked) scr_async_prom_scope_leave(async_scope);
     return;
   }
   if (cb->all) {

@@ -2,6 +2,14 @@ import type { IrLibFn } from "../builtin-signatures.js";
 
 /** The builtins in the http module decided never to throw. */
 export const httpNeverThrow: readonly IrLibFn[] = [
+  // IncomingMessage's own data properties: a write keeps or replaces a
+  // retained string or a checked value in the request; a read retains what
+  // is stored or answers the immutable undefined. No program code runs.
+  "http.reqSetMethod",
+  "http.reqSetUrl",
+  "http.reqSetHeaders",
+  "http.reqHasHeadersOverride",
+  "http.reqHeadersOverride",
   // Reads the stored client request header record and answers the value as
   // set; no program code runs.
   "http.clientGetHeaderDyn",

@@ -93,9 +93,11 @@ static bool scr_decl_adopt_plain(const ScrDyn *n, const ScrDyn *capsule, const S
         ScrDynProp e = scr_dyn_obj_prop_at(n, i);
         /* A non-enumerable data property stays one only where the built
          * record keeps a view of its source; a read-only or
-         * non-configurable one has no native form yet. */
-        if (e.accessor) want = "a plain object (this value has accessor properties)";
-        else if (!e.writable || !e.configurable)
+         * non-configurable one has no native form yet. An accessor is kept
+         * through the same source view, which carries its descriptor. */
+        if (e.accessor && !keeps_attributes)
+          want = "a plain object (this value has accessor properties)";
+        else if (!e.accessor && (!e.writable || !e.configurable))
           want = "a plain object (this value has read-only or non-configurable properties)";
         else if (!e.enumerable && !keeps_attributes)
           want = "a plain object (this value has a non-enumerable key its record type cannot keep)";

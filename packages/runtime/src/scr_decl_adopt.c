@@ -89,13 +89,28 @@ static bool scr_decl_adopt_plain(const ScrDyn *n, const ScrDyn *capsule, const S
       want = "a plain object";
     else {
       const bool keeps_attributes = scr_decl_adopt_keeps_attributes(capsule);
+      /* The kept source view marks a declared entry with a data
+       * placeholder and carries an undeclared accessor's descriptor. A
+       * declared accessor has no native field form (the conversion stored
+       * the getter's value once), so adoption refuses it by name. */
+      const ScrDyn *view =
+          keeps_attributes ? scr_record_source_view(capsule->v.typed_ref.ptr) : NULL;
       for (size_t i = 0; i < scr_dyn_obj_count(n) && !want; i++) {
         ScrDynProp e = scr_dyn_obj_prop_at(n, i);
+        bool declared = false;
+        for (size_t k = 0; e.accessor && view && k < scr_dyn_obj_count(view) && !declared; k++) {
+          ScrDynProp v = scr_dyn_obj_prop_at(view, k);
+          declared = !v.accessor && v.key_len == e.key_len &&
+                     memcmp(v.key, e.key, e.key_len) == 0;
+        }
         /* A non-enumerable data property stays one only where the built
          * record keeps a view of its source; a read-only or
          * non-configurable one has no native form yet. An accessor is kept
-         * through the same source view, which carries its descriptor. */
-        if (e.accessor && !keeps_attributes)
+         * through the same source view, which carries its descriptor,
+         * unless the record declares the name. */
+        if (e.accessor && declared)
+          want = "a plain object (this value has a declared accessor property)";
+        else if (e.accessor && !keeps_attributes)
           want = "a plain object (this value has accessor properties)";
         else if (!e.accessor && (!e.writable || !e.configurable))
           want = "a plain object (this value has read-only or non-configurable properties)";

@@ -6189,7 +6189,10 @@ void scr_record_source_note(void *rec, const ScrDyn *src, const char *const *nam
     const ScrDynProp entry_prop = scr_dyn_obj_prop_at(src, i);
     const ScrDynProp *entry = &entry_prop;
     size_t index = scr_record_source_index(&probe, entry->key, entry->key_len);
-    keep = index == count || index < next || !entry->enumerable;
+    /* A declared accessor has no native field form: the record keeps the
+     * source so the conversion can tell adoption to refuse it. */
+    keep = index == count || index < next || !entry->enumerable ||
+           (entry->accessor && index < count);
     next = index + 1;
   }
   if (!keep) return;

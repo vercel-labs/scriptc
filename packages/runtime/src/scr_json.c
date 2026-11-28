@@ -13178,6 +13178,7 @@ static ScrDyn *scr_dyn_symbol_key_get_receiver(const ScrDyn *value, const ScrDyn
      * property the program installed, a class method or an accessor wins,
      * as on any object. */
     if (result != NULL && !scr_exc_pending() && result->kind == SCR_DYN_UNDEF &&
+        scr_dyn_symbol_entry(view, key, true) == NULL &&
         scr_stream_ref_hooks.symbol != NULL && scr_stream_ref_hooks.is_stream != NULL &&
         scr_stream_ref_hooks.is_stream(value->v.typed_ref.ptr)) {
       ScrDyn *member = scr_stream_ref_hooks.symbol(value->v.typed_ref.ptr, key);

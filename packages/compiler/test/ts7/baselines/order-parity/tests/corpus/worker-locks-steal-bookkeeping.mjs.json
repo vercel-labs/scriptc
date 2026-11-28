@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/worker-locks-steal-bookkeeping.mjs"
+ ],
+ "diags": []
+}

@@ -508,6 +508,31 @@ export function emitDynamicExpr(
                 ? host.loadInt32Field(ptr, e.type).name
                 : host.loadField(ptr, type, false)
               : host.loadRecordField(ptr, type, false);
+          // An optional checked-dynamic field whose value is the ABSENT
+          // marker has no own property: the read answers undefined, the
+          // value Node's property read gives, so the marker never reaches
+          // the caller (which would make a destination property absent).
+          if (
+            arm.kind === "record" &&
+            type.kind === "dyn" &&
+            host.recordShape(arm.shapeId).fields.find((f) => f.name === e.field)?.optional === true
+          ) {
+            host.declare(`declare ptr @scr_dyn_undefined()`);
+            host.declare(`declare ptr @scr_dyn_retain_v(ptr)`);
+            const absent = B.tmp();
+            B.line(`${absent} = icmp eq ptr ${v}, ${host.dynAbsentRef()}`);
+            const lAbsent = B.newLabel("ud.absent");
+            const lPresent = B.newLabel("ud.present");
+            B.condBr(absent, lAbsent, lPresent);
+            B.startBlock(lAbsent);
+            const un = B.tmp();
+            const r = B.tmp();
+            B.line(`${un} = call ptr @scr_dyn_undefined()`);
+            B.line(`${r} = call ptr @scr_dyn_retain_v(ptr ${un})`);
+            B.line(`store ptr ${r}, ptr ${slot}`);
+            B.br(join);
+            B.startBlock(lPresent);
+          }
           const value = nullable
             ? host.nullableToOwnedUnion(v, nullable)
             : isRefCounted(e.type)

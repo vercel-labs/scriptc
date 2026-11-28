@@ -1,6 +1,6 @@
 name: Release toolchain
 description: >-
-  The host toolchain a release build of one platform needs (release-build.yml): LLVM and clang, Zig, and the
+  The host toolchain a release build of one platform needs (release-build.yml): LLVM and clang, and the
   Windows LLVM development distribution. The pack and CLI jobs both set it up, so they build with the same tools.
 inputs:
   platform:
@@ -9,9 +9,6 @@ inputs:
   llvm-asset:
     description: The pinned LLVM release archive for Linux platforms
     default: ""
-  use-zig:
-    description: Install the pinned Zig
-    default: "false"
 runs:
   using: composite
   steps:
@@ -35,10 +32,6 @@ runs:
         mv "$RUNNER_TEMP/${{ inputs.llvm-asset }}" "$RUNNER_TEMP/llvm-22.1.8"
         echo "LLVM_DIR=$RUNNER_TEMP/llvm-22.1.8/lib/cmake/llvm" >> "$GITHUB_ENV"
         echo "$RUNNER_TEMP/llvm-22.1.8/bin" >> "$GITHUB_PATH"
-    - uses: vercel-labs/setup-zig@83c1594f26b86da8a9a8ddd9b5ee5f3af0f96943 # v1.0.2
-      if: inputs.use-zig == 'true'
-      with:
-        version: 0.16.0
     # The archive is checked against its pinned digest (scripts/toolchain.sha256) before anything unpacks it.
     - name: Download pinned LLVM development distribution (Windows)
       if: inputs.platform == 'windows-x64'

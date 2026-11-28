@@ -70,6 +70,12 @@ export interface ImportElisionOptions {
   /** `preserveValueImports` (removed in TypeScript 5.5): a binding that names
    * a value stays whether or not the file uses it. */
   preserveValueImports: boolean;
+  /** `experimentalDecorators`: legacy decorator emit. */
+  experimentalDecorators: boolean;
+  /** `emitDecoratorMetadata`: the legacy emit serializes design types, and
+   * a class a serialized type names is a VALUE reference — tsc marks that
+   * alias referenced (markAliasReferenced), so its import is kept. */
+  emitDecoratorMetadata: boolean;
 }
 
 export interface ImportElision {
@@ -599,6 +605,151 @@ function elideCandidates(
     mark(alias, inExport);
   }
 
+  // ---- design-type metadata value references ----
+  // `emitDecoratorMetadata` serializes design types into `__metadata`
+  // arguments, and a class a serialized type names is read as a VALUE
+  // there: tsc marks that alias referenced, so its import stays even when
+  // the name appears only in types. The scan follows the serializer's
+  // shape — a rest parameter's element type, a getter's setter parameters,
+  // and a union only when every constituent serializes alike (otherwise
+  // the emit names Object and references no value).
+  if (options.experimentalDecorators && options.emitDecoratorMetadata)
+    markDecoratorMetadataReferences();
+
+  function markDecoratorMetadataReferences(): void {
+    ts.walkPreorder(sf, (node) => {
+      if (!ts.isClassLikeDeclaration(node)) return;
+      const members = node.members.nodes;
+      const constructor = members.find(
+        (member): member is ts.ConstructorDeclaration =>
+          ts.isConstructorDeclaration(member) && member.body !== undefined,
+      );
+      const classDecorated =
+        decoratorsOf(node).length > 0 ||
+        (constructor !== undefined &&
+          constructor.parameters.nodes.some((parameter) => decoratorsOf(parameter).length > 0));
+      if (classDecorated && constructor !== undefined)
+        for (const parameter of constructor.parameters.nodes) markParameterReferences(parameter);
+      for (const member of members) {
+        const parameters =
+          (member as { parameters?: ts.NodeArray<ts.ParameterDeclaration> }).parameters?.nodes ??
+          [];
+        if (
+          decoratorsOf(member).length === 0 &&
+          !parameters.some((parameter) => decoratorsOf(parameter).length > 0)
+        )
+          continue;
+        if (ts.isPropertyDeclaration(member)) {
+          markTypeReferences(member.type);
+        } else if (ts.isMethodDeclaration(member)) {
+          markTypeReferences(member.type);
+          for (const parameter of member.parameters.nodes) markParameterReferences(parameter);
+        } else if (ts.isGetAccessorDeclaration(member) || ts.isSetAccessorDeclaration(member)) {
+          const setter = members.find(
+            (candidate): candidate is ts.SetAccessorDeclaration =>
+              ts.isSetAccessorDeclaration(candidate) &&
+              candidate.name.getText() === member.name.getText(),
+          );
+          if (setter !== undefined)
+            for (const parameter of setter.parameters.nodes) markParameterReferences(parameter);
+          else if (ts.isGetAccessorDeclaration(member)) markTypeReferences(member.type);
+        }
+      }
+    });
+  }
+
+  function decoratorsOf(node: ts.Node): ts.Decorator[] {
+    return (
+      ((node as { modifiers?: ts.NodeArray<ts.Node> }).modifiers?.nodes ?? []) as ts.Node[]
+    ).filter((modifier): modifier is ts.Decorator => modifier.kind === ts.SyntaxKind.Decorator);
+  }
+
+  /** A parameter's design:paramtypes entry: its annotation, or a rest
+   * parameter's element type (getRestParameterElementType). */
+  function markParameterReferences(parameter: ts.ParameterDeclaration): void {
+    const type = parameter.type;
+    if (parameter.dotDotDotToken === undefined) {
+      markTypeReferences(type);
+      return;
+    }
+    if (type === undefined) return;
+    if (ts.isArrayTypeNode(type)) markTypeReferences(type.elementType);
+    else if (ts.isTypeReferenceNode(type)) {
+      const name = ts.isIdentifier(type.typeName) ? type.typeName.text : null;
+      if ((name === "Array" || name === "ReadonlyArray") && type.typeArguments !== undefined)
+        markTypeReferences(type.typeArguments.nodes[0]);
+    }
+  }
+
+  function markTypeReferences(type: ts.TypeNode | undefined): void {
+    let node = type;
+    while (node !== undefined && ts.isParenthesizedTypeNode(node)) node = node.type;
+    if (node === undefined) return;
+    switch (node.kind) {
+      case ts.SyntaxKind.TypeReference:
+        if (isClassValueReference(node as ts.TypeReferenceNode))
+          markEntityHead((node as ts.TypeReferenceNode).typeName, false);
+        return;
+      case ts.SyntaxKind.TypeOperator:
+        if ((node as ts.TypeOperatorNode).operator === ts.SyntaxKind.ReadonlyKeyword)
+          markTypeReferences((node as ts.TypeOperatorNode).type);
+        return;
+      case ts.SyntaxKind.UnionType:
+      case ts.SyntaxKind.IntersectionType:
+      case ts.SyntaxKind.ConditionalType: {
+        const parts: readonly ts.TypeNode[] =
+          node.kind === ts.SyntaxKind.ConditionalType
+            ? [
+                (node as ts.ConditionalTypeNode).trueType,
+                (node as ts.ConditionalTypeNode).falseType,
+              ]
+            : (node as ts.UnionTypeNode).types.nodes;
+        let name: ts.EntityName | null = null;
+        for (const raw of parts) {
+          let part = raw;
+          while (ts.isParenthesizedTypeNode(part)) part = part.type;
+          if (part.kind === ts.SyntaxKind.NeverKeyword) continue;
+          if (!ts.isTypeReferenceNode(part) || !isClassValueReference(part)) return;
+          if (name === null) name = part.typeName;
+          else if (name.getText() !== part.typeName.getText()) return;
+        }
+        if (name !== null) markEntityHead(name, false);
+        return;
+      }
+      default:
+        return;
+    }
+  }
+
+  /** Whether the type reference names a class VALUE the emit reads: a class
+   * reached through a value import (a type-only import has no run-time
+   * binding; tsc serializes that one as Function). */
+  function isClassValueReference(reference: ts.TypeReferenceNode): boolean {
+    let head: ts.Node = reference.typeName;
+    while (ts.isQualifiedName(head)) head = (head as ts.QualifiedName).left;
+    if (!ts.isIdentifier(head)) return false;
+    const symbol = checker.resolveName(head.text, ALL_MEANINGS, head, false);
+    if (symbol === undefined) return false;
+    if (aliasOf(symbol, head.text) === undefined) return false;
+    if ((symbol.flags & ts.SymbolFlags.Alias) !== 0) {
+      const declaration = symbol.declarations?.[0];
+      if (declaration !== undefined && isTypeOnlyImport(declaration as unknown as ts.Node))
+        return false;
+    }
+    const target = targetOf(symbol);
+    return ((target ?? symbol).flags & ts.SymbolFlags.Class) !== 0;
+  }
+
+  function isTypeOnlyImport(declaration: ts.Node): boolean {
+    let node: ts.Node = declaration;
+    while (ts.isImportSpecifier(node) || ts.isImportClause(node) || ts.isNamespaceImport(node)) {
+      if ((node as { isTypeOnly?: boolean }).isTypeOnly === true) return true;
+      if (node.parent === undefined) break;
+      node = node.parent;
+    }
+    return false;
+  }
+
   // ---- export lists and `export default name` ----
   const droppedExports = new Set<ts.ExportSpecifier>();
   const inlinedExports: string[] = [];
@@ -889,6 +1040,8 @@ export function importElisionOptions(
       unused === 2 ||
       (typeof unused === "string" && /^(?:preserve|error)$/i.test(unused)),
     preserveValueImports: options["preserveValueImports"] === true,
+    experimentalDecorators: options["experimentalDecorators"] === true,
+    emitDecoratorMetadata: options["emitDecoratorMetadata"] === true,
   };
 }
 

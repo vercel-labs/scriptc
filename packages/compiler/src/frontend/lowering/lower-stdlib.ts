@@ -3326,6 +3326,29 @@ export function npmMemberFence(lowerer: Lowerer, access: ts.PropertyAccessExpres
     // that declares the member: a data shape's member is data the program
     // holds, a value shape's member still has nothing to read from.
     const member = lowerer.checker.getSymbolAtLocation(access.name);
+    // A member a package declares inside `declare global` (reflect-metadata's
+    // metadata API on Reflect, for one) is a GLOBAL, not a package value: its
+    // runtime home is the global object the program's own modules mutate, so
+    // it has a representation without the package's implementation.
+    const globalAugmentationMember =
+      member !== undefined &&
+      member.declarations !== undefined &&
+      member.declarations.length > 0 &&
+      member.declarations.every((declaration) => {
+        for (
+          let node: ts.Node | undefined = declaration.parent;
+          node !== undefined;
+          node = node.parent
+        )
+          if (
+            ts.isModuleDeclaration(node) &&
+            ts.isIdentifier(node.name) &&
+            node.name.text === "global"
+          )
+            return true;
+        return false;
+      });
+    if (globalAugmentationMember) return;
     pkg = lowerer.npmPackageOfSymbol(member);
     if (pkg !== null && member && packageMemberIsData(member, lowerer.checker, ctx)) return;
   }

@@ -1077,14 +1077,17 @@ ScrDyn *scr_fs_lstat_sync_dyn(ScrStr *path, const ScrDyn *options) {
  * the snapshot handle the promise form fulfills with. bigint selects the
  * member table at the reads (the call's own type names it), and a suppressed
  * miss answers NULL with no exception pending, which the promise form
- * fulfills with the absent value. */
+ * fulfills with the absent value. Node's promise lstat does NOT read
+ * throwIfNoEntry: a missing entry rejects even with false, so the flag is
+ * only read for stat. */
 ScrStats *scr_fs_stat_opts(ScrStr *path, const ScrDyn *options, bool no_follow) {
   (void)scr_fs_stat_bigint_member(options);
   if (scr_exc_pending()) return NULL;
+  if (no_follow) return scr_fs_stat_probe(path, true, true);
   bool ok;
   bool throws = scr_fs_stat_throws_member(options, &ok);
   if (!ok) return NULL;
-  return scr_fs_stat_probe(path, no_follow, throws);
+  return scr_fs_stat_probe(path, false, throws);
 }
 
 /* fstatSync(fd, options): an open descriptor cannot miss, so Node passes the

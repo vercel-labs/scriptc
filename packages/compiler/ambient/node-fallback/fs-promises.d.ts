@@ -242,12 +242,22 @@ declare module "fs/promises" {
   ): Promise<import("node:fs").BigIntStats | undefined>;
   export function stat(
     path: string | URL,
-    options?: import("node:fs").StatPromiseOptions & { bigint?: false },
+    options?: import("node:fs").StatPromiseOptions & { bigint?: false; throwIfNoEntry?: true },
   ): Promise<import("node:fs").Stats>;
   export function stat(
     path: string | URL,
-    options: import("node:fs").StatPromiseOptions & { bigint: true },
+    options: import("node:fs").StatPromiseOptions & { bigint: true; throwIfNoEntry?: true },
   ): Promise<import("node:fs").BigIntStats>;
+  /* A throwIfNoEntry the checker cannot pin: false can suppress a missing
+   * entry, so the result carries the undefined arm. */
+  export function stat(
+    path: string | URL,
+    options: import("node:fs").StatPromiseOptions & { bigint?: false },
+  ): Promise<import("node:fs").Stats | undefined>;
+  export function stat(
+    path: string | URL,
+    options: import("node:fs").StatPromiseOptions & { bigint: true },
+  ): Promise<import("node:fs").BigIntStats | undefined>;
   export function stat(
     path: string | URL,
     options?: import("node:fs").StatPromiseOptions,
@@ -265,15 +275,9 @@ declare module "fs/promises" {
     options?: import("node:fs").StatFsOptions,
   ): Promise<import("node:fs").StatsFs | import("node:fs").BigIntStatsFs>;
   export function realpath(path: string | URL): Promise<string>;
+  /* Node's promise lstat never reads throwIfNoEntry: a missing entry always
+   * rejects, so the result never carries the undefined arm. */
   export function lstat(path: string | URL): Promise<import("node:fs").Stats>;
-  export function lstat(
-    path: string | URL,
-    options: import("node:fs").StatPromiseOptions & { bigint?: false; throwIfNoEntry: false },
-  ): Promise<import("node:fs").Stats | undefined>;
-  export function lstat(
-    path: string | URL,
-    options: import("node:fs").StatPromiseOptions & { bigint: true; throwIfNoEntry: false },
-  ): Promise<import("node:fs").BigIntStats | undefined>;
   export function lstat(
     path: string | URL,
     options?: import("node:fs").StatPromiseOptions & { bigint?: false },
@@ -285,7 +289,7 @@ declare module "fs/promises" {
   export function lstat(
     path: string | URL,
     options?: import("node:fs").StatPromiseOptions,
-  ): Promise<import("node:fs").Stats | import("node:fs").BigIntStats | undefined>;
+  ): Promise<import("node:fs").Stats | import("node:fs").BigIntStats>;
   export function unlink(path: string | URL): Promise<void>;
   export function chmod(path: string | URL, mode: number): Promise<void>;
   export function chown(path: string | URL, uid: number, gid: number): Promise<void>;

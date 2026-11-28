@@ -19,6 +19,12 @@
  },
  {
   "file": "scr_async.c",
+  "function": "scr_promise_race_dyn_entry",
+  "message": "Promise.race over a dynamic entry that holds a thenable is not supported yet",
+  "code": "SC1090"
+ },
+ {
+  "file": "scr_async.c",
   "function": "scr_gen_slot_transfer",
   "message": "yield* completing with a value outside the delegating generator's return type is not supported",
   "code": "SC1071"

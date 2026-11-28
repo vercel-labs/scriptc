@@ -13,6 +13,9 @@ export const promiseSignatures = defineLibFnSignatures({
    * way once the combinator fulfills, each entry widened to Promise<void>
    * and read at the type it was built with (program-dependent). */
   "promise.fulfilledValue": { argTypes: [null], result: VOID },
+  /** A dynamic Promise.race entry: the promise a settled entry fulfills (the
+   * call's own type), or the named refusal for a thenable. */
+  "promise.raceDynEntry": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
   /** Promise.all's tuple form as a value: the entries (each widened to
    * Promise<void>) join the runtime combinator, and when it fulfills the
    * function reads the fulfilled entries into the tuple inside that

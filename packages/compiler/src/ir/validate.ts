@@ -4447,7 +4447,9 @@ function validateFunction(
       e.fn === "http.serverListeners" ||
       // The typed encodeInto answers the call site's own { read, written }
       // record shape.
-      e.fn === "text.encodeIntoStr";
+      e.fn === "text.encodeIntoStr" ||
+      // A dynamic race entry answers its call site's promise type.
+      e.fn === "promise.raceDynEntry";
     if (!variableResult && !typeEquals(e.type, sig.result)) {
       // The stat calls answer the SAME snapshot under either member table:
       // their `bigint` option picks BigIntStats' reads over Stats'. The

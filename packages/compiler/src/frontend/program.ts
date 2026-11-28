@@ -271,6 +271,18 @@ function libraryName(entry: string): string {
   return lower.startsWith("lib.") && lower.endsWith(".d.ts") ? lower.slice(4, -5) : lower;
 }
 
+/** The libraries tsc's default `<target>.full` set adds beyond scriptc's
+ * own: the DOM and host libraries. Their names are the only part of the
+ * project's type world the preflight gate needs; the ES-year part is
+ * already in scriptc's fixed set (projectOnlyLibraries filters it). */
+const DEFAULT_PROJECT_LIBRARIES: readonly string[] = [
+  "lib.dom.d.ts",
+  "lib.webworker.importscripts.d.ts",
+  "lib.scripthost.d.ts",
+  "lib.dom.iterable.d.ts",
+  "lib.dom.asynciterable.d.ts",
+];
+
 /** The libraries FORCED_OPTIONS.lib already holds: ES2025 with every
  * earlier year and their slices (each year's library includes the one
  * before it), the decorator declarations ES5 includes, and the three
@@ -581,12 +593,18 @@ function adoptProjectConfig7(
     parsed.options["moduleResolution"] === ts.ModuleResolutionKind.Node10 ||
     (parsed.options["moduleResolution"] === undefined &&
       parsed.options["module"] === ts.ModuleKind.CommonJS);
-  // The project's own library selection, kept only to explain errors: the
-  // checker always uses scriptc's fixed library set (FORCED_OPTIONS).
+  // The project's effective library selection, kept only to explain errors:
+  // the checker always uses scriptc's fixed library set (FORCED_OPTIONS),
+  // while the preflight gate's library world (projectOnlyLibraries) loads
+  // what the project's own tsc would. A tsconfig that names no `lib` gets
+  // tsc's default, whose DOM and host libraries are the ones scriptc's set
+  // lacks; without them every `window`/`document` use was a hard SC0001
+  // instead of the "value throws at run time" opinion Node's behaviour
+  // warrants.
   const rawLib = parsed.options["lib"];
   const projectLib = Array.isArray(rawLib)
     ? rawLib.filter((entry): entry is string => typeof entry === "string")
-    : undefined;
+    : DEFAULT_PROJECT_LIBRARIES;
   return {
     configFile,
     options: { ...BASE_OPTIONS, ...adopted, ...FORCED_OPTIONS },

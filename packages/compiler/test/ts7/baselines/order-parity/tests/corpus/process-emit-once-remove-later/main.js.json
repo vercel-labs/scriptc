@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/process-emit-once-remove-later/main.js"
+ ],
+ "diags": []
+}

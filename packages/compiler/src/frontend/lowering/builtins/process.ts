@@ -2935,15 +2935,6 @@ export function lowerProcessMethodCall(
   // family (Node's emit prints the default report as well), and the
   // rejection families (their listeners take a promise).
   if (member === "emit") {
-    // Island code's listeners live in Node's own `process`; the native
-    // registries are not the ones an emit would have to reach.
-    if (lowerer.nodeIslands !== null) {
-      lowerer.unsupported(
-        "SC1090",
-        call,
-        "process.emit in a program with Node islands (the listeners belong to Node's process)",
-      );
-    }
     const eventArg = call.arguments.nodes[0];
     // Node answers false for a missing event (`process.emit()`).
     if (eventArg === undefined) return boolLit(false, loc);
@@ -2956,6 +2947,17 @@ export function lowerProcessMethodCall(
       );
     }
     const name = eventArg.text;
+    // In a program with Node islands the exception families' listeners
+    // live in Node's own process object, so a native dispatch would miss
+    // them (the stance this branch kept before signals lowered). The signal
+    // family dispatches the native registry the compiler owns.
+    if (lowerer.nodeIslands !== null && !name.startsWith("SIG")) {
+      lowerer.unsupported(
+        "SC1090",
+        call,
+        "process.emit in a program with Node islands (the listeners belong to Node's process)",
+      );
+    }
     if (name === "error") {
       // Node's EventEmitter throws when 'error' is emitted and no 'error'
       // listener is registered, and `process.on("error", ...)` has no
@@ -2988,7 +2990,29 @@ export function lowerProcessMethodCall(
         ? dispatch
         : { kind: "seqExpr", stmts, result: dispatch, type: BOOL, loc };
     }
-    if (UNSUPPORTED_PROCESS_EVENTS.has(name) || name.startsWith("SIG")) {
+    // process.emit('SIG…'): dispatch the signal's registered listeners
+    // synchronously, as Node's EventEmitter emit does. A signal listener
+    // takes (name, number) in this runtime and receives no emit arguments,
+    // so extra arguments are refused rather than silently dropped.
+    if (name.startsWith("SIG")) {
+      if (rest.length > 0) {
+        lowerer.unsupported(
+          "SC1090",
+          call,
+          `process.emit('${name}', ...) (a signal listener receives no arguments)`,
+        );
+      }
+      const signal = lowerer.coerceToExpected(lowerer.lowerExpr(eventArg), STRING);
+      if (signal.type.kind !== "string" && signal.type.kind !== "dyn") {
+        lowerer.noLowering("process signal event name that is not a string", eventArg);
+      }
+      const value =
+        signal.type.kind === "string"
+          ? signal
+          : { kind: "dynCheck" as const, value: signal, type: STRING, loc };
+      return { kind: "libCall", fn: "process.emitSignal", args: [value], type: BOOL, loc };
+    }
+    if (UNSUPPORTED_PROCESS_EVENTS.has(name)) {
       lowerer.unsupported(
         "SC1090",
         call,

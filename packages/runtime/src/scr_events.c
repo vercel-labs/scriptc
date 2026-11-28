@@ -85,6 +85,17 @@ void scr_events_set_island_emit(void (*fn)(uint32_t, uint32_t, ScrStr *, int)) {
   scr_island_emit = fn;
 }
 
+/* A `once` registration's wrapper state, shared by the registration and
+ * every dispatch snapshot that copied it, so it outlives a removal in the
+ * middle of a dispatch. `fired` is Node's once-wrapper flag: a snapshot
+ * still calls an entry another listener removed before its turn, and an
+ * entry a nested emit already fired makes the outer snapshot's call a
+ * no-op. */
+typedef struct {
+  size_t refs;
+  bool fired;
+} ScrSigOnce;
+
 typedef struct {
   ScrDyn *cb; /* owned; checked callable */
   ScrStr *name; /* aliases of one signum remain distinct event names */
@@ -93,7 +104,12 @@ typedef struct {
   /* Nonzero: a listener island code added (its cb is undefined); the
    * delivery calls it through the bridge at this position. */
   uint32_t island;
+  ScrSigOnce *onceState; /* NULL unless `once` */
 } ScrSigListener;
+
+static void scr_sig_once_release(ScrSigOnce *state) {
+  if (state != NULL && --state->refs == 0) free(state);
+}
 
 typedef struct ScrSigReg {
   int sig;
@@ -247,7 +263,14 @@ void scr_signal_on(ScrStr *name, ScrDyn *cb, bool once) {
     reg->ls = realloc(reg->ls, reg->cap * sizeof *reg->ls);
     if (!reg->ls) scr_events_oom();
   }
-  reg->ls[reg->n++] = (ScrSigListener){scr_dyn_retain(cb), scr_str_retain(name), once, ++scr_sig_id, 0};
+  ScrSigOnce *onceState = NULL;
+  if (once) {
+    onceState = calloc(1, sizeof *onceState);
+    if (!onceState) scr_events_oom();
+    onceState->refs = 1;
+  }
+  reg->ls[reg->n++] =
+      (ScrSigListener){scr_dyn_retain(cb), scr_str_retain(name), once, ++scr_sig_id, 0, onceState};
 #endif
 }
 
@@ -297,6 +320,7 @@ static void scr_sig_reg_drop(ScrSigReg *reg) {
 static void scr_sig_remove(ScrSigReg *reg, size_t i) {
   scr_dyn_release(reg->ls[i].cb);
   scr_str_release(reg->ls[i].name);
+  scr_sig_once_release(reg->ls[i].onceState);
   memmove(reg->ls + i, reg->ls + i + 1, (reg->n - i - 1) * sizeof *reg->ls);
   if (--reg->n == 0) scr_sig_reg_drop(reg);
 }
@@ -317,6 +341,76 @@ void scr_signal_off(ScrStr *name, ScrDyn *cb) {
       return;
     }
   }
+}
+
+/* process.emit('<signal>'): dispatch the signal's registered listeners
+ * synchronously, in registration order, as EventEmitter's emit does. A
+ * `once` listener leaves the registry before it runs. Answers whether any
+ * listener existed; the default disposition never runs here (Node's emit
+ * delivers the event, not the OS signal). */
+bool scr_process_emit_signal(ScrStr *name) {
+  if (name == NULL) return false;
+  // Node's process listeners belong to the thread's own process object.
+  // scriptc models the main thread's registry, so a worker's manual emit
+  // answers false rather than reading (and racing) the main thread's list.
+  if (!scr_context_is_main()) return false;
+  int sig = scr_signal_from_name(name);
+  if (sig < 0) sig = 0;
+  ScrSigReg *reg = scr_sig_regs;
+  while (reg && reg->sig != sig) reg = reg->next;
+  if (!reg || reg->n == 0) return false;
+  size_t n = reg->n;
+  ScrSigListener *snap = calloc(n, sizeof *snap);
+  if (!snap) scr_events_oom();
+  for (size_t i = 0; i < n; i++) {
+    snap[i] = reg->ls[i];
+    scr_dyn_retain(snap[i].cb);
+    scr_str_retain(snap[i].name);
+    if (snap[i].onceState != NULL) snap[i].onceState->refs++;
+  }
+  for (size_t i = 0; i < n; i++) {
+    if (!scr_exc_pending()) {
+      // Node's once wrapper carries a `fired` flag, not a presence test: a
+      // snapshot still calls an entry another listener removed before its
+      // turn, and an entry a nested emit already fired is a no-op.
+      bool fired = snap[i].once && snap[i].onceState != NULL && snap[i].onceState->fired;
+      if (snap[i].once && !fired) {
+        // The wrapper drops its registration before it runs; a listener
+        // that removed this one already took it out.
+        bool found = false;
+        for (ScrSigReg *r = scr_sig_regs; r; r = r->next) {
+          for (size_t j = 0; j < r->n; j++) {
+            if (r->ls[j].id == snap[i].id) {
+              scr_sig_remove(r, j);
+              found = true;
+              break;
+            }
+          }
+          if (found) break;
+        }
+        if (snap[i].onceState != NULL) snap[i].onceState->fired = true;
+      }
+      if (fired) {
+        scr_dyn_release(snap[i].cb);
+        scr_str_release(snap[i].name);
+        scr_sig_once_release(snap[i].onceState);
+        continue;
+      }
+      if (snap[i].island != 0 && scr_island_emit != NULL) {
+        // Node calls a signal listener with no arguments, and an emit
+        // passes none (a listener's declared parameters read undefined).
+        scr_island_emit(SCR_EVENTS_ISLAND_SIGNAL_EMIT, snap[i].island, snap[i].name, 0);
+      } else {
+        ScrDyn *result = scr_dyn_call(snap[i].cb, NULL, 0, "listener");
+        scr_dyn_release(result);
+      }
+    }
+    scr_dyn_release(snap[i].cb);
+    scr_str_release(snap[i].name);
+    scr_sig_once_release(snap[i].onceState);
+  }
+  free(snap);
+  return true;
 }
 
 /* Island code's signal listeners (scr_node_island.c forwards Node's
@@ -359,7 +453,8 @@ void scr_signal_on_island(ScrStr *name, uint32_t island) {
     if (!reg->ls) scr_events_oom();
   }
   reg->ls[reg->n++] =
-      (ScrSigListener){scr_dyn_retain(scr_dyn_undefined()), scr_str_retain(name), false, ++scr_sig_id, island};
+      (ScrSigListener){scr_dyn_retain(scr_dyn_undefined()), scr_str_retain(name), false, ++scr_sig_id,
+                       island, NULL};
 #endif
 }
 
@@ -391,14 +486,21 @@ static void scr_signals_drain(void) {
       snap[n] = reg->ls[i];
       scr_dyn_retain(snap[n].cb);
       scr_str_retain(snap[n].name);
+      if (snap[n].onceState != NULL) snap[n].onceState->refs++;
       n++;
     }
   }
   for (size_t i = 0; i < n; i++) {
     if (!scr_exc_pending()) {
-      if (snap[i].once) {
+      // Node's once wrapper carries a `fired` flag, not a presence test: a
+      // snapshot still calls an entry another listener removed before its
+      // turn, and an entry a nested emit already fired is a no-op.
+      bool fired = snap[i].once && snap[i].onceState != NULL && snap[i].onceState->fired;
+      if (snap[i].once && !fired) {
+        // The wrapper drops its registration before it runs; a listener
+        // that removed this one already took it out.
+        bool found = false;
         for (ScrSigReg *reg = scr_sig_regs; reg; reg = reg->next) {
-          bool found = false;
           for (size_t j = 0; j < reg->n; j++) {
             if (reg->ls[j].id == snap[i].id) {
               scr_sig_remove(reg, j);
@@ -408,8 +510,17 @@ static void scr_signals_drain(void) {
           }
           if (found) break;
         }
+        if (snap[i].onceState != NULL) snap[i].onceState->fired = true;
+      }
+      if (fired) {
+        scr_dyn_release(snap[i].cb);
+        scr_str_release(snap[i].name);
+        scr_sig_once_release(snap[i].onceState);
+        continue;
       }
       if (snap[i].island != 0 && scr_island_emit != NULL) {
+        // A real delivery carries the signal's name and number, matching
+        // the native adapter below.
         scr_island_emit(SCR_EVENTS_ISLAND_SIGNAL, snap[i].island, snap[i].name,
                         scr_signal_from_name(snap[i].name));
       } else {
@@ -422,6 +533,7 @@ static void scr_signals_drain(void) {
     }
     scr_dyn_release(snap[i].cb);
     scr_str_release(snap[i].name);
+    scr_sig_once_release(snap[i].onceState);
   }
   free(snap);
 }

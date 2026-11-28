@@ -1,6 +1,7 @@
 import * as ts from "./ts7/adapter.js";
 import { bodyReadsArguments } from "./arguments-usage.js";
 import { isNodeModulesPath } from "./resolve.js";
+import { fileWritesBinding } from "./binding-writes.js";
 
 /** Compiler options adopted from the project during preflight. */
 export const ADOPTED_OPTIONS = [
@@ -1120,6 +1121,90 @@ const undefinedAtRunTime = (node: ts.Node, program: ts.Program, depth = 0): bool
   return named.initializer === held && constInitializerOf(held);
 };
 
+/** Whether a void-typed call's callee names a function value this program
+ * compiles with a value-carrying return: a function declaration whose body
+ * returns an expression, or a const bound directly (through parenthesized
+ * aliases) to such a declaration. Null for every other callee, so the
+ * member-call rule below decides those. */
+function namedValuePreservingCallee(program: ts.Program, callee: ts.Node): boolean | null {
+  if (!ts.isIdentifier(callee)) return null;
+  const checker = program.getTypeChecker();
+  const seen = new Set<ts.Symbol>();
+  let node: ts.Node = callee;
+  for (;;) {
+    if (!ts.isIdentifier(node)) return false;
+    let symbol = checker.getSymbolAtLocation(node);
+    if (symbol === undefined || seen.has(symbol)) return false;
+    seen.add(symbol);
+    if ((symbol.flags & ts.SymbolFlags.Alias) !== 0) symbol = checker.getAliasedSymbol(symbol);
+    const decl = symbol.valueDeclaration ?? symbol.declarations?.[0];
+    if (decl === undefined) return false;
+    // A binding the program writes again may hold a function whose void
+    // signature discarded the value (one written into a void-typed slot),
+    // so only an unwritten binding is proof.
+    const written = bindingWritten(program, checker, symbol, decl);
+    if (ts.isFunctionDeclaration(decl))
+      return decl.body !== undefined && bodyReturnsValue(decl) && !written;
+    if (!ts.isVariableDeclaration(decl) || decl.initializer === undefined) return false;
+    const list = decl.parent;
+    if (!ts.isVariableDeclarationList(list) || (list.flags & ts.NodeFlags.Const) === 0)
+      return false;
+    // Only the declaration's own initializer may write the binding.
+    if ((symbol.declarations?.length ?? 0) !== 1 || written) return false;
+    let init = decl.initializer as ts.Expression;
+    while (ts.isParenthesizedExpression(init) || ts.isAsExpression(init))
+      init = (init as { expression: ts.Expression }).expression;
+    if (ts.isArrowFunction(init) || ts.isFunctionExpression(init)) return bodyReturnsValue(init);
+    node = init;
+  }
+}
+
+const bindingWriteCache = new WeakMap<ts.Symbol, boolean>();
+
+/** Whether anything in the binding's declaring file writes it after its
+ * initializer. An import alias is read-only, so only local symbols scan. */
+function bindingWritten(
+  program: ts.Program,
+  checker: ts.TypeChecker,
+  symbol: ts.Symbol,
+  decl: ts.Node,
+): boolean {
+  if ((symbol.flags & ts.SymbolFlags.Alias) !== 0) return false;
+  const cached = bindingWriteCache.get(symbol);
+  if (cached !== undefined) return cached;
+  const written = fileWritesBinding(symbol, ts.getSourceFileOfNode(decl), (ident) =>
+    checker.getSymbolAtLocation(ident),
+  );
+  bindingWriteCache.set(symbol, written);
+  return written;
+}
+
+/** Whether a function body has a return statement with an expression. A
+ * nested function's returns answer that function, not this one. */
+function bodyReturnsValue(decl: ts.SignatureDeclaration): boolean {
+  const body = (decl as ts.SignatureDeclaration & { body?: ts.Node }).body;
+  if (body === undefined) return false;
+  let found = false;
+  const visit = (node: ts.Node): void => {
+    if (found) return;
+    if (ts.isReturnStatement(node) && node.expression !== undefined) {
+      found = true;
+      return;
+    }
+    if (
+      ts.isFunctionDeclaration(node) ||
+      ts.isFunctionExpression(node) ||
+      ts.isArrowFunction(node) ||
+      ts.isMethodDeclaration(node) ||
+      ts.isClassDeclaration(node)
+    )
+      return;
+    ts.forEachChild?.(node, visit);
+  };
+  visit(body);
+  return found;
+}
+
 /** A void-typed truthiness operand whose value Node reads at run time: a
  * call the checker types `void` that the analysis cannot prove answers
  * undefined. The lowering performs the call through the checked-dynamic
@@ -1135,6 +1220,15 @@ export function voidTruthinessNeedsRuntimeValue(node: ts.Node, program: ts.Progr
   // cannot follow the value a `void` signature discards.
   let callee: ts.Node = node.expression;
   while (ts.isParenthesizedExpression(callee)) callee = callee.expression;
+  // A callee that names a function this program compiles keeps the value
+  // its body returns (a declaration with @returns {void} still compiles a
+  // value-carrying return), so reading the call's result through the
+  // checked-dynamic invocation is Node's answer. The trace accepts only a
+  // function declaration, or a const bound directly to one; a function
+  // literal written into a void-typed slot is adopted with that slot's
+  // signature and discards its body value, so it stays refused.
+  const named = namedValuePreservingCallee(program, callee);
+  if (named !== null) return named;
   if (
     (!ts.isPropertyAccessExpression(callee) && !ts.isElementAccessExpression(callee)) ||
     callee.questionDotToken !== undefined

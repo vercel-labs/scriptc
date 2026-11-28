@@ -4966,7 +4966,26 @@ export function lowerFieldRead(lowerer: Lowerer, expr: ts.PropertyAccessExpressi
   }
   const target = lowerer.fieldTarget(expr);
   if (target) return lowerer.fieldGetExpr(target, locOf(expr), expr);
-  if (expr.questionDotToken) return null;
+  if (expr.questionDotToken) {
+    // `tuple?.length` on the chain's narrowed receiver: the same arity
+    // constant the plain read folds. The checker's element list is the
+    // arity, and the chain's guard answers undefined for a nullish receiver.
+    if (expr.name.text === "length") {
+      const type = lowerer.checker.getBaseTypeOfLiteralType(lowerer.typeOf(expr.expression));
+      if (lowerer.checker.isTupleType(type)) {
+        const arity = lowerer.checker.getTypeArguments(type as ts.TypeReference).length;
+        const receiver = lowerer.lowerExpr(expr.expression);
+        return {
+          kind: "seqExpr",
+          stmts: [{ kind: "exprStmt", expr: receiver, loc: locOf(expr.expression) }],
+          result: { kind: "numLit", value: arity, type: F64, loc: locOf(expr) },
+          type: F64,
+          loc: locOf(expr),
+        };
+      }
+    }
+    return null;
+  }
   let receiverIr = lowerer.mapTypeOf(lowerer.typeOf(expr.expression));
   // The readonly-tuple Array.isArray narrow has no directly mappable
   // checker type (`Result & any[]`), but maybeNarrow extracted the tuple

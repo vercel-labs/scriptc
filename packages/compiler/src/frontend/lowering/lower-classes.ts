@@ -42,6 +42,7 @@ import {
 } from "./primitive-throws.js";
 import {
   constructedFromValue,
+  constructedDynValue,
   constructedValue,
   constructorForeignFlag,
   constructorPrimitiveFlag,
@@ -6557,6 +6558,11 @@ export function lowerStaticFieldInits(lowerer: Lowerer, info: ClassInfo): IrStmt
   // generic FAMILIES own their statics and carry no genericInstance).
   const diagsBefore = lowerer.diags.length;
   const sinkMark = lowerer.diagSinkMark();
+  // Static field initializers and static blocks are code of the class
+  // itself: `this` (the class value) and values of the class keep the
+  // class's own context, as in the constructor and methods.
+  const prevClass = lowerer.currentClass;
+  lowerer.currentClass = info;
   try {
     return withInstanceBindings(lowerer, info, () => lowerStaticFieldInitsInner(lowerer, info));
   } catch (error) {
@@ -6572,6 +6578,8 @@ export function lowerStaticFieldInits(lowerer: Lowerer, info: ClassInfo): IrStmt
       if (fence) return [fence];
     }
     return [];
+  } finally {
+    lowerer.currentClass = prevClass;
   }
 }
 
@@ -13650,9 +13658,17 @@ function lowerProgramClassNew(
   const args = lowerer.inheritsBuiltinErrorCtor(info)
     ? lowerer.errorConstructorArgs(expr.arguments?.nodes ?? [], loc, expr)
     : lowerer.completeArgs(expr.arguments?.nodes ?? [], info.ctorParams, loc, expr);
+  // A class whose constructor can answer a foreign object has no static
+  // instance value: the construction answers the checked-dynamic value, so
+  // the foreign object when the constructor set one and the boxed instance
+  // otherwise, as Node does.
+  const construct = (inner: IrExpr): IrExpr =>
+    lowerer.classReturnsForeign(info.def.name)
+      ? constructedDynValue(lowerer, info, inner)
+      : constructedValue(lowerer, info, inner);
   for (let current: ClassInfo | null = info; current; current = current.base) {
     if (current.def.baseValueGlobal)
-      return constructedValue(lowerer, info, {
+      return construct({
         kind: "newValue",
         callee: classValueRef(lowerer, info, expr),
         args,
@@ -13660,7 +13676,7 @@ function lowerProgramClassNew(
         loc,
       });
   }
-  return constructedValue(lowerer, info, {
+  return construct({
     kind: "new",
     className: info.def.name,
     args,

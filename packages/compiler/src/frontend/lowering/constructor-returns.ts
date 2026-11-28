@@ -249,6 +249,36 @@ function ownReturns(body: ts.Node): ts.ReturnStatement[] {
   return out;
 }
 
+/** Whether a class's constructor can answer an object of another kind (a
+ * foreign result), decided WITHOUT mapTypeOf: the constructor plan itself
+ * calls mapTypeOf, so a plan-consulting predicate inside the type mapper
+ * would recurse through a constructor that returns an instance-typed value.
+ * Mirrors constructorReturnPlan's return classification with the checker's
+ * types and syntax only. */
+export function classReturnsForeignObject(lowerer: Lowerer, info: ClassInfo): boolean {
+  const ctor = info.ctor;
+  if (ctor?.body === undefined || info.decl === null || info.localClass !== undefined) return false;
+  if (!isJsSourceFile(ts.getSourceFileOfNode(ctor))) return false;
+  for (const stmt of ownValueReturns(ctor)) {
+    if (stmt.expression === undefined) continue;
+    const value = withoutParentheses(stmt.expression);
+    if (returnsThis(lowerer, info, value)) continue;
+    if (insideFinallyTry(stmt, ctor)) continue;
+    const type = lowerer.typeOf(value);
+    if (objectness(type) === "never") continue;
+    // A returned instance of the class itself answers the result slot, not
+    // the foreign slot.
+    const symbol = type.getSymbol();
+    if (
+      symbol !== undefined &&
+      (symbol.valueDeclaration === info.decl || (symbol.declarations ?? []).includes(info.decl))
+    )
+      continue;
+    return true;
+  }
+  return false;
+}
+
 export function constructorReturnPlan(
   lowerer: Lowerer,
   info: ClassInfo,

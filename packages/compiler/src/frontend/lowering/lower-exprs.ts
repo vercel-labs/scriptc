@@ -4202,6 +4202,66 @@ export function namedCaptureGroupsOfPattern(
   return groups;
 }
 
+/** The string an expression evaluates to, when the compiler can fold it: a
+ * string literal, a template (cooked, or raw under `String.raw`), a `+`
+ * concatenation, or a const binding of one of those. Null otherwise. The
+ * fold follows const initializers one hop at a time, with a depth bound so a
+ * cycle of consts answers null instead of recursing. */
+export function staticStringOf(lowerer: Lowerer, e: ts.Expression, depth = 0): string | null {
+  if (depth > 12) return null;
+  let expr = e;
+  for (;;) {
+    if (ts.isParenthesizedExpression(expr) || ts.isNonNullExpression(expr)) {
+      expr = expr.expression;
+      continue;
+    }
+    break;
+  }
+  const next = (child: ts.Expression): string | null => staticStringOf(lowerer, child, depth + 1);
+  if (ts.isStringLiteral(expr) || ts.isNoSubstitutionTemplateLiteral(expr)) return expr.text;
+  if (ts.isTemplateExpression(expr)) {
+    let out = expr.head.text;
+    for (const span of expr.templateSpans.nodes) {
+      const value = next(span.expression);
+      if (value === null) return null;
+      out += value + span.literal.text;
+    }
+    return out;
+  }
+  if (ts.isTaggedTemplateExpression(expr)) {
+    const tag = expr.tag;
+    if (
+      ts.isPropertyAccessExpression(tag) &&
+      ts.isIdentifier(tag.expression) &&
+      tag.expression.text === "String" &&
+      tag.name.text === "raw"
+    ) {
+      const template = expr.template;
+      if (ts.isNoSubstitutionTemplateLiteral(template)) return templateRawTextOf(template);
+      if (ts.isTemplateExpression(template)) {
+        let out = templateRawTextOf(template.head);
+        for (const span of template.templateSpans.nodes) {
+          const value = next(span.expression);
+          if (value === null) return null;
+          out += value + templateRawTextOf(span.literal);
+        }
+        return out;
+      }
+    }
+    return null;
+  }
+  if (ts.isBinaryExpression(expr) && expr.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+    const left = next(expr.left);
+    const right = next(expr.right);
+    return left === null || right === null ? null : left + right;
+  }
+  if (ts.isIdentifier(expr)) {
+    const init = constInitializerOf(lowerer, expr);
+    return init === null ? null : next(init);
+  }
+  return null;
+}
+
 /** The statically-known regex PATTERN behind an expression: a regex
  * literal, a const local initialized with one (the crypto.js
  * `const regexp = /(?<m>\d+)/` shape), or `new RegExp("...")` over a
@@ -4226,11 +4286,9 @@ export function staticRegexPatternOf(lowerer: Lowerer, e: ts.Expression): string
     expr.expression.text === "RegExp" &&
     lowerer.isStdlibGlobal(expr.expression, "RegExp") &&
     expr.arguments !== undefined &&
-    expr.arguments.nodes.length >= 1 &&
-    (ts.isStringLiteral(expr.arguments.nodes[0]!) ||
-      ts.isNoSubstitutionTemplateLiteral(expr.arguments.nodes[0]!))
+    expr.arguments.nodes.length >= 1
   ) {
-    return (expr.arguments.nodes[0] as ts.StringLiteral | ts.NoSubstitutionTemplateLiteral).text;
+    return staticStringOf(lowerer, expr.arguments.nodes[0]!);
   }
   if (ts.isIdentifier(expr)) {
     const init = constInitializerOf(lowerer, expr);

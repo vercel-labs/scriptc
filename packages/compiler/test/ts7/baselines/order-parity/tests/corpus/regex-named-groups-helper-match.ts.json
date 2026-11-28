@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/regex-named-groups-helper-match.ts"
+ ],
+ "diags": []
+}

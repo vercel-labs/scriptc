@@ -551,7 +551,15 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       if (emitter.checkedInt32Array(s.arr)) {
         // An int32 array with checked stores: the int32 arm stores an int32
         // value, and widens the array for any other first.
-        emitter.emitPublishedArrayGuard(arr.name, s.arr.type, 0, idx.name);
+        emitter.emitPublishedArrayGuard(
+          arr.name,
+          s.arr.type,
+          0,
+          idx.name,
+          f64Lit(0),
+          null,
+          emitter.sloppyArrayWrites.has(`${s.loc.file}\0${s.loc.start}\0${s.loc.end}`),
+        );
         const elem = s.arr.type.elem;
         const proven = emitter.provenDenseIndex(s.arr, s.index);
         emitter.emitByElementKind(arr.name, null, (acc, widened) => {
@@ -563,19 +571,52 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       }
       const acc = emitter.arrayAccess(s.arr, s.arr.type.elem);
       const int32 = emitter.emitInt32KindStoreCheck(s.arr, v, s.value);
-      emitter.emitPublishedArrayGuard(arr.name, s.arr.type, 0, idx.name);
-      if (acc === "ref") emitter.toHeap(v);
-      emitDenseArraySet(
-        emitter,
+      const noOp = emitter.emitPublishedArrayGuard(
         arr.name,
-        idx,
-        s.index,
-        acc,
-        s.arr.type.elem,
-        v.name,
-        emitter.provenDenseIndex(s.arr, s.index),
-        int32,
+        s.arr.type,
+        0,
+        idx.name,
+        f64Lit(0),
+        null,
+        emitter.sloppyArrayWrites.has(`${s.loc.file}\0${s.loc.start}\0${s.loc.end}`),
       );
+      if (acc === "ref") emitter.toHeap(v);
+      if (noOp === null) {
+        emitDenseArraySet(
+          emitter,
+          arr.name,
+          idx,
+          s.index,
+          acc,
+          s.arr.type.elem,
+          v.name,
+          emitter.provenDenseIndex(s.arr, s.index),
+          int32,
+        );
+        break;
+      }
+      {
+        // A sloppy-mode write to a frozen array is ignored: the guard
+        // answers "no write" there and the store is skipped.
+        const B = emitter.B;
+        const skip = B.newLabel("arrset.skip");
+        const run = B.newLabel("arrset.run");
+        B.condBr(noOp, skip, run);
+        B.startBlock(run);
+        emitDenseArraySet(
+          emitter,
+          arr.name,
+          idx,
+          s.index,
+          acc,
+          s.arr.type.elem,
+          v.name,
+          emitter.provenDenseIndex(s.arr, s.index),
+          int32,
+        );
+        B.br(skip);
+        B.startBlock(skip);
+      }
       break;
     }
     case "arraySetLength": {
@@ -600,7 +641,26 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         B.line(`call void @scr_arr_reserve_len(ptr ${arr.name}, double ${length.name})`);
         break;
       }
-      emitter.emitPublishedArrayGuard(arr.name, s.arr.type, s.pop === true ? 2 : 3);
+      // A sloppy-mode length store on a frozen array is ignored: the
+      // guard answers "no write" and the store is skipped.
+      const lengthNoOp =
+        s.pop === true
+          ? emitter.emitPublishedArrayGuard(arr.name, s.arr.type, 2)
+          : emitter.emitPublishedArrayGuard(
+              arr.name,
+              s.arr.type,
+              3,
+              f64Lit(0),
+              f64Lit(0),
+              null,
+              emitter.sloppyArrayWrites.has(`${s.loc.file}\0${s.loc.start}\0${s.loc.end}`),
+            );
+      const lengthDone = B.newLabel("arr.len.done");
+      if (lengthNoOp !== null) {
+        const run = B.newLabel("arr.len.run");
+        B.condBr(lengthNoOp, lengthDone, run);
+        B.startBlock(run);
+      }
       emitter.declare(`declare void @scr_arr_set_len(ptr, double)`);
       // Assigning the current length (a reused work array reset to where
       // it already is) changes nothing: the runtime's validation accepts
@@ -611,7 +671,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         lenNumber = B.tmp(),
         same = B.tmp();
       const resize = B.newLabel("arr.len.set"),
-        done = B.newLabel("arr.len.done");
+        done = lengthDone;
       B.line(`${lenPtr} = getelementptr inbounds %ScrArr, ptr ${arr.name}, i32 0, i32 1`);
       emitter.markMemoryPointer(lenPtr, "array:header");
       loadArrCount(emitter, len, lenPtr, emitter.fieldAliasAttachment(lenPtr));

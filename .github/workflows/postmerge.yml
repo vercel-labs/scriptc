@@ -153,7 +153,10 @@ jobs:
         with:
           platform: ${{ matrix.platform }}
           llvm-asset: ${{ matrix.llvm_asset }}
-          use-zig: ${{ matrix.use_zig }}
+      # The probes build the Linux runtime packs with the pinned Zig, as the release build does. use_zig is the
+      # string "true" or "false" scripts/postmerge.mjs puts on the matrix.
+      - uses: ./.github/actions/zig
+        if: matrix.setup == 'release-toolchain' && matrix.use_zig == 'true'
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: postmerge-state

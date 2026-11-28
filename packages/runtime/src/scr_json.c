@@ -13174,11 +13174,12 @@ static ScrDyn *scr_dyn_symbol_key_get_receiver(const ScrDyn *value, const ScrDyn
     ScrDyn *result = scr_exc_pending() ? NULL
       : scr_dyn_symbol_key_get_receiver(view, key, optional, receiver);
     /* A live stream answers the symbols it implements itself (its async
-     * iterator) only when its view and prototype have no answer: a symbol
-     * property the program installed, a class method or an accessor wins,
-     * as on any object. */
+     * iterator) only when its view and prototype have no answer at all: a
+     * symbol property the program installed (own or on the prototype), a
+     * class method or an accessor wins, as on any object, and an explicit
+     * undefined shadows the built-in method too. */
     if (result != NULL && !scr_exc_pending() && result->kind == SCR_DYN_UNDEF &&
-        scr_dyn_symbol_entry(view, key, true) == NULL &&
+        scr_dyn_symbol_entry(view, key, false) == NULL &&
         scr_stream_ref_hooks.symbol != NULL && scr_stream_ref_hooks.is_stream != NULL &&
         scr_stream_ref_hooks.is_stream(value->v.typed_ref.ptr)) {
       ScrDyn *member = scr_stream_ref_hooks.symbol(value->v.typed_ref.ptr, key);

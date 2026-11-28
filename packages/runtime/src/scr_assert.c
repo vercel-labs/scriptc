@@ -917,19 +917,49 @@ static const ScrDyn *scr_assert_loose_error_prop(const ScrDyn *d, const char *ke
   return scr_dyn_undefined();
 }
 
+/* Node's `d[key]` for the error arm: the prototype chain's first entry for
+ * the key, running an accessor's getter with `d` as the receiver (V8 reads
+ * the property, so a getter's value is compared and a getter's throw is
+ * the exception the assertion propagates). +1, or NULL with the getter's
+ * exception pending. */
+static ScrDyn *scr_assert_error_prop(const ScrDyn *d, const char *key, size_t len) {
+  for (const ScrDyn *o = d; o && o->kind == SCR_DYN_OBJ; o = o->prototype) {
+    size_t i = scr_dyn_obj_index_of(o, key, len);
+    if (i == SIZE_MAX) continue;
+    ScrDynProp ent = scr_dyn_obj_prop_at(o, i);
+    if (!ent.accessor) return scr_dyn_retain(ent.value);
+    if (!ent.getter) return scr_dyn_retain(scr_dyn_undefined());
+    scr_dyn_this_push_dyn(d);
+    ScrDyn *value = scr_dyn_call(ent.getter, NULL, 0, key);
+    scr_dyn_this_pop();
+    return value;
+  }
+  return scr_dyn_retain(scr_dyn_undefined());
+}
+
+/* Whether the property exists as an own property of `d` (Node's
+ * hasOwn(d, key): an accessor counts, whatever its enumerability). */
+static bool scr_assert_has_own(const ScrDyn *d, const char *key, size_t len) {
+  return scr_dyn_obj_index_of(d, key, len) != SIZE_MAX;
+}
+
 /* isError's arm: message, name, cause and errors compare unless the
  * expected side has them as enumerable own keys, and an own cause must
- * be own on both sides. */
+ * be own on both sides. The reads are property reads (getters run, their
+ * throws propagate). */
 static bool scr_assert_loose_error(const ScrDyn *a, const ScrDyn *b) {
   static const char *const props[] = {"message", "name", "cause", "errors"};
   for (size_t i = 0; i < 4; i++) {
     size_t len = strlen(props[i]);
     if (scr_assert_loose_entry(b, props[i], len)) continue;
-    if (!scr_assert_loose_eq(scr_assert_loose_error_prop(a, props[i], len),
-                             scr_assert_loose_error_prop(b, props[i], len)))
-      return false;
+    ScrDyn *va = scr_assert_error_prop(a, props[i], len);
+    ScrDyn *vb = va != NULL ? scr_assert_error_prop(b, props[i], len) : NULL;
+    bool same = va != NULL && vb != NULL && scr_assert_loose_eq(va, vb);
+    scr_dyn_release(va);
+    scr_dyn_release(vb);
+    if (!same || scr_exc_pending()) return false;
   }
-  if ((scr_dyn_obj_get(a, "cause", 5) != NULL) != (scr_dyn_obj_get(b, "cause", 5) != NULL)) return false;
+  if (scr_assert_has_own(a, "cause", 5) != scr_assert_has_own(b, "cause", 5)) return false;
   return true;
 }
 
@@ -942,12 +972,14 @@ static bool scr_assert_dyn_error(const ScrDyn *a, const ScrDyn *b) {
   for (size_t i = 0; i < 4; i++) {
     size_t len = strlen(props[i]);
     if (scr_assert_loose_entry(b, props[i], len)) continue;
-    if (!scr_assert_dyn_deep_eq(scr_assert_loose_error_prop(a, props[i], len),
-                                scr_assert_loose_error_prop(b, props[i], len)))
-      return false;
+    ScrDyn *va = scr_assert_error_prop(a, props[i], len);
+    ScrDyn *vb = va != NULL ? scr_assert_error_prop(b, props[i], len) : NULL;
+    bool same = va != NULL && vb != NULL && scr_assert_dyn_deep_eq(va, vb);
+    scr_dyn_release(va);
+    scr_dyn_release(vb);
+    if (!same || scr_exc_pending()) return false;
   }
-  if ((scr_dyn_obj_get(a, "cause", 5) != NULL) != (scr_dyn_obj_get(b, "cause", 5) != NULL))
-    return false;
+  if (scr_assert_has_own(a, "cause", 5) != scr_assert_has_own(b, "cause", 5)) return false;
   return true;
 }
 
@@ -1614,7 +1646,8 @@ static void scr_assert_cf_error(ScrAssertBuf *b, const ScrDyn *d, size_t indent,
     ScrDynProp ent = scr_dyn_obj_prop_at(d, i);
     if (!scr_assert_cf_error_shown(ent)) continue;
     ScrAssertBuf eb = {0};
-    if (!ent.enumerable && scr_assert_cf_error_meta(ent)) {
+    const bool meta = !ent.enumerable && scr_assert_cf_error_meta(ent);
+    if (meta) {
       ab_char(&eb, '[');
       ab_bytes(&eb, ent.key, ent.key_len);
       ab_char(&eb, ']');
@@ -1622,7 +1655,15 @@ static void scr_assert_cf_error(ScrAssertBuf *b, const ScrDyn *d, size_t indent,
       scr_assert_cf_key(&eb, ent.key, ent.key_len);
     }
     ab_cstr(&eb, ": ");
-    scr_assert_cf_entry(&eb, d, ent, indent + 2, depth - 1);
+    if (meta && ent.accessor) {
+      /* Node's formatError reads err.cause and inspects the value, so an
+       * accessor shows what its getter answers, not a [Getter] marker. */
+      ScrDyn *value = scr_assert_error_prop(d, ent.key, ent.key_len);
+      if (value != NULL) scr_assert_cf_value(&eb, value, indent + 2, depth - 1);
+      scr_dyn_release(value);
+    } else {
+      scr_assert_cf_entry(&eb, d, ent, indent + 2, depth - 1);
+    }
     scr_assert_cf_entries_push(&ents, eb.data ? eb.data : scr_assert_cf_entry_copy("", 0), eb.len);
     n++;
   }

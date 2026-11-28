@@ -68,3 +68,21 @@ show("partial-cause-diff", () =>
   assert.partialDeepStrictEqual(new Error("x", { cause: 1 }), new Error("x", { cause: 2 })),
 );
 show("not-deep-strict-same", () => assert.notDeepStrictEqual(siteA(), siteA()));
+
+// Accessor-backed error properties are read (the getter's value is
+// compared, a getter's throw propagates), never their stored placeholder.
+const withCause = (v) => {
+  const e = new Error("x");
+  Reflect.defineProperty(e, "cause", { get() { return v; }, configurable: true });
+  return e;
+};
+const throwingCause = () => {
+  const e = new Error("x");
+  Reflect.defineProperty(e, "cause", { get() { throw new RangeError("boom"); }, configurable: true });
+  return e;
+};
+show("getter-equal", () => assert.deepStrictEqual(withCause(1), withCause(1)));
+show("getter-diff", () => assert.deepStrictEqual(withCause(1), withCause(2)));
+show("getter-throws", () => assert.deepStrictEqual(throwingCause(), throwingCause()));
+show("loose-getter-diff", () => assert.deepEqual(withCause(1), withCause(2)));
+show("loose-getter-throws", () => assert.deepEqual(throwingCause(), throwingCause()));

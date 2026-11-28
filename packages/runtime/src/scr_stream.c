@@ -224,6 +224,12 @@ struct ScrStreamState {
      * a readable-only stream with autoDestroy and emitClose, not yet
      * closed). next_eof_close: the ended waiter is held for 'close'. */
     bool next_started, next_close_wait, next_eof_close;
+    /* The async iterator is still consuming: from its first next() until it
+     * observes the end or an error (or is closed). Node's iterator registers
+     * its own 'error' handler for that whole span, so an error that lands
+     * between two next() calls is kept for the iterator instead of being an
+     * unhandled 'error' event. */
+    bool next_open;
     ScrClosure *read_cb;
     ScrStreamReadInv read_inv;
   } r;
@@ -1656,6 +1662,8 @@ static void scr_stream_next_fulfill(ScrStreamState *st, ScrPromise *w /*moves*/,
     payload = chunk ? (ScrBytes *)chunk : scr_bytes_new(SCR_BYTES_U8, 0);
   }
   if (chunk == NULL) {
+    /* the iterator saw the end: its error handler goes with it */
+    st->r.next_open = false;
     if (dyn) scr_promise_fulfill_ref(w, payload, scr_dyn_retain_v, scr_dyn_release_v, NULL);
     else scr_promise_fulfill_ref(w, payload, scr_bytes_retain_v, scr_bytes_release_v, NULL);
     scr_promise_release(w);
@@ -1782,6 +1790,7 @@ static void scr_stream_settle_next_waiter(ScrStream *s) {
     ScrPromise *w = st->r.next_waiter;
     st->r.next_waiter = NULL;
     st->next_err_consumed = true;
+    st->r.next_open = false;
     scr_throw_obj(scr_error_retain(st->errored), &scr_error_retain_v, &scr_error_release_v,
                   scr_error_trace_arg());
     scr_promise_reject_pending(w);
@@ -1849,6 +1858,8 @@ static ScrPromise *scr_stream_next_chunk_impl(ScrStream *s, bool dyn, bool resul
   st->r.next_dyn = dyn;
   st->r.next_result = result;
   st->r.next_single = single;
+  /* the iterator is consuming until it sees the end or an error */
+  st->r.next_open = true;
   st->r.next_waiter = scr_promise_retain(p);
   st->r.next_parked = false;
   if (!st->r.next_started) {
@@ -8740,6 +8751,8 @@ ScrStream *scr_stream_destroy(ScrStream *s, ScrError *err) {
 
 ScrStream *scr_stream_iterator_close(ScrStream *s) {
   ScrStreamState *st = s->st;
+  /* the iterator is leaving: its error handler leaves with it */
+  st->r.next_open = false;
   if (st->destroyed) return scr_stream_retain(s);
   ScrStr *message = scr_str_new("The operation was aborted", 25);
   ScrError *error = scr_error_new(SCR_ERR_ERROR, message);
@@ -9172,9 +9185,11 @@ static void scr_stream_run_tick(ScrStreamTick *t) {
       st->error_scheduled = false;
       if (!st->error_emitted && t->err) {
         st->error_emitted = true;
-        if (st->next_err_consumed && !scr_emitter_has((ScrEmitter *)s, "error")) {
+        if ((st->next_err_consumed || st->r.next_open) && !scr_emitter_has((ScrEmitter *)s, "error")) {
           /* the for-await's rejection consumed it (Node's iterator
-           * registers its own 'error' handler — no unhandled crash) */
+           * registers its own 'error' handler for its whole life — the
+           * error reaches the next() even when none is parked right now,
+           * never an unhandled 'error' event) */
           scr_stream_settle_next(s);
           break;
         }

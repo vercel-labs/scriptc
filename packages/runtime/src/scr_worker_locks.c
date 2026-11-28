@@ -294,9 +294,7 @@ static void scr_locks_reject_thrown(ScrPromise *promise, bool signal_path) {
  * job then finds it settled. The abort listener goes away with the grant,
  * which is Node's finally, and the settled promise is dropped so nothing
  * audit-visible outlives it. */
-static ScrDyn *scr_locks_stolen_job(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
-  (void)args;
-  (void)argc;
+static void scr_locks_stolen_job(ScrClosure *clo) {
   ScrLockReq *req = scr_box_get_ref(clo->caps[0]); /* +1 */
   if (req->promise != NULL && scr_promise_is_pending(req->promise)) {
     scr_throw_domex("AbortError", "The operation was aborted");
@@ -308,7 +306,6 @@ static ScrDyn *scr_locks_stolen_job(ScrClosure *clo, ScrDyn *const *args, size_t
   }
   scr_locks_dispose_signal(req);
   scr_locks_req_release(req);
-  return scr_dyn_retain(scr_dyn_undefined());
 }
 
 /* The abort listener: a request whose callback has not started yet rejects
@@ -407,13 +404,11 @@ static const ScrPromiseReaction scr_locks_wait_reaction = { scr_locks_wait_react
  * Node's wrapped callback does (an abort issued before that turn rejects
  * the request instead of running it). The box holds the request's
  * reference for the grant. */
-static ScrDyn *scr_locks_start_job(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
-  (void)args;
-  (void)argc;
+static void scr_locks_start_job(ScrClosure *clo) {
   ScrLockReq *req = scr_box_get_ref(clo->caps[0]); /* +1 */
   if (req->aborted || req->started) {
     scr_locks_req_release(req);
-    return scr_dyn_retain(scr_dyn_undefined());
+    return;
   }
   bool stolen = req->stolen;
   req->started = true;
@@ -434,7 +429,7 @@ static ScrDyn *scr_locks_start_job(ScrClosure *clo, ScrDyn *const *args, size_t 
     scr_exc_clear();
     scr_dyn_release(result);
     scr_locks_req_release(req);
-    return scr_dyn_retain(scr_dyn_undefined());
+    return;
   }
   if (scr_exc_pending()) {
     scr_dyn_release(result);
@@ -457,7 +452,7 @@ static ScrDyn *scr_locks_start_job(ScrClosure *clo, ScrDyn *const *args, size_t 
       req->promise = NULL;
     }
     scr_locks_req_release(req);
-    return scr_dyn_retain(scr_dyn_undefined());
+    return;
   }
   if (result != NULL && result->kind == SCR_DYN_PROMISE) {
     /* The lock waits for the callback's promise, and the request settles
@@ -476,7 +471,6 @@ static ScrDyn *scr_locks_start_job(ScrClosure *clo, ScrDyn *const *args, size_t 
                             scr_dyn_trace_v);
   }
   scr_locks_req_release(req); /* this thunk's +1 */
-  return scr_dyn_retain(scr_dyn_undefined());
 }
 
 /* Grants a request: the holder list records it now (query() reports the lock

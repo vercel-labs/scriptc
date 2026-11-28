@@ -2568,6 +2568,9 @@ const RUNTIME_FEATURE_RULES = {
       "util.styleText",
       // ERR_UNHANDLED_ERROR quotes util.inspect of a non-Error payload.
       "emitter.emitErrorValue",
+      // assert.ifError renders a non-Error value with util.inspect's
+      // defaults (compact, depth 2).
+      "assert.ifErrorDyn",
       "crypto.cipherNew",
       "webcrypto.encrypt",
       "webcrypto.decrypt",

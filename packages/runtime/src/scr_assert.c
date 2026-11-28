@@ -25,6 +25,7 @@
  * DEL escaped) — exotic C1/Unicode escapes are out of scope
  * (SEMANTICS.md 106). */
 #include "scr_runtime.h"
+#include "scr_optional.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -701,6 +702,34 @@ static bool scr_assert_dyn_same_value(const ScrDyn *a, const ScrDyn *b) {
  * JSON-origin dyn values are trees; a keyed-write cycle (h.self = h) has no
  * memo here where Node carries one (documented divergence). */
 static const ScrDyn *scr_assert_loose_error_prop(const ScrDyn *d, const char *key, size_t len);
+/* Node's error arm under the strict walk (defined with the loose helpers). */
+static bool scr_assert_dyn_error(const ScrDyn *a, const ScrDyn *b);
+/* The class name Node's error rendering prints (defined with ifError). */
+static ScrDyn *scr_assert_constructor_name(const ScrDyn *v);
+
+/* Node's strict prototype test for two error views: an error's observable
+ * prototype (Error.prototype, a subclass's own class prototype) compares
+ * by identity. A builtin error view other than a plain Error answers a
+ * synthesized prototype per view, so the class its `constructor` read
+ * names answers in that case. A read that throws leaves the exception
+ * pending and answers false. */
+static bool scr_assert_same_error_class(const ScrDyn *a, const ScrDyn *b) {
+  ScrDyn *pa = scr_dyn_get_prototype((ScrDyn *)a);
+  ScrDyn *pb = pa != NULL ? scr_dyn_get_prototype((ScrDyn *)b) : NULL;
+  bool same = pa != NULL && pb != NULL && pa == pb;
+  scr_dyn_release(pa);
+  scr_dyn_release(pb);
+  if (same) return true;
+  if (scr_exc_pending()) return false;
+  ScrDyn *ca = scr_dyn_obj_read(a, "constructor", 11);
+  if (ca == NULL) return false;
+  ScrDyn *cb = scr_dyn_obj_read(b, "constructor", 11);
+  same = cb != NULL && scr_dyn_strict_eq(ca, cb);
+  scr_dyn_release(ca);
+  scr_dyn_release(cb);
+  if (scr_exc_pending()) return false;
+  return same;
+}
 
 /* The value a deep comparison reads for own property `ent` of `owner`. Node
  * reads `owner[key]`, so an accessor answers what its getter returns
@@ -745,6 +774,19 @@ static bool scr_assert_dyn_deep_eq(const ScrDyn *a, const ScrDyn *b) {
                      ? scr_dyn_typed_ref_materialize(b)
                      : scr_dyn_retain((ScrDyn *)b);
     bool same = scr_assert_dyn_deep_eq(ma, mb);
+    /* Two program class instances of error classes stay distinguishable
+     * only through their typed references: both materialized views answer
+     * the builtin Error constructor and a subclass view's synthesized
+     * prototype is per view. Node's strict pass compares the class before
+     * its error arm, so the class key answers here. */
+    if (same && a->kind == SCR_DYN_TYPED_REF && b->kind == SCR_DYN_TYPED_REF &&
+        !scr_assert_skip_prototype() && ma != NULL && mb != NULL && ma->kind == SCR_DYN_OBJ &&
+        mb->kind == SCR_DYN_OBJ && scr_dyn_obj_get(ma, "%error", 6) != NULL &&
+        scr_dyn_obj_get(mb, "%error", 6) != NULL &&
+        (a->v.typed_ref.type_key_len != b->v.typed_ref.type_key_len ||
+         memcmp(a->v.typed_ref.type_key, b->v.typed_ref.type_key,
+                a->v.typed_ref.type_key_len) != 0))
+      same = false;
     scr_dyn_release(ma);
     scr_dyn_release(mb);
     return same;
@@ -803,18 +845,20 @@ static bool scr_assert_dyn_deep_eq(const ScrDyn *a, const ScrDyn *b) {
       return true;
     }
     case SCR_DYN_OBJ: {
-      if (scr_assert_skip_prototype()) {
-        /* Node's error arm runs without the prototype check: both sides
-         * are errors with the same name and message. */
-        bool ea = scr_dyn_obj_get(a, "%error", 6) != NULL;
-        bool eb = scr_dyn_obj_get(b, "%error", 6) != NULL;
-        if (ea != eb) return false;
-        if (ea && (!scr_assert_dyn_deep_eq(scr_assert_loose_error_prop(a, "name", 4),
-                                           scr_assert_loose_error_prop(b, "name", 4)) ||
-                   !scr_assert_dyn_deep_eq(scr_assert_loose_error_prop(a, "message", 7),
-                                           scr_assert_loose_error_prop(b, "message", 7))))
-          return false;
-      } else if (a->null_proto != b->null_proto || a->prototype != b->prototype) {
+      const bool error_a = scr_dyn_obj_get(a, "%error", 6) != NULL;
+      const bool error_b = scr_dyn_obj_get(b, "%error", 6) != NULL;
+      if (error_a || error_b) {
+        if (error_a != error_b) return false;
+        /* Node's strict pass compares the two errors' class before its
+         * error arm (comparisons.js compares `constructor`), so a subclass
+         * instance never equals the base class's error; skipPrototype
+         * asserts skip it. */
+        if (!scr_assert_skip_prototype() && !scr_assert_same_error_class(a, b)) return false;
+        /* Node's error arm: name, message, cause and `errors` are compared
+         * whatever their enumerability and the stack never is. */
+        if (!scr_assert_dyn_error(a, b)) return false;
+      } else if (!scr_assert_skip_prototype() &&
+                 (a->null_proto != b->null_proto || a->prototype != b->prototype)) {
         return false;
       }
       /* Node compares the enumerable own properties: a non-enumerable one
@@ -915,19 +959,69 @@ static const ScrDyn *scr_assert_loose_error_prop(const ScrDyn *d, const char *ke
   return scr_dyn_undefined();
 }
 
+/* Node's `d[key]` for the error arm: the prototype chain's first entry for
+ * the key, running an accessor's getter with `d` as the receiver (V8 reads
+ * the property, so a getter's value is compared and a getter's throw is
+ * the exception the assertion propagates). +1, or NULL with the getter's
+ * exception pending. */
+static ScrDyn *scr_assert_error_prop(const ScrDyn *d, const char *key, size_t len) {
+  for (const ScrDyn *o = d; o && o->kind == SCR_DYN_OBJ; o = o->prototype) {
+    size_t i = scr_dyn_obj_index_of(o, key, len);
+    if (i == SIZE_MAX) continue;
+    ScrDynProp ent = scr_dyn_obj_prop_at(o, i);
+    if (!ent.accessor) return scr_dyn_retain(ent.value);
+    if (!ent.getter) return scr_dyn_retain(scr_dyn_undefined());
+    scr_dyn_this_push_dyn(d);
+    ScrDyn *value = scr_dyn_call(ent.getter, NULL, 0, key);
+    scr_dyn_this_pop();
+    return value;
+  }
+  return scr_dyn_retain(scr_dyn_undefined());
+}
+
+/* Whether the property exists as an own property of `d` (Node's
+ * hasOwn(d, key): an accessor counts, whatever its enumerability). */
+static bool scr_assert_has_own(const ScrDyn *d, const char *key, size_t len) {
+  return scr_dyn_obj_index_of(d, key, len) != SIZE_MAX;
+}
+
 /* isError's arm: message, name, cause and errors compare unless the
  * expected side has them as enumerable own keys, and an own cause must
- * be own on both sides. */
+ * be own on both sides. The reads are property reads (getters run, their
+ * throws propagate). */
 static bool scr_assert_loose_error(const ScrDyn *a, const ScrDyn *b) {
   static const char *const props[] = {"message", "name", "cause", "errors"};
   for (size_t i = 0; i < 4; i++) {
     size_t len = strlen(props[i]);
     if (scr_assert_loose_entry(b, props[i], len)) continue;
-    if (!scr_assert_loose_eq(scr_assert_loose_error_prop(a, props[i], len),
-                             scr_assert_loose_error_prop(b, props[i], len)))
-      return false;
+    ScrDyn *va = scr_assert_error_prop(a, props[i], len);
+    ScrDyn *vb = va != NULL ? scr_assert_error_prop(b, props[i], len) : NULL;
+    bool same = va != NULL && vb != NULL && scr_assert_loose_eq(va, vb);
+    scr_dyn_release(va);
+    scr_dyn_release(vb);
+    if (!same || scr_exc_pending()) return false;
   }
-  if ((scr_dyn_obj_get(a, "cause", 5) != NULL) != (scr_dyn_obj_get(b, "cause", 5) != NULL)) return false;
+  if (scr_assert_has_own(a, "cause", 5) != scr_assert_has_own(b, "cause", 5)) return false;
+  return true;
+}
+
+/* Node's error arm under the strict walk (comparisons.js): name, message,
+ * cause and `errors` are compared whatever their enumerability, and the
+ * stack never is. A property that is an own ENUMERABLE member of the
+ * expected side is left to the caller's own-property walk. */
+static bool scr_assert_dyn_error(const ScrDyn *a, const ScrDyn *b) {
+  static const char *const props[] = {"message", "name", "cause", "errors"};
+  for (size_t i = 0; i < 4; i++) {
+    size_t len = strlen(props[i]);
+    if (scr_assert_loose_entry(b, props[i], len)) continue;
+    ScrDyn *va = scr_assert_error_prop(a, props[i], len);
+    ScrDyn *vb = va != NULL ? scr_assert_error_prop(b, props[i], len) : NULL;
+    bool same = va != NULL && vb != NULL && scr_assert_dyn_deep_eq(va, vb);
+    scr_dyn_release(va);
+    scr_dyn_release(vb);
+    if (!same || scr_exc_pending()) return false;
+  }
+  if (scr_assert_has_own(a, "cause", 5) != scr_assert_has_own(b, "cause", 5)) return false;
   return true;
 }
 
@@ -1554,6 +1648,19 @@ static bool scr_assert_cf_error_extra(ScrDynProp ent) {
            (ent.key_len == 5 && memcmp(ent.key, "stack", 5) == 0));
 }
 
+/* The error property Node's formatError prints whatever its enumerability:
+ * an own `cause`. A non-enumerable one renders as the bracketed meta key,
+ * `[cause]: value` (an assigned enumerable one as an ordinary
+ * `cause: value`). An AggregateError's own `errors` is NOT printed: the
+ * assert diff inspects with showHidden off, which hides it. */
+static bool scr_assert_cf_error_meta(ScrDynProp ent) {
+  return ent.key_len == 5 && memcmp(ent.key, "cause", 5) == 0;
+}
+
+static bool scr_assert_cf_error_shown(ScrDynProp ent) {
+  return scr_assert_cf_error_extra(ent) || scr_assert_cf_error_meta(ent);
+}
+
 /* An encoded Error: Node's stackless `[Name: message]` (assertion_error.js
  * drops the stacks when both sides are errors), then any other
  * enumerable own properties in a `{ ... }` block. */
@@ -1571,7 +1678,7 @@ static void scr_assert_cf_error(ScrAssertBuf *b, const ScrDyn *d, size_t indent,
   size_t extra = 0;
   for (size_t i = 0; i < scr_dyn_obj_count(d); i++) {
     ScrDynProp ent = scr_dyn_obj_prop_at(d, i);
-    if (scr_assert_cf_error_extra(ent)) extra++;
+    if (scr_assert_cf_error_shown(ent)) extra++;
   }
   if (extra == 0) return;
   if (depth == 0) return;
@@ -1579,11 +1686,26 @@ static void scr_assert_cf_error(ScrAssertBuf *b, const ScrDyn *d, size_t indent,
   size_t n = 0;
   for (size_t i = 0; i < scr_dyn_obj_count(d); i++) {
     ScrDynProp ent = scr_dyn_obj_prop_at(d, i);
-    if (!scr_assert_cf_error_extra(ent)) continue;
+    if (!scr_assert_cf_error_shown(ent)) continue;
     ScrAssertBuf eb = {0};
-    scr_assert_cf_key(&eb, ent.key, ent.key_len);
+    const bool meta = !ent.enumerable && scr_assert_cf_error_meta(ent);
+    if (meta) {
+      ab_char(&eb, '[');
+      ab_bytes(&eb, ent.key, ent.key_len);
+      ab_char(&eb, ']');
+    } else {
+      scr_assert_cf_key(&eb, ent.key, ent.key_len);
+    }
     ab_cstr(&eb, ": ");
-    scr_assert_cf_entry(&eb, d, ent, indent + 2, depth - 1);
+    if (meta && ent.accessor) {
+      /* Node's formatError reads err.cause and inspects the value, so an
+       * accessor shows what its getter answers, not a [Getter] marker. */
+      ScrDyn *value = scr_assert_error_prop(d, ent.key, ent.key_len);
+      if (value != NULL) scr_assert_cf_value(&eb, value, indent + 2, depth - 1);
+      scr_dyn_release(value);
+    } else {
+      scr_assert_cf_entry(&eb, d, ent, indent + 2, depth - 1);
+    }
     scr_assert_cf_entries_push(&ents, eb.data ? eb.data : scr_assert_cf_entry_copy("", 0), eb.len);
     n++;
   }
@@ -3280,18 +3402,97 @@ void scr_assert_iferror_bool(bool v) {
  * caughtToDyn encoding) throw with the error's message (its name when
  * the message is empty, Node's rule), everything else throws with the
  * value's inspection. */
+/* Node's `err.constructor.name` for ifError's empty message. A class
+ * instance answers its class; a runtime error answers its constructor
+ * token's name; the runtime's own Object.prototype is a method table with
+ * no data `constructor`, so a plain body whose prototype is not null
+ * answers the builtin class Node would (Object, Array). +1, or NULL when
+ * there is no name (a null-prototype body, a nameless constructor) or a
+ * getter threw. */
+static ScrDyn *scr_assert_constructor_name(const ScrDyn *v) {
+  if (v->kind == SCR_DYN_TYPED_REF) {
+    const ScrStr *cls = scr_dyn_typed_ref_class_name(v);
+    if (cls != NULL && cls->len > 0) return scr_dyn_new_str(scr_str_retain((ScrStr *)cls));
+  }
+  ScrDyn *ctor = scr_dyn_obj_read((ScrDyn *)v, "constructor", 11);
+  if (ctor != NULL && scr_exc_pending()) {
+    scr_dyn_release(ctor);
+    return NULL;
+  }
+  if (ctor != NULL && ctor->kind == SCR_DYN_FUNC) {
+    ScrDyn *name = scr_dyn_fn_get(ctor, "name", 4);
+    scr_dyn_release(ctor);
+    if (name != NULL) return name;
+  } else {
+    if (ctor != NULL && ctor->kind != SCR_DYN_UNDEF && ctor->kind != SCR_DYN_NULL) {
+      /* A data constructor that is not a function: Node reads `.name` off
+       * it, which is undefined for a plain value. */
+      scr_dyn_release(ctor);
+      return NULL;
+    }
+    scr_dyn_release(ctor);
+    /* The runtime's own Object.prototype carries no data constructor, so a
+     * body whose prototype is not null answers the builtin class Node
+     * would (Object, Array). */
+    const char *builtin =
+        v->kind == SCR_DYN_ARR ? "Array" : v->kind == SCR_DYN_OBJ ? "Object" : NULL;
+    if (builtin == NULL) return NULL;
+    ScrDyn *proto = scr_dyn_get_prototype((ScrDyn *)v);
+    const bool no_proto = proto == NULL || proto->kind == SCR_DYN_NULL;
+    scr_dyn_release(proto);
+    if (no_proto) return NULL;
+    ScrStr *text = scr_str_new(builtin, strlen(builtin));
+    ScrDyn *name = scr_dyn_new_str(text);
+    scr_str_release(text);
+    return name;
+  }
+  return NULL;
+}
+
+
+/* assert.js's ifError: for an object whose `message` reads as a string the
+ * message is that string — the constructor's name when the string is empty
+ * — and every other value renders with util.inspect's defaults (compact,
+ * depth 2). An error is not special-cased: a plain object with a message
+ * answers the same way. The reads are property reads (prototype chain and
+ * getters); a getter's throw is the exception the assertion propagates. */
 void scr_assert_iferror_dyn(const ScrDyn *v) {
   if (v->kind == SCR_DYN_UNDEF || v->kind == SCR_DYN_NULL) return;
-  if (v->kind == SCR_DYN_OBJ && scr_dyn_obj_get(v, "%error", 6) != NULL) {
-    const ScrDyn *msg = scr_dyn_obj_get(v, "message", 7);
-    const ScrDyn *name = scr_dyn_obj_get(v, "name", 4);
-    const ScrDyn *d = msg != NULL && msg->kind == SCR_DYN_STR && msg->v.str->len > 0 ? msg : name;
-    if (d != NULL && d->kind == SCR_DYN_STR) {
-      scr_assert_iferror_fail(d->v.str->data, d->v.str->len, scr_dyn_retain((ScrDyn *)v));
+  if (scr_assert_dyn_is_object(v)) {
+    ScrDyn *message = scr_dyn_obj_read((ScrDyn *)v, "message", 7);
+    if (message == NULL) return; /* the getter threw */
+    if (message->kind == SCR_DYN_STR) {
+      if (message->v.str->len > 0) {
+        scr_assert_iferror_fail(message->v.str->data, message->v.str->len,
+                                scr_dyn_retain((ScrDyn *)v));
+        scr_dyn_release(message);
+        return;
+      }
+      /* `err.message.length === 0 && err.constructor`: its name. */
+      ScrDyn *name = scr_assert_constructor_name(v);
+      if (name != NULL && name->kind == SCR_DYN_STR) {
+        scr_assert_iferror_fail(name->v.str->data, name->v.str->len,
+                                scr_dyn_retain((ScrDyn *)v));
+        scr_dyn_release(name);
+        scr_dyn_release(message);
+        return;
+      }
+      scr_dyn_release(name);
+      /* No constructor name to add: Node appends the empty message. */
+      scr_assert_iferror_fail(message->v.str->data, message->v.str->len,
+                              scr_dyn_retain((ScrDyn *)v));
+      scr_dyn_release(message);
       return;
     }
+    scr_dyn_release(message);
   }
-  ScrStr *q = scr_assert_cf_inspect(v);
+  /* Node's ifError renders any other value with util.inspect's defaults
+   * (compact, depth 2), so a short object or array stays on one line. The
+   * unit is reached through scr_optional.h: a program links it for this
+   * call (the assert.ifErrorDyn feature), and the local renderer answers
+   * if it is not linked. */
+  ScrStr *q = scr_optional_inspect != NULL ? scr_optional_inspect->dyn((ScrDyn *)v, 0, 2)
+                                           : scr_assert_cf_inspect(v);
   scr_assert_iferror_fail(q->data, q->len, scr_dyn_retain((ScrDyn *)v));
   scr_str_release(q);
 }

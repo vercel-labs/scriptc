@@ -16,6 +16,7 @@
 #include <stdbool.h>
 
 typedef struct ScrDyn ScrDyn;
+typedef struct ScrStr ScrStr;
 
 /* The event-target unit (scr_event_target.c): the abort-listener entry an
  * AbortSignal needs, which http.Agent.createConnection passes to the dial. */
@@ -33,8 +34,15 @@ typedef struct {
   bool (*chan_has_subscribers)(double handle);
 } ScrDcOps;
 
+/* The inspect unit (scr_inspect.c): assert.ifError renders a non-error
+ * value with util.inspect's defaults (compact, depth 2). */
+typedef struct {
+  ScrStr *(*dyn)(ScrDyn *d, double recurse, double depth);
+} ScrInspectOps;
+
 /* NULL until the unit that provides them is installed. */
 extern const ScrEventTargetOps *scr_optional_event_target;
 extern const ScrDcOps *scr_optional_dc;
+extern const ScrInspectOps *scr_optional_inspect;
 
 #endif

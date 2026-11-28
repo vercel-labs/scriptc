@@ -1,0 +1,74 @@
+name: Merge guard
+
+# A pull request's CI checks its head against the canary it branched from. Two
+# pull requests that each pass can still break together — usually one changes a
+# compiler diagnostic and another's snapshot or diagnostic fixture still expects
+# the old rendering — and the merge queue is the first place that combination is
+# built. An entry that fails there holds up every entry behind it.
+#
+# This workflow builds the combination before the queue does: the pull request's
+# head merged into the CURRENT origin/canary, in the workflow, never on the
+# branch. It runs the quick, high-signal checks that broke the queue on
+# 2026-11-27 (scripts/ci/merge-guard.mjs): the compiler source-rule and snapshot
+# suites, the TypeScript baselines, and lint/format. Full suites stay in CI.
+#
+# Each run reports one commit status named `merge with canary` on the pull
+# request's head (merge-guard-sweep.yml reports the same status when canary
+# moves), so branch protection can require that one context once this has run
+# for a while without a false failure. It is advisory until then: requiring a
+# new job before it has proven stable holds every pull request on its first bug.
+on:
+  pull_request:
+    branches: [canary]
+    types: [opened, synchronize, reopened, ready_for_review]
+  # A queue entry is the merge itself. Guarding it here names a failure on the
+  # queue entry instead of leaving the queue to stall on an unnamed red run.
+  merge_group:
+
+permissions:
+  contents: read
+
+concurrency:
+  # A new push supersedes the pull request's older guard; a queue entry's own
+  # commit is guarded once.
+  group: merge-guard-${{ github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || format('queue-{0}', github.event.merge_group.head_sha) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  guard_pr:
+    name: guard the pull request
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      # The canary tier runs its suites with four workers; the guard matches it so a suite that is
+      # parallel-sensitive fails here as it does there.
+      SCRIPTC_TEST_WORKERS: "4"
+    permissions:
+      contents: read
+      # The guard reports `merge with canary` on the head; nothing else is written.
+      statuses: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: canary
+          fetch-depth: 0
+      - uses: ./.github/actions/merge-guard
+        with:
+          pr: ${{ github.event.pull_request.number }}
+          head: ${{ github.event.pull_request.head.sha }}
+
+  queue_entry:
+    name: guard the merge queue entry
+    if: github.event_name == 'merge_group'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      # The canary tier runs its suites with four workers; the guard matches it so a suite that is
+      # parallel-sensitive fails here as it does there.
+      SCRIPTC_TEST_WORKERS: "4"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 1
+      - uses: ./.github/actions/merge-guard

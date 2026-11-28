@@ -31,6 +31,7 @@ export const CANARY_SUITES = [
   "tests/harness/ci-green-tag.test.ts",
   "tests/harness/ci-queue-tests.test.ts",
   "tests/harness/ci-review-gate.test.ts",
+  "tests/harness/ci-merge-guard.test.ts",
   "tests/harness/ci-canary-suite.test.ts",
 ];
 

@@ -1,0 +1,122 @@
+name: Merge guard checks
+description: >-
+  Merges a pull request's head into the checked-out origin/canary tree and runs the merge guard's quick checks
+  (scripts/ci/merge-guard.mjs): the canary tier's compiler source-rule and snapshot suites, the TypeScript
+  baselines, and lint/format. A pull request that does not merge cleanly fails by name before any check runs.
+inputs:
+  pr:
+    description: The pull request number to merge; empty checks the checked-out tree as it is (a merge queue entry).
+    required: false
+    default: ""
+  head:
+    description: >-
+      The commit the guard reports on, as the `merge with canary` status; empty reports nothing (a merge queue
+      entry has no pull request head of its own).
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+    # The caller checks out the repository first, so this action can be read. The checkout is the canary tip for
+    # a pull request sweep and the merge queue's tree for a queue entry.
+    - name: Merge the head into origin/canary
+      id: merge
+      if: inputs.pr != ''
+      shell: bash
+      env:
+        PR: ${{ inputs.pr }}
+      run: |
+        set -euo pipefail
+        canary=$(git rev-parse HEAD)
+        echo "canary=$canary" >> "$GITHUB_OUTPUT"
+        echo "Canary: $canary" >> "$GITHUB_STEP_SUMMARY"
+        # The pull request head is a ref of the base repository, so a fork's head is reachable here too. The
+        # checkout's credential fetches it; nothing is written back.
+        git fetch --no-tags origin "+refs/pull/${PR}/head:refs/remotes/origin/pr-${PR}"
+        if git -c user.name="merge guard" -c user.email="merge-guard@users.noreply.github.com" \
+          merge --no-ff --no-commit -m "Merge pull request #${PR} into canary" "refs/remotes/origin/pr-${PR}" \
+          > "$RUNNER_TEMP/merge.log" 2>&1; then
+          echo "Merged pull request #${PR} into canary $canary" >> "$GITHUB_STEP_SUMMARY"
+        else
+          conflicted=$(git diff --name-only --diff-filter=U | paste -sd ',' - | sed 's/,/, /g')
+          printf '::error title=Merge conflict::Pull request #%s does not merge cleanly with origin/canary (%s). Resolve the conflict with canary before queueing.%s\n' \
+            "$PR" "${canary:0:12}" "${conflicted:+ Conflicted files: $conflicted}"
+          echo "--- git merge ---"
+          cat "$RUNNER_TEMP/merge.log"
+          exit 1
+        fi
+    - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      with:
+        version: 11.1.3
+    - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      with:
+        node-version-file: .node-version
+        cache: pnpm
+    - name: Install the merged dependencies
+      shell: bash
+      run: pnpm install --frozen-lockfile
+    # The diagnostics suite spawns the compile-time evaluator, and a diagnostics program that reaches the backend
+    # needs the codegen helper; both come from the helper build. The runtime pack is not needed: no check here
+    # builds or runs a native program.
+    - uses: ./.github/actions/llvm-linux
+    - uses: ./.github/actions/zig
+    # The same helper key .github/actions/native-packages uses: a lane that already built the helper for these
+    # sources hands it over, and this action invalidates nothing there. Keep the inputs in step with that key.
+    - name: Identify the host toolchain
+      id: host
+      shell: bash
+      run: |
+        echo "image=${ImageOS}-${ImageVersion}" >> "$GITHUB_OUTPUT"
+        echo "zig=$(zig version)" >> "$GITHUB_OUTPUT"
+    - name: Restore the LLVM helper
+      id: helper
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: packages/llvm-linux-x64-gnu/bin
+        key: helper-v1-linux-x64-gnu-${{ steps.host.outputs.image }}-${{ steps.host.outputs.zig }}-${{ hashFiles('.node-version', '.github/actions/native-packages/action.yml', '.github/actions/llvm-linux/action.yml', 'native/llvm-codegen/**', 'packages/llvm-*/package.json', 'packages/llvm-*/scripts/**', 'packages/runtime/vendor/quickjs-ng/**', 'packages/runtime/src/scr_ieee754.*') }}
+    - name: Build the LLVM helper
+      if: steps.helper.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        SCRIPTC_PACKAGE_TARGET: linux-x64-gnu
+      run: pnpm --filter "@scriptc/llvm-$SCRIPTC_PACKAGE_TARGET" build:native
+    - name: Save the LLVM helper
+      if: steps.helper.outputs.cache-hit != 'true'
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: packages/llvm-linux-x64-gnu/bin
+        key: ${{ steps.helper.outputs.cache-primary-key }}
+    - name: Merge guard checks
+      shell: bash
+      run: node scripts/ci/merge-guard.mjs
+    # One status names the result on the head, whichever run produced it: the pull request's own guard, or a
+    # canary sweep that found the head ready again. Branch protection can require that one context. A fork pull
+    # request's token is read-only, so reporting there is best-effort; its job still reports as a check.
+    - name: Report the guard on the head
+      if: always() && inputs.head != ''
+      continue-on-error: true
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        HEAD: ${{ inputs.head }}
+        CANARY: ${{ steps.merge.outputs.canary }}
+        STATUS: ${{ job.status }}
+      run: |
+        set -euo pipefail
+        state=success
+        if [ "$STATUS" != success ]; then state=failure; fi
+        # A guard that started before the latest canary push tested a canary that no longer exists. Reporting now
+        # would overwrite a newer sweep's result with a stale one, so leave the head to the sweep, which re-checks
+        # it against the tip.
+        current=$(gh api "repos/${GITHUB_REPOSITORY}/commits/canary" --jq .sha)
+        if [ "$current" != "$CANARY" ]; then
+          echo "origin/canary moved from ${CANARY:0:12} to ${current:0:12} while the guard ran; the sweep reports the tip" \
+            >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+        fi
+        gh api "repos/${GITHUB_REPOSITORY}/statuses/${HEAD}" \
+          -f state="$state" \
+          -f context="merge with canary" \
+          -f description="the merge guard ${state} for origin/canary at ${CANARY:0:12}" \
+          > /dev/null
+        echo "Reported merge with canary: $state" >> "$GITHUB_STEP_SUMMARY"

@@ -711,3 +711,68 @@ test("a design type keeps a value import the file names only in the type positio
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("a namespace import used only by a decorated annotation is kept", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-legacy-decorators-ns-"));
+  try {
+    const entry = join(dir, "main.ts");
+    await writeFile(join(dir, "dep.ts"), "export class Dep {}\n");
+    await writeFile(
+      entry,
+      [
+        'import * as dep from "./dep.js";',
+        "function dec(..._a: any[]): any { return undefined; }",
+        "class Box { @dec p: dep.Dep = new dep.Dep(); }",
+        "console.log(new Box().p instanceof dep.Dep);",
+        "",
+      ].join("\n"),
+    );
+    await writeFile(join(dir, "tsconfig.json"), JSON.stringify(metadataTsconfig));
+    const result = await compile(entry, {
+      outDir: dir,
+      outPath: join(dir, "main.ir.json"),
+      outputKind: "ir",
+    });
+    if (!result.ok) throw new Error(result.diagnostics.map((d) => d.message).join("\n"));
+    const mod = deserializeModule(await readFile(join(dir, "main.ir.json"), "utf8"));
+    // The dependency module stays in the program (the namespace import is a
+    // value import), and design:type carries the imported class value.
+    expect(
+      mod.functions.filter((fn) => fn.name.startsWith("%init.")).length,
+    ).toBeGreaterThanOrEqual(2);
+    expect(JSON.stringify(initFunction(mod).body)).toContain('"classRef"');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a type-only imported class serializes as Function", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-legacy-decorators-typeonly-"));
+  try {
+    const entry = join(dir, "main.ts");
+    await writeFile(join(dir, "dep.ts"), "export class Dep {}\n");
+    await writeFile(
+      entry,
+      [
+        'import type { Dep } from "./dep.js";',
+        "function dec(..._a: any[]): any { return undefined; }",
+        "class Box { @dec p!: Dep; }",
+        "console.log(new Box() !== undefined);",
+        "",
+      ].join("\n"),
+    );
+    await writeFile(join(dir, "tsconfig.json"), JSON.stringify(metadataTsconfig));
+    const result = await compile(entry, {
+      outDir: dir,
+      outPath: join(dir, "main.ir.json"),
+      outputKind: "ir",
+    });
+    if (!result.ok) throw new Error(result.diagnostics.map((d) => d.message).join("\n"));
+    const mod = deserializeModule(await readFile(join(dir, "main.ir.json"), "utf8"));
+    const body = JSON.stringify(initFunction(mod).body);
+    expect(body).toContain('"Function"');
+    expect(body).not.toContain('"classRef"');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

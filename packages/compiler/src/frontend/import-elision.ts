@@ -736,6 +736,14 @@ function elideCandidates(
       if (declaration !== undefined && isTypeOnlyImport(declaration as unknown as ts.Node))
         return false;
     }
+    // A namespace member (`dep.Dep`) names its class through the QUALIFIED
+    // name: tsc emits the member read and keeps the namespace import.
+    if (ts.isQualifiedName(reference.typeName)) {
+      const member = checker.getSymbolAtLocation(reference.typeName);
+      if (member === undefined) return false;
+      const memberTarget = targetOf(member) ?? member;
+      return (memberTarget.flags & ts.SymbolFlags.Class) !== 0;
+    }
     const target = targetOf(symbol);
     return ((target ?? symbol).flags & ts.SymbolFlags.Class) !== 0;
   }

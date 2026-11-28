@@ -245,12 +245,21 @@ function typeReferenceToken(
 ): MetaToken {
   const name = node.typeName;
   const setSymbol = lowerer.checker.getSymbolAtLocation(name);
-  const symbol =
-    setSymbol !== undefined && (setSymbol.flags & ts.SymbolFlags.Alias) !== 0
-      ? lowerer.checker.getAliasedSymbol(setSymbol)
-      : setSymbol;
-  if (setSymbol !== undefined) {
-    const info = lowerer.classBySymbol.get(symbol ?? setSymbol);
+  const aliased = setSymbol !== undefined && (setSymbol.flags & ts.SymbolFlags.Alias) !== 0;
+  const symbol = aliased ? lowerer.checker.getAliasedSymbol(setSymbol) : setSymbol;
+  // A type-only import has no run-time binding at all (tsc elides it): a
+  // class reached through one serializes as Function, the one token whose
+  // value every program has.
+  if (
+    setSymbol !== undefined &&
+    aliased &&
+    symbol !== undefined &&
+    (symbol.flags & ts.SymbolFlags.Class) !== 0 &&
+    isTypeOnlyImportSymbol(setSymbol)
+  )
+    return { k: "global", name: "Function" };
+  if (symbol !== undefined) {
+    const info = lowerer.classBySymbol.get(symbol);
     if (info !== undefined && info.decl !== null)
       return { k: "class", info, blame: container, spelled: entityNameText(name) };
   }
@@ -265,14 +274,73 @@ function typeReferenceToken(
     if ((flags & ts.SymbolFlags.Enum) !== 0) return enumToken(lowerer, symbol);
     if ((flags & ts.SymbolFlags.Interface) !== 0 && (flags & ts.SymbolFlags.Value) === 0)
       return OBJ;
-    if ((flags & ts.SymbolFlags.TypeAlias) !== 0) return OBJ;
-    // A class value the program did not compile: an ambient declaration's
-    // name is read where tsc reads it. A type-only import has no value
-    // binding at run time; tsc's resolver serializes that one as Function.
+    // An alias serializes as the type it names: a primitive, an array, a
+    // callable or a literal union answers its global constructor, anything
+    // else Object (a class reached only through an alias is Object too:
+    // tsc's resolver does not name the aliased value).
+    if ((flags & ts.SymbolFlags.TypeAlias) !== 0) return aliasToken(lowerer, symbol);
     if ((flags & (ts.SymbolFlags.Class | ts.SymbolFlags.ValueModule)) !== 0)
       return { k: "entity", node: name };
     if ((flags & ts.SymbolFlags.Value) !== 0) return { k: "entity", node: name };
   }
+  return OBJ;
+}
+
+/** Whether the import alias was spelled type-only (`import type …`,
+ * `import { type X }`). */
+function isTypeOnlyImportSymbol(symbol: ts.Symbol): boolean {
+  const declaration = symbol.declarations?.[0];
+  if (declaration === undefined) return false;
+  let node: ts.Node = declaration as unknown as ts.Node;
+  for (let hop = 0; hop < 8; hop++) {
+    if (ts.isImportSpecifier(node)) {
+      if (node.isTypeOnly) return true;
+      const clause = node.parent?.parent as { phaseModifier?: ts.SyntaxKind } | undefined;
+      return clause?.phaseModifier === ts.SyntaxKind.TypeKeyword;
+    }
+    if (ts.isNamespaceImport(node)) {
+      const clause = node.parent as { phaseModifier?: ts.SyntaxKind } | undefined;
+      return clause?.phaseModifier === ts.SyntaxKind.TypeKeyword;
+    }
+    if (ts.isImportClause(node))
+      return (
+        (node as unknown as { phaseModifier?: ts.SyntaxKind }).phaseModifier ===
+        ts.SyntaxKind.TypeKeyword
+      );
+    if (ts.isImportEqualsDeclaration(node)) return node.isTypeOnly;
+    if (node.parent === undefined) return false;
+    node = node.parent;
+  }
+  return false;
+}
+
+/** The token an alias's declared type serializes to (tsc resolves the alias
+ * and answers by the type's kind). */
+function aliasToken(lowerer: Lowerer, symbol: ts.Symbol): MetaToken {
+  const type = lowerer.checker.getDeclaredTypeOfSymbol(symbol);
+  if (type.isUnionType()) {
+    let numeric = 0;
+    let string = 0;
+    let boolean = 0;
+    for (const part of ts.constituentTypes(type)) {
+      if ((part.flags & ts.TypeFlags.NumberLiteral) !== 0) numeric++;
+      else if ((part.flags & ts.TypeFlags.StringLiteral) !== 0) string++;
+      else if ((part.flags & ts.TypeFlags.BooleanLiteral) !== 0) boolean++;
+      else return OBJ;
+    }
+    if (numeric > 0 && string === 0 && boolean === 0) return { k: "global", name: "Number" };
+    if (string > 0 && numeric === 0 && boolean === 0) return { k: "global", name: "String" };
+    if (boolean > 0 && numeric === 0 && string === 0) return { k: "global", name: "Boolean" };
+    return OBJ;
+  }
+  const flags = type.flags;
+  if ((flags & ts.TypeFlags.StringLike) !== 0) return { k: "global", name: "String" };
+  if ((flags & ts.TypeFlags.NumberLike) !== 0) return { k: "global", name: "Number" };
+  if ((flags & ts.TypeFlags.BooleanLike) !== 0) return { k: "global", name: "Boolean" };
+  if ((flags & ts.TypeFlags.BigIntLike) !== 0) return { k: "global", name: "BigInt" };
+  if ((flags & ts.TypeFlags.ESSymbolLike) !== 0) return { k: "global", name: "Symbol" };
+  if (lowerer.checker.isArrayType(type)) return { k: "global", name: "Array" };
+  if (lowerer.checker.getCallSignatures(type).length > 0) return { k: "global", name: "Function" };
   return OBJ;
 }
 

@@ -158,6 +158,62 @@ class ParamOnly {
   }
 }
 
+// A getter with a typed return and an UNANNOTATED setter: TypeScript's
+// emit serializes the setter's (implicit) parameter type, Object.
+class GetterCase {
+  private _g: Dep = new Dep();
+
+  @meta("getterUnannotatedSetter")
+  get g(): Dep {
+    return this._g;
+  }
+  set g(next) {
+    this._g = next as Dep;
+  }
+}
+
+// A type alias serializes as the type it names: a primitive, an array, a
+// callable or a literal union answers its global constructor, while an
+// alias to a class (or a construct-only signature) is Object.
+type AliasString = string;
+type AliasNumber = number;
+type AliasBoolean = boolean;
+type AliasArray = Dep[];
+type AliasFn = () => void;
+type AliasLit = "x" | "y";
+type AliasCtor = new () => Dep;
+
+class AliasCase {
+  @meta("aliasString")
+  s: AliasString = "";
+
+  @meta("aliasNumber")
+  n: AliasNumber = 0;
+
+  @meta("aliasBoolean")
+  b: AliasBoolean = false;
+
+  @meta("aliasArray")
+  a: AliasArray = [];
+
+  @meta("aliasFn")
+  f: AliasFn = () => {};
+
+  @meta("aliasLit")
+  lit: AliasLit = "x";
+
+  @meta("aliasCtor")
+  ctor: AliasCtor = Dep;
+
+  @meta("aliasClass")
+  cls: AliasDep = new Dep();
+}
+
+type AliasDep = Dep;
+
+void new GetterCase();
+void new AliasCase();
+
 const paramOnly = Reflect.getMetadata("design:paramtypes", ParamOnly);
 console.log("paramonly", paramOnly[0] === Dep);
 

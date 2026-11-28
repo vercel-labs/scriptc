@@ -40,10 +40,14 @@ fs.watchFile(path, { interval: 20 }, (current: fs.Stats, previous: fs.Stats) => 
 });
 
 // Five poll intervals: the baseline (the file as written above) is settled in
-// every implementation before the change.
+// every implementation before the change. The change is staged with its mtime
+// and renamed over the path, so a poll reads either the old file or the
+// complete new one, never an intermediate snapshot.
 await new Promise((resolve) => setTimeout(resolve, 100));
-fs.writeFileSync(path, "three!");
-fs.utimesSync(path, newSeconds, newSeconds);
+const staged = `${path}.staged`;
+fs.writeFileSync(staged, "three!");
+fs.utimesSync(staged, newSeconds, newSeconds);
+fs.renameSync(staged, path);
 
 const sentinel: Change = { current: -1, previous: -1, previousOld: false, currentNew: false };
 const change = await Promise.race([

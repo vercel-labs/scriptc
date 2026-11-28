@@ -313,6 +313,7 @@ export function classMethodValue(
     options?.exactReturn === true &&
     (ret.kind === "object" || (ret.kind === "union" && classArmOf(lowerer, ret) !== null));
   const name = `%method.value:${callee}${exactReturn ? ".exact" : ""}`;
+  if (exactReturn) lowerer.exactReturnMethodValues.add(name);
   const member = classMethodMember(lowerer, owner, method, false);
   // The value is the method the class declares, so its `length` is that
   // declaration's. The type counts the slot's parameters: an override that
@@ -984,8 +985,13 @@ export function finalizeClassMethodValues(lowerer: Lowerer, functions: IrFunctio
     // its call is the same method, and a method that never reads `this` must
     // stay callable detached there too.
     const methodName = fn.name.slice("%method.value:".length);
+    // Only the adapter this pass built with the variant carries the suffix.
+    // A method the source names `exact` reads `%C.exact` and is that method,
+    // not a variant of `%C`.
     const target = byName.get(
-      methodName.endsWith(".exact") ? methodName.slice(0, -".exact".length) : methodName,
+      lowerer.exactReturnMethodValues.has(fn.name)
+        ? methodName.slice(0, -".exact".length)
+        : methodName,
     );
     const thisParam = target?.params[0];
     if (!target || !thisParam || target.async || target.generator) continue;

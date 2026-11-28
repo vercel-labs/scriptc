@@ -97,6 +97,25 @@ for (const method of RECEIVER_FREE)
     expect(names(module)).toContain("%method.receiverless:%Logger.m");
   });
 
+// A method the source names `exact` is an ordinary method. Its adapter name
+// ends in the suffix an island's exact-return variant carries, and stripping
+// it would look up the class instead of the method: the value still needs no
+// receiver.
+test("a method the source names exact needs no receiver", async () => {
+  const module = await compileToIr([
+    "class Logger {",
+    '  tag = "L";',
+    '  exact(): string { return "plain"; }',
+    "}",
+    "const logger = new Logger();",
+    "const f = logger.exact;",
+    "console.log(f());",
+    "",
+  ]);
+  expect(adapter(module, "exact")).not.toContain("%method.receiver:Logger");
+  expect(names(module)).toContain("%method.receiverless:%Logger.exact");
+});
+
 // `(c.m)()`, `c.m!()` and `(c.m as F)()` are method calls: no method value is
 // read, so no adapter exists. A comma in the callee reads the value.
 test("a parenthesized or asserted member callee is a method call", async () => {

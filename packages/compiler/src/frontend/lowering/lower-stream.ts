@@ -5974,17 +5974,17 @@ function lowerDynSourceStage(
       },
     ];
     if (give) {
-      // the untyped function stage after the source takes the iterable
-      // itself, as Node's makeAsyncIterable answers it; a stream (a pair's
-      // readable side) goes as the generator over it, as Node iterates a
-      // stream there
+      // the function stage after the source takes the value itself, as
+      // Node's makeAsyncIterable answers an iterable (a native readable
+      // stream answers its iterator too); a stream-like JavaScript object
+      // goes as the generator over it
       const v = varRef(valueId, DYN, loc);
       body.push(
         handoffPut(
           varRef(cellId, DYN, loc),
           {
             kind: "ternary",
-            cond: { kind: "libCall", fn: "stream.dynIterableSource", args: [v], type: BOOL, loc },
+            cond: { kind: "libCall", fn: "stream.dynHandsValue", args: [v], type: BOOL, loc },
             then: v,
             else_: { kind: "dynFrom", value: varRef(genId, out, loc), type: DYN, loc },
             type: DYN,
@@ -6552,6 +6552,27 @@ function lowerPipelineStages(
     // exactly that protocol, so the stage is lowered as the function value
     // it is and the runtime drives it.
     const plain = !isAsync || (!isGen && !isLast);
+    if (plain && srcT === null && !isLast && preLowered?.has(0) !== true) {
+      // Node's source branch: the function is called with { signal } while
+      // the pipeline is set up and must answer an iterable (sync or async)
+      // or a stream, which is read as an async iterable; another value
+      // throws ERR_INVALID_RETURN_VALUE naming the source.
+      const fnValue = lowerer.lowerExprExpecting(arg, DYN);
+      const source = lowerDynSourceStage(
+        lowerer,
+        fnValue,
+        loc,
+        givesToNext ? cellRef() : undefined,
+      );
+      if (source === null) lowerer.noLowering("pipeline over this source", arg);
+      takes = givesToNext;
+      mask |= 1 << stages.length;
+      positions += 1;
+      argOrder.push({ list: stages, index: stages.length });
+      stages.push(source!.closure);
+      srcT = source!.out;
+      continue;
+    }
     if (plain && srcT !== null) {
       // A source parameter typed as one of the async-protocol interfaces
       // is the pipeline's own object held as a compiled generator, which
@@ -6603,12 +6624,13 @@ function lowerPipelineStages(
       );
     }
     if (plain) {
+      // The source branch above handles a plain function followed by other
+      // stages; a lone function is Node's source branch with no stage after
+      // it, whose result the pipeline would answer itself.
       lowerer.noLowering(
-        isLast
-          ? "a pipeline destination that is not an async function"
-          : "a pipeline source function that is not an async generator function",
+        "a pipeline whose only stage is a plain function",
         arg,
-        "write the stage as async function* (source) { for await (const chunk of source) ... }",
+        "give the pipeline a stage after the source: a stream, or an async function whose value settles the pipeline",
       );
     }
     const optionsAt = srcT === null ? 0 : 1;

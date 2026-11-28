@@ -220,6 +220,8 @@ describe.skipIf(!zigOnPath() || !wasmPackInstalled())("wasm32-wasi differential"
     "object-key-indexes.js",
     // Error.prepareStackTrace program state.
     "error-prepare-stack-trace-state.js",
+    // A private name never answers through a string key.
+    "private-name-string-key.js",
     "record-key-order.ts",
     "typed-array-bulk-conversion.mjs",
     "typed-array-numeric-import.ts",

@@ -118657,10 +118657,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
-          "tests/corpus/crypto-webcrypto-mlkem.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts",
+          "tests/corpus/webcrypto-algorithm-parameters.ts",
+          "tests/corpus/webcrypto-sha3-digest.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -118770,10 +118773,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
-          "tests/corpus/crypto-webcrypto-mlkem.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts",
+          "tests/corpus/webcrypto-aes-ocb.ts",
+          "tests/corpus/webcrypto-chacha20-poly1305.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -118854,10 +118860,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
-          "tests/corpus/crypto-webcrypto-mlkem.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts",
+          "tests/corpus/webcrypto-aes-ocb.ts",
+          "tests/corpus/webcrypto-chacha20-poly1305.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -118966,10 +118975,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
-          "tests/corpus/crypto-webcrypto-mlkem.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts",
+          "tests/corpus/webcrypto-algorithm-parameters.ts",
+          "tests/corpus/webcrypto-sha3-digest.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -119078,10 +119090,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
-          "tests/corpus/crypto-webcrypto-mlkem.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts",
+          "tests/corpus/webcrypto-algorithm-parameters.ts",
+          "tests/corpus/webcrypto-sha3-digest.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -119161,10 +119176,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
-          "tests/corpus/crypto-webcrypto-mlkem.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts",
+          "tests/corpus/webcrypto-algorithm-parameters.ts",
+          "tests/corpus/webcrypto-sha3-digest.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -119244,10 +119262,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
-          "tests/corpus/crypto-webcrypto-mlkem.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts",
+          "tests/corpus/webcrypto-algorithm-parameters.ts",
+          "tests/corpus/webcrypto-sha3-digest.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -119351,10 +119372,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
-          "tests/corpus/crypto-webcrypto-mlkem.mjs"
+          "tests/corpus/webcrypto-argon2.ts",
+          "tests/corpus/compat-webcrypto-modern-params.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -119512,11 +119534,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-feature:webcrypto.ContextParams",
-        "tests": [
-          "tests/corpus/crypto-webcrypto-mlkem.mjs"
-        ]
+        "status": "not-implemented",
+        "evidence": "compiler-unmatched:webcrypto"
       },
       "anchorSource": "exact"
     },
@@ -119538,11 +119557,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-feature:webcrypto.name",
-        "tests": [
-          "tests/corpus/crypto-webcrypto-mlkem.mjs"
-        ]
+        "status": "not-implemented",
+        "evidence": "compiler-unmatched:webcrypto"
       },
       "anchorSource": "ancestor"
     },
@@ -119616,10 +119632,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
-          "tests/corpus/crypto-webcrypto-mlkem.mjs"
+          "tests/corpus/webcrypto-cshake.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -119751,10 +119767,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
-          "tests/corpus/crypto-webcrypto-mlkem.mjs"
+          "tests/corpus/compat-webcrypto-modern-params.ts",
+          "tests/corpus/webcrypto-ecdh-key-agreement.ts",
+          "tests/corpus/webcrypto-x25519-key-agreement.ts",
+          "tests/corpus/webcrypto-rsa-oaep.ts",
+          "tests/corpus/jose-jwe-asymmetric/main.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -119867,7 +119887,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
-          "tests/corpus/crypto-webcrypto-mlkem.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -119921,10 +119942,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
-          "tests/corpus/crypto-webcrypto-mlkem.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts",
+          "tests/corpus/webcrypto-ecdh-key-agreement.ts",
+          "tests/corpus/webcrypto-x25519-key-agreement.ts",
+          "tests/corpus/webcrypto-rsa-oaep.ts",
+          "tests/corpus/jose-jwe-asymmetric/main.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -120009,10 +120035,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
-          "tests/corpus/crypto-webcrypto-mlkem.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts",
+          "tests/corpus/webcrypto-ecdh-key-agreement.ts",
+          "tests/corpus/webcrypto-x25519-key-agreement.ts",
+          "tests/corpus/webcrypto-rsa-oaep.ts",
+          "tests/corpus/jose-jwe-asymmetric/main.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -120097,10 +120128,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
-          "tests/corpus/crypto-webcrypto-mlkem.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts",
+          "tests/corpus/webcrypto-ecdh-key-agreement.ts",
+          "tests/corpus/webcrypto-x25519-key-agreement.ts",
+          "tests/corpus/webcrypto-rsa-oaep.ts",
+          "tests/corpus/jose-jwe-asymmetric/main.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -120393,10 +120429,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
-          "tests/corpus/crypto-webcrypto-mlkem.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts",
+          "tests/corpus/webcrypto-algorithm-parameters.ts",
+          "tests/corpus/webcrypto-sha3-digest.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -120531,10 +120570,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
-          "tests/corpus/crypto-webcrypto-mlkem.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts",
+          "tests/corpus/webcrypto-algorithm-parameters.ts",
+          "tests/corpus/webcrypto-sha3-digest.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -120640,10 +120682,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
-          "tests/corpus/crypto-webcrypto-mlkem.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts",
+          "tests/corpus/webcrypto-algorithm-parameters.ts",
+          "tests/corpus/webcrypto-sha3-digest.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -120749,10 +120794,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
-          "tests/corpus/crypto-webcrypto-mlkem.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts",
+          "tests/corpus/webcrypto-algorithm-parameters.ts",
+          "tests/corpus/webcrypto-sha3-digest.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -120803,10 +120851,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
-          "tests/corpus/crypto-webcrypto-mlkem.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts",
+          "tests/corpus/webcrypto-algorithm-parameters.ts",
+          "tests/corpus/webcrypto-sha3-digest.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -120881,10 +120932,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
-          "tests/corpus/crypto-webcrypto-mlkem.mjs"
+          "tests/corpus/webcrypto-kt.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -120987,10 +121038,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
-          "tests/corpus/crypto-webcrypto-mlkem.mjs"
+          "tests/corpus/webcrypto-kmac.ts",
+          "tests/corpus/compat-webcrypto-modern-params.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -121067,10 +121119,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
-          "tests/corpus/crypto-webcrypto-mlkem.mjs"
+          "tests/corpus/webcrypto-kmac.ts",
+          "tests/corpus/compat-webcrypto-modern-params.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -121147,10 +121200,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
-          "tests/corpus/crypto-webcrypto-mlkem.mjs"
+          "tests/corpus/webcrypto-kmac.ts",
+          "tests/corpus/compat-webcrypto-modern-params.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -121364,10 +121418,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
-          "tests/corpus/crypto-webcrypto-mlkem.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts",
+          "tests/corpus/webcrypto-algorithm-parameters.ts",
+          "tests/corpus/webcrypto-sha3-digest.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -121475,7 +121532,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
-          "tests/corpus/crypto-webcrypto-mlkem.mjs"
+          "tests/corpus/compat-webcrypto-modern-params.ts",
+          "tests/corpus/7085-webcrypto-ecdsa-rsa.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -121581,10 +121639,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
-          "tests/corpus/crypto-webcrypto-mlkem.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts",
+          "tests/corpus/webcrypto-algorithm-parameters.ts",
+          "tests/corpus/webcrypto-sha3-digest.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -121719,7 +121780,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
-          "tests/corpus/crypto-webcrypto-mlkem.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -121830,10 +121892,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
-          "tests/corpus/crypto-webcrypto-mlkem.mjs"
+          "tests/corpus/compat-webcrypto-modern-params.ts",
+          "tests/corpus/webcrypto-ecdh-key-agreement.ts",
+          "tests/corpus/webcrypto-x25519-key-agreement.ts",
+          "tests/corpus/webcrypto-rsa-oaep.ts",
+          "tests/corpus/jose-jwe-asymmetric/main.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -121884,10 +121950,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
-          "tests/corpus/crypto-webcrypto-mlkem.mjs"
+          "tests/corpus/compat-webcrypto-algorithms.mjs",
+          "tests/corpus/compat-webcrypto-algorithms.ts",
+          "tests/corpus/webcrypto-algorithm-parameters.ts",
+          "tests/corpus/webcrypto-sha3-digest.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -121991,10 +122060,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
-          "tests/corpus/crypto-webcrypto-mlkem.mjs"
+          "tests/corpus/webcrypto-turboshake.ts"
         ]
       },
       "anchorSource": "ancestor"

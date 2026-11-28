@@ -1,6 +1,8 @@
-// net.createServer({ blockList }): a connection from a blocked address is
-// dropped before any 'connection' listener or connection handler runs; an
-// empty list lets the connection through as usual.
+// net.createServer(options): a connection from a blocked address is dropped
+// before any 'connection' listener or connection handler runs; an empty list
+// lets the connection through as usual. The options bag is read the same way
+// whether it is a record, an object with a getter, or an array that carries
+// the member.
 import * as net from "node:net";
 
 const out: string[] = [];
@@ -87,6 +89,33 @@ steps.push(() => {
     client.on("error", () => {});
     client.on("close", () => {
       say("getter-blocked-connections", connections, "reads", reads);
+      server.close(() => run());
+    });
+  });
+});
+
+steps.push(() => {
+  // Node reads the ServerOpts members off any object, arrays included: an
+  // array options bag that carries blockList blocks the address the same way
+  // a record does.
+  const list = new net.BlockList();
+  list.addAddress("127.0.0.1", "ipv4");
+  const options: unknown[] = [];
+  Reflect.set(options as unknown as object, "blockList", list);
+  const server = net.createServer(options as any, (socket) => {
+    say("array-handler", "called");
+    socket.destroy();
+  });
+  let connections = 0;
+  server.on("connection", () => {
+    connections += 1;
+  });
+  server.listen(0, "127.0.0.1", () => {
+    const port = (server.address() as { port: number }).port;
+    const client = net.connect(port, "127.0.0.1");
+    client.on("error", () => {});
+    client.on("close", () => {
+      say("array-blocked-connections", connections);
       server.close(() => run());
     });
   });

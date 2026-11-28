@@ -2391,7 +2391,9 @@ static ScrDyn *scr_net_server_opt_read(const ScrDyn *o, const char *name, size_t
  * its Server constructor reads them — allowHalfOpen, pauseOnConnect,
  * noDelay and keepAlive for their truthiness, keepAliveInitialDelay and
  * highWaterMark as numbers, blockList as a net.BlockList (a falsy member
- * is no list). An options value that is not an object throws Node's
+ * is no list). Node reads those members off any object, so an array that
+ * carries them (an options bag built dynamically) applies them just like a
+ * record. An options value that is not an object throws Node's
  * ERR_INVALID_ARG_TYPE; null and undefined mean no option set. +1, or
  * NULL with the exception pending. */
 ScrNetServer *scr_net_create_server_opts(const ScrDyn *options /*borrowed*/,
@@ -2418,7 +2420,7 @@ ScrNetServer *scr_net_create_server_opts(const ScrDyn *options /*borrowed*/,
     goto fail;
   }
   s = scr_net_server_new();
-  if (o->kind == SCR_DYN_OBJ) {
+  if (o->kind == SCR_DYN_OBJ || o->kind == SCR_DYN_ARR) {
     ScrDyn *m = scr_net_server_opt_read(o, "allowHalfOpen", 13);
     s->opts_allow_half_open = m != NULL && scr_net_dyn_truthy(m);
     scr_dyn_release(m);

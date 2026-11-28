@@ -122,8 +122,10 @@ export function buildUnitSummary(
     exportNames.set(entry.module, names);
   }
   const exportsOut: Record<string, readonly string[]> = {};
-  for (const module of [...exportNames.keys()].sort())
-    exportsOut[module] = [...(exportNames.get(module) ?? [])].sort();
+  for (const module of Array.from(exportNames.keys()).sort()) {
+    const names = exportNames.get(module);
+    exportsOut[module] = names === undefined ? [] : Array.from(names).sort();
+  }
   const generics = summaryGenerics(lowering, members, unitOfFile);
   const classes: UnitClassFact[] = observation.classes
     .map((entry): UnitClassFact | null => {

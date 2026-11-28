@@ -1510,6 +1510,26 @@ static void *keep_move_worker(void *arg) {
   return NULL;
 }
 
+/* A small-to-small grow copies into another small-class block. That block
+ * must not enter the keep registry: its free is the inline fast path, which
+ * does not remove records, so the discard would release a stale pointer
+ * after the chunk went back. */
+static void *keep_small_move_worker(void *arg) {
+  (void)arg;
+  scr_sa_thread_starting();
+  unsigned char *r = scr_mem_alloc_ref(64);
+  assert(r && ref_in_window(r));
+  fill(r, 64, 0x21);
+  assert(!scr_sa_test_keep_has(r));
+  unsigned char *g = scr_mem_realloc_ref(r, 200);
+  assert(g && ref_in_window(g));
+  verify(g, 64, 0x21);
+  assert(!scr_sa_test_keep_has(g));
+  scr_mem_free(g);
+  scr_sa_thread_park();
+  return NULL;
+}
+
 /* A small-class block carries no record (only runs and large blocks are
  * recorded), and a grow that promotes it to a run must record the run: an
  * untracked run leaks when the worker's memory goes back. */
@@ -1712,6 +1732,9 @@ static void check_large_blocks(void) {
     assert(pthread_join(keep_thread, NULL) == 0);
     scr_sa_wait_trims();
     assert(pthread_create(&keep_thread, NULL, keep_promote_worker, NULL) == 0);
+    assert(pthread_join(keep_thread, NULL) == 0);
+    scr_sa_wait_trims();
+    assert(pthread_create(&keep_thread, NULL, keep_small_move_worker, NULL) == 0);
     assert(pthread_join(keep_thread, NULL) == 0);
     scr_sa_wait_trims();
   }

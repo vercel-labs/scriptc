@@ -2131,6 +2131,46 @@ static void scr_sa_discard(ScrSaKeep *k) {
   uintptr_t page = (uintptr_t)sysconf(_SC_PAGESIZE);
   if (page == 0 || page == (uintptr_t)-1) page = 4096;
   size_t returned = 0, sys_bytes = 0, sys_blocks = 0;
+  /* The registry first: every block it names must be released while its
+   * chunk is still the worker's. Releasing chunks first would let another
+   * thread reuse a recorded range before the registry was consumed. */
+  if (!k->poison)
+    for (size_t s = 0; s < k->cap; s++) {
+      void *p = k->sys[s];
+      if (!p || p == SCR_SA_SYS_GONE) continue;
+      uintptr_t off = (uintptr_t)p - (uintptr_t)scr_sa_window;
+      if (off < (uintptr_t)scr_sa_window_chunks << SCR_SA_CHUNK_SHIFT) {
+        /* A window block: a run goes back to the window; a block of a large
+         * class becomes a trimmed free block of the arena. */
+        unsigned e = scr_sa_chunks[off >> SCR_SA_CHUNK_SHIFT];
+        if (e == SCR_SA_RUN_HEAD) {
+          returned += scr_sa_large_bytes(p, e);
+          scr_sa_run_free(p);
+        } else if ((e & SCR_SA_LARGE_TAG) && e < SCR_SA_RUN_HEAD) {
+          unsigned c = e & 0xff;
+          size_t sz = scr_sa_large_size(c);
+          char *lo = (char *)(((uintptr_t)p + page) & ~(page - 1)), *hi = (char *)(((uintptr_t)p + sz) & ~(page - 1));
+          ScrSaLarge *l = &scr_sa_large[scr_sa_arena];
+          ScrSaBlock *b = p;
+          if (hi > lo) {
+            scr_sa_pages_return(lo, hi);
+            returned += (size_t)(hi - lo);
+            b->next = l->trimmed[c];
+            l->trimmed[c] = b;
+          } else {
+            b->next = l->free[c];
+            l->free[c] = b;
+          }
+          __atomic_fetch_sub(&scr_sa_large_live, sz, __ATOMIC_RELAXED);
+        }
+        continue;
+      }
+#if defined(__GLIBC__)
+      sys_bytes += malloc_usable_size(p);
+#endif
+      sys_blocks++;
+      free(p);
+    }
   for (unsigned c = 0; c < SCR_SA_NCLASS; c++) {
     char *lo = k->start[c], *top = scr_sa.bump[c], *lim = scr_sa.lim[c];
     char *bump = k->front_bump[c], *limit = k->front_lim[c];
@@ -2204,43 +2244,6 @@ static void scr_sa_discard(ScrSaKeep *k) {
       b->next = scr_sa.free[c];
       scr_sa.free[c] = b;
     }
-  if (!k->poison)
-    for (size_t s = 0; s < k->cap; s++) {
-      void *p = k->sys[s];
-      if (!p || p == SCR_SA_SYS_GONE) continue;
-      uintptr_t off = (uintptr_t)p - (uintptr_t)scr_sa_window;
-      if (off < (uintptr_t)scr_sa_window_chunks << SCR_SA_CHUNK_SHIFT) {
-        /* A window block: a run goes back to the window; a block of a large
-         * class becomes a trimmed free block of the arena. */
-        unsigned e = scr_sa_chunks[off >> SCR_SA_CHUNK_SHIFT];
-        if (e == SCR_SA_RUN_HEAD) {
-          returned += scr_sa_large_bytes(p, e);
-          scr_sa_run_free(p);
-        } else if ((e & SCR_SA_LARGE_TAG) && e < SCR_SA_RUN_HEAD) {
-          unsigned c = e & 0xff;
-          size_t sz = scr_sa_large_size(c);
-          char *lo = (char *)(((uintptr_t)p + page) & ~(page - 1)), *hi = (char *)(((uintptr_t)p + sz) & ~(page - 1));
-          ScrSaLarge *l = &scr_sa_large[scr_sa_arena];
-          ScrSaBlock *b = p;
-          if (hi > lo) {
-            scr_sa_pages_return(lo, hi);
-            returned += (size_t)(hi - lo);
-            b->next = l->trimmed[c];
-            l->trimmed[c] = b;
-          } else {
-            b->next = l->free[c];
-            l->free[c] = b;
-          }
-          __atomic_fetch_sub(&scr_sa_large_live, sz, __ATOMIC_RELAXED);
-        }
-        continue;
-      }
-#if defined(__GLIBC__)
-      sys_bytes += malloc_usable_size(p);
-#endif
-      sys_blocks++;
-      free(p);
-    }
 #if defined(__GLIBC__)
   if (sys_blocks) (void)malloc_trim(0);
 #endif
@@ -2268,7 +2271,12 @@ static void scr_sa_keep_move(void *from, void *to) {
   ScrSaKeep *k = scr_sa_keep;
   if (!k || from == to) return;
   (void)scr_sa_keep_remove(k, from);
-  if (!scr_sa_keep_has(k, to)) scr_sa_keep_add(k, to);
+  /* Only a block the keep records is recorded: a run or a large-class block
+   * (and a system block, which its allocation already recorded). A small
+   * class block is never recorded, because its free is the inline fast path,
+   * which does not consult the registry: a record would outlive the block
+   * and the discard would release a stale pointer after chunks went back. */
+  if (!scr_sa_keep_has(k, to) && scr_mem_block_size(to) > SCR_SA_MAX) scr_sa_keep_add(k, to);
 }
 
 void scr_sa_thread_shares(void) {

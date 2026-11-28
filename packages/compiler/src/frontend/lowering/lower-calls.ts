@@ -1,3 +1,4 @@
+import { declIterationSource } from "./decl-iteration.js";
 import { lowerHistogramStatsMethodCall } from "./builtins/histogram-stats.js";
 import { isCheckerPanic } from "../../diagnostics/diagnostic.js";
 import { reboundRequireBindingOf } from "./rebindable-requires.js";
@@ -53,6 +54,7 @@ import {
   lowerResponseStaticRedirect,
 } from "./lower-stdlib.js";
 import { lowerArrayCallbackCall } from "./containers/array-callback-call.js";
+import { lowerUnionSearchMethodCall } from "./union-receiver-methods.js";
 /** Dispatch source calls, builtin members and receiver-specific operations.
  * Signature collection, argument completion and function bodies have their
  * own owners; this module selects the applicable call path. */
@@ -616,6 +618,11 @@ export function refuseWrittenBuiltin(
 }
 
 export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
+  // The declaration projection's iteration marker wraps a package-produced
+  // iterable so the checker types the loop binding from the declaration
+  // world; the call's value is the wrapped expression.
+  const iterSource = declIterationSource(lowerer, expr);
+  if (iterSource !== null) return lowerer.lowerExpr(iterSource);
   // `Module.isBuiltin(...)`: the class's statics are the module surface.
   const moduleStatic = lowerModuleClassStaticCall(lowerer, expr);
   if (moduleStatic) return moduleStatic;
@@ -2498,6 +2505,14 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
           loc: locOf(expr),
         };
       }
+    }
+    // A search call on a union the value holds as a string or an array
+    // (`string | string[]` headers): each arm runs its own method, chosen
+    // by the arm tag (union-receiver-methods.ts). Before the lib fence,
+    // which has no union form of the member.
+    {
+      const unionSearch = lowerUnionSearchMethodCall(lowerer, expr, expr.expression);
+      if (unionSearch) return unionSearch;
     }
     // The lib fence's METHOD-CALL chokepoint: a stdlib-declared member
     // that every lowering above declined — an unlowered member

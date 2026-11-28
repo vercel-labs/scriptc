@@ -543,18 +543,42 @@ export function lowerOptionalChain(
     // number), so narrow the node too — downstream receiver-typed
     // dispatch must agree with the lowered value, not the spelling.
     lowerer.chainHandled.add(dotNode);
-    const hadNarrow = lowerer.chainNarrowedType.has(recvNode);
-    if (!hadNarrow) {
-      lowerer.chainNarrowedType.set(
-        recvNode,
-        lowerer.checker.getNonNullableType(chainReceiverType(lowerer, recvNode)),
-      );
+    // The checker can spell the guard receiver nullable while the lowering
+    // answers a present value (`Error.stack`, `process.getuid`). The steps
+    // above the guard then run on that present value, so their element
+    // types lose the chain's nullish arm too: `err.stack?.split("\n")
+    // .join("\n")` types every element `string[] | undefined`, and the
+    // last call's dispatch must see `string[]`. A step that can answer
+    // undefined on its own (`at(-1)`, `find`) cannot stand unguarded in a
+    // spine (TypeScript rejects it with TS2532), so the narrowed type is
+    // the value the step really receives.
+    const narrowedNodes: ts.Node[] = [];
+    for (let node: ts.Expression = expr; ; node = node.expression) {
+      // The chain's own result keeps its spelling: an optional member
+      // (`options?.apiKey` with `apiKey?: string`) answers undefined on
+      // its own, and only the steps ABOVE the result are known present.
+      if (node !== expr && !lowerer.chainNarrowedType.has(node)) {
+        lowerer.chainNarrowedType.set(
+          node,
+          lowerer.checker.getNonNullableType(chainReceiverType(lowerer, node)),
+        );
+        narrowedNodes.push(node);
+      }
+      if (node === recvNode) break;
+      if (
+        !ts.isCallExpression(node) &&
+        !ts.isPropertyAccessExpression(node) &&
+        !ts.isElementAccessExpression(node) &&
+        !ts.isNonNullExpression(node) &&
+        !ts.isParenthesizedExpression(node)
+      )
+        break;
     }
     try {
       return lowerer.lowerExpr(expr);
     } finally {
       lowerer.chainHandled.delete(dotNode);
-      if (!hadNarrow) lowerer.chainNarrowedType.delete(recvNode);
+      for (const node of narrowedNodes) lowerer.chainNarrowedType.delete(node);
     }
   }
   const rest = def.arms.filter((a) => !isUnitType(a));

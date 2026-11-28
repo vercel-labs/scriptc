@@ -1472,6 +1472,10 @@ export function lowerObjectAssignIndexShape(
     fromId: string;
     fields: { name: string; type: IrType; lift: WidthLift | "dyn" }[];
     ovfLift: (WidthLift | "dyn") | null;
+    /** An OPTIONAL source (`Record<string, T> | undefined`): the value is
+     * held at this union and the merge runs only on the record arm — Node's
+     * rule that Object.assign SKIPS a nullish source. */
+    optional?: { unionId: string; tag: number; unionT: IrType };
   }
   /** A source the frontend could only map to the checked-dynamic tree (an
    * `unknown`/`any` argument, a value whose type it cannot model): nothing
@@ -1498,7 +1502,28 @@ export function lowerObjectAssignIndexShape(
         ) && to.fields.every((f) => typeEquals(f.type, tIv));
   const plans: SourcePlan[] = [];
   for (const argNode of call.arguments.nodes.slice(1)) {
-    const srcIr = lowerer.mapTypeOf(lowerer.typeOf(argNode));
+    let srcIr = lowerer.mapTypeOf(lowerer.typeOf(argNode));
+    // A source the checker types `Record | undefined` (an optional override
+    // record): Node's Object.assign skips a nullish source, so the merge
+    // runs only on the record arm — the plan carries the union and tag and
+    // the call site guards it.
+    let optional: RecordSourcePlan["optional"];
+    if (srcIr?.kind === "union") {
+      const def = lowerer.unions.get(srcIr.unionId);
+      const recordArms = def?.arms.filter((arm) => arm.kind === "record") ?? [];
+      if (
+        def !== undefined &&
+        recordArms.length === 1 &&
+        def.arms.every((arm) => arm.kind === "record" || isUnitType(arm))
+      ) {
+        optional = {
+          unionId: srcIr.unionId,
+          tag: def.arms.indexOf(recordArms[0]!),
+          unionT: srcIr,
+        };
+        srcIr = recordArms[0]!;
+      }
+    }
     if (srcIr?.kind === "dyn") {
       // The target keeps its typed representation while the checker's
       // `T & U` answer for a dyn `U` is some other type, so only the
@@ -1529,7 +1554,13 @@ export function lowerObjectAssignIndexShape(
       ovfLift = slotLift(from.indexValue);
       if (ovfLift === null) return null;
     }
-    plans.push({ kind: "record", fromId: srcIr.shapeId, fields, ovfLift });
+    plans.push({
+      kind: "record",
+      fromId: srcIr.shapeId,
+      fields,
+      ovfLift,
+      ...(optional ? { optional } : {}),
+    });
   }
   const helperFor = (plan: RecordSourcePlan): string => {
     const key = `assign:${targetIr.shapeId}:${plan.fromId}`;
@@ -1769,18 +1800,119 @@ export function lowerObjectAssignIndexShape(
     lowerer.liftedFns.push(fn);
     return name;
   };
-  let acc = lowerer.lowerExprExpecting(call.arguments.nodes[0]!, targetIr);
+  // Node evaluates every argument before the first merge: the target, then
+  // each source in argument order (side effects included), and only then
+  // copies. Bind the target and each source to hidden locals in that order,
+  // then chain the merges over the locals.
+  const prelude: IrStmt[] = [];
+  const target = lowerer.declareHiddenLocal("%assignTarget", targetIr, true);
+  prelude.push({
+    kind: "varDecl",
+    localId: target.id,
+    init: lowerer.lowerExprExpecting(call.arguments.nodes[0]!, targetIr),
+    loc,
+  });
+  const targetRef = (): IrExpr => varRef(target.id, targetIr, loc);
+  const sources: { plan: SourcePlan; ref: () => IrExpr }[] = [];
   for (let i = 0; i < plans.length; i++) {
     const plan = plans[i]!;
     const argNode = call.arguments.nodes[i + 1]!;
-    const src: IrExpr =
-      plan.kind === "dyn"
-        ? lowerer.coerceToExpected(lowerer.lowerExpr(argNode), DYN)
-        : lowerer.lowerExprExpecting(argNode, { kind: "record", shapeId: plan.fromId });
-    const callee = plan.kind === "dyn" ? dynHelperFor() : helperFor(plan);
-    acc = { kind: "call", callee, args: [acc, src], type: targetIr, loc };
+    if (plan.kind === "record" && plan.optional !== undefined) {
+      const optional = plan.optional;
+      const source = lowerer.declareHiddenLocal("%assignSource", optional.unionT);
+      prelude.push({
+        kind: "varDecl",
+        localId: source.id,
+        init: lowerer.lowerExpr(argNode),
+        loc,
+      });
+      sources.push({ plan, ref: (): IrExpr => varRef(source.id, optional.unionT, loc) });
+      continue;
+    }
+    if (plan.kind === "dyn") {
+      const source = lowerer.declareHiddenLocal("%assignSource", DYN);
+      prelude.push({
+        kind: "varDecl",
+        localId: source.id,
+        init: lowerer.coerceToExpected(lowerer.lowerExpr(argNode), DYN),
+        loc,
+      });
+      sources.push({ plan, ref: (): IrExpr => varRef(source.id, DYN, loc) });
+      continue;
+    }
+    const recordT: IrType = { kind: "record", shapeId: plan.fromId };
+    const source = lowerer.declareHiddenLocal("%assignSource", recordT);
+    prelude.push({
+      kind: "varDecl",
+      localId: source.id,
+      init: lowerer.lowerExprExpecting(argNode, recordT),
+      loc,
+    });
+    sources.push({ plan, ref: (): IrExpr => varRef(source.id, recordT, loc) });
   }
-  return acc;
+  // Each merge step assigns ONE accumulator local. A ternary over the
+  // accumulated expression would copy it into both branches, so N optional
+  // sources would grow the emitted IR exponentially; a statement per step
+  // keeps it linear (a 30-source merge compiles fast).
+  const steps: IrStmt[] = [];
+  for (const { plan, ref } of sources) {
+    if (plan.kind === "record" && plan.optional !== undefined) {
+      const { unionId, tag } = plan.optional;
+      steps.push({
+        kind: "if",
+        cond: {
+          kind: "unionIsTag",
+          unionId,
+          tag,
+          negated: false,
+          value: ref(),
+          type: BOOL,
+          loc,
+        },
+        then: [
+          {
+            kind: "assign",
+            localId: target.id,
+            value: {
+              kind: "call",
+              callee: helperFor(plan),
+              args: [
+                targetRef(),
+                {
+                  kind: "unionNarrow",
+                  unionId,
+                  tag,
+                  value: ref(),
+                  type: { kind: "record", shapeId: plan.fromId },
+                  loc,
+                },
+              ],
+              type: targetIr,
+              loc,
+            },
+            loc,
+          },
+        ],
+        else_: null,
+        loc,
+      });
+      continue;
+    }
+    const callee = plan.kind === "dyn" ? dynHelperFor() : helperFor(plan);
+    steps.push({
+      kind: "assign",
+      localId: target.id,
+      value: { kind: "call", callee, args: [targetRef(), ref()], type: targetIr, loc },
+      loc,
+    });
+  }
+  return {
+    kind: "seqExpr",
+    stmts: [...prelude, ...steps],
+    result: targetRef(),
+    type: targetIr,
+    loc,
+  };
 }
 
 /** One contributor of a pure-index-record MERGE literal: a full spread of
@@ -2433,7 +2565,22 @@ export function lowerEnvToPairsHelper(
   // f64 formats via toString, string[] expands element-wise — repeated
   // same-name pairs, one per element — and units skip).
   let siteNo = 0;
-  const writeFor = (k: IrExpr, raw: IrExpr, t: IrType): IrStmt => {
+  /* A request-header key is a user value here (a record's field or a run-time
+   * key), and a NUL in it is not a header name Node accepts — it would also
+   * read as the array marker further down. The check runs before the entry's
+   * value is looked at, as Node validates the name whatever the value. */
+  const keyCheck = (k: IrExpr): IrStmt => ({
+    kind: "exprStmt",
+    expr: {
+      kind: "libCall",
+      fn: "http.validateHeaderName",
+      args: [k, { kind: "strLit", value: "", type: STRING, loc }],
+      type: { kind: "void" },
+      loc,
+    },
+    loc,
+  });
+  const writeForInner = (k: IrExpr, raw: IrExpr, t: IrType): IrStmt => {
     const st = strArmTag(t);
     if (st !== null) {
       const write = push(k, asStr(raw, t));
@@ -2578,6 +2725,10 @@ export function lowerEnvToPairsHelper(
       ];
     }
     return { kind: "block", body: chain, loc };
+  };
+  const writeFor = (k: IrExpr, raw: IrExpr, t: IrType): IrStmt => {
+    const body = writeForInner(k, raw, t);
+    return markArrays ? { kind: "block", body: [keyCheck(k), body], loc } : body;
   };
   const body: IrStmt[] = [
     {

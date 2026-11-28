@@ -777,7 +777,15 @@ export function isIdentityCollectionKey(t: IrType): boolean {
     // (scr_bytes_retain/release_v, no trace).
     t.kind === "map" ||
     t.kind === "set" ||
-    t.kind === "bytes"
+    t.kind === "bytes" ||
+    // A spawned child handle is one object for its whole life (a Set of
+    // live children, a Map keyed by child): pointer identity is JS
+    // identity, and the runtime's scr_child_retain/release_v adapters
+    // serve the ref slot. The child drops its listener closures at its
+    // terminal event, so a held child cannot cycle through the
+    // collection for longer than the child lives (the same stance as a
+    // Map value).
+    t.kind === "child"
   );
 }
 
@@ -987,6 +995,30 @@ export function maybePromiseUnionArmsOk(arms: IrType[]): boolean {
  * Nested records/unions are represented by their (already interned, already
  * canonical) shapeId/unionId, so keys stay finite and comparable. Lives in
  * the IR (not the frontend) because both ends need it. */
+/** Value kinds a record view's source may hold without the pair being
+ * refused: a value of any other kind can reference an arbitrary object (a
+ * function, a class instance, an untyped value, a promise or a handle), so
+ * the record that holds it counts as holding every record type
+ * (backend/llvm/record-views.ts, the frontend's view eligibility in
+ * frontend/lowering/width-copies.ts). */
+export const RECORD_VIEW_LEAF_KINDS: ReadonlySet<IrType["kind"]> = new Set<IrType["kind"]>([
+  "f64",
+  "bool",
+  "string",
+  "bigint",
+  "date",
+  "regex",
+  "bytes",
+  "symbol",
+  "url",
+  "searchParams",
+  "stats",
+  "bigintStats",
+  "undefinedT",
+  "nullT",
+  "void",
+]);
+
 export function typeKey(t: IrType): string {
   if (HANDLE_KINDS.has(t.kind)) return t.kind;
   switch (t.kind) {

@@ -24,4 +24,7 @@ export const tlsNeverThrow: readonly IrLibFn[] = [
   // scr_tls_sock_ephemeral_key_info builds a fresh object or answers null;
   // no program code runs.
   "tls.sockEphemeralKeyInfo",
+  // scr_tls_sock_is_session_reused reads whether this handshake resumed a
+  // session; no program code runs.
+  "tls.sockIsSessionReused",
 ];

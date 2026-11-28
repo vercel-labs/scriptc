@@ -1986,6 +1986,23 @@ const HTTP_SERVER_EVENT_KIND: Readonly<Record<string, number>> = {
   dropRequest: 7,
 };
 
+/** The scr_http.h SCR_HTTP_REQ_OFF_* value of each IncomingMessage event. */
+const REQ_OFF_KINDS: Readonly<Record<string, number>> = {
+  data: 1,
+  end: 2,
+  error: 3,
+  close: 4,
+  aborted: 5,
+};
+
+/** The scr_http.h SCR_HTTP_RES_OFF_* value of each ServerResponse event. */
+const RES_OFF_KINDS: Readonly<Record<string, number>> = {
+  close: 1,
+  finish: 2,
+  prefinish: 3,
+  drain: 4,
+};
+
 function serverEventKind(
   table: Readonly<Record<string, number>>,
   event: string | null,
@@ -10733,13 +10750,23 @@ function lowerHttpClientMethodCall(
       lowerer.noLowering(`request.${name} arguments`, call, `pass one header name`);
     const receiver = coerceToHandle(lowerer, access.expression, HTTPCLIENTREQ_T);
     const header = lowerer.lowerExprExpecting(args[0]!, STRING);
-    const fn: IrLibFn =
-      name === "getHeader"
-        ? "http.clientGetHeader"
-        : name === "hasHeader"
-          ? "http.clientHasHeader"
-          : "http.clientRemoveHeader";
-    const type = name === "getHeader" ? lowerer.envValueType() : name === "hasHeader" ? BOOL : VOID;
+    if (name === "getHeader") {
+      // The value as set: number, string or string[] (undefined when
+      // absent), checked against the declared result type.
+      const value: IrExpr = {
+        kind: "libCall",
+        fn: "http.clientGetHeaderDyn",
+        args: [receiver, header],
+        type: DYN,
+        loc,
+      };
+      const declared = lowerer.mapTypeOf(lowerer.typeOf(call));
+      return declared === null || declared.kind === "dyn"
+        ? value
+        : lowerer.coerceInto(call, value, declared);
+    }
+    const fn: IrLibFn = name === "hasHeader" ? "http.clientHasHeader" : "http.clientRemoveHeader";
+    const type = name === "hasHeader" ? BOOL : VOID;
     return { kind: "libCall", fn, args: [receiver, header], type, loc };
   }
   if (name === "getHeaderNames" || name === "getRawHeaderNames" || name === "getHeaders") {
@@ -11405,6 +11432,63 @@ function lowerHttpReqMethodCall(
     }
     return { kind: "libCall", fn, args: [receiver, dst], type: VOID, loc };
   }
+  if (name === "unpipe") {
+    // req.unpipe(dest): the destination leaves the body forward; the
+    // request keeps flowing to whatever other consumer remains.
+    requireStatementPosition(lowerer, call, "req.unpipe(...)");
+    if (args.length !== 1) {
+      lowerer.noLowering(
+        `unpipe with ${args.length} arguments`,
+        call,
+        "the supported form is unpipe(destination)",
+      );
+    }
+    const receiver = coerceToHandle(lowerer, access.expression, HTTPREQ_T);
+    const dst = lowerer.lowerExpr(args[0]!);
+    const fn: IrLibFn | null =
+      dst.type.kind === "httpRes"
+        ? "http.reqUnpipeRes"
+        : dst.type.kind === "httpClientReq"
+          ? "http.reqUnpipeClient"
+          : dst.type.kind === "netSocket"
+            ? "http.reqUnpipeSock"
+            : null;
+    if (fn === null) {
+      lowerer.noLowering(
+        `unpipe of '${lowerer.fmt(dst.type)}' destinations`,
+        args[0]!,
+        "an IncomingMessage unpipes from a ServerResponse, a ClientRequest, or a Socket",
+      );
+    }
+    return { kind: "libCall", fn, args: [receiver, dst], type: VOID, loc };
+  }
+  if ((name === "off" || name === "removeListener") && args.length === 2) {
+    // req.off(event, cb): the LAST listener standing for the same function
+    // leaves that event's list, Node's removeListener order.
+    requireStatementPosition(lowerer, call, `req.${name}(...)`);
+    const evT = lowerer.typeOf(args[0]!);
+    const event = evT.isStringLiteralType() ? evT.value : null;
+    const kind = event === null ? undefined : REQ_OFF_KINDS[event];
+    if (kind === undefined) {
+      lowerer.noLowering(
+        `req.${name}(${event === null ? "non-literal event" : `"${event}"`}, ...)`,
+        args[0]!,
+        '"data", "end", "error", "close", and "aborted" are the events off/removeListener removes (as literals)',
+      );
+    }
+    const receiver = coerceToHandle(lowerer, access.expression, HTTPREQ_T);
+    const listener = lowerer.lowerExpr(args[1]!);
+    if (listener.type.kind !== "func") {
+      lowerer.unsupported("SC1090", args[1]!, `req.${name} with a listener that is not a function`);
+    }
+    return {
+      kind: "libCall",
+      fn: "http.reqOff",
+      args: [receiver, listener, numLit(kind!, loc)],
+      type: VOID,
+      loc,
+    };
+  }
   if ((name === "on" || name === "once" || name === "addListener") && args.length === 2) {
     requireStatementPosition(lowerer, call, `req.${name}(...)`);
     const once = boolLit(name === "once", loc);
@@ -11521,7 +11605,7 @@ function lowerHttpReqMethodCall(
   lowerer.noLowering(
     `IncomingMessage.${name}`,
     call,
-    "url, method, statusCode, statusMessage, socket, headers/rawHeaders reads, resume, destroy, pipe, and on/once of data/end/error/close are the supported IncomingMessage members",
+    "url, method, statusCode, statusMessage, socket, headers/rawHeaders reads, resume, destroy, pipe, unpipe, and on/once/off of data/end/error/close are the supported IncomingMessage members",
     lowerer.checker.getSymbolAtLocation(access.name),
   );
 }
@@ -11865,18 +11949,36 @@ function lowerHttpResMethodCall(
           loc,
         };
       }
-      if (args.length < 1 || args.length > 2) {
+      if (args.length < 1 || args.length > 3) {
         lowerer.noLowering(
           `res.writeInformation with ${args.length} arguments`,
           call,
-          "the supported forms are writeInformation(status) and writeInformation(status, headers) (no callback)",
+          "use writeInformation(status[, headers][, callback])",
         );
       }
       const status = lowerer.lowerExprExpecting(args[0]!, F64);
       const pairs: IrExpr =
-        args.length === 2
+        args.length >= 2
           ? headerPairs(args[1]!, "writeInformation")
           : { kind: "arrayLit", elems: [], type: arrayOf(STRING), loc };
+      if (args.length === 3) {
+        const { cb } = lowerCallbackArg(
+          lowerer,
+          args[2]!,
+          "writeInformation callbacks",
+          0,
+          () => false,
+          "use ()",
+          [],
+        );
+        return {
+          kind: "libCall",
+          fn: "http.resWriteInformationCb",
+          args: [receiver, status, pairs, cb],
+          type: BOOL,
+          loc,
+        };
+      }
       return {
         kind: "libCall",
         fn: "http.resWriteInformation",
@@ -12623,6 +12725,33 @@ function lowerHttpResMethodCall(
     const receiver = coerceToHandle(lowerer, access.expression, HTTPRES_T);
     return { kind: "libCall", fn: "http.resDestroy", args: [receiver], type: VOID, loc };
   }
+  if ((name === "off" || name === "removeListener") && args.length === 2) {
+    // res.off(event, cb): the LAST listener standing for the same function
+    // leaves that event's list, Node's removeListener order.
+    requireStatementPosition(lowerer, call, `res.${name}(...)`);
+    const evT = lowerer.typeOf(args[0]!);
+    const event = evT.isStringLiteralType() ? evT.value : null;
+    const kind = event === null ? undefined : RES_OFF_KINDS[event];
+    if (kind === undefined) {
+      lowerer.noLowering(
+        `res.${name}(${event === null ? "non-literal event" : `"${event}"`}, ...)`,
+        args[0]!,
+        '"close", "finish", "prefinish", and "drain" are the events off/removeListener removes (as literals)',
+      );
+    }
+    const receiver = coerceToHandle(lowerer, access.expression, HTTPRES_T);
+    const listener = lowerer.lowerExpr(args[1]!);
+    if (listener.type.kind !== "func") {
+      lowerer.unsupported("SC1090", args[1]!, `res.${name} with a listener that is not a function`);
+    }
+    return {
+      kind: "libCall",
+      fn: "http.resOff",
+      args: [receiver, listener, numLit(kind!, loc)],
+      type: VOID,
+      loc,
+    };
+  }
   if ((name === "on" || name === "once" || name === "addListener") && args.length === 2) {
     requireStatementPosition(lowerer, call, `res.${name}(...)`);
     const once = boolLit(name === "once", loc);
@@ -12708,7 +12837,7 @@ function lowerHttpResMethodCall(
   lowerer.noLowering(
     `ServerResponse.${name}`,
     call,
-    "setHeader, appendHeader, getHeader, hasHeader, removeHeader, writeHead, writeContinue, writeProcessing, writeEarlyHints, setTimeout, write, end, destroy, response state reads, and on/once of close are the supported ServerResponse members",
+    "setHeader, appendHeader, getHeader, hasHeader, removeHeader, writeHead, writeContinue, writeProcessing, writeEarlyHints, setTimeout, write, end, destroy, response state reads, and on/once/off of close/finish/prefinish/drain are the supported ServerResponse members",
     lowerer.checker.getSymbolAtLocation(access.name),
   );
 }

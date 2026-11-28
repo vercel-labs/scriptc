@@ -2503,6 +2503,7 @@ ScrDyn *scr_dyn_obj_get(const ScrDyn *d, const char *key, size_t key_len) {
   return entry && !entry->class_view ? entry->value : NULL;
 }
 
+
 bool scr_dyn_obj_enumerable(const ScrDyn *d, const char *key, size_t key_len) {
   if (scr_dyn_is_layout(d)) return scr_dyn_layout_slot(d, key, key_len) != NULL;
   ScrDynEntry *entry = scr_dyn_find_entry(d, key, key_len);
@@ -2979,6 +2980,11 @@ static ScrDyn *scr_dyn_not_iterable(const ScrDyn *src, const ScrStr *msg) {
   scr_jb_puts(&b, " is not iterable (cannot read property Symbol(Symbol.iterator))");
   scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&b));
   return NULL;
+}
+
+/* The same TypeError for a value the caller found not iterable. */
+void scr_dyn_throw_not_iterable(const ScrDyn *value) {
+  (void)scr_dyn_not_iterable(value, NULL);
 }
 
 static ScrDyn *scr_native_iterator_drain(const ScrDyn *src);
@@ -6637,6 +6643,53 @@ bool scr_jb_try_record_source(ScrJsonBuf *b, void *rec,
   return true;
 }
 
+/* Type keys must outlive the capsules that name them: a typed reference
+ * stores the pointer it is given, and program keys are string constants. A
+ * key built on the stack — the stream unit's class-named pipe/event capsule —
+ * is copied here once per distinct key and owned by this table, so the
+ * capsule's key stays valid after the frame that spelled it is gone. */
+typedef struct {
+  char *key;
+  size_t len;
+} ScrKeyIntern;
+static SCR_TL ScrKeyIntern *scr_key_interns;
+static SCR_TL size_t scr_key_intern_count, scr_key_intern_capacity;
+static SCR_TL bool scr_key_intern_exit_registered;
+
+static void scr_key_intern_cleanup(void) {
+  for (size_t i = 0; i < scr_key_intern_count; i++) free(scr_key_interns[i].key);
+  free(scr_key_interns);
+  scr_key_interns = NULL;
+  scr_key_intern_count = 0;
+  scr_key_intern_capacity = 0;
+  scr_key_intern_exit_registered = false;
+}
+
+const char *scr_dyn_type_key_intern(const char *key, size_t len) {
+  for (size_t i = 0; i < scr_key_intern_count; i++)
+    if (scr_key_interns[i].len == len && !memcmp(scr_key_interns[i].key, key, len))
+      return scr_key_interns[i].key;
+  if (scr_key_intern_count == scr_key_intern_capacity) {
+    size_t capacity = scr_key_intern_capacity ? scr_key_intern_capacity * 2 : 8;
+    ScrKeyIntern *grown = realloc(scr_key_interns, capacity * sizeof *grown);
+    if (!grown) scr_json_oom();
+    scr_key_interns = grown;
+    scr_key_intern_capacity = capacity;
+    if (!scr_key_intern_exit_registered) {
+      scr_key_intern_exit_registered = true;
+      scr_atexit(scr_key_intern_cleanup);
+    }
+  }
+  char *copy = malloc(len + 1);
+  if (!copy) scr_json_oom();
+  memcpy(copy, key, len);
+  copy[len] = '\0';
+  scr_key_interns[scr_key_intern_count].key = copy;
+  scr_key_interns[scr_key_intern_count].len = len;
+  scr_key_intern_count++;
+  return copy;
+}
+
 /* The flags are written with the rest of the capsule: setting a flag bit
  * afterwards is a byte store that the next read of the flag word (the
  * live-view bind right after construction) cannot forward from. */
@@ -10168,6 +10221,13 @@ static const char *scr_dyn_specific_type_impl(const ScrDyn *cb, char *detail, si
   case SCR_DYN_PROMISE: d = "an instance of Promise"; break;
 
   case SCR_DYN_TYPED_REF: {
+    /* A generator object has no `constructor` property, so Node's
+     * determineSpecificType falls back to inspect(value, { depth: -1 }),
+     * which tags it "[Generator]" (the async form "[AsyncGenerator]"). */
+    if (scr_dyn_generator(cb)) {
+      d = cb->v.typed_ref.type_key[0] == 'a' ? "Object [AsyncGenerator] {}" : "Object [Generator] {}";
+      break;
+    }
     /* A class instance's view has no prototype; Node names its class. */
     const ScrStr *class_name = scr_dyn_typed_ref_class_name(cb);
     if (class_name && class_name->len) {
@@ -12974,6 +13034,34 @@ ScrDyn *scr_dyn_iterator(const ScrDyn *source, const ScrStr *spell) {
   return iterator;
 }
 
+/* A member read for the iterator protocols (next/return): a property Get,
+ * so an accessor runs once, like Node's GetIteratorGetNext; a compiled
+ * generator capsule answers from its own method table first, and a typed
+ * capsule through its materialized view. +1, or NULL with the exception
+ * pending. */
+ScrDyn *scr_dyn_iterator_member(const ScrDyn *value, const char *key) {
+  size_t len = strlen(key);
+  if (scr_generator_member_hook && scr_dyn_generator(value)) {
+    ScrDyn *member = scr_generator_member_hook(value, key, len);
+    if (member) return member;
+  }
+  if (value->kind == SCR_DYN_TYPED_REF) {
+    ScrDyn *view = scr_dyn_typed_ref_materialize(value);
+    if (!view) return NULL;
+    ScrDyn *result = scr_dyn_iterator_member(view, key);
+    scr_dyn_release(view);
+    return result;
+  }
+  ScrDyn *target = (ScrDyn *)value;
+  ScrStr *name = scr_str_new(key, len);
+  ScrDyn *boxed = scr_dyn_new_str(name);
+  scr_str_release(name);
+  ScrDyn *result = scr_dyn_reflect_get(target, boxed, target);
+  scr_dyn_release(boxed);
+  if (result == NULL && !scr_exc_pending()) return scr_dyn_retain(scr_dyn_undefined());
+  return result;
+}
+
 static ScrDyn *scr_iterator_read(const ScrDyn *value, const char *key, size_t len) {
   /* A compiled generator capsule keeps its next/return/throw methods in the
    * program's getters, not in a materialized view; an async capsule answers
@@ -14275,6 +14363,87 @@ ScrStr *scr_dyn_object_tag(const ScrDyn *d) {
   }
   return scr_str_new(tag, strlen(tag));
 }
+
+/* V8's side-effect-free string of a value: the text Node quotes in an
+ * unhandled-rejection message and in Intl.ListFormat's element TypeError.
+ * Primitives answer what String() gives them (a symbol as Symbol(desc)); an
+ * array is [object Array]; an object with its own toString is
+ * [object Object]; any other object is #<Constructor>; an Error answers
+ * Error.prototype.toString; and the builtins whose class V8 does not expose
+ * as a toString tag are #<Name>. Result +1. */
+ScrStr *scr_dyn_side_effect_free_string(const ScrDyn *value) {
+  static const struct {
+    ScrDynHandleTag tag;
+    const char *name;
+  } INTERNAL[] = {
+    {SCR_DYNH_MAP, "Map"},
+    {SCR_DYNH_SET, "Set"},
+    {SCR_DYNH_WEAK_MAP, "WeakMap"},
+    {SCR_DYNH_WEAK_SET, "WeakSet"},
+    {SCR_DYNH_ARRAY_BUFFER, "ArrayBuffer"},
+    {SCR_DYNH_SHARED_ARRAY_BUFFER, "SharedArrayBuffer"},
+    {SCR_DYNH_WEAK_REF, "WeakRef"},
+    {SCR_DYNH_FINALIZATION_REGISTRY, "FinalizationRegistry"},
+  };
+  switch (value->kind) {
+  case SCR_DYN_UNDEF:
+    return scr_str_new("undefined", 9);
+  case SCR_DYN_NULL:
+    return scr_str_new("null", 4);
+  case SCR_DYN_SYMBOL:
+    return value->v.symbol.render(value->v.symbol.value);
+  case SCR_DYN_ARR:
+    return scr_str_new("[object Array]", 14);
+  case SCR_DYN_BYTES:
+    return scr_dyn_object_tag(value);
+  case SCR_DYN_HANDLE:
+    for (size_t i = 0; i < sizeof INTERNAL / sizeof *INTERNAL; i++) {
+      if (value->v.handle.tag != INTERNAL[i].tag) continue;
+      ScrStr *parts[3] = {scr_str_new("#<", 2),
+                          scr_str_new(INTERNAL[i].name, strlen(INTERNAL[i].name)),
+                          scr_str_new(">", 1)};
+      ScrStr *text = scr_str_concat_parts(parts, 3);
+      for (size_t k = 0; k < 3; k++) scr_str_release(parts[k]);
+      return text;
+    }
+    return scr_dyn_object_tag(value);
+  case SCR_DYN_OBJ:
+  case SCR_DYN_TYPED_REF: {
+    if (scr_dyn_err_instanceof(value, 0)) return scr_dyn_to_string(value, NULL);
+    if (scr_dyn_ref_is_array(value)) return scr_str_new("[object Array]", 14);
+    bool custom = false;
+    if (value->kind == SCR_DYN_TYPED_REF) {
+      ScrStr *key = scr_str_new("toString", 8);
+      custom = scr_dyn_typed_ref_class_has(value, key);
+      scr_str_release(key);
+    } else {
+      for (const ScrDyn *p = value; p != NULL; p = p->prototype) {
+        if (p->kind != SCR_DYN_OBJ) continue;
+        /* scr_dyn_obj_get answers BORROWED: only the presence matters. */
+        if (scr_dyn_obj_get(p, "toString", 8) != NULL) {
+          custom = true;
+          break;
+        }
+      }
+    }
+    if (custom) return scr_str_new("[object Object]", 15);
+    const ScrStr *typed =
+        value->kind == SCR_DYN_TYPED_REF ? scr_dyn_typed_ref_class_name(value) : NULL;
+    const char *name = value->kind == SCR_DYN_OBJ ? scr_dyn_class_name(value) : NULL;
+    const char *plain = name != NULL ? name : "Object";
+    ScrStr *parts[3] = {scr_str_new("#<", 2),
+                        typed != NULL ? scr_str_new(typed->data, typed->len)
+                                      : scr_str_new(plain, strlen(plain)),
+                        scr_str_new(">", 1)};
+    ScrStr *text = scr_str_concat_parts(parts, 3);
+    for (size_t k = 0; k < 3; k++) scr_str_release(parts[k]);
+    return text;
+  }
+  default:
+    return scr_dyn_to_string(value, NULL);
+  }
+}
+
 
 /* ── JSON.stringify over a dyn value (util.format's %j) ───────────────
  * The RUNTIME walk the type-directed serializers deliberately avoid for

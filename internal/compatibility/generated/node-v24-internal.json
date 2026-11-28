@@ -20735,6 +20735,7 @@
           "tests/corpus/crypto-kem-crypto-key.ts",
           "tests/corpus/crypto-kem-dhkem.ts",
           "tests/corpus/crypto-kem-rsa.ts",
+          "tests/corpus/crypto-key-object-matrix.mjs",
           "tests/corpus/crypto-key-object-properties.ts",
           "tests/corpus/crypto-key-sources.cjs",
           "tests/corpus/crypto-ml-kem-callback-errors.ts",
@@ -21519,7 +21520,8 @@
           "tests/corpus/crypto-dh-key-parse.mjs",
           "tests/fixtures/node-types/keys.ts",
           "tests/corpus/crypto-key-sources.cjs",
-          "tests/harness/crypto-unsupported-audit.test.ts"
+          "tests/harness/crypto-unsupported-audit.test.ts",
+          "tests/corpus/crypto-key-object-matrix.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -21575,7 +21577,8 @@
           "tests/corpus/crypto-dh-key-parse.mjs",
           "tests/fixtures/node-types/keys.ts",
           "tests/corpus/crypto-key-sources.cjs",
-          "tests/harness/crypto-unsupported-audit.test.ts"
+          "tests/harness/crypto-unsupported-audit.test.ts",
+          "tests/corpus/crypto-key-object-matrix.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -21843,7 +21846,8 @@
           "tests/corpus/crypto-dh-key-parse.mjs",
           "tests/fixtures/node-types/keys.ts",
           "tests/corpus/crypto-key-sources.cjs",
-          "tests/harness/crypto-unsupported-audit.test.ts"
+          "tests/harness/crypto-unsupported-audit.test.ts",
+          "tests/corpus/crypto-key-object-matrix.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -21876,7 +21880,8 @@
           "tests/corpus/crypto-dh-key-parse.mjs",
           "tests/fixtures/node-types/keys.ts",
           "tests/corpus/crypto-key-sources.cjs",
-          "tests/harness/crypto-unsupported-audit.test.ts"
+          "tests/harness/crypto-unsupported-audit.test.ts",
+          "tests/corpus/crypto-key-object-matrix.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -94498,10 +94503,12 @@
           "tests/corpus/compat-stream-state.mjs",
           "tests/corpus/compat-stream-state.ts",
           "tests/corpus/fs-stream-erased-open-listener.ts",
+          "tests/corpus/stream-async-disposal.mjs",
           "tests/corpus/stream-duplex-from-web.ts",
           "tests/corpus/stream-duplex-pair.ts",
           "tests/corpus/stream-duplex-to-web.ts",
           "tests/corpus/stream-erased-data-listener.ts",
+          "tests/corpus/stream-events.mjs",
           "tests/corpus/stream-flow-control.mjs",
           "tests/corpus/stream-lifecycle-state.mjs",
           "tests/corpus/stream-operators-option-values.ts",
@@ -94510,6 +94517,7 @@
           "tests/corpus/stream-readable-to-web-untyped.mjs",
           "tests/corpus/stream-readable-to-web-zero-hwm.mjs",
           "tests/corpus/stream-readable-to-web.ts",
+          "tests/corpus/stream-reader-iterator.mjs",
           "tests/corpus/stream-set-default-hwm.ts",
           "tests/corpus/stream-set-encoding-hwm.ts",
           "tests/corpus/stream-web-predicates-js.cjs",
@@ -96288,9 +96296,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.writable",
         "tests": [
+          "tests/corpus/stream-async-disposal.mjs",
           "tests/corpus/compat-stream-getters.mjs",
           "tests/corpus/compat-stream-getters.ts",
           "tests/corpus/compat-stream-async-dispose.mjs",
@@ -96434,9 +96443,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.writableAborted",
         "tests": [
+          "tests/corpus/stream-async-disposal.mjs",
           "tests/corpus/compat-stream-getters.mjs",
           "tests/corpus/compat-stream-getters.ts",
           "tests/corpus/compat-stream-async-dispose.mjs",
@@ -96463,9 +96473,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.writableEnded",
         "tests": [
+          "tests/corpus/stream-events.mjs",
           "tests/corpus/compat-stream-classes.ts"
         ]
       },
@@ -96516,9 +96527,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.errored",
         "tests": [
+          "tests/corpus/stream-events.mjs",
           "tests/corpus/compat-stream-classes.ts"
         ]
       },
@@ -96542,9 +96554,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.writableFinished",
         "tests": [
+          "tests/corpus/stream-events.mjs",
           "tests/corpus/compat-stream-classes.ts"
         ]
       },
@@ -96595,9 +96608,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.writableLength",
         "tests": [
+          "tests/corpus/stream-events.mjs",
           "tests/corpus/compat-stream-classes.ts"
         ]
       },
@@ -96675,11 +96689,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.'close'",
         "tests": [
-          "tests/corpus/compat-stream-state.mjs",
-          "tests/corpus/compat-stream-state.ts"
+          "tests/corpus/stream-events.mjs",
+          "tests/corpus/compat-stream-classes.ts"
         ]
       },
       "anchorSource": "exact"
@@ -96702,9 +96716,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.'drain'",
         "tests": [
+          "tests/corpus/stream-events.mjs",
           "tests/corpus/2894-child-stdin-backpressure.ts"
         ]
       },
@@ -96728,9 +96743,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.'error'",
         "tests": [
+          "tests/corpus/stream-events.mjs",
           "tests/corpus/compat-stream-classes.ts"
         ]
       },
@@ -96754,9 +96770,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.'finish'",
         "tests": [
+          "tests/corpus/stream-events.mjs",
           "tests/corpus/compat-stream-classes.ts"
         ]
       },
@@ -96780,9 +96797,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.'pipe'",
         "tests": [
+          "tests/corpus/stream-events.mjs",
           "tests/corpus/8884-stream-pipe-lifecycle.ts",
           "tests/corpus/8884-stream-pipe-error-unhandled.ts"
         ]
@@ -96807,9 +96825,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.'unpipe'",
         "tests": [
+          "tests/corpus/stream-events.mjs",
           "tests/corpus/8884-stream-pipe-lifecycle.ts",
           "tests/corpus/8884-stream-pipe-error-unhandled.ts"
         ]
@@ -97328,9 +97347,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.readable",
         "tests": [
+          "tests/corpus/stream-async-disposal.mjs",
           "tests/corpus/compat-stream-getters.mjs",
           "tests/corpus/compat-stream-getters.ts",
           "tests/corpus/compat-stream-async-dispose.mjs",
@@ -97384,9 +97404,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.readable.iterator",
         "tests": [
+          "tests/corpus/stream-reader-iterator.mjs",
           "tests/corpus/1746-stream-for-await.ts",
           "tests/corpus/2861-readable-iterator-close.ts"
         ]
@@ -97819,9 +97840,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.readableAborted",
         "tests": [
+          "tests/corpus/stream-async-disposal.mjs",
           "tests/corpus/compat-stream-getters.mjs",
           "tests/corpus/compat-stream-getters.ts",
           "tests/corpus/compat-stream-async-dispose.mjs",
@@ -97848,9 +97870,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.readableDidRead",
         "tests": [
+          "tests/corpus/stream-async-disposal.mjs",
           "tests/corpus/compat-stream-getters.mjs",
           "tests/corpus/compat-stream-getters.ts",
           "tests/corpus/compat-stream-async-dispose.mjs",
@@ -97877,9 +97900,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.readableEncoding",
         "tests": [
+          "tests/corpus/stream-async-disposal.mjs",
           "tests/corpus/compat-stream-getters.mjs",
           "tests/corpus/compat-stream-getters.ts",
           "tests/corpus/compat-stream-async-dispose.mjs",
@@ -98062,9 +98086,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.'close'",
         "tests": [
+          "tests/corpus/stream-events.mjs",
           "tests/corpus/compat-stream-classes.ts"
         ]
       },
@@ -98088,9 +98113,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.'data'",
         "tests": [
+          "tests/corpus/stream-events.mjs",
           "tests/corpus/compat-stream-classes.ts"
         ]
       },
@@ -98114,9 +98140,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.'end'",
         "tests": [
+          "tests/corpus/stream-events.mjs",
           "tests/corpus/compat-stream-classes.ts"
         ]
       },
@@ -98140,9 +98167,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.'error'",
         "tests": [
+          "tests/corpus/stream-events.mjs",
           "tests/corpus/compat-stream-classes.ts"
         ]
       },
@@ -98924,9 +98952,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.stream.PassThrough",
         "tests": [
+          "tests/corpus/stream-events.mjs",
           "tests/corpus/compat-stream-classes.ts"
         ]
       },
@@ -98950,9 +98979,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.transform._flush",
         "tests": [
+          "tests/corpus/stream-events.mjs",
           "tests/corpus/compat-stream-classes.ts"
         ]
       },
@@ -98976,9 +99006,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.transform._transform",
         "tests": [
+          "tests/corpus/stream-events.mjs",
           "tests/corpus/compat-stream-classes.ts"
         ]
       },
@@ -99002,9 +99033,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.'end'",
         "tests": [
+          "tests/corpus/stream-events.mjs",
           "tests/corpus/compat-stream-classes.ts"
         ]
       },
@@ -99028,9 +99060,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.'finish'",
         "tests": [
+          "tests/corpus/stream-events.mjs",
           "tests/corpus/compat-stream-state.mjs",
           "tests/corpus/compat-stream-state.ts"
         ]
@@ -118102,6 +118135,8 @@
           "tests/corpus/compat-webcrypto-algorithms.ts",
           "tests/corpus/compat-webcrypto-modern-params.ts",
           "tests/corpus/crypto-argon2.ts",
+          "tests/corpus/crypto-subtle-alias.mjs",
+          "tests/corpus/crypto-subtle-alias.ts",
           "tests/corpus/jose-jwe-asymmetric/main.mjs",
           "tests/corpus/key-object-from-arguments.mjs",
           "tests/corpus/key-object-from-crypto-key.ts",
@@ -122189,7 +122224,8 @@
         "tests": [
           "tests/corpus/7120-webcrypto-random-uuid.ts",
           "tests/corpus/7121-webcrypto-crypto-object.mjs",
-          "tests/corpus/6293-webcrypto-digest.ts"
+          "tests/corpus/6293-webcrypto-digest.ts",
+          "tests/corpus/crypto-subtle-alias.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -122277,7 +122313,9 @@
           "tests/corpus/6292-webcrypto-hmac-errors.ts",
           "tests/corpus/6293-webcrypto-digest.ts",
           "tests/corpus/6294-webcrypto-js-values.mjs",
-          "tests/corpus/6295-jose-hs256/main.mjs"
+          "tests/corpus/6295-jose-hs256/main.mjs",
+          "tests/corpus/crypto-subtle-alias.ts",
+          "tests/corpus/crypto-subtle-alias.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -122565,7 +122603,9 @@
           "tests/corpus/6292-webcrypto-hmac-errors.ts",
           "tests/corpus/6293-webcrypto-digest.ts",
           "tests/corpus/6294-webcrypto-js-values.mjs",
-          "tests/corpus/6295-jose-hs256/main.mjs"
+          "tests/corpus/6295-jose-hs256/main.mjs",
+          "tests/corpus/crypto-subtle-alias.ts",
+          "tests/corpus/crypto-subtle-alias.mjs"
         ]
       },
       "anchorSource": "exact"

@@ -783,6 +783,7 @@ ScrStats *scr_fs_lstat(ScrStr *path); /* +1, or throws; NO follow (lstat) */
 /* { throwIfNoEntry }: +1, or throws; with false, NULL when the entry is
  * missing (ENOENT/ENOTDIR) */
 ScrStats *scr_fs_stat_probe(ScrStr *path, bool no_follow, bool throw_if_no_entry);
+ScrStats *scr_fs_stat_opts(ScrStr *path, const ScrDyn *options, bool no_follow);
 ScrStats *scr_fs_fstat(double fd); /* +1, or throws */
 void scr_fs_fchmod(double fd, double mode);
 void scr_fs_fsync(double fd);
@@ -946,6 +947,8 @@ ScrPromise *scr_fsp_rm_opts_retry(ScrStr *path, bool recursive, bool force, doub
 ScrPromise *scr_fsp_stat(ScrStr *path);
 ScrPromise *scr_fsp_realpath(ScrStr *path);
 ScrPromise *scr_fsp_lstat(ScrStr *path);
+ScrPromise *scr_fsp_stat_opts(ScrStr *path, const ScrDyn *options);
+ScrPromise *scr_fsp_lstat_opts(ScrStr *path, const ScrDyn *options);
 typedef struct ScrDir ScrDir; /* fs.Dir, declared with its operations in scr_os.h */
 ScrPromise *scr_fsp_opendir(ScrStr *path, double buffer_size);
 ScrPromise *scr_dir_close_promise(ScrDir *d);

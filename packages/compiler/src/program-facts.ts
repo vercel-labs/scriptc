@@ -1126,6 +1126,12 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
   ),
   decides("frontend/program.ts#programNamesTemporal7", 2, "names-temporal"),
   scan(
+    "frontend/program.ts#programNamesWebStreams7",
+    2,
+    "prefilter",
+    "whether any program source names a web stream global; the declaration joins only when no declaration file of the program declares the global (programDeclaresWebStreamGlobals7)",
+  ),
+  scan(
     "frontend/program.ts#lowerProgramJsx7",
     1,
     "discovery",

@@ -9,7 +9,7 @@ import {
   overridesDtsPath,
   tsgoPath,
 } from "./dts-paths.js";
-import { nearestPackageImports } from "./resolve.js";
+import { nearestPackageImports, resolveWorkerEntrySource } from "./resolve.js";
 import { canonicalBuiltinModule } from "./builtin-modules.js";
 import { moduleSourceCandidates } from "./module-source-candidates.js";
 import { isBundledLibraryFile } from "./default-library.js";
@@ -442,7 +442,13 @@ export function forkTargetPaths(program: ts.Program, files: readonly ts.SourceFi
     // the checker's authority while avoiding its whole-file miss fallback.
     program.getTypeChecker().prefetchSymbolNodesExact(bindings);
     for (const node of calls) {
-      const target = forkCallModulePath(program, node);
+      const spelled = forkCallModulePath(program, node);
+      // A fork entry spelled as JavaScript answers its TypeScript source the
+      // way a relative import spelled `./x.js` does: a project compiled from
+      // source selects child.ts when `./child.js` is the specifier and only
+      // child.ts is on disk. An unresolvable path stays as spelled, so
+      // program loading reports the missing file.
+      const target = spelled === null ? null : (resolveWorkerEntrySource(spelled) ?? spelled);
       if (target !== null && !seen.has(target)) {
         seen.add(target);
         targets.push(target);

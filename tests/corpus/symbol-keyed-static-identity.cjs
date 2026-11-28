@@ -49,6 +49,24 @@ class TableInherits extends Table {}
 console.log('table:', Table[first], Table[second](), Table.sized);
 console.log('table sub:', TableSub[first], TableSub[second](), TableInherits[first]);
 
+// A runtime-backed subclass that OVERRIDES an inherited native symbol static
+// reads its own value, and one that does not override reads the base's.
+class NativeBase {
+  static [first] = 'native-base';
+}
+class TableOverride extends NativeBase {
+  static get sized() {
+    return 2;
+  }
+  static [first] = 'table-override';
+}
+class TableKeeps extends NativeBase {
+  static get sized() {
+    return 3;
+  }
+}
+console.log('override:', NativeBase[first], TableOverride[first], TableKeeps[first]);
+
 // Instance slots key by identity too: two equal descriptions are two fields.
 class Holder {
   constructor() {

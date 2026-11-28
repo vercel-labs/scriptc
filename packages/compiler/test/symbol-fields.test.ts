@@ -36,10 +36,6 @@ test.each([
     'function text() { return "x"; } const key = Symbol.for(text()); class C { [key] = true; }',
   ],
   ["local symbol", 'class C { constructor() { const key = Symbol("x"); this[key] = true; } }'],
-  [
-    "distinct symbol collision",
-    'const key = Symbol("x"); const other = Symbol.for("x"); class C { [key] = true; [other] = false; }',
-  ],
 ])("refuses symbol fields with %s", (_name, source) => {
   const dir = mkdtempSync(join(tmpdir(), "scriptc-symbol-fields-"));
   try {
@@ -64,6 +60,13 @@ test.each([
     'const text = "x"; const key = Symbol.for(text); class C { [key] = true; }',
   ],
   ["uninitialized JavaScript field", 'const key = Symbol.for("x"); class C { [key]; }'],
+  [
+    // Two distinct symbols may share one description: the slot names carry
+    // the declaring binding, so the fields stay two slots, exactly as the
+    // two keys are two symbols at run time.
+    "distinct symbols sharing a description",
+    'const key = Symbol("x"); const other = Symbol.for("x"); class C { [key] = true; [other] = false; }',
+  ],
 ])("accepts symbol fields with %s", (_name, source) => {
   const dir = mkdtempSync(join(tmpdir(), "scriptc-symbol-fields-"));
   try {

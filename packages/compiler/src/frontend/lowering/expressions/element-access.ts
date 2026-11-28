@@ -84,10 +84,10 @@ import {
 } from "../lower-exprs.js";
 import { hasRuntimeStatics } from "../class-runtime-statics.js";
 import {
+  classMemberNameOf,
   classValueRef,
-  findGenericStaticOn,
-  findStaticOn,
   lowerClassStaticRead,
+  type ClassInfo,
 } from "../lower-classes.js";
 import { classSymbolKeyOf } from "../symbol-fields.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
@@ -451,58 +451,60 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
     const classInfo =
       receiver.type.kind === "classval" ? lowerer.classes.get(receiver.type.className) : undefined;
     // A symbol-keyed STATIC member read through an exact class value
-    // (`C[kError]`): the declaration stores under the same `%symbol:` name
-    // a field of that key uses, beside the named statics, so the read is
-    // the named static read.
+    // (`C[kError]`): the nearest declaration decides where the value lives —
+    // the lowering's own module global or function, or a runtime-statics
+    // class's constructor property table — and a subclass's declaration
+    // overrides an inherited one in either storage.
     if (classInfo !== undefined) {
       const keyInfo = classSymbolKeyOf(lowerer, expr.argumentExpression);
-      const found =
-        keyInfo === null
-          ? null
-          : (findStaticOn(lowerer, classInfo, keyInfo.fieldName) ??
-            findGenericStaticOn(lowerer, classInfo, keyInfo.fieldName));
-      if (keyInfo !== null && found !== null) {
-        const staticRead = lowerClassStaticRead(
-          lowerer,
-          classInfo,
-          keyInfo.fieldName,
-          expr.expression,
-          expr,
-        );
-        if (staticRead !== null) return lowerer.maybeNarrow(staticRead, expr);
-      }
-      // No class in the chain declares the key: `C[k]` reads a property the
-      // class object does not have, and Node answers undefined. A class
-      // value that could carry properties set outside the declaration (a
-      // callable base) keeps its fence instead of guessing.
-      if (
-        keyInfo !== null &&
-        found === null &&
-        !hasRuntimeStatics(classInfo) &&
-        !classInfo.callableBase
-      ) {
-        return lowerer.maybeNarrow(dynUndefinedExpr(locOf(expr)), expr);
-      }
-      // A class that keeps its statics in the constructor's property table
-      // (a JS class with a static accessor or a runtime-statics base) has no
-      // module storage for a symbol-keyed static: the table keys the member
-      // by the SYMBOL, so the read is a symbol-keyed lookup of the class
-      // value. The hidden spelling names no property, and reading it would
-      // answer undefined.
-      if (keyInfo !== null && found === null && hasRuntimeStatics(classInfo)) {
-        return lowerer.maybeNarrow(
-          {
-            kind: "dynKeyGet",
-            value: lowerer.coerceToExpected(
-              classValueRef(lowerer, classInfo, expr.expression),
-              DYN,
-            ),
-            key: lowerer.lowerExprExpecting(expr.argumentExpression, DYN),
-            type: DYN,
-            loc: locOf(expr),
-          },
-          expr,
-        );
+      if (keyInfo !== null) {
+        const name = keyInfo.fieldName;
+        let storage: "module" | "table" | null = null;
+        for (let owner: ClassInfo | null = classInfo; owner !== null; owner = owner.base) {
+          if (
+            owner.staticFields.some((field) => field.name === name) ||
+            owner.staticMethods?.has(name) === true
+          ) {
+            storage = "module";
+            break;
+          }
+          const inTable = (owner.runtimeStatics ?? []).some((member) => {
+            const memberName = (member as { name?: ts.PropertyName }).name;
+            return memberName !== undefined && classMemberNameOf(lowerer, memberName) === name;
+          });
+          if (inTable) {
+            storage = "table";
+            break;
+          }
+        }
+        if (storage === "module") {
+          const staticRead = lowerClassStaticRead(lowerer, classInfo, name, expr.expression, expr);
+          if (staticRead !== null) return lowerer.maybeNarrow(staticRead, expr);
+        }
+        // The property table keys the member by the SYMBOL, so the read is a
+        // symbol-keyed lookup of the class value; the hidden spelling names
+        // no property there.
+        if (storage === "table") {
+          return lowerer.maybeNarrow(
+            {
+              kind: "dynKeyGet",
+              value: lowerer.coerceToExpected(
+                classValueRef(lowerer, classInfo, expr.expression),
+                DYN,
+              ),
+              key: lowerer.lowerExprExpecting(expr.argumentExpression, DYN),
+              type: DYN,
+              loc: locOf(expr),
+            },
+            expr,
+          );
+        }
+        // No class in the chain declares the key: `C[k]` reads a property
+        // the class object does not have, and Node answers undefined. A
+        // class value that could carry properties set outside the
+        // declaration (a callable base) keeps its fence instead of guessing.
+        if (storage === null && !classInfo.callableBase)
+          return lowerer.maybeNarrow(dynUndefinedExpr(locOf(expr)), expr);
       }
     }
     if (

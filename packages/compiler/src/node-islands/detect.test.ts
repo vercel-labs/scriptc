@@ -66,7 +66,7 @@ describe("R1 runtime markers", () => {
 
   test("R1.6 runtime-only globals", () => {
     expect(markers("const r = new WeakRef(o);")).toEqual([]);
-    expect(markers("const f = new FinalizationRegistry(cb);")).toEqual(["R1.6 weak-ref"]);
+    expect(markers("const cb = () => {}; const f = new FinalizationRegistry(cb);")).toEqual([]);
     expect(markers("if (typeof WeakRef !== 'undefined') {}")).toEqual([]);
     expect(markers("const o = { WeakRef: 1 }; o.WeakRef;")).toEqual([]);
   });

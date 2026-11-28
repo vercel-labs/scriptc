@@ -11,6 +11,7 @@
  * first touch them. Only an exiting worker thread returns pages, those
  * holding nothing but free blocks (scr_sa_trim, Linux). */
 #include "scr_runtime.h"
+#include <errno.h>
 #if defined(__GLIBC__)
 #include <malloc.h>
 #endif

@@ -94517,6 +94517,7 @@
           "tests/corpus/stream-readable-to-web-untyped.mjs",
           "tests/corpus/stream-readable-to-web-zero-hwm.mjs",
           "tests/corpus/stream-readable-to-web.ts",
+          "tests/corpus/stream-reader-iterator.mjs",
           "tests/corpus/stream-set-default-hwm.ts",
           "tests/corpus/stream-set-encoding-hwm.ts",
           "tests/corpus/stream-web-predicates-js.cjs",
@@ -97403,9 +97404,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.readable.iterator",
         "tests": [
+          "tests/corpus/stream-reader-iterator.mjs",
           "tests/corpus/1746-stream-for-await.ts",
           "tests/corpus/2861-readable-iterator-close.ts"
         ]

@@ -653,6 +653,7 @@ ScrStr *scr_http_req_header(ScrHttpReq *r, ScrStr *name) {
  * ends the destination, Node's pipe default. A body that already ended
  * ends the destination NOW (nothing more will flow). */
 static void scr_http_req_consume(ScrHttpReq *r);
+static void scr_http_req_pipe_flow(ScrHttpReq *r);
 
 void scr_http_req_pipe_res(ScrHttpReq *r, ScrHttpRes *dst /*borrowed*/) {
   if (r->ended) {
@@ -661,7 +662,7 @@ void scr_http_req_pipe_res(ScrHttpReq *r, ScrHttpRes *dst /*borrowed*/) {
   }
   if (r->pipe_res) scr_http_res_release(r->pipe_res);
   r->pipe_res = scr_http_res_retain(dst);
-  scr_http_req_consume(r);
+  scr_http_req_pipe_flow(r);
 }
 
 /* socket.pipe(res) — the extended-CONNECT bridge leg: a native reader on
@@ -710,7 +711,7 @@ void scr_http_req_pipe_client(ScrHttpReq *r, ScrHttpClientReq *dst /*borrowed*/)
   }
   if (r->pipe_client) scr_http_client_release(r->pipe_client);
   r->pipe_client = scr_http_client_retain(dst);
-  scr_http_req_consume(r);
+  scr_http_req_pipe_flow(r);
 }
 
 void scr_http_req_pipe_sock(ScrHttpReq *r, ScrNetSocket *dst /*borrowed*/) {
@@ -720,7 +721,7 @@ void scr_http_req_pipe_sock(ScrHttpReq *r, ScrNetSocket *dst /*borrowed*/) {
   }
   if (r->pipe_sock) scr_net_sock_release(r->pipe_sock);
   r->pipe_sock = scr_net_sock_retain(dst);
-  scr_http_req_consume(r);
+  scr_http_req_pipe_flow(r);
 }
 
 void scr_http_req_on_data(ScrHttpReq *r, ScrClosure *cb /*moves*/, ScrNetDataFn fn, bool once) {
@@ -765,17 +766,19 @@ static bool scr_http_req_holding(const ScrHttpReq *r) {
   return r->paused || (r->gated && !r->flowing);
 }
 
-/* IncomingMessage's readableHighWaterMark (its socket's, 64 KiB): a held
- * request buffers this many body bytes before its socket stops reading. */
+/* IncomingMessage's readableHighWaterMark (the stream default, 64 KiB): a
+ * held message buffers this many body bytes before its socket stops
+ * reading. */
 #define SCR_HTTP_REQ_HOLD_BYTES 65536u
 
-/* Stops the socket's reads while an HTTP/1 server request holds a full
- * buffer, and restarts them once it flows, ends or is dumped, as Node's
- * readStop when push() returns false. Client responses and h2 compat
- * requests keep reading. */
+/* Stops the socket's reads while an HTTP/1 message holds a full buffer, and
+ * restarts them once it flows, ends or is dumped, as Node's readStop when
+ * push() returns false. Server requests and client responses are both
+ * readable messages: a paused response's body waits at the high-water mark
+ * instead of buffering without a bound. h2 compat requests keep reading. */
 static void scr_http_req_update_hold(ScrHttpReq *r) {
-  bool hold = r->sock != NULL && r->status == -1 && !r->http2 && !r->ended &&
-              scr_http_req_holding(r) && r->pend_len >= SCR_HTTP_REQ_HOLD_BYTES;
+  bool hold = r->sock != NULL && !r->http2 && !r->ended && scr_http_req_holding(r) &&
+              r->pend_len >= SCR_HTTP_REQ_HOLD_BYTES;
   if (hold == r->sock_held) return;
   r->sock_held = hold;
   scr_net_sock_hold(r->sock, hold);
@@ -801,6 +804,55 @@ static void scr_http_req_flow(ScrHttpReq *r) {
 static void scr_http_req_consume(ScrHttpReq *r) {
   if (r->gated && !r->paused && !r->flowing) scr_http_req_flow(r);
 }
+
+/* A new pipe destination resumes the message even when pause() or unpipe
+ * left it paused: Node's pipe switches the source back to flowing through
+ * its own 'data' listener, so a destination piped after an unpipe still
+ * receives the whole body. */
+static void scr_http_req_pipe_flow(ScrHttpReq *r) {
+  if (r->flowing && !r->paused) return;
+  scr_http_req_flow(r);
+}
+
+#ifdef SCR_HTTP_SERVER_META
+/* req.unpipe(dst): that destination stops receiving the body. A
+ * destination the request is not piping to changes nothing, as Node's
+ * unpipe ignores one it does not hold. */
+/* Node pauses a readable whose last pipe destination leaves, even while a
+ * 'data' listener is attached: the listener that remains or arrives later
+ * reads only after resume(), as Node's flowing state requires, so body
+ * bytes that arrive in between wait in the buffer instead of being lost
+ * with a listener that leaves. */
+static void scr_http_req_pause_without_consumer(ScrHttpReq *r) {
+  if (r->pipe_res != NULL || r->pipe_client != NULL || r->pipe_sock != NULL) return;
+  if (r->ended) return;
+  r->paused = true;
+}
+
+void scr_http_req_unpipe_res(ScrHttpReq *r, ScrHttpRes *dst /*borrowed*/) {
+  if (r->pipe_res == NULL || r->pipe_res != dst) return;
+  scr_http_res_release(r->pipe_res);
+  r->pipe_res = NULL;
+  scr_http_req_pause_without_consumer(r);
+  scr_http_req_update_hold(r);
+}
+
+void scr_http_req_unpipe_client(ScrHttpReq *r, ScrHttpClientReq *dst /*borrowed*/) {
+  if (r->pipe_client == NULL || r->pipe_client != dst) return;
+  scr_http_client_release(r->pipe_client);
+  r->pipe_client = NULL;
+  scr_http_req_pause_without_consumer(r);
+  scr_http_req_update_hold(r);
+}
+
+void scr_http_req_unpipe_sock(ScrHttpReq *r, ScrNetSocket *dst /*borrowed*/) {
+  if (r->pipe_sock == NULL || r->pipe_sock != dst) return;
+  scr_net_sock_release(r->pipe_sock);
+  r->pipe_sock = NULL;
+  scr_http_req_pause_without_consumer(r);
+  scr_http_req_update_hold(r);
+}
+#endif
 
 /* resume(): releases what pause() or the initial paused state held. */
 void scr_http_req_resume(ScrHttpReq *r) {
@@ -914,6 +966,29 @@ void scr_http_req_on_aborted(ScrHttpReq *r, ScrClosure *cb /*moves*/, bool once)
   }
   scr_net_ls_add(&r->aborted_ls, cb, NULL, once);
 }
+
+#ifdef SCR_HTTP_SERVER_META
+/* The list an SCR_HTTP_REQ_OFF_* kind names; NULL for a kind this message
+ * does not have. */
+static ScrNetLs *scr_http_req_event_list(ScrHttpReq *r, double kind) {
+  switch ((int)kind) {
+  case SCR_HTTP_REQ_OFF_DATA: return &r->data_ls;
+  case SCR_HTTP_REQ_OFF_END: return &r->end_ls;
+  case SCR_HTTP_REQ_OFF_ERROR: return &r->err_ls;
+  case SCR_HTTP_REQ_OFF_CLOSE: return &r->close_ls;
+  case SCR_HTTP_REQ_OFF_ABORTED: return &r->aborted_ls;
+  default: return NULL;
+  }
+}
+
+/* req.off(event, cb) / removeListener: the LAST listener standing for the
+ * same function leaves the event's list — Node's EventEmitter removes the
+ * most recently added match, so the scan runs back to front. */
+void scr_http_req_off(ScrHttpReq *r, ScrClosure *cb /*borrowed*/, double kind) {
+  ScrNetLs *l = scr_http_req_event_list(r, kind);
+  if (l != NULL) scr_net_ls_remove_last(l, cb);
+}
+#endif
 
 /* Body completion: 'end' fires, then both listener lists drop (the
  * settle-releases-listeners story — a handler closure capturing its own
@@ -3453,6 +3528,27 @@ void scr_http_res_on_close(ScrHttpRes *r, ScrClosure *cb /*moves*/, bool once) {
   }
   scr_net_ls_add(&r->close_ls, cb, NULL, once);
 }
+
+#ifdef SCR_HTTP_SERVER_META
+/* The list an SCR_HTTP_RES_OFF_* kind names; NULL for a kind this
+ * response does not have. */
+static ScrNetLs *scr_http_res_event_list(ScrHttpRes *r, double kind) {
+  switch ((int)kind) {
+  case SCR_HTTP_RES_OFF_CLOSE: return &r->close_ls;
+  case SCR_HTTP_RES_OFF_FINISH: return &r->finish_ls;
+  case SCR_HTTP_RES_OFF_PREFINISH: return &r->prefinish_ls;
+  case SCR_HTTP_RES_OFF_DRAIN: return &r->drain_ls;
+  default: return NULL;
+  }
+}
+
+/* res.off(event, cb) / removeListener: the LAST listener standing for the
+ * same function leaves the event's list (Node's removal order). */
+void scr_http_res_off(ScrHttpRes *r, ScrClosure *cb /*borrowed*/, double kind) {
+  ScrNetLs *l = scr_http_res_event_list(r, kind);
+  if (l != NULL) scr_net_ls_remove_last(l, cb);
+}
+#endif
 
 /* ── the deferred-emit queue (scr_net.c's proto sweep drains it) ───────
  *

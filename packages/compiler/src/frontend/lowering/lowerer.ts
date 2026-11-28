@@ -2489,6 +2489,7 @@ function lowerToIrWithIslands(
             found.loc.start === warning.loc.start,
         ),
     ),
+    ...ffiValidation.warnings,
     ...resultLowerer.sharedModuleWarnings,
     ...resultLowerer.islandWorkerWarnings,
     ...resultLowerer.deferredRefusalWarnings,

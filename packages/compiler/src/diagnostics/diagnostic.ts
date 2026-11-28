@@ -64,8 +64,10 @@
  *   SC5xxx  native FFI: malformed manifests (SC5001), a configured
  *            binding that is not an ambient function declaration
  *            (SC5002), and a TypeScript signature that does not match its
- *            declared native ABI classes (SC5003), and native toolchain
- *            failures while applying a valid profile (SC5004)
+ *            declared native ABI classes (SC5003), native toolchain
+ *            failures while applying a valid profile (SC5004), and a
+ *            binding the program does not declare, which is a warning
+ *            (SC5005)
  *   SC6xxx  divergences: the program compiles, but the native binary can
  *            behave differently from Node at this site — WARNINGS, never
  *            build failures (coverage --fail-on=divergences opts in):
@@ -1187,6 +1189,22 @@ export function ffiBindingDiag(name: string, detail: string, loc: SrcLoc): ScrDi
     hint:
       `declare it as a signature-only ambient function, for example ` +
       `'declare function ${name}(...): ...'; scriptc only replaces direct calls of that exact binding`,
+  };
+}
+
+/** SC5005 — a manifest binding the program does not declare. A shared
+ * manifest can list the bindings of several programs (a package's
+ * `ffi.json` beside its declarations), so a program that declares none of
+ * one entry's names is not broken: the binding is simply not linked into
+ * it. The build says so and goes on. */
+export function ffiUnusedBindingDiag(name: string, loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC5005",
+    message: `FFI manifest binding '${name}' is not declared in this program, so it is not bound`,
+    loc,
+    hint:
+      `declare it as a signature-only ambient function to bind it, or keep the entry in a shared ` +
+      `manifest for the programs that do; the build goes on`,
   };
 }
 

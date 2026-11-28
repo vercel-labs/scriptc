@@ -54,6 +54,49 @@ Only direct calls to that exact declaration become native calls. A function with
 
 For C++, export the function with `extern "C"` so it keeps an unmangled name. Pass the same manifest to `scriptc coverage` so the native calls count as compiled.
 
+## Ship FFI in a package
+
+A native binding package ships three things: the declarations, the manifest, and one static archive per target. The manifest's `libraries` paths resolve from the manifest's own directory, so archives that travel with the package work from wherever it is installed.
+
+```text:my-native
+my-native/
+  package.json
+  index.d.ts
+  ffi.darwin-arm64.json
+  ffi.linux-x64-gnu.json
+  lib/libnative-darwin-arm64.a
+  lib/libnative-linux-x64-gnu.a
+```
+
+Make the declarations global so a project can pull them in without a JavaScript import edge, and point `types` at the file:
+
+```json:package.json
+{ "name": "my-native", "version": "1.0.0", "types": "index.d.ts" }
+```
+
+```ts:index.d.ts
+declare function nativeScale(value: number): number;
+```
+
+A manifest belongs to one target: `libraries` is a flat list, and the archive named there must match the build target. Ship one manifest per target whose entries name that target's archive.
+
+The consuming project installs the package, adds a type reference in its entry, and builds with the manifest for its target:
+
+```ts:main.ts
+/// <reference types="my-native" />
+console.log(nativeScale(21));
+```
+
+```console
+$ scriptc build main.ts --ffi node_modules/my-native/ffi.darwin-arm64.json -o app
+```
+
+Pass `--ffi` to `scriptc coverage` too, so the native calls count as compiled rather than as a runtime gap.
+
+If you would rather not use a reference directive, declare the functions in the project's own source as signature-only `declare function`s and pass the same manifest; a binding matches its declaration by name.
+
+Named imports of the package's functions are not supported. `import { nativeScale } from "my-native"` needs a JavaScript module to load, and a package that ships only declarations and native code has none; a package that also ships a JavaScript entry answers the import with that JavaScript function, not the native binding. Use the type reference or a local `declare function`.
+
 <span id="replacing-a-node-api-addon" />
 
 ## Replace a Node-API addon
@@ -412,7 +455,7 @@ On Darwin targets, a format 7 manifest may name system frameworks in `frameworks
   <dd>Format 7. Optional array of callback signatures for <code>node:ffi</code> <code>registerCallback</code>, each with <code>library</code>, <code>params</code>, <code>returns</code>, and an optional <code>capacity</code> from 1 to 256 (default 16).</dd>
 </dl>
 
-Unknown fields, invalid ABI classes, duplicate names, and signature mismatches fail the build with an `SC5xxx` diagnostic.
+Unknown fields, invalid ABI classes, duplicate names, and signature mismatches fail the build with an `SC5xxx` diagnostic. An entry the program neither declares nor implements is not a failure: the build warns with `SC5005` and links the rest, so one manifest can list the bindings of several entry points and a program pays nothing for the ones it does not use. A name the program implements itself is different: the build refuses it (`SC5002`) rather than let a manifest claim calls the program's own function serves.
 
 ## Boundary rules and current limits
 

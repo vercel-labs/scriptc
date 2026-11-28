@@ -23,6 +23,7 @@ import { locOf } from "../program.js";
 import {
   ffiBindingDiag,
   ffiSignatureDiag,
+  ffiUnusedBindingDiag,
   libCallbackDiag,
   type ScrDiagnostic,
 } from "../../diagnostics/diagnostic.js";
@@ -264,6 +265,9 @@ function ffiDeclarationDiagnostic(
 
 export interface FfiValidationResult {
   diagnostics: ScrDiagnostic[];
+  /** Manifest bindings the program does not declare (SC5005). Warnings:
+   * a shared manifest may list several programs' bindings. */
+  warnings: ScrDiagnostic[];
   symbolsByName: ReadonlyMap<string, ReadonlySet<ts.Symbol>>;
 }
 
@@ -277,6 +281,33 @@ function libraryCallbackOwnsFile(lowerer: Lowerer, file: ts.SourceFile): boolean
   return !file.isDeclarationFile || (!lowerer.isStdlibFile(file) && !lowerer.isNpmFile(file));
 }
 
+/** Whether the program declares `name` as anything other than a
+ * signature-only ambient function: an implemented function, a class or a
+ * variable. Such a name is a collision, not unused manifest capacity, and
+ * a call of it must keep the implementation the program wrote rather than
+ * be dropped (SC5002 says so). */
+function programDeclaresOrdinaryName(lowerer: Lowerer, name: string): boolean {
+  for (const file of lowerer.program.getSourceFiles()) {
+    if (lowerer.libraryCallbacks && !libraryCallbackOwnsFile(lowerer, file)) continue;
+    let found = false;
+    ts.walkPreorder(file, (node) => {
+      if (found) return "skip";
+      if (ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node)) {
+        if (node.body !== undefined && node.name !== undefined && node.name.text === name)
+          found = true;
+        return "skip";
+      }
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === name) {
+        found = true;
+        return "skip";
+      }
+      if (ts.isFunctionLike(node)) return "skip";
+    });
+    if (found) return true;
+  }
+  return false;
+}
+
 /** Resolve and validate every configured outbound binding before emit.
  * Candidate declarations are signature-only functions bearing the manifest
  * name anywhere in the program. Multiple scoped declarations are all native
@@ -286,6 +317,7 @@ function libraryCallbackOwnsFile(lowerer: Lowerer, file: ts.SourceFile): boolean
  * declaration files as authored callback surface. */
 export function validateFfiImports(lowerer: Lowerer): FfiValidationResult {
   const diagnostics: ScrDiagnostic[] = [];
+  const warnings: ScrDiagnostic[] = [];
   const symbolsByName = new Map<string, ReadonlySet<ts.Symbol>>();
   const configuredNames = new Set(
     lowerer.ffiImports
@@ -294,7 +326,7 @@ export function validateFfiImports(lowerer: Lowerer): FfiValidationResult {
   );
   const candidates = new Map<string, Map<ts.Symbol, ts.FunctionDeclaration>>();
 
-  if (configuredNames.size === 0) return { diagnostics, symbolsByName };
+  if (configuredNames.size === 0) return { diagnostics, warnings, symbolsByName };
 
   for (const file of lowerer.program.getSourceFiles()) {
     if (lowerer.libraryCallbacks && !libraryCallbackOwnsFile(lowerer, file)) continue;
@@ -325,19 +357,31 @@ export function validateFfiImports(lowerer: Lowerer): FfiValidationResult {
     if (binding.library !== undefined) continue;
     const bySymbol = candidates.get(binding.name);
     if (bySymbol === undefined || bySymbol.size === 0) {
-      // A native-manifest binding with no declaration is a broken build
-      // input. A library callback channel with no declaration is unused
-      // CAPACITY: the registration symbol still dispatches it, nothing
-      // calls it, and a later program revision may (a program that calls
-      // the name without declaring it fails ordinary typechecking first).
+      // No signature-only declaration. When the program implements the name
+      // itself this is a collision, not unused capacity: a call of it must
+      // keep the function the program wrote and never be silently dropped,
+      // so the build fails as it did before shared manifests were allowed
+      // (SC5002). Only a name the program neither declares nor implements
+      // is unused capacity: a shared manifest (a package's ffi.json beside
+      // the declarations every consumer may import) lists bindings for
+      // several entry points, and a program that declares none of them is
+      // not broken. A library callback channel with no declaration is
+      // unused CAPACITY too: the registration symbol still dispatches it,
+      // nothing calls it, and a later program revision may.
       if (!lowerer.libraryCallbacks) {
-        diagnostics.push(
-          ffiBindingDiag(
-            binding.name,
-            "the program has no signature-only function declaration with this name",
-            { file: lowerer.entry.fileName, start: 0, end: 0 },
-          ),
-        );
+        if (programDeclaresOrdinaryName(lowerer, binding.name)) {
+          diagnostics.push(
+            ffiBindingDiag(
+              binding.name,
+              "the program implements this name as an ordinary declaration, not a signature-only ambient function",
+              { file: lowerer.entry.fileName, start: 0, end: 0 },
+            ),
+          );
+        } else {
+          warnings.push(
+            ffiUnusedBindingDiag(binding.name, { file: lowerer.entry.fileName, start: 0, end: 0 }),
+          );
+        }
       } else {
         // Preserve the distinction between unused capacity and a binding
         // whose program declaration was found but failed validation. The
@@ -363,7 +407,7 @@ export function validateFfiImports(lowerer: Lowerer): FfiValidationResult {
     if (valid) symbolsByName.set(binding.name, validSymbols);
   }
 
-  return { diagnostics, symbolsByName };
+  return { diagnostics, warnings, symbolsByName };
 }
 
 /** A manifest-bound call of a signature-only ambient declaration. This

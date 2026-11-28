@@ -3270,6 +3270,16 @@ function lowerDistributedUnionSpread(
   // ahead: its arms build in the dispatch.
   const sourcePure = pureKeyExpr(lowerer, conditional ? conditional.node.condition : site);
   for (const prop of props.slice(0, spreadIndex)) {
+    if (
+      conditional !== null &&
+      (ts.isPropertyAssignment(prop) || ts.isShorthandPropertyAssignment(prop))
+    ) {
+      // A two-armed conditional's arms build inside the dispatch, after
+      // every earlier property; an earlier initializer is lowered once
+      // into a hidden local before the condition (spreadOnceBindings), so
+      // its effects run in source order exactly once.
+      continue;
+    }
     if (sourcePure && ts.isShorthandPropertyAssignment(prop)) continue;
     if (
       ts.isPropertyAssignment(prop) &&
@@ -3405,28 +3415,58 @@ function lowerDistributedUnionSpread(
   }
   const loc = locOf(expr);
   if (conditional) {
-    const cond = lowerer.lowerCondition(conditional.node.condition);
-    const built: IrExpr[] = [];
-    for (const { tag, arm, destination } of plan) {
-      const armNode = conditional.nodes[tag]!;
-      // A fresh arm builds at its own type: its checker context is the
-      // enclosing literal's, which one arm need not complete.
-      const armValue = ts.isObjectLiteralExpression(armNode)
-        ? lowerObjectLiteral(lowerer, armNode, arm as IrType & { kind: "record" }, true)
-        : lowerer.lowerExpr(armNode);
-      if (!typeEquals(armValue.type, arm)) return null;
-      lowerer.spreadArmOverrides.set(site, armValue);
-      let whole: IrExpr;
-      try {
-        whole = lowerObjectLiteral(lowerer, expr, destination, true);
-      } finally {
-        lowerer.spreadArmOverrides.delete(site);
-      }
-      const wrapped = lowerer.coerceToExpected(whole, mapped);
-      if (!typeEquals(wrapped.type, mapped)) return null;
-      built.push(wrapped);
+    // Both arms re-lower the WHOLE literal, so an earlier property with
+    // effects would run once per arm. Bind each such initializer once, in
+    // source order, before the condition; the arm builds then read the
+    // bound value (spreadOnceBindings) instead of re-lowering it.
+    const boundStmts: IrStmt[] = [];
+    const boundNodes: ts.Expression[] = [];
+    for (const prop of props.slice(0, spreadIndex)) {
+      if (!ts.isPropertyAssignment(prop)) continue;
+      const initializer = prop.initializer;
+      if (pureKeyExpr(lowerer, initializer) || constantInitializer(lowerer, initializer)) continue;
+      const value = lowerer.lowerExpr(initializer);
+      const held = lowerer.declareHiddenLocal("%spreadOnce", value.type);
+      boundStmts.push({ kind: "varDecl", localId: held.id, init: value, loc: value.loc });
+      lowerer.spreadOnceBindings.set(initializer, varRef(held.id, value.type, value.loc));
+      boundNodes.push(initializer);
     }
-    return { kind: "ternary", cond, then: built[0]!, else_: built[1]!, type: mapped, loc };
+    try {
+      const cond = lowerer.lowerCondition(conditional.node.condition);
+      const built: IrExpr[] = [];
+      for (const { tag, arm, destination } of plan) {
+        const armNode = conditional.nodes[tag]!;
+        // A fresh arm builds at its own type: its checker context is the
+        // enclosing literal's, which one arm need not complete.
+        const armValue = ts.isObjectLiteralExpression(armNode)
+          ? lowerObjectLiteral(lowerer, armNode, arm as IrType & { kind: "record" }, true)
+          : lowerer.lowerExpr(armNode);
+        if (!typeEquals(armValue.type, arm)) return null;
+        lowerer.spreadArmOverrides.set(site, armValue);
+        let whole: IrExpr;
+        try {
+          whole = lowerObjectLiteral(lowerer, expr, destination, true);
+        } finally {
+          lowerer.spreadArmOverrides.delete(site);
+        }
+        const wrapped = lowerer.coerceToExpected(whole, mapped);
+        if (!typeEquals(wrapped.type, mapped)) return null;
+        built.push(wrapped);
+      }
+      const result: IrExpr = {
+        kind: "ternary",
+        cond,
+        then: built[0]!,
+        else_: built[1]!,
+        type: mapped,
+        loc,
+      };
+      return boundStmts.length === 0
+        ? result
+        : { kind: "seqExpr", stmts: boundStmts, result, type: mapped, loc };
+    } finally {
+      for (const node of boundNodes) lowerer.spreadOnceBindings.delete(node);
+    }
   }
   if (siteType?.kind !== "union") return null;
   let source = lowerer.lowerExpr(site);

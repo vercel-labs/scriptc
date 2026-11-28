@@ -5456,6 +5456,11 @@ export class Lowerer {
   /** One arm's narrowed value for a spread source while a distributed
    * union spread lowers that arm (lowerDistributedUnionSpread). */
   readonly spreadArmOverrides = new Map<ts.Node, IrExpr>();
+  /** A property initializer the distributed conditional spread evaluates
+   * ONCE into a hidden local before the condition, because both arm builds
+   * re-lower the literal (an effectful initializer lowered per arm would
+   * run twice). Registered only while that literal lowers. */
+  readonly spreadOnceBindings = new Map<ts.Expression, IrExpr>();
   /** for-of-over-matchAll bindings whose `.index` reads the companion-index
    * array: binding SYMBOL → the hidden number[] of match start indices plus
    * the hidden cursor holding THIS iteration's position (registered while
@@ -7122,6 +7127,7 @@ export class Lowerer {
     "keptOperands",
     "operandFrames",
     "spreadArmOverrides",
+    "spreadOnceBindings",
     "splitIdentifierUses",
     "emptyArrayPlaces.decided",
     "emptyArrayPlaces.active",
@@ -24368,6 +24374,8 @@ export class Lowerer {
   /* ── expressions ──────────────────────────────────────────────────── */
 
   lowerExpr(expr: ts.Expression): IrExpr {
+    const spreadOnce = this.spreadOnceBindings.get(expr);
+    if (spreadOnce !== undefined) return spreadOnce;
     if (this.speculatedClosures.size > 0) {
       const speculated = this.speculatedClosure(expr);
       if (speculated !== null) {

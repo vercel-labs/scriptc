@@ -1731,9 +1731,17 @@ static void scr_h2_iter_notify_end(ScrH2Stream *st) {
   ScrH2Iter *it = st->iter;
   if (it == NULL || it->done || it->error != NULL) return;
   if (st->rq_head != NULL) return;
+  /* The body's 'end' listeners run inside the completion, and one of them
+   * may tear the stream down — which settles every reader parked on the
+   * iterator, releases the loop object, and with it the last reference to
+   * this state. Hold the state across the emit and settle whoever is left
+   * through that reference, never through the pointer the emit may have
+   * freed. */
+  ScrH2Iter *held = scr_h2_iter_retain_v(it);
   it->done = true;
   scr_h2_stream_maybe_emit_end_reader(st, true);
-  scr_h2_iter_drain_done(it);
+  scr_h2_iter_drain_done(held);
+  scr_h2_iter_release_v(held);
 }
 
 /* The stream failed: every parked next() rejects with the error, or the

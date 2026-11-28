@@ -3180,7 +3180,7 @@ static ScrDyn *dyn_builtin_fn_call(ScrClosure *clo, ScrDyn *const *args, size_t 
     }
   } else if (strcmp(name->data, dyn_s11) == 0) {
     if (dyn_builtin_fn_callback(args, argc)) {
-      scr_queue_microtask_dyn(args[0]);
+      scr_queue_microtask_dyn_user(args[0]);
       result = scr_dyn_retain(scr_dyn_undefined());
     }
   } else if (strncmp(name->data, dyn_s28, 5) == 0) {

@@ -3735,10 +3735,152 @@ static const ScrAsyncHookOps scr_ah_ops = {
     .promise_resolve = scr_ah_hook_promise_resolve,
 };
 
+/* ── queueMicrotask's 'Microtask' resource ────────────────────────────
+ * Node's queueMicrotask runs the callback as an AsyncResource('Microtask')
+ * when an async context frame or an enabled hook exists: init at
+ * scheduling, before/after around the callback, the resource's ids as the
+ * execution's ids, and a destroy from a later iteration. The wrapper below
+ * gives the public entry points that shape without allocating the
+ * AsyncResource class's payload (a plain object is the hook `resource`, the
+ * shape the runtime's timer kinds already pass); the runtime's own
+ * microtasks (promise jobs, fetch callbacks) keep the plain path. */
+static bool scr_ah_any_enabled(void) {
+  for (size_t i = 0; i < scr_ah_count; i++) {
+    if (scr_ah_hooks[i].enabled) return true;
+  }
+  return false;
+}
+
+static bool scr_ah_destroy_enabled(void) {
+  for (size_t i = 0; i < scr_ah_count; i++) {
+    if (scr_ah_hooks[i].enabled && scr_ah_hooks[i].destroy != NULL) return true;
+  }
+  return false;
+}
+
+typedef struct {
+  size_t rc;
+  double id;
+  double trigger;
+  ScrAlsCtx *ctx; /* owned, captured at scheduling (NULL: no store) */
+} ScrMicroTask;
+
+static void *scr_micro_state_retain(void *p) {
+  ScrMicroTask *task = p;
+  task->rc++;
+  return p;
+}
+
+static void scr_micro_state_release(void *p) {
+  ScrMicroTask *task = p;
+  if (--task->rc != 0) return;
+  scr_als_ctx_release(task->ctx);
+  free(task);
+}
+
+/* Destroy events a Microtask callback queued, drained from a next tick like
+ * Node's emitDestroy. */
+static SCR_TL double *scr_micro_destroy_ids = NULL;
+static SCR_TL size_t scr_micro_destroy_len = 0, scr_micro_destroy_cap = 0;
+
+
+/* Node emits async destroys after its next-tick and microtask queues drain,
+ * which the core's checkpoint-idle hook is called for (scr_async.c); this
+ * drain runs there, so a next tick or microtask queued later in the turn
+ * still runs first. */
+static void scr_micro_destroy_flush(void) {
+  if (scr_micro_destroy_len == 0) return;
+  size_t n = scr_micro_destroy_len;
+  double *ids = scr_micro_destroy_ids;
+  scr_micro_destroy_ids = NULL;
+  scr_micro_destroy_len = scr_micro_destroy_cap = 0;
+  for (size_t i = 0; i < n; i++) scr_ah_dispatch_id(ids[i], 2);
+  free(ids);
+}
+
+static void scr_micro_destroy_queue(double id) {
+  if (scr_micro_destroy_len == scr_micro_destroy_cap) {
+    size_t cap = scr_micro_destroy_cap ? scr_micro_destroy_cap * 2 : 4;
+    double *grown = realloc(scr_micro_destroy_ids, cap * sizeof *grown);
+    if (!grown) scr_ad_oom();
+    scr_micro_destroy_ids = grown;
+    scr_micro_destroy_cap = cap;
+  }
+  scr_micro_destroy_ids[scr_micro_destroy_len++] = id;
+}
+
+static void scr_micro_task_fire(ScrClosure *self) {
+  ScrClosure *cb = scr_box_get_ref(self->caps[0]);     /* +1 */
+  ScrMicroTask *task = scr_box_get_ref(self->caps[1]); /* +1 */
+  /* The resource's ids and scheduling store are active across the before
+   * hook, the callback and the after hook alike: Node's runInAsyncScope
+   * runs all three inside the resource's execution scope, so a resource
+   * scheduled by a hook takes the Microtask's id as its trigger. */
+  double previous[2];
+  scr_async_exec_push(task->id, task->trigger, previous);
+  ScrAlsCtx *prev_ctx = scr_als_dispatch_enter(task->ctx);
+  scr_ah_dispatch_id(task->id, 0); /* before */
+  /* The callback has its own context boundary: a store the before hook put
+   * in place with enterWith is not the callback's. The after hook runs with
+   * the context the before hook left, as Node emits the callback in the
+   * resource's captured context and the after hook in the hook's. Enter the
+   * captured context for the callback and keep the hook's context for after. */
+  ScrAlsCtx *hook_ctx = scr_als_dispatch_enter(task->ctx);
+  /* A throwing before hook skips the callback and the after hook (Node's
+   * emitBefore sits outside runInAsyncScope's try); a throwing callback
+   * runs the after hook from the finally. */
+  if (!scr_exc_pending()) {
+    ((void (*)(ScrClosure *))cb->fn)(cb);
+    ScrAlsCtx *callback_ctx = *SCR_ALS_SLOT();
+    *SCR_ALS_SLOT() = hook_ctx; /* ownership moves in */
+    scr_als_ctx_release(callback_ctx);
+    scr_ah_dispatch_id(task->id, 1); /* after */
+  } else {
+    scr_als_ctx_release(hook_ctx);
+  }
+  scr_als_dispatch_leave(prev_ctx);
+  scr_async_exec_pop(previous);
+  /* Node's runMicrotask emits the destroy in its finally. */
+  if (scr_ah_destroy_enabled()) scr_micro_destroy_queue(task->id);
+  scr_closure_release(cb);
+  scr_micro_state_release(task);
+}
+
+static ScrClosure *scr_micro_task_wrap(ScrClosure *cb) {
+  /* Node's fast path: neither an async context frame nor an enabled hook. */
+  if (!scr_ah_any_enabled() && *SCR_ALS_SLOT() == NULL) return cb;
+  double id = scr_async_new_id();
+  double trigger = scr_async_execution_id();
+  ScrAlsCtx *ctx = scr_als_capture();
+  ScrDyn *resource = scr_dyn_new_obj();
+  scr_ah_dispatch_init(id, "Microtask", 9, trigger, resource);
+  scr_dyn_release(resource);
+  if (scr_exc_pending()) { /* a throwing init hook: queueMicrotask propagates */
+    scr_als_ctx_release(ctx);
+    scr_closure_release(cb);
+    return NULL;
+  }
+  ScrMicroTask *task = malloc(sizeof *task);
+  if (!task) scr_ad_oom();
+  task->rc = 1;
+  task->id = id;
+  task->trigger = trigger;
+  task->ctx = ctx;
+  ScrClosure *wrapper = scr_closure_new((void *)scr_micro_task_fire, 2);
+  wrapper->caps[0] = scr_box_new(SCR_BOX_FUNC);
+  scr_box_set_ref(wrapper->caps[0], cb); /* moves */
+  wrapper->caps[1] = scr_box_new_obj(scr_micro_state_retain, scr_micro_state_release, NULL);
+  scr_box_set_ref(wrapper->caps[1], task);
+  return wrapper;
+}
+
 /* Emitted before the entry of a program whose IR uses async_hooks: from
- * here on the core allocates ids and dispatches hook callbacks. */
+ * here on the core allocates ids and dispatches hook callbacks, and a
+ * program's queueMicrotask calls run inside a 'Microtask' resource. */
 void scr_async_hooks_install(void) {
   if (scr_async_hook_ops == NULL) scr_async_hook_ops = &scr_ah_ops;
+  scr_async_microtask_resource = scr_micro_task_wrap;
+  scr_async_checkpoint_idle = scr_micro_destroy_flush;
 }
 
 /* createHook(callbacks): the five members are read the way Node's

@@ -213,6 +213,25 @@ test.skipIf(!THIN_ARCHIVE)(
   },
 );
 
+test.skipIf(!THIN_ARCHIVE)(
+  "a thin archive built from an archive in a subdirectory names that archive",
+  async () => {
+    const root = scratch();
+    const member = file(root, "sub/member.o", "member\n");
+    const plain = join(root, "sub", "libplain.a");
+    execFileSync("ar", ["crs", plain, "member.o"], { cwd: join(root, "sub"), stdio: "ignore" });
+    const archive = join(root, "libthin.a");
+    try {
+      execFileSync("ar", ["crsT", archive, "sub/libplain.a"], { cwd: root, stdio: "ignore" });
+    } catch {
+      return; // this ar refuses a regular archive as a thin member
+    }
+
+    expect(await namedLinkInputDependencies([archive], { cwd: root })).toContain(plain);
+    expect(await namedLinkInputDependencies([archive], { cwd: root })).not.toContain(member);
+  },
+);
+
 test("a regular archive and an object file name nothing", async () => {
   const root = scratch();
   const member = file(root, "member.o", "member\n");

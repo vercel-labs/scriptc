@@ -213,8 +213,13 @@ function thinArchiveMembers(bytes: Buffer, archiveDir: string, cwd: string): str
     // the extra reading can only add an existing candidate, which costs a
     // relink rather than a stale executable.
     let names = [...new Set([nameField.toString("utf8").trim(), rawName])];
-    if (rawName.startsWith("/") && /^\d+$/.test(rawName.slice(1))) {
-      const start = Number.parseInt(rawName.slice(1), 10);
+    // GNU ar's extended name is `/offset`, and a member that came from
+    // another archive (a thin archive built out of a regular one) is
+    // `/offset:length`: the table entry is the containing archive's path with
+    // a trailing slash, and the archive itself is the file the proof needs.
+    const extended = /^\/(\d+)(?::\d+)?$/.exec(rawName);
+    if (extended !== null) {
+      const start = Number.parseInt(extended[1]!, 10);
       const end = longNames.indexOf(0x0a, start);
       const long = longNames.subarray(start, end < 0 ? longNames.length : end);
       names = [...new Set([long.toString("utf8"), long.toString("latin1")])];
@@ -233,6 +238,13 @@ function thinArchiveMembers(bytes: Buffer, archiveDir: string, cwd: string): str
         for (const directory of [archiveDir, cwd])
           for (const candidate of existingCandidates(entry, [directory])) members.push(candidate);
       }
+      // A thin archive built from a regular archive records the member as
+      // `<archive>/<member>` (GNU ar copies the members, not the archive):
+      // the member's content lives in the containing archive, which is a file
+      // on disk, not a directory. Record every prefix of the name that is an
+      // archive file, so a rebuilt containing archive invalidates the proof.
+      for (const directory of [archiveDir, cwd])
+        for (const candidate of containingArchives(name, [directory])) members.push(candidate);
     }
     // A thin member's content is elsewhere, so the next header follows the
     // header immediately.
@@ -396,6 +408,28 @@ function collectList(
 
 /** Every existing candidate for `name`: an absolute path names itself, and a
  * relative path is looked for in each directory. */
+/** The prefixes of a thin member name that name an archive FILE: a thin
+ * archive built from a regular archive records its members as
+ * `<archive>/<member>`, and the containing archive is what a rebuild changes.
+ * A prefix that is a directory is an ordinary member path and is left to
+ * `existingCandidates`. */
+function containingArchives(name: string, directories: readonly string[]): string[] {
+  const containers: string[] = [];
+  for (let end = name.indexOf("/"); end > 0; end = name.indexOf("/", end + 1)) {
+    const prefix = name.slice(0, end);
+    for (const candidate of existingCandidates(prefix, directories)) {
+      try {
+        if (!statSync(candidate).isFile()) continue;
+      } catch {
+        continue;
+      }
+      const magic = readPrefix(candidate, 8).toString("latin1");
+      if (magic === ARCHIVE_MAGIC || magic === THIN_ARCHIVE_MAGIC) containers.push(candidate);
+    }
+  }
+  return containers;
+}
+
 function existingCandidates(name: string, directories: readonly string[]): string[] {
   if (name === "") return [];
   if (isAbsolute(name)) return existsSync(name) ? [resolve(name)] : [];

@@ -1,36 +1,31 @@
-// A server 'timeout' callback that captures its server (and job data) must
-// not keep the closed server alive: settling the server releases the
-// callbacks the context registered. The sanitized lane's reference-count
-// audit reports any that outlive the close.
+// Node captures the server timeout policy when a session is accepted: a later
+// server.timeout = 0 does not stop an already-accepted session from
+// forwarding its idle timeout to the server's listeners.
 import * as http2 from "node:http2";
+import type { AddressInfo } from "node:net";
 
-const ROUNDS = 24;
 const lines: string[] = [];
-
-function round(n: number): void {
-  const server = http2.createServer();
-  const payload = Buffer.alloc(1024 * 1024, 0x41);
-  let hits = 0;
-  let seen: http2.Http2Server | null = null;
-  server.setTimeout(600000, () => {
-    hits += payload.length;
-    seen = server;
-  });
-  server.listen(0, () => {
-    server.close(() => {
-      lines.push(`closed ${n} ${hits} ${seen === null}`);
-      if (n + 1 < ROUNDS) round(n + 1);
-    });
-  });
-}
+const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 await new Promise<void>((resolve) => {
-  round(0);
-  const check = (): void => {
-    if (lines.length === ROUNDS) resolve();
-    else setTimeout(check, 20);
-  };
-  check();
+  const server = http2.createServer();
+  server.setTimeout(40);
+  server.on("timeout", () => lines.push("server timeout"));
+  server.on("session", () => {
+    server.timeout = 0;
+    lines.push("timeout cleared");
+  });
+  server.listen(0, "127.0.0.1", () => {
+    const client = http2.connect(`http://127.0.0.1:${(server.address() as AddressInfo).port}`);
+    client.on("error", () => {});
+    client.on("connect", () => {
+      void delay(120).then(() => {
+        lines.push(`alive ${!client.destroyed}`);
+        client.destroy();
+        server.close(() => resolve());
+      });
+    });
+  });
 });
 
 for (const line of lines.sort()) console.log(line);

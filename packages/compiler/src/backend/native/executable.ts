@@ -37,6 +37,7 @@ import {
   runtimeFingerprint,
   runtimeFingerprintInputPaths,
 } from "./runtime-inputs.js";
+import { SANITIZER_FLAG } from "../sanitizer-checks.js";
 import {
   resolveCc,
   targetPlatform,
@@ -296,7 +297,11 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // links no part of the unit.
   unit((u) => u.opts.mutableBuffers === true, "scr_js_buffers.c"),
   unit(
-    (u) => u.opts.eventTarget || u.nativeFetch || u.opts.abortSignal === true,
+    (u) =>
+      u.opts.eventTarget ||
+      u.nativeFetch ||
+      u.opts.webSocket === true ||
+      u.opts.abortSignal === true,
     "scr_event_target.c",
   ),
   unit((u) => u.opts.wasm, "scr_wasm.c"),
@@ -396,6 +401,7 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // filehandle.readableWebStream's byte stream over the handle's reads,
   // its own gate (it links the FileHandle and web stream units with it).
   unit((u) => u.opts.fsWebStream === true, "scr_fs_web_stream.c"),
+  unit((u) => u.opts.fsUtf8Stream === true, "scr_fs_utf8_stream.c"),
   // scr_dyn_handle_class.c also carries the class installs dns.Resolver and
   // dns/promises' Resolver need (scr_dns_resolve.c's own class row) and the
   // one node:module's Module class value needs (scr_module_class.c), so a
@@ -590,6 +596,7 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unitArgs((u) => (u.tlsCa && targetPlatform(u.driver) === "win32" ? ["-lcrypt32"] : [])),
   // Fetch uses the native network, TLS, and HTTP runtime.
   unit((u) => u.nativeFetch, "scr_fetch.c"),
+  unit((u) => u.opts.webSocket === true, "scr_websocket.c"),
   unit(
     (u) => u.opts.nodeIsland === true,
     "scr_node_island.c",
@@ -1195,7 +1202,7 @@ export async function compileCInternal(
     ...threadArgs,
     ...(opts.workers ? ["-DSCR_WORKERS"] : []),
     ...(sanitize
-      ? ["-O1", "-fsanitize=address", "-DSCR_RC_AUDIT"]
+      ? ["-O1", SANITIZER_FLAG, "-DSCR_RC_AUDIT"]
       : [optimization === "dev" ? "-O0" : "-O2"]),
     ...executableSectionFlags.compile,
     ...runtimeDefineArgs(opts),
@@ -1280,7 +1287,7 @@ export async function compileCInternal(
     ...threadArgs,
     ...(opts.workers ? ["-DSCR_WORKERS"] : []),
     ...(sanitize
-      ? ["-O1", "-fsanitize=address", "-DSCR_RC_AUDIT"]
+      ? ["-O1", SANITIZER_FLAG, "-DSCR_RC_AUDIT"]
       : [optimization === "dev" ? "-O0" : "-O2"]),
     ...executableSectionFlags.compile,
     ...runtimeDefineArgs(opts),
@@ -1512,7 +1519,7 @@ export async function compileCInternal(
     (opts.systemLibraries?.length ?? 0) === 0;
   let programDependencies: string | null = null;
   const linkProbeArgs = [
-    ...(sanitize ? ["-fsanitize=address"] : []),
+    ...(sanitize ? [SANITIZER_FLAG] : []),
     ...threadArgs,
     ...(opts.workers ? ["-DSCR_WORKERS"] : []),
     ...(targetPlatform(driver) === "win32" ? ["-ladvapi32", "-liphlpapi", "-lws2_32"] : []),

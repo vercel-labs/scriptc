@@ -191,6 +191,7 @@ import { lowerObjectConstructor } from "./containers/indexed-objects.js";
 import { knownBufEncoding, lowerBufferConstruct } from "./containers/bytes.js";
 import { lowerSearchParamsNew } from "./builtins/url.js";
 import { lowerTextCodecNew } from "./builtins/text-codecs.js";
+import { lowerWebSocketNew } from "./builtins/websocket.js";
 import {
   lowerBroadcastChannelNew,
   lowerMessageChannelNew,
@@ -279,7 +280,11 @@ import {
 import { lowerObjectFactoryNew, objectReturningConstructorRefusal } from "./object-factory-new.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import { lowerInstanceConstructorNew } from "./class-instance-constructor.js";
-import { classPrototypeData, reflectClassPrototype } from "./class-prototypes.js";
+import {
+  classPrototypeData,
+  prototypeViewable,
+  reflectClassPrototype,
+} from "./class-prototypes.js";
 import { constructionEscape } from "./construction-escapes.js";
 import { type ConstructionReads, constructionReads } from "./construction-reads.js";
 import {
@@ -1221,8 +1226,12 @@ export interface LegacyParameterDecoration {
  * lives in `ClassInfo.prototypeOriginals`); a PROPERTY gets `undefined` as
  * its descriptor. `name` is the declared string key. */
 export interface LegacyMemberDecoration {
-  kind: "method" | "property";
-  member: ts.MethodDeclaration | ts.PropertyDeclaration;
+  kind: "method" | "property" | "accessor";
+  member:
+    | ts.MethodDeclaration
+    | ts.PropertyDeclaration
+    | ts.GetAccessorDeclaration
+    | ts.SetAccessorDeclaration;
   decorators: ts.Decorator[];
   name: string;
   static: boolean;
@@ -1251,6 +1260,12 @@ export interface ClassDecorationInfo {
   shapes?: (
     | { kind: "call"; funcType: Extract<IrType, { kind: "func" }>; replaces: boolean }
     | { kind: "ambientThrow"; name: string }
+    /** A legacy decorator whose signature has no concrete nominal call ABI
+     * (the standard library's generic `ClassDecorator`, `Function`-typed
+     * parameters, union returns): called through the checked-dynamic path
+     * with the class value; a result other than the class itself is a
+     * runtime refusal. */
+    | { kind: "dynamic" }
   )[];
   /** Analysis fenced — diagnostics already reported; emission skips. */
   poisoned?: true;
@@ -2548,6 +2563,56 @@ export function collectClassShapeInner(
           }
           return found;
         };
+        // tsc decorates an accessor PROPERTY once, at its first declaration:
+        // a getter's member decorator and a setter's parameter decorators
+        // form one array (member decorators first, then __param entries).
+        const accessorGroups = new Map<
+          string,
+          {
+            first: ts.GetAccessorDeclaration | ts.SetAccessorDeclaration;
+            /** The declaration carrying the member decorators: tsc emits the
+             * pair's single decoration at that declaration's position (a
+             * setter's parameter decorators alone keep the first
+             * declaration's position). */
+            memberDecorated: ts.GetAccessorDeclaration | ts.SetAccessorDeclaration | null;
+            decorators: ts.Decorator[];
+            parameters: LegacyParameterDecoration[];
+          }
+        >();
+        if (legacyDecorators)
+          for (const member of decl.members.nodes) {
+            if (!ts.isGetAccessorDeclaration(member) && !ts.isSetAccessorDeclaration(member))
+              continue;
+            if (
+              ts.getModifiers(member)?.some((m) => m.kind === ts.SyntaxKind.StaticKeyword) === true
+            )
+              continue;
+            const name =
+              ts.isIdentifier(member.name) ||
+              ts.isStringLiteral(member.name) ||
+              ts.isNumericLiteral(member.name)
+                ? member.name.text
+                : null;
+            if (name === null) continue;
+            const decorators = decoratorNodesOf(member);
+            const parameters = ts.isSetAccessorDeclaration(member)
+              ? parameterDecoratorsOf(member)
+              : [];
+            if (decorators.length === 0 && parameters.length === 0) continue;
+            const group = accessorGroups.get(name);
+            if (group === undefined)
+              accessorGroups.set(name, {
+                first: member,
+                memberDecorated: decorators.length > 0 ? member : null,
+                decorators: [...decorators],
+                parameters: [...parameters],
+              });
+            else {
+              group.decorators.push(...decorators);
+              group.parameters.push(...parameters);
+              if (decorators.length > 0) group.memberDecorated = member;
+            }
+          }
         if (legacyDecorators) {
           // Constructor parameter decorators apply with the class decorations
           // (`__param(i, d)` entries on the class's `__decorate`), even when
@@ -2642,7 +2707,10 @@ export function collectClassShapeInner(
             const staticMember =
               ts.getModifiers(member)?.some((m) => m.kind === ts.SyntaxKind.StaticKeyword) === true;
             const literalName =
-              (ts.isMethodDeclaration(member) || ts.isPropertyDeclaration(member)) &&
+              (ts.isMethodDeclaration(member) ||
+                ts.isPropertyDeclaration(member) ||
+                ts.isGetAccessorDeclaration(member) ||
+                ts.isSetAccessorDeclaration(member)) &&
               (ts.isIdentifier(member.name) ||
                 ts.isStringLiteral(member.name) ||
                 ts.isNumericLiteral(member.name));
@@ -2668,6 +2736,32 @@ export function collectClassShapeInner(
                 parameters: [],
               };
               (staticMember ? legacyStaticMembers : legacyInstanceMembers).push(entry);
+              continue;
+            }
+            if (
+              (ts.isGetAccessorDeclaration(member) || ts.isSetAccessorDeclaration(member)) &&
+              !staticMember &&
+              literalName
+            ) {
+              const name = (member.name as ts.Identifier | ts.StringLiteral | ts.NumericLiteral)
+                .text;
+              const group = accessorGroups.get(name);
+              // One event per property, at its FIRST declaration; the other
+              // half only contributes its decorators/parameters to the group.
+              if (group === undefined || (group.memberDecorated ?? group.first) !== member)
+                continue;
+              // tsc emits the accessor pair's single decoration only when a
+              // member decorator exists; setter parameter decorators alone
+              // produce no decoration at all.
+              if (group.decorators.length === 0) continue;
+              legacyInstanceMembers.push({
+                kind: "accessor",
+                member: group.memberDecorated ?? group.first,
+                decorators: group.decorators,
+                name,
+                static: false,
+                parameters: group.parameters,
+              });
               continue;
             }
             const at = dec ?? parameters[0]!.decorators[0]!;
@@ -6858,6 +6952,28 @@ function lowerLegacyMemberDecorations(lowerer: Lowerer, info: ClassInfo): IrStmt
   if (members === undefined || members.length === 0 || info.decl === null) return [];
   const loc = locOf(info.decl);
   const stmts: IrStmt[] = [];
+  const runtimeRootedAncestor = (start: ClassInfo | null): boolean => {
+    for (let current = start; current; current = current.base)
+      if (
+        current.def.runtime ||
+        current.builtinError ||
+        current.builtinEmitter ||
+        current.builtinStream
+      )
+        return true;
+    return false;
+  };
+  if (runtimeRootedAncestor(info)) {
+    // Instance reads and calls on a class rooted in a runtime-provided
+    // built-in answer from the compiled/rooted class, not from a reflected
+    // prototype, so a decorator-installed replacement would never run.
+    const first = members[0]!;
+    lowerer.unsupported(
+      "SC1090",
+      first.decorators[0] ?? first.parameters[0]!.decorators[0]!,
+      `legacy ${first.kind} decorators on a class rooted in a built-in error ('${info.def.jsName ?? info.def.name}' instances answer from the runtime class, so a decorator-installed replacement would not run)`,
+    );
+  }
   try {
     let prototypeLocal: string | null = null;
     const prototypeTarget = (at: SrcLoc): string => {
@@ -6881,6 +6997,33 @@ function lowerLegacyMemberDecorations(lowerer: Lowerer, info: ClassInfo): IrStmt
       }
       return prototypeLocal;
     };
+    let accessorProtoLocal: string | null = null;
+    const accessorTarget = (at: SrcLoc): string => {
+      if (accessorProtoLocal === null) {
+        const view = reflectClassPrototype(
+          lowerer,
+          info,
+          loc,
+          classValueRef(lowerer, info, info.decl!),
+        );
+        if (view === null) {
+          lowerer.unsupported(
+            "SC1090",
+            members[0]!.decorators[0]!,
+            'accessor decorators under "experimentalDecorators" (this class has no reflectable prototype to decorate)',
+          );
+        }
+        const local = lowerer.declareHiddenLocal("legacyaccessor", DYN);
+        stmts.push({
+          kind: "varDecl",
+          localId: local.id,
+          init: lowerer.coerceToExpected(view, DYN),
+          loc: at,
+        });
+        accessorProtoLocal = local.id;
+      }
+      return accessorProtoLocal;
+    };
     let classLocal: string | null = null;
     const classTarget = (at: SrcLoc): string => {
       if (classLocal === null) {
@@ -6895,9 +7038,28 @@ function lowerLegacyMemberDecorations(lowerer: Lowerer, info: ClassInfo): IrStmt
       }
       return classLocal;
     };
+    const dateRooted = (start: ClassInfo | null): boolean => {
+      for (let current = start; current; current = current.base)
+        if (current.extendsDate !== undefined) return true;
+      return false;
+    };
     for (const entry of members) {
       const at = locOf(entry.member);
-      const targetId = entry.static ? classTarget(at) : prototypeTarget(at);
+      // A Date subclass's instance accessor reads answer from the runtime
+      // date class, not the reflected prototype, so a decorator-installed
+      // replacement would be bypassed. Refuse the combination instead.
+      if (entry.kind === "accessor" && dateRooted(info))
+        lowerer.unsupported(
+          "SC1090",
+          entry.decorators[0]!,
+          "accessor decorators on a class extending Date (instance accessor reads answer from the runtime date class, so a decorator-installed replacement would be bypassed)",
+        );
+      const targetId =
+        entry.kind === "accessor"
+          ? accessorTarget(at)
+          : entry.static
+            ? classTarget(at)
+            : prototypeTarget(at);
       const target = (dLoc: SrcLoc): IrExpr => ({
         kind: "varRef",
         localId: targetId,
@@ -6972,8 +7134,8 @@ function lowerLegacyMemberDecorations(lowerer: Lowerer, info: ClassInfo): IrStmt
             loc: at,
           });
         }
-      } else if (entry.kind === "method") {
-        if (info.prototypeOriginals?.get(entry.name) === undefined) {
+      } else if (entry.kind === "method" || entry.kind === "accessor") {
+        if (entry.kind === "method" && info.prototypeOriginals?.get(entry.name) === undefined) {
           lowerer.unsupported(
             "SC1090",
             entry.decorators[0] ?? entry.parameters[0]!.decorators[0]!,
@@ -7027,7 +7189,20 @@ function lowerLegacyMemberDecorations(lowerer: Lowerer, info: ClassInfo): IrStmt
         for (let i = callees.length - 1; i >= 0; i--) {
           const d = callees[i]!.decorator;
           const dLoc = locOf(d);
+          const callee = callees[i]!.localId;
+          const previous: IrExpr = { kind: "varRef", localId: descriptorId, type: DYN, loc: dLoc };
+          const calleeRef: IrExpr = { kind: "varRef", localId: callee, type: DYN, loc: dLoc };
+          const call: IrExpr = {
+            kind: "dynCall",
+            callee: calleeRef,
+            calleeName: "decorator",
+            args: [target(dLoc), key(dLoc), previous],
+            type: DYN,
+            loc: dLoc,
+          };
           const result = lowerer.declareHiddenLocal("legacyres", DYN);
+          // `d && (d(...) || r) || r`: a falsy decorator is skipped, as
+          // tsc's helper does, and the accumulated result survives.
           stmts.push({
             kind: "varDecl",
             localId: result.id,
@@ -7035,18 +7210,21 @@ function lowerLegacyMemberDecorations(lowerer: Lowerer, info: ClassInfo): IrStmt
               kind: "logical",
               op: "||",
               left: {
-                kind: "dynCall",
-                callee: { kind: "varRef", localId: callees[i]!.localId, type: DYN, loc: dLoc },
-                calleeName: "decorator",
-                args: [
-                  target(dLoc),
-                  key(dLoc),
-                  { kind: "varRef", localId: descriptorId, type: DYN, loc: dLoc },
-                ],
+                kind: "logical",
+                op: "&&",
+                left: calleeRef,
+                right: {
+                  kind: "logical",
+                  op: "||",
+                  left: call,
+                  right: previous,
+                  type: DYN,
+                  loc: dLoc,
+                },
                 type: DYN,
                 loc: dLoc,
               },
-              right: { kind: "varRef", localId: descriptorId, type: DYN, loc: dLoc },
+              right: previous,
               type: DYN,
               loc: dLoc,
             },
@@ -7108,6 +7286,8 @@ function lowerLegacyMemberDecorations(lowerer: Lowerer, info: ClassInfo): IrStmt
         for (let i = callees.length - 1; i >= 0; i--) {
           const d = callees[i]!.decorator;
           const dLoc = locOf(d);
+          const callee = callees[i]!.localId;
+          const calleeRef: IrExpr = { kind: "varRef", localId: callee, type: DYN, loc: dLoc };
           const previous: IrExpr =
             resultId === null
               ? dynUndefinedExpr(dLoc)
@@ -7120,10 +7300,24 @@ function lowerLegacyMemberDecorations(lowerer: Lowerer, info: ClassInfo): IrStmt
               kind: "logical",
               op: "||",
               left: {
-                kind: "dynCall",
-                callee: { kind: "varRef", localId: callees[i]!.localId, type: DYN, loc: dLoc },
-                calleeName: "decorator",
-                args: [target(dLoc), key(dLoc), previous],
+                kind: "logical",
+                op: "&&",
+                left: calleeRef,
+                right: {
+                  kind: "logical",
+                  op: "||",
+                  left: {
+                    kind: "dynCall",
+                    callee: calleeRef,
+                    calleeName: "decorator",
+                    args: [target(dLoc), key(dLoc), previous],
+                    type: DYN,
+                    loc: dLoc,
+                  },
+                  right: previous,
+                  type: DYN,
+                  loc: dLoc,
+                },
                 type: DYN,
                 loc: dLoc,
               },
@@ -7269,6 +7463,10 @@ export function analyzeClassDecoration(lowerer: Lowerer, info: ClassInfo): void 
       }
       const mapped = lowerer.mapTypeOf(t);
       if (!mapped || mapped.kind !== "func" || mapped.rest === true || mapped.params.length > 1) {
+        if (cd.legacy === true) {
+          shapes.push({ kind: "dynamic" });
+          continue;
+        }
         lowerer.unsupported(
           "SC1090",
           d,
@@ -7289,6 +7487,10 @@ export function analyzeClassDecoration(lowerer: Lowerer, info: ClassInfo): void 
                 return sup !== undefined && !sup.generic && ctorAbiEquals(lowerer, info, sup);
               })()));
         if (!paramOk) {
+          if (cd.legacy === true) {
+            shapes.push({ kind: "dynamic" });
+            continue;
+          }
           lowerer.unsupported(
             "SC1090",
             d,
@@ -7319,6 +7521,10 @@ export function analyzeClassDecoration(lowerer: Lowerer, info: ClassInfo): void 
           );
         }
       } else if (ret.kind !== "void") {
+        if (cd.legacy === true) {
+          shapes.push({ kind: "dynamic" });
+          continue;
+        }
         lowerer.unsupported(
           "SC1090",
           d,
@@ -7327,21 +7533,50 @@ export function analyzeClassDecoration(lowerer: Lowerer, info: ClassInfo): void 
       }
       shapes.push({ kind: "call", funcType: mapped, replaces });
     }
-    if (shapes.some((s) => s.kind === "call" && s.replaces)) {
+    // A dynamic decorator's result cannot be checked at compile time, and a
+    // replacement constructor would be invisible to already-compiled
+    // subclasses (they extend the original class), so the combination is
+    // refused rather than silently bypassed.
+    if (shapes.some((s) => s.kind === "dynamic") && info.subclasses.length > 0)
+      lowerer.unsupported(
+        "SC1090",
+        cd.nodes[0]!,
+        `legacy class decorators that the compiled call cannot verify on '${display}', which has subclasses ('${info.subclasses[0]!.def.jsName ?? info.subclasses[0]!.def.name}' extends '${display}': a replacement constructor would be bypassed by the compiled subclass — decorate the leaf classes)`,
+      );
+    // A class whose base comes from a factory call answers its statics
+    // through the run-time base, and a decoration body cannot read or
+    // replace those statics there; typed static calls keep reading the
+    // compiled method, so a decorator that installs a replacement would be
+    // bypassed (and its reads of the statics differ from Node's). Refuse
+    // the combination instead of compiling it with the guard skipped.
+    if (
+      (info.factoryBaseExpression !== undefined || info.def.baseValueGlobal !== undefined) &&
+      ((info.staticMethods?.size ?? 0) > 0 ||
+        info.staticFields.length > 0 ||
+        (info.staticBlocks?.length ?? 0) > 0)
+    )
+      lowerer.unsupported(
+        "SC1090",
+        cd.nodes[0]!,
+        "legacy class decorators on a class whose base comes from a factory call and that declares static members (the decorator cannot observe or replace those statics, and typed static calls keep the compiled method — extend a named class, or declare the statics on the named base)",
+      );
+    const typedReplace = shapes.some((s) => s.kind === "call" && s.replaces);
+    if (typedReplace || shapes.some((s) => s.kind === "dynamic")) {
       // The name can rebind at runtime: every reference must route
-      // through the decoration result. Two shapes cannot: a compiled
-      // subclass (its base pointer, vtable prefix, and interval are
-      // fixed at build time, but JS would extend the decoration result)
-      // and namespace-nested declarations (the qualified-access paths
-      // resolve the class directly, not through the rebound binding).
-      if (info.subclasses.length > 0) {
+      // through the decoration result. A TYPED replacing decorator cannot
+      // keep a compiled subclass (its base pointer, vtable prefix, and
+      // interval are fixed at build time, but JS would extend the
+      // decoration result) or a namespace-nested declaration exact; the
+      // dynamic path checks the result against the class at run time, so
+      // those shapes stay available there.
+      if (typedReplace && info.subclasses.length > 0) {
         lowerer.unsupported(
           "SC1090",
           cd.nodes[0]!,
           `class decorators that can replace a class with subclasses ('${info.subclasses[0]!.def.jsName ?? info.subclasses[0]!.def.name}' extends '${display}', but the runtime base would be the decoration result — return void, or decorate the leaf classes)`,
         );
       }
-      if (info.decl && !ts.isSourceFile(info.decl.parent)) {
+      if (typedReplace && info.decl && !ts.isSourceFile(info.decl.parent)) {
         lowerer.unsupported(
           "SC1090",
           cd.nodes[0]!,
@@ -7386,11 +7621,15 @@ function lowerClassDecoration(lowerer: Lowerer, info: ClassInfo): IrStmt[] {
     // ReferenceError HERE: earlier expressions still evaluate, nothing
     // after — expression, application, or the class's own static
     // initializers — ever runs (the %init unwinds).
-    const temps: {
-      localId: string;
-      funcType: Extract<IrType, { kind: "func" }>;
-      replaces: boolean;
-    }[] = [];
+    const temps: (
+      | {
+          kind: "call";
+          localId: string;
+          funcType: Extract<IrType, { kind: "func" }>;
+          replaces: boolean;
+        }
+      | { kind: "dynamic"; localId: string }
+    )[] = [];
     for (let i = 0; i < cd.nodes.length; i++) {
       const d = cd.nodes[i]!;
       const shape = cd.shapes[i]!;
@@ -7402,10 +7641,22 @@ function lowerClassDecoration(lowerer: Lowerer, info: ClassInfo): IrStmt[] {
         });
         return stmts;
       }
+      if (shape.kind === "dynamic") {
+        const value = lowerer.lowerExprExpecting(d.expression, DYN);
+        const local = lowerer.declareHiddenLocal("dec", DYN);
+        stmts.push({ kind: "varDecl", localId: local.id, init: value, loc: locOf(d) });
+        temps.push({ kind: "dynamic", localId: local.id });
+        continue;
+      }
       const value = lowerer.lowerExprExpecting(d.expression, shape.funcType);
       const local = lowerer.declareHiddenLocal("dec", shape.funcType);
       stmts.push({ kind: "varDecl", localId: local.id, init: value, loc: locOf(d) });
-      temps.push({ localId: local.id, funcType: shape.funcType, replaces: shape.replaces });
+      temps.push({
+        kind: "call",
+        localId: local.id,
+        funcType: shape.funcType,
+        replaces: shape.replaces,
+      });
     }
     // 1b. LEGACY constructor parameter decorators evaluate after the class
     // decorator expressions and apply before them (tsc's `__param` entries
@@ -7432,6 +7683,57 @@ function lowerClassDecoration(lowerer: Lowerer, info: ClassInfo): IrStmt[] {
     for (let i = temps.length - 1; i >= 0; i--) {
       const t = temps[i]!;
       const dLoc = locOf(cd.nodes[i]!);
+      if (t.kind === "dynamic") {
+        const target: IrType = { kind: "classval", className: info.def.name };
+        const call: IrExpr = {
+          kind: "dynCall",
+          callee: { kind: "varRef", localId: t.localId, type: DYN, loc: dLoc },
+          calleeName: "decorator",
+          args: [lowerer.coerceToExpected(current, DYN)],
+          type: DYN,
+          loc: dLoc,
+        };
+        // `result || current`, then the checked cast back to the class value:
+        // a decorator that returns a different constructor is refused at run
+        // time rather than silently ignored.
+        const chained: IrExpr = {
+          kind: "logical",
+          op: "||",
+          left: call,
+          right: lowerer.coerceToExpected(current, DYN),
+          type: DYN,
+          loc: dLoc,
+        };
+        const calleeRef: IrExpr = { kind: "varRef", localId: t.localId, type: DYN, loc: dLoc };
+        const res = lowerer.declareHiddenLocal("decres", target);
+        // falsy decorator skipped; the class value otherwise takes the
+        // chained result (tsc's `if (d = decorators[i]) ... || r`).
+        stmts.push({
+          kind: "varDecl",
+          localId: res.id,
+          init: lowerer.coerceToExpected(
+            {
+              kind: "logical",
+              op: "||",
+              left: {
+                kind: "logical",
+                op: "&&",
+                left: calleeRef,
+                right: chained,
+                type: DYN,
+                loc: dLoc,
+              },
+              right: lowerer.coerceToExpected(current, DYN),
+              type: DYN,
+              loc: dLoc,
+            },
+            target,
+          ),
+          loc: dLoc,
+        });
+        current = { kind: "varRef", localId: res.id, type: target, loc: dLoc };
+        continue;
+      }
       const callee: IrExpr = { kind: "varRef", localId: t.localId, type: t.funcType, loc: dLoc };
       const args: IrExpr[] = [];
       if (t.funcType.params.length === 1) {
@@ -8617,6 +8919,17 @@ export function lowerClassExpressionInfo(
     }
   }
   const local = perEvaluationClass(expr);
+  // Parameter decorators ride a member's decoration event; a function-local
+  // class has none, so they would silently never run. Count them with the
+  // member decorators the refusal below covers.
+  const memberHasParameterDecorators = (member: ts.ClassElement): boolean =>
+    (
+      (member as { parameters?: ts.NodeArray<ts.ParameterDeclaration> }).parameters?.nodes ?? []
+    ).some((parameter) =>
+      ((parameter as { modifiers?: ts.NodeArray<ts.Node> }).modifiers?.nodes ?? []).some(
+        (modifier) => modifier.kind === ts.SyntaxKind.Decorator,
+      ),
+    );
   if (
     local &&
     expr.members.nodes.some((member) => member.name && ts.isPrivateIdentifier(member.name)) &&
@@ -8631,6 +8944,7 @@ export function lowerClassExpressionInfo(
       expr.members.nodes.some(
         (member) =>
           decoratorNodesOf(member).length ||
+          memberHasParameterDecorators(member) ||
           (!isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
             ts.isClassStaticBlockDeclaration(member)) ||
           (ts.isMethodDeclaration(member) && member.typeParameters?.nodes.length),
@@ -12971,6 +13285,39 @@ export function lowerSuperAccessorRead(
   }
   checkRefusedMemberUse(lowerer, found.declarer, `get:${name}`, access.name);
   lowerer.noteEdge(`%${found.declarer.def.name}.get:${name}`);
+  // A decorated accessor's replacement lives on the base's REFLECTED
+  // prototype, which is what instance reads dispatch through; `super.x`
+  // must see the same accessor (a security wrapper installed by a
+  // decorator cannot be bypassed through super).
+  if (
+    lowerer.prototypeMethodAccesses.has(name) &&
+    prototypeViewable(found.declarer) &&
+    found.declarer.decl !== null
+  ) {
+    const view = reflectClassPrototype(
+      lowerer,
+      found.declarer,
+      locOf(access),
+      classValueRef(lowerer, found.declarer, found.declarer.decl),
+    );
+    if (view !== null) {
+      const read: IrExpr = {
+        kind: "libCall",
+        fn: "dyn.reflectGet",
+        args: [
+          lowerer.coerceToExpected(view, DYN),
+          lowerer.coerceToExpected(
+            { kind: "strLit", value: name, type: STRING, loc: locOf(access) },
+            DYN,
+          ),
+          lowerer.coerceToExpected(thisRef, DYN),
+        ],
+        type: DYN,
+        loc: locOf(access),
+      };
+      return lowerer.coerceToExpected(read, found.sig.ret);
+    }
+  }
   return {
     kind: "call",
     callee: `%${found.declarer.def.name}.get:${name}`,
@@ -13005,6 +13352,38 @@ export function lowerSuperAccessorWrite(
   checkRefusedMemberUse(lowerer, found.declarer, `set:${name}`, access.name);
   lowerer.noteEdge(`%${found.declarer.def.name}.set:${name}`);
   const value = lowerer.lowerExprExpecting(rhs, found.sig.params[0]!.type);
+  // Same rule as the read: a replaced setter on the base's reflected
+  // prototype must receive `super.x = v`.
+  if (
+    lowerer.prototypeMethodAccesses.has(name) &&
+    prototypeViewable(found.declarer) &&
+    found.declarer.decl !== null
+  ) {
+    const view = reflectClassPrototype(
+      lowerer,
+      found.declarer,
+      loc,
+      classValueRef(lowerer, found.declarer, found.declarer.decl),
+    );
+    if (view !== null) {
+      return {
+        kind: "exprStmt",
+        expr: {
+          kind: "libCall",
+          fn: "dyn.reflectSet",
+          args: [
+            lowerer.coerceToExpected(view, DYN),
+            lowerer.coerceToExpected({ kind: "strLit", value: name, type: STRING, loc }, DYN),
+            lowerer.coerceToExpected(value, DYN),
+            lowerer.coerceToExpected(thisRef, DYN),
+          ],
+          type: BOOL,
+          loc,
+        },
+        loc,
+      };
+    }
+  }
   return {
     kind: "exprStmt",
     expr: {
@@ -13647,6 +14026,50 @@ function stdlibUrlClassOf(
   return null;
 }
 
+/** True when the callee names the fs module's Utf8Stream class — either
+ * `fs.Utf8Stream` or a named import of the same class. */
+function isUtf8StreamRef(lowerer: Lowerer, callee: ts.Expression): boolean {
+  let e = callee;
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  const bi = ts.isIdentifier(e)
+    ? lowerer.builtinImportOf(e)
+    : ts.isPropertyAccessExpression(e) && !e.questionDotToken
+      ? lowerer.builtinMemberOf(e)
+      : null;
+  return bi !== null && bi.module === "fs" && bi.member === "Utf8Stream";
+}
+
+/** `new fs.Utf8Stream(options?)`: the buffered file writer as a
+ * checked-dynamic handle (scr_fs_utf8_stream.c). The options record crosses
+ * as one dyn value for the runtime's Node-order checks. */
+function lowerUtf8StreamNew(lowerer: Lowerer, expr: ts.NewExpression, loc: SrcLoc): IrExpr | null {
+  if (!isUtf8StreamRef(lowerer, expr.expression)) return null;
+  const args = expr.arguments?.nodes ?? [];
+  if (args.length > 1 || args.some(ts.isSpreadElement)) {
+    lowerer.noLowering(
+      `new fs.Utf8Stream with ${args.length} arguments`,
+      expr,
+      "the constructor is new fs.Utf8Stream([options])",
+    );
+  }
+  let options: IrExpr = dynUndefinedExpr(loc);
+  if (args[0] !== undefined) {
+    const raw = lowerer.lowerExpr(args[0]);
+    if (raw.type.kind === "dyn") {
+      options = raw;
+    } else if (raw.kind === "unitLit" || lowerer.dynConvertible(raw.type)) {
+      options = { kind: "dynFrom", value: raw, type: DYN, loc };
+    } else {
+      lowerer.noLowering(
+        `new fs.Utf8Stream with a '${lowerer.fmt(raw.type)}' options value`,
+        args[0],
+        "the options are a plain object",
+      );
+    }
+  }
+  return { kind: "libCall", fn: "fs.utf8StreamNew", args: [options], type: DYN, loc };
+}
+
 export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   const loc = locOf(expr);
   // Constructing a Node 24 global the native runtime does not provide
@@ -13708,6 +14131,11 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     if (urlClass === "URL") return lowerUrlNew(lowerer, expr);
     if (urlClass === "URLSearchParams") return lowerSearchParamsNew(lowerer, expr, loc);
   }
+  // `new fs.Utf8Stream(options?)`: the fs module's buffered file writer.
+  {
+    const utf8 = lowerUtf8StreamNew(lowerer, expr, loc);
+    if (utf8) return utf8;
+  }
   // `new util.TextEncoder()` / `new util.TextDecoder()`: the util module's
   // members are the global classes of the same name in Node
   // (global-values.ts GLOBAL_MEMBERS), so they take the global
@@ -13736,6 +14164,10 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     lowerMessagePortNew(lowerer, expr) ??
     lowerBroadcastChannelNew(lowerer, expr);
   if (channel) return channel;
+  // `new WebSocket(url[, protocols])`: the runtime dials, upgrades and
+  // carries the connection (websocket.ts).
+  const webSocket = lowerWebSocketNew(lowerer, expr);
+  if (webSocket) return webSocket;
   let intlConstructor = expr.expression;
   if (ts.isIdentifier(intlConstructor)) {
     const symbol = lowerer.resolveValueSymbol(intlConstructor);
@@ -13746,7 +14178,7 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   const intl = ts.isPropertyAccessExpression(intlConstructor)
     ? lowerer.stdlibGlobalMember(intlConstructor, "Intl")
     : null;
-  if (intl === "NumberFormat" || intl === "DateTimeFormat")
+  if (intl === "NumberFormat" || intl === "DateTimeFormat" || intl === "ListFormat")
     return lowerIntlFormatterNew(lowerer, expr, intl);
   if (intl && intl !== "Segmenter")
     lowerer.noLowering(

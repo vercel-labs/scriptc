@@ -2095,12 +2095,52 @@ function classMethodsBuilderOf(
     for (const m of [...(c.def.methods ?? []), ...(c.genericMethods?.keys() ?? [])])
       if (!names.includes(m) && (islandMethodName(m) || islandAccessorName(m))) names.push(m);
   }
+  // A BASE-typed slot builds this table for the STATIC class, while the
+  // value crossing the boundary can be any subclass at run time and the
+  // island dispatches accessors on the instance's own class. A decorated
+  // member declared by a descendant would therefore be bypassed; refuse the
+  // crossing instead of compiling it with the wrapper skipped.
+  for (const candidate of lowerer.classes.values()) {
+    if (candidate === info) continue;
+    if (candidate.legacyMemberDecorations === undefined) continue;
+    if (!lowerer.isSubclassOf(candidate.def.name, info.def.name)) continue;
+    const first = candidate.legacyMemberDecorations[0]!;
+    lowerer.unsupported(
+      "SC1090",
+      first.decorators[0] ?? first.parameters[0]!.decorators[0]!,
+      `an instance crossing into a Node island through a '${className}' slot whose class '${candidate.def.jsName ?? candidate.def.name}' declares legacy member decorations (the island accessor table is built from the static class, so the descendant's decorated member would be bypassed — pass the instance's own class type, or remove the decorations)`,
+    );
+  }
   if (names.length === 0) return null;
+  // A decorated accessor's replacement lives on the reflected prototype,
+  // while this island table can only hold the declared accessor halves: an
+  // island read or write would bypass the decorator's wrapper. Refuse the
+  // crossing instead of compiling it with the guard silently skipped.
+  const decoratedAccessorOn = (owner: typeof info, property: string): boolean => {
+    for (
+      let c = owner as typeof info | undefined;
+      c !== undefined;
+      c = c.def.base ? lowerer.classes.get(c.def.base) : undefined
+    ) {
+      const entry = c.legacyMemberDecorations?.find(
+        (m) => m.kind === "accessor" && m.name === property,
+      );
+      if (entry !== undefined) return true;
+    }
+    return false;
+  };
   const builder = `%island.methods:${className}`;
   if (!lowerer.classMethodValueHelpers.has(builder)) {
     lowerer.classMethodValueHelpers.add(builder);
     const fields: { key: IrExpr; value: IrExpr }[] = [];
     for (const m of names) {
+      const accessorHalf = /^(?:get|set):(.+)$/.exec(m);
+      if (accessorHalf !== null && decoratedAccessorOn(info, accessorHalf[1]!))
+        lowerer.unsupported(
+          "SC1090",
+          blame,
+          `accessor decorators on '${className}' with Node islands (an instance crossing into an island reads the island accessor table, which holds the declared accessor, so a decorator-installed replacement would be bypassed)`,
+        );
       // A generic method a subclass overrides has no value this table can
       // hold — the island dispatches by static class, so the overriding
       // class decides — and the lowering refuses the value: the table leaves
@@ -2778,6 +2818,14 @@ export function lowerIslandExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr |
     if (!isForeignExpr(lowerer, callee)) return null;
     lowerer.usesNodeIsland = true;
     const fn = lowerer.lowerExpr(callee);
+    // A callee the program compiles (a function of a package that is BOTH
+    // statically compiled and named by an island's declarations, such as
+    // the `ai` package's gateway() in ai-cli) lowers to a native function
+    // value. The island bridge would hand Node a native closure it cannot
+    // call, and the IR validator refuses the call outright ("arg 0:
+    // expected dyn, got func"); it is a native call, so decline here and
+    // let the generic call lowering take it.
+    if ((fn.type.kind as string) === "func") return null;
     return fromIsland(
       lowerer,
       {

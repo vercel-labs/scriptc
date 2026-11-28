@@ -1083,58 +1083,155 @@ function boundedProgramTargetOf(
  * arrays, ...) report the standard unsupported-type diagnostic at the
  * import site. Preflight already fenced named/namespace JSON imports
  * and kept .json files out of the module order. */
+/** The JSON SourceFile a module specifier names, or null. */
+function jsonModuleOf(lowerer: Lowerer, specifier: ts.StringLiteralLike): ts.SourceFile | null {
+  const sym = lowerer.checker.getSymbolAtLocation(specifier);
+  if (sym === undefined) return null;
+  const target =
+    (sym.flags & ts.SymbolFlags.Alias) !== 0 ? lowerer.checker.getAliasedSymbol(sym) : sym;
+  const decl = target.declarations[0];
+  const sf = decl === undefined ? undefined : ts.getSourceFileOfNode(decl);
+  return sf !== undefined && sf.fileName.endsWith(".json") ? sf : null;
+}
+
+/** tsgo tolerates JSON shapes strict JSON.parse rejects (a leading `//`
+ * comment — importAttributes11), so no SC0001 guarantees a clean document:
+ * a failing parse gates at the statement (Node refuses to import the module
+ * at runtime too). */
+function parseJsonDocument(lowerer: Lowerer, jsonSf: ts.SourceFile, at: ts.Node): unknown {
+  try {
+    return JSON.parse(jsonSf.text);
+  } catch (e) {
+    lowerer.pushDiag(
+      invalidJsonModuleDiag(jsonSf.fileName, e instanceof Error ? e.message : String(e), locOf(at)),
+    );
+    throw new PoisonError();
+  }
+}
+
+/** Bake one JSON binding (`import pkg from …`, `import { version } from …`,
+ * `export { version } from …`) into a record global keyed by the symbol
+ * importers resolve to, assigned in this module's `%init` prelude. Two
+ * importers of the same document share one global (keyed by the ALIASED
+ * symbol). */
+function bakeJsonBinding(
+  lowerer: Lowerer,
+  fp: FileParts,
+  at: ts.Node,
+  node: ts.Node,
+  symbol: ts.Symbol,
+  name: string,
+  value: unknown,
+  path: string,
+): void {
+  const tsType = lowerer.typeOf(node);
+  const mapped = lowerer.mapTypeOf(tsType);
+  if (!mapped || !lowerer.comptimeBakeable(mapped)) {
+    lowerer.badType(node, tsType);
+  }
+  const ir = lowerer.comptimeValueToIr(value, mapped, path, node);
+  let g = lowerer.globalsBySymbol.get(symbol);
+  if (!g) {
+    g = {
+      id: `%g.json.${lowerer.globalsList.length}`,
+      name,
+      type: mapped,
+      mutable: false,
+    };
+    lowerer.globalsBySymbol.set(symbol, g);
+    lowerer.globalsList.push(g);
+  }
+  const actions = lowerer.jsonInitActions.get(fp.sf) ?? [];
+  lowerer.jsonInitActions.set(fp.sf, actions);
+  actions.push({ kind: "assign", localId: g.id, value: ir, loc: locOf(at) });
+}
+
+/** The JSON value of one named binding. `resolveJsonModule` types the
+ * document's keys and rejects a name the document lacks, so the key exists
+ * in every program the checker admits. */
+function jsonMember(document: unknown, name: string): unknown {
+  return document !== null && typeof document === "object"
+    ? (document as Record<string, unknown>)[name]
+    : undefined;
+}
+
+/** The diagnostic name of a JSON binding's module global. An import binds a
+ * local identifier; a re-export may spell its exported name as an arbitrary
+ * string literal (`export { x as "a\"b" }`), which never reaches the
+ * emitted global's name unsanitized. */
+function jsonBindingName(name: ts.Identifier | ts.StringLiteral): string {
+  const text = name.text;
+  return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(text) ? text : "jsonBinding";
+}
+
 export function collectJsonImports(lowerer: Lowerer, parts: FileParts[]): void {
   for (const fp of parts) {
     for (const stmt of fp.sf.statements.nodes) {
-      if (!ts.isImportDeclaration(stmt) || !ts.isStringLiteral(stmt.moduleSpecifier)) continue;
-      const clause = stmt.importClause;
-      if (!clause?.name || clause.phaseModifier === ts.SyntaxKind.TypeKeyword) continue;
-      const nameSym = lowerer.checker.getSymbolAtLocation(clause.name);
-      if (!nameSym || !(nameSym.flags & ts.SymbolFlags.Alias)) continue;
-      const target = lowerer.checker.getAliasedSymbol(nameSym);
-      const jsonSf =
-        target.declarations.length === 0
-          ? undefined
-          : ts.getSourceFileOfNode(target.declarations[0]!);
-      if (!jsonSf || !jsonSf.fileName.endsWith(".json")) continue;
+      let defaultName: ts.Identifier | undefined;
+      let named: readonly ts.ImportSpecifier[] = [];
+      let exported: readonly ts.ExportSpecifier[] = [];
+      if (ts.isImportDeclaration(stmt)) {
+        if (!ts.isStringLiteral(stmt.moduleSpecifier)) continue;
+        const clause = stmt.importClause;
+        if (!clause || clause.isTypeOnly || clause.phaseModifier === ts.SyntaxKind.TypeKeyword)
+          continue;
+        defaultName = clause.name;
+        if (clause.namedBindings && ts.isNamedImports(clause.namedBindings))
+          named = clause.namedBindings.elements.nodes;
+        if (!defaultName && named.length === 0) continue;
+      } else if (ts.isExportDeclaration(stmt)) {
+        if (
+          stmt.isTypeOnly ||
+          stmt.moduleSpecifier === undefined ||
+          !ts.isStringLiteral(stmt.moduleSpecifier) ||
+          stmt.exportClause === undefined ||
+          !ts.isNamedExports(stmt.exportClause)
+        )
+          continue;
+        exported = stmt.exportClause.elements.nodes;
+      } else continue;
+      const specifier = (stmt as ts.ImportDeclaration | ts.ExportDeclaration).moduleSpecifier;
+      if (specifier === undefined || !ts.isStringLiteral(specifier)) continue;
+      const jsonSf = jsonModuleOf(lowerer, specifier);
+      if (jsonSf === null) continue;
+      let document: unknown;
+      let parsed = false;
+      const doc = (): unknown => {
+        if (!parsed) {
+          document = parseJsonDocument(lowerer, jsonSf, stmt);
+          parsed = true;
+        }
+        return document;
+      };
       try {
-        const tsType = lowerer.typeOf(clause.name);
-        const mapped = lowerer.mapTypeOf(tsType);
-        if (!mapped || !lowerer.comptimeBakeable(mapped)) {
-          lowerer.badType(clause.name, tsType);
+        if (defaultName !== undefined) {
+          const nameSym = lowerer.checker.getSymbolAtLocation(defaultName);
+          if (!nameSym || !(nameSym.flags & ts.SymbolFlags.Alias)) continue;
+          const target = lowerer.checker.getAliasedSymbol(nameSym);
+          bakeJsonBinding(lowerer, fp, stmt, defaultName, target, defaultName.text, doc(), "$");
         }
-        // tsgo tolerates JSON shapes strict JSON.parse rejects (a leading
-        // `//` comment — importAttributes11), so no SC0001 guarantees a
-        // clean document: a failing parse gates at the import statement
-        // (Node refuses to import the module at runtime too).
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(jsonSf.text);
-        } catch (e) {
-          lowerer.pushDiag(
-            invalidJsonModuleDiag(
-              jsonSf.fileName,
-              e instanceof Error ? e.message : String(e),
-              locOf(stmt),
-            ),
+        const bakeNamed = (element: ts.ImportSpecifier | ts.ExportSpecifier): void => {
+          if (element.isTypeOnly) return;
+          const localSym = lowerer.checker.getSymbolAtLocation(element.name);
+          if (!localSym || !(localSym.flags & ts.SymbolFlags.Alias)) return;
+          const target = lowerer.checker.getAliasedSymbol(localSym);
+          const key = (element.propertyName ?? element.name).text;
+          // `default` from a JSON module is the whole document (Node's ESM
+          // default export), never the document's own "default" key.
+          const whole = key === "default";
+          bakeJsonBinding(
+            lowerer,
+            fp,
+            stmt,
+            element.name,
+            target,
+            jsonBindingName(element.name),
+            whole ? doc() : jsonMember(doc(), key),
+            whole ? "$" : `$.${key}`,
           );
-          throw new PoisonError();
-        }
-        const value = lowerer.comptimeValueToIr(parsed, mapped, "$", clause.name);
-        let g = lowerer.globalsBySymbol.get(target);
-        if (!g) {
-          g = {
-            id: `%g.json.${lowerer.globalsList.length}`,
-            name: clause.name.text,
-            type: mapped,
-            mutable: false,
-          };
-          lowerer.globalsBySymbol.set(target, g);
-          lowerer.globalsList.push(g);
-        }
-        const actions = lowerer.jsonInitActions.get(fp.sf) ?? [];
-        lowerer.jsonInitActions.set(fp.sf, actions);
-        actions.push({ kind: "assign", localId: g.id, value, loc: locOf(stmt) });
+        };
+        for (const element of named) bakeNamed(element);
+        for (const element of exported) bakeNamed(element);
       } catch (e) {
         if (!(e instanceof PoisonError)) throw e;
         // diagnostic already recorded; uses of the binding poison too
@@ -4787,6 +4884,30 @@ export function lowerFileInit(
           : { kind: "dynObjLit", fields: [], type: DYN, loc: loc0 },
         loc: loc0,
       });
+    }
+    // Node's Module object answers the module's exports object: a view another
+    // module reads (require.cache's entry, a parent's children) holds the one
+    // object the module materializes — the top-level `this` object, or the
+    // object a value use needs when the module has no `this` at all.
+    const materializedExports = exportsObject ?? exportsThis;
+    if (materializedExports !== undefined) {
+      const exportsModuleRef = cjsModuleRef(lowerer, sf);
+      if (exportsModuleRef !== null) {
+        header.push({
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            fn: "module.setExportsDyn",
+            args: [
+              exportsModuleRef,
+              { kind: "varRef", localId: materializedExports.id, type: DYN, loc: loc0 },
+            ],
+            type: VOID,
+            loc: loc0,
+          },
+          loc: loc0,
+        });
+      }
     }
     // The module's initial `module.exports` IS that same object: Node starts
     // the wrapper with `this === module.exports === exports`, so an identity

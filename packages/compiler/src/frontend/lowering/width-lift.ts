@@ -6,6 +6,10 @@ import type { IrType } from "../../ir/ir.js";
 export type WidthLift =
   | { how: "copy" }
   | { how: "wrap"; tag: number }
+  /** A builtin handle (a process or child stdio handle, a socket, ...) into
+   * a record of members it has: the projection builtinMemberHelper interns,
+   * read once for data members and invoked through for methods. */
+  | { how: "builtinMembers" }
   | { how: "discriminantWrap" }
   | { how: "discriminantRoute" }
   | { how: "retag" }

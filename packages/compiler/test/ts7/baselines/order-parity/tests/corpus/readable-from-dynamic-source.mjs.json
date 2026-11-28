@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/readable-from-dynamic-source.mjs"
+ ],
+ "diags": []
+}

@@ -36,6 +36,13 @@ export const icuSignatures = defineLibFnSignatures({
   /** `new Intl.DateTimeFormat(locales, options)` (and the call without
    * `new`): as icu.numberFormatNew; a DateTimeFormat handle (+1). */
   "icu.dateTimeFormatNew": { argTypes: [STRING, DYN], result: DYN },
+  /** `new Intl.ListFormat(locales, options)` (and the call without
+   * `new`): as icu.numberFormatNew; a ListFormat handle (+1). */
+  "icu.listFormatNew": { argTypes: [STRING, DYN], result: DYN },
+  /** `lf.format(list)`: the formatted text (+1). The list is read at run
+   * time as an iterable whose elements must be strings (Node's TypeError
+   * otherwise); undefined formats the empty list. */
+  "icu.listFormatFormat": { argTypes: [DYN, DYN], result: STRING },
   /** `dtf.format(date)` over a time value: the text (+1); a RangeError
    * outside the time value range. */
   "icu.dateTimeFormatFormat": { argTypes: [DYN, F64], result: STRING },

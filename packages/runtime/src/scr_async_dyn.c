@@ -3181,6 +3181,22 @@ ScrDyn *scr_dyn_new_promise(ScrPromise *p) {
   return d;
 }
 
+/* The stream unit's [Symbol.asyncDispose]() answers through this hook: the
+ * promise it creates is boxed here. The reference is weak because an async
+ * program without the stream unit links this one alone. Mach-O refuses an
+ * undefined weak data reference in an executable, so Apple gets a weak
+ * definition here; the stream unit's strong definition replaces it when both
+ * are linked. */
+#if defined(__APPLE__)
+__attribute__((weak)) ScrDyn *(*scr_stream_promise_box_hook)(ScrPromise *) = NULL;
+#else
+extern ScrDyn *(*scr_stream_promise_box_hook)(ScrPromise *) __attribute__((weak));
+#endif
+
+__attribute__((constructor)) static void scr_async_dyn_install_stream_hook(void) {
+  if (&scr_stream_promise_box_hook) scr_stream_promise_box_hook = scr_dyn_new_promise;
+}
+
 /* The typed-inner box: a fresh destination promise parked on `src`
  * through the Promise.race cb-waiter machinery — `adapt` (emitted,
  * per-inner-type) converts the fulfillment payload into a dyn value and

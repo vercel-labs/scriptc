@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/subtle-alias-value.ts"
+ ],
+ "diags": []
+}

@@ -56,9 +56,10 @@ export const targets = [
 
 /**
  * Flags the sanitized build gets beside `--sanitize`, which is AddressSanitizer and the reference-count audit.
- * A failed check ends the run. One check is off: the runtime and the vendored regular expression engine call
- * memcpy and memset with a null pointer and a length of zero (scr_inspect.c, libregexp.c), which the C standard
- * leaves undefined and every libc this project targets treats as doing nothing.
+ * A failed check ends the run. One check is off: the vendored regular expression engine calls memcpy and
+ * memset with a null pointer and a length of zero (libregexp.c), which the C standard leaves undefined and
+ * every libc this project targets treats as doing nothing. (The runtime's inspector used to append empty
+ * strings the same way; it now touches nothing for a zero-length append.)
  */
 export const undefinedBehaviorFlags = [
   "-fsanitize=undefined",

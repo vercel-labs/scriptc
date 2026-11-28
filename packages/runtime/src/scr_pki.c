@@ -39,6 +39,7 @@
 #include "mbedtls/x509_crt.h"
 
 #include "scr_dh_groups.h"
+#include "scr_ec_explicit.h"
 #include "scr_pki.h"
 #include "scr_cipher_names.h"
 
@@ -246,6 +247,9 @@ typedef struct SpKey {
    * With RSASSA-PSS-params it signs only with pss_md and MGF1 over
    * pss_mgf1, and salts of at least pss_salt bytes. */
   bool rsa_pss;
+  /* An EC key whose encodings carry explicit ECParameters (paramEncoding
+   * "explicit") instead of the named-curve OID. */
+  bool ec_explicit;
   bool pss_params;
   mbedtls_md_type_t pss_md, pss_mgf1;
   int pss_salt;
@@ -514,23 +518,25 @@ typedef struct {
   const char *nist;  /* EC_curve_nist2nid alias, or NULL */
   const char *jwk;   /* JWK crv */
   mbedtls_ecp_group_id id;
+  const unsigned char *explicit_params; /* the explicit ECParameters DER */
+  size_t explicit_params_len;
 } SpCurve;
 
 static const SpCurve sp_curves[] = {
     /* The curves with no JWK name report Node's unsupported-curve error
      * when a JWK exports them, and import from a JWK by name or NIST
      * alias like the others. */
-    {"prime192v1", "P-192", NULL, MBEDTLS_ECP_DP_SECP192R1},
-    {"secp224r1", "P-224", NULL, MBEDTLS_ECP_DP_SECP224R1},
-    {"prime256v1", "P-256", "P-256", MBEDTLS_ECP_DP_SECP256R1},
-    {"secp384r1", "P-384", "P-384", MBEDTLS_ECP_DP_SECP384R1},
-    {"secp521r1", "P-521", "P-521", MBEDTLS_ECP_DP_SECP521R1},
-    {"secp192k1", NULL, NULL, MBEDTLS_ECP_DP_SECP192K1},
-    {"secp224k1", NULL, NULL, MBEDTLS_ECP_DP_SECP224K1},
-    {"secp256k1", NULL, "secp256k1", MBEDTLS_ECP_DP_SECP256K1},
-    {"brainpoolP256r1", NULL, NULL, MBEDTLS_ECP_DP_BP256R1},
-    {"brainpoolP384r1", NULL, NULL, MBEDTLS_ECP_DP_BP384R1},
-    {"brainpoolP512r1", NULL, NULL, MBEDTLS_ECP_DP_BP512R1},
+    {"prime192v1", "P-192", NULL, MBEDTLS_ECP_DP_SECP192R1, scr_ec_explicit_prime192v1, sizeof scr_ec_explicit_prime192v1},
+    {"secp224r1", "P-224", NULL, MBEDTLS_ECP_DP_SECP224R1, scr_ec_explicit_secp224r1, sizeof scr_ec_explicit_secp224r1},
+    {"prime256v1", "P-256", "P-256", MBEDTLS_ECP_DP_SECP256R1, scr_ec_explicit_prime256v1, sizeof scr_ec_explicit_prime256v1},
+    {"secp384r1", "P-384", "P-384", MBEDTLS_ECP_DP_SECP384R1, scr_ec_explicit_secp384r1, sizeof scr_ec_explicit_secp384r1},
+    {"secp521r1", "P-521", "P-521", MBEDTLS_ECP_DP_SECP521R1, scr_ec_explicit_secp521r1, sizeof scr_ec_explicit_secp521r1},
+    {"secp192k1", NULL, NULL, MBEDTLS_ECP_DP_SECP192K1, scr_ec_explicit_secp192k1, sizeof scr_ec_explicit_secp192k1},
+    {"secp224k1", NULL, NULL, MBEDTLS_ECP_DP_SECP224K1, scr_ec_explicit_secp224k1, sizeof scr_ec_explicit_secp224k1},
+    {"secp256k1", NULL, "secp256k1", MBEDTLS_ECP_DP_SECP256K1, scr_ec_explicit_secp256k1, sizeof scr_ec_explicit_secp256k1},
+    {"brainpoolP256r1", NULL, NULL, MBEDTLS_ECP_DP_BP256R1, scr_ec_explicit_brainpoolP256r1, sizeof scr_ec_explicit_brainpoolP256r1},
+    {"brainpoolP384r1", NULL, NULL, MBEDTLS_ECP_DP_BP384R1, scr_ec_explicit_brainpoolP384r1, sizeof scr_ec_explicit_brainpoolP384r1},
+    {"brainpoolP512r1", NULL, NULL, MBEDTLS_ECP_DP_BP512R1, scr_ec_explicit_brainpoolP512r1, sizeof scr_ec_explicit_brainpoolP512r1},
 };
 
 static const SpCurve *sp_curve_by_id(mbedtls_ecp_group_id id) {
@@ -555,8 +561,102 @@ static bool sp_key_supported(const SpKey *k) {
  * answer the written length or a negative error. */
 #define SP_DER_MAX 8192
 
+static int sp_write_ec_spki_explicit(SpKey *k, unsigned char *buf, size_t size);
+static int sp_write_ec_sec1_explicit(SpKey *k, unsigned char *buf, size_t size);
+
 static int sp_write_private_der(SpKey *k, unsigned char *buf, size_t size) {
+  if (sp_is_ec(k) && k->ec_explicit) return sp_write_ec_sec1_explicit(k, buf, size);
   return mbedtls_pk_write_key_der(&k->pk, buf, size);
+}
+
+/* The EC public point, uncompressed, at the curve's size. */
+static int sp_ec_write_point(SpKey *k, unsigned char point[160], size_t *point_len) {
+  const mbedtls_ecp_keypair *ec = mbedtls_pk_ec(k->pk);
+  return mbedtls_ecp_point_write_binary(&ec->MBEDTLS_PRIVATE(grp), &ec->MBEDTLS_PRIVATE(Q),
+                                        MBEDTLS_ECP_PF_UNCOMPRESSED, point_len, point, 160);
+}
+
+/* An AlgorithmIdentifier whose parameters are the curve's explicit
+ * ECParameters instead of the curve OID, written backwards. */
+static int sp_write_ec_alg(unsigned char **c, unsigned char *start, const SpKey *k, int *len) {
+  const SpCurve *curve = sp_curve_of(k);
+  if (!curve || curve->explicit_params == NULL) return MBEDTLS_ERR_ASN1_INVALID_DATA;
+  int r;
+  if ((r = mbedtls_asn1_write_raw_buffer(c, start, curve->explicit_params, curve->explicit_params_len)) < 0)
+    return r;
+  *len = r;
+  if ((r = mbedtls_asn1_write_oid(c, start, MBEDTLS_OID_EC_ALG_UNRESTRICTED,
+                                  MBEDTLS_OID_SIZE(MBEDTLS_OID_EC_ALG_UNRESTRICTED))) < 0)
+    return r;
+  *len += r;
+  if ((r = mbedtls_asn1_write_len(c, start, (size_t)*len)) < 0) return r;
+  *len += r;
+  if ((r = mbedtls_asn1_write_tag(c, start, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE)) < 0)
+    return r;
+  *len += r;
+  return 0;
+}
+
+/* SubjectPublicKeyInfo for an explicitly parameterized EC key. */
+static int sp_write_ec_spki_explicit(SpKey *k, unsigned char *buf, size_t size) {
+  unsigned char point[160];
+  size_t point_len;
+  int r = sp_ec_write_point(k, point, &point_len);
+  if (r != 0) return r;
+  unsigned char *c = buf + size;
+  int len = 0;
+  if ((r = mbedtls_asn1_write_bitstring(&c, buf, point, point_len * 8)) < 0) return r;
+  len += r;
+  int alg = 0;
+  if ((r = sp_write_ec_alg(&c, buf, k, &alg)) < 0) return r;
+  len += alg;
+  if ((r = mbedtls_asn1_write_len(&c, buf, (size_t)len)) < 0) return r;
+  len += r;
+  if ((r = mbedtls_asn1_write_tag(&c, buf, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE)) < 0)
+    return r;
+  return len + r;
+}
+
+/* SEC1 ECPrivateKey for an explicitly parameterized key: version 1, the
+ * private scalar, the [0] explicit parameters and the [1] public point. */
+static int sp_write_ec_sec1_explicit(SpKey *k, unsigned char *buf, size_t size) {
+  const mbedtls_ecp_keypair *ec = mbedtls_pk_ec(k->pk);
+  unsigned char point[160];
+  size_t point_len;
+  int r = sp_ec_write_point(k, point, &point_len);
+  if (r != 0) return r;
+  unsigned char *c = buf + size;
+  int len = 0;
+  if ((r = mbedtls_asn1_write_bitstring(&c, buf, point, point_len * 8)) < 0) return r;
+  int pub = r;
+  if ((r = mbedtls_asn1_write_len(&c, buf, (size_t)pub)) < 0) return r;
+  pub += r;
+  if ((r = mbedtls_asn1_write_tag(&c, buf, MBEDTLS_ASN1_CONTEXT_SPECIFIC | MBEDTLS_ASN1_CONSTRUCTED | 1)) < 0)
+    return r;
+  len += pub + r;
+  const SpCurve *curve = sp_curve_of(k);
+  if (!curve || curve->explicit_params == NULL) return MBEDTLS_ERR_ASN1_INVALID_DATA;
+  if ((r = mbedtls_asn1_write_raw_buffer(&c, buf, curve->explicit_params, curve->explicit_params_len)) < 0)
+    return r;
+  int par = r;
+  if ((r = mbedtls_asn1_write_len(&c, buf, (size_t)par)) < 0) return r;
+  par += r;
+  if ((r = mbedtls_asn1_write_tag(&c, buf, MBEDTLS_ASN1_CONTEXT_SPECIFIC | MBEDTLS_ASN1_CONSTRUCTED | 0)) < 0)
+    return r;
+  len += par + r;
+  size_t d_len = (ec->MBEDTLS_PRIVATE(grp).nbits + 7) / 8;
+  unsigned char d[72];
+  if ((r = mbedtls_mpi_write_binary(&ec->MBEDTLS_PRIVATE(d), d, d_len)) != 0) return r;
+  if ((r = mbedtls_asn1_write_octet_string(&c, buf, d, d_len)) < 0) return r;
+  len += r;
+  mbedtls_platform_zeroize(d, sizeof d);
+  if ((r = mbedtls_asn1_write_int(&c, buf, 1)) < 0) return r;
+  len += r;
+  if ((r = mbedtls_asn1_write_len(&c, buf, (size_t)len)) < 0) return r;
+  len += r;
+  if ((r = mbedtls_asn1_write_tag(&c, buf, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE)) < 0)
+    return r;
+  return len + r;
 }
 
 /* Ed25519's PKCS#8 and SubjectPublicKeyInfo prefixes (RFC 8410): the
@@ -825,6 +925,24 @@ static bool sp_dh_public_from_private(const SpKey *k, unsigned char **y, size_t 
   return ok;
 }
 
+/* The parameters' optional tail: PKCS#3's privateValueLength, which
+ * OpenSSL's decoder validates (the third INTEGER must fit an int, so the q of
+ * X9.42 parameters — larger than INT_MAX — makes the key unreadable, as Node
+ * reports), then any fields after it, which are skipped. */
+static bool sp_dh_read_params_tail(unsigned char **p, const unsigned char *params_end) {
+  if (*p < params_end) {
+    mbedtls_mpi length;
+    mbedtls_mpi_init(&length);
+    int r = sp_dh_read_param(p, params_end, &length);
+    bool fits = r == 0 && mbedtls_mpi_bitlen(&length) <= 31;
+    mbedtls_mpi_free(&length);
+    if (!fits) return false;
+  }
+  while (*p < params_end)
+    if (sp_asn1_skip_element(p, params_end) != 0) return false;
+  return true;
+}
+
 static SpKey *sp_dh_from_der(const uint8_t *der, size_t len, bool private_key) {
   const unsigned char *const end = der + len;
   /* mbedTLS's parsers advance the cursor through unsigned char **; the
@@ -860,9 +978,7 @@ static SpKey *sp_dh_from_der(const uint8_t *der, size_t len, bool private_key) {
     params_end = p + params_len;
     if (sp_dh_read_param(&p, params_end, &P) != 0) goto done;
     if (sp_dh_read_param(&p, params_end, &G) != 0) goto done;
-    /* Optional q, j and validation fields follow; skip them. */
-    while (p < params_end)
-      if (sp_asn1_skip_element(&p, params_end) != 0) goto done;
+    if (!sp_dh_read_params_tail(&p, params_end)) goto done;
     if (p != alg_end) goto done;
     {
       size_t oct_len;
@@ -888,8 +1004,7 @@ static SpKey *sp_dh_from_der(const uint8_t *der, size_t len, bool private_key) {
     params_end = p + params_len;
     if (sp_dh_read_param(&p, params_end, &P) != 0) goto done;
     if (sp_dh_read_param(&p, params_end, &G) != 0) goto done;
-    while (p < params_end)
-      if (sp_asn1_skip_element(&p, params_end) != 0) goto done;
+    if (!sp_dh_read_params_tail(&p, params_end)) goto done;
     if (p != alg_end) goto done;
     {
       mbedtls_asn1_bitstring bits;
@@ -1009,6 +1124,7 @@ static int sp_write_spki_der(SpKey *k, unsigned char *buf, size_t size) {
     if (k->x448) return sp_write_okp_der(sp_x448_spki_prefix, 12, k->x448_pub, 56, buf, size);
     return sp_write_ed_der(sp_is_x(k) ? sp_x_spki_prefix : sp_ed_spki_prefix, 12, k->ed_pub, buf, size);
   }
+  if (sp_is_ec(k) && k->ec_explicit) return sp_write_ec_spki_explicit(k, buf, size);
   if (!k->rsa_pss) return mbedtls_pk_write_pubkey_der(&k->pk, buf, size);
   /* SubjectPublicKeyInfo ::= SEQUENCE { AlgorithmIdentifier, BIT STRING
    * RSAPublicKey } */
@@ -1109,6 +1225,12 @@ static int sp_write_pkcs8_der(SpKey *k, unsigned char *buf, size_t size) {
       alg_len += (size_t)r;
       oid = MBEDTLS_OID_PKCS1_RSA;
       oid_len = MBEDTLS_OID_SIZE(MBEDTLS_OID_PKCS1_RSA);
+    } else if (k->ec_explicit) {
+      /* sp_write_ec_alg writes the whole AlgorithmIdentifier. */
+      int ec_alg = 0;
+      if ((r = sp_write_ec_alg(&c, buf, k, &ec_alg)) < 0) goto done;
+      len += (size_t)ec_alg;
+      goto version;
     } else {
       const char *curve_oid;
       size_t curve_oid_len;
@@ -1648,9 +1770,19 @@ static void sp_throw_bad_decrypt(int form) {
                        form == 0 ? 4 : 2);
 }
 
+/* One hexadecimal digit, or -1. */
+static int sp_hex_value(unsigned char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return -1;
+}
+
 /* The cipher name of an encrypted traditional PEM key's DEK-Info header
- * into `name` (NUL-terminated), or false for other input. */
-static bool sp_pem_dek_info(const unsigned char *data, size_t len, char *name, size_t cap) {
+ * into `name` (NUL-terminated), and when `iv` is not NULL the IV its hex
+ * carries, or false for other input. */
+static bool sp_pem_dek_info(const unsigned char *data, size_t len, char *name, size_t cap,
+                            unsigned char *iv, size_t *iv_len) {
   const char *text = (const char *)data;
   const char *begin = NULL;
   for (size_t i = 0; i + 11 <= len && !begin; i++)
@@ -1672,6 +1804,18 @@ static bool sp_pem_dek_info(const unsigned char *data, size_t len, char *name, s
       size_t o = 0;
       while (i < n && line[i] != ',' && o + 1 < cap) name[o++] = line[i++];
       name[o] = 0;
+      if (iv == NULL) return true;
+      if (i >= n || line[i] != ',') return false;
+      i++;
+      size_t got = 0;
+      while (i + 1 < n && got < 16) {
+        int hi = sp_hex_value(line[i]), lo = sp_hex_value(line[i + 1]);
+        if (hi < 0 || lo < 0) return false;
+        iv[got++] = (unsigned char)((hi << 4) | lo);
+        i += 2;
+      }
+      if (got == 0 || i != n) return false;
+      *iv_len = got;
       return true;
     } else if (n == 0 || memchr(line, ':', n) == NULL) {
       return false;
@@ -1687,7 +1831,7 @@ static bool sp_pem_dek_info(const unsigned char *data, size_t len, char *name, s
  * for a cipher mbedTLS does not decrypt; true for other input. */
 static bool sp_pem_dek_check(const unsigned char *data, size_t len, const ScrBytes *pass) {
   char name[64];
-  if (!sp_pem_dek_info(data, len, name, sizeof name)) return true;
+  if (!sp_pem_dek_info(data, len, name, sizeof name, NULL, NULL)) return true;
   size_t n = strlen(name);
   static const char *const known[] = {SCR_CIPHER_KNOWN_NAMES};
   static const struct {
@@ -2576,13 +2720,19 @@ static SpKey *sp_public_of(SpKey *k) {
     return pub;
   }
   unsigned char der[SP_DER_MAX];
+  /* mbedTLS reads named curves only: the public half is parsed from the
+   * named encoding even when the key's own encodings are explicit. */
+  bool ec_explicit = k->ec_explicit;
+  k->ec_explicit = false;
   int n = k->rsa_pss ? mbedtls_pk_write_pubkey_der(&k->pk, der, sizeof der) : sp_write_spki_der(k, der, sizeof der);
+  k->ec_explicit = ec_explicit;
   SpKey *pub = sp_key_alloc(false);
   if (n < 0 || mbedtls_pk_parse_public_key(&pub->pk, der + sizeof der - n, (size_t)n) != 0) {
     sp_key_release(pub);
     return NULL;
   }
   sp_pss_copy(pub, k);
+  pub->ec_explicit = ec_explicit;
   return pub;
 }
 
@@ -2999,6 +3149,176 @@ static bool sp_is_encrypted_pkcs8(const unsigned char *der, size_t len) {
   return password && mbedtls_asn1_get_tag(&p, end, &n, MBEDTLS_ASN1_OCTET_STRING) == 0 && p + n == end;
 }
 
+/* ── explicit EC parameters, read back ─────────────────────────────────
+ * A key whose ECParameters are the curve's explicit encoding
+ * (paramEncoding "explicit") rather than the curve OID. mbedTLS reads
+ * named curves only, so the parameter set is matched against the table of
+ * OpenSSL's encodings and the point or scalar is imported onto the named
+ * curve, with the explicit form remembered for the key's own encodings. */
+
+/* The curve whose explicit ECParameters DER is the element at elem. */
+static const SpCurve *sp_ec_curve_of_explicit(const unsigned char *elem, size_t elem_len) {
+  for (size_t i = 0; i < sizeof sp_curves / sizeof sp_curves[0]; i++)
+    if (sp_curves[i].explicit_params_len == elem_len &&
+        memcmp(sp_curves[i].explicit_params, elem, elem_len) == 0)
+      return &sp_curves[i];
+  return NULL;
+}
+
+/* The explicit ECParameters SEQUENCE at *p, matched against the curve
+ * table and skipped; NULL for anything else (a named curve, an explicit
+ * set this build has no named form for, a malformed element). */
+static const SpCurve *sp_ec_read_explicit_params(unsigned char **p, const unsigned char *end) {
+  const unsigned char *start = *p;
+  size_t len;
+  if (mbedtls_asn1_get_tag(p, end, &len, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0)
+    return NULL;
+  const unsigned char *content = *p;
+  if ((size_t)(end - content) < len) return NULL;
+  *p = content + len;
+  return sp_ec_curve_of_explicit(start, (size_t)(content - start) + len);
+}
+
+/* An EC key over `curve` from a public point, or a private scalar with the
+ * public point when the encoding carries one. NULL with nothing pending;
+ * the callers fall through to mbedTLS. */
+static SpKey *sp_ec_explicit_key(const SpCurve *curve, bool private_key, const unsigned char *point,
+                                 size_t point_len, const unsigned char *scalar,
+                                 size_t scalar_len) {
+  SpKey *k = sp_key_alloc(private_key);
+  bool ok = mbedtls_pk_setup(&k->pk, mbedtls_pk_info_from_type(MBEDTLS_PK_ECKEY)) == 0;
+  if (ok) {
+    mbedtls_ecp_keypair *kp = mbedtls_pk_ec(k->pk);
+    mbedtls_ecp_group *grp = &kp->MBEDTLS_PRIVATE(grp);
+    ok = mbedtls_ecp_group_load(grp, curve->id) == 0;
+    if (ok && private_key) {
+      ok = scalar_len == (grp->nbits + 7) / 8 &&
+           mbedtls_mpi_read_binary(&kp->MBEDTLS_PRIVATE(d), scalar, scalar_len) == 0 &&
+           mbedtls_ecp_check_privkey(grp, &kp->MBEDTLS_PRIVATE(d)) == 0;
+      if (ok && point) {
+        ok = mbedtls_ecp_point_read_binary(grp, &kp->MBEDTLS_PRIVATE(Q), point, point_len) == 0 &&
+             mbedtls_ecp_check_pubkey(grp, &kp->MBEDTLS_PRIVATE(Q)) == 0;
+      } else if (ok) {
+        ok = mbedtls_ecp_mul(grp, &kp->MBEDTLS_PRIVATE(Q), &kp->MBEDTLS_PRIVATE(d), &grp->G,
+                             sp_random, NULL) == 0;
+      }
+    } else if (ok) {
+      ok = mbedtls_ecp_point_read_binary(grp, &kp->MBEDTLS_PRIVATE(Q), point, point_len) == 0 &&
+           mbedtls_ecp_check_pubkey(grp, &kp->MBEDTLS_PRIVATE(Q)) == 0;
+    }
+  }
+  if (!ok) {
+    sp_key_release(k);
+    return NULL;
+  }
+  k->ec_explicit = true;
+  return k;
+}
+
+/* An id-ecPublicKey AlgorithmIdentifier at *p whose parameters must be an
+ * explicit set: the matched curve, with *p advanced past the whole
+ * AlgorithmIdentifier content. NULL for any other algorithm. */
+static const SpCurve *sp_ec_alg_explicit(unsigned char **p, const unsigned char *end) {
+  static const unsigned char ec_oid[] = {0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01};
+  size_t oid_len;
+  if (mbedtls_asn1_get_tag(p, end, &oid_len, MBEDTLS_ASN1_OID) != 0 || oid_len != sizeof ec_oid ||
+      memcmp(*p, ec_oid, oid_len) != 0)
+    return NULL;
+  *p += oid_len;
+  const SpCurve *curve = sp_ec_read_explicit_params(p, end);
+  if (!curve || *p != end) return NULL;
+  return curve;
+}
+
+/* An ECPrivateKey body (version 1, the scalar, the optional [0] explicit
+ * parameters and [1] public point) at [p, end). `outer` is the curve the
+ * enclosing AlgorithmIdentifier named, NULL for a SEC1 key. */
+static SpKey *sp_ec_private_explicit(unsigned char *p, const unsigned char *end, const SpCurve *outer) {
+  int version;
+  if (mbedtls_asn1_get_int(&p, end, &version) != 0 || version != 1) return NULL;
+  const unsigned char *scalar;
+  size_t scalar_len;
+  if (mbedtls_asn1_get_tag(&p, end, &scalar_len, MBEDTLS_ASN1_OCTET_STRING) != 0) return NULL;
+  scalar = p;
+  p += scalar_len;
+  const unsigned char *point = NULL;
+  size_t point_len = 0;
+  const SpCurve *curve = outer;
+  while (p < end) {
+    /* [0] and [1] are both constructed context-specific tags; the tag byte
+     * selects which field follows. */
+    if (p >= end) return NULL;
+    unsigned char field_tag = *p++;
+    if ((field_tag & 0xc0) != MBEDTLS_ASN1_CONTEXT_SPECIFIC || !(field_tag & 0x20)) return NULL;
+    size_t field_len;
+    if (mbedtls_asn1_get_len(&p, end, &field_len) != 0 || (size_t)(end - p) < field_len) return NULL;
+    const unsigned char *field_end = p + field_len;
+    if ((field_tag & 0x1f) == 0) {
+      /* Inside PKCS#8 the outer parameters name the curve; a SEC1 key has
+       * them here. A second set must match the first. */
+      const SpCurve *inner = sp_ec_read_explicit_params(&p, field_end);
+      if (!inner || p != field_end || (curve && curve != inner)) return NULL;
+      curve = inner;
+    } else if ((field_tag & 0x1f) == 1) {
+      mbedtls_asn1_bitstring bits;
+      unsigned char *q = p;
+      if (mbedtls_asn1_get_bitstring(&q, field_end, &bits) != 0 || q != field_end) return NULL;
+      point = bits.p;
+      point_len = bits.len;
+    } else {
+      return NULL;
+    }
+    p = field_end;
+  }
+  if (!curve) return NULL;
+  return sp_ec_explicit_key(curve, true, point, point_len, scalar, scalar_len);
+}
+
+/* A SubjectPublicKeyInfo, a PKCS#8 private key or a SEC1 ECPrivateKey whose
+ * ECParameters are explicit: the key over the matched named curve, with the
+ * explicit form remembered. NULL for any other encoding, which the callers
+ * leave to mbedTLS and report with Node's decoder error. */
+static SpKey *sp_ec_explicit_from_der(const uint8_t *der, size_t len, bool private_key) {
+  unsigned char *p = (unsigned char *)der;
+  const unsigned char *end = der + len;
+  size_t seq_len;
+  if (mbedtls_asn1_get_tag(&p, end, &seq_len, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0 ||
+      (size_t)(end - p) != seq_len)
+    return NULL;
+  if (!private_key) {
+    size_t alg_len;
+    if (mbedtls_asn1_get_tag(&p, end, &alg_len, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0)
+      return NULL;
+    const SpCurve *curve = sp_ec_alg_explicit(&p, p + alg_len);
+    if (!curve) return NULL;
+    mbedtls_asn1_bitstring bits;
+    if (mbedtls_asn1_get_bitstring(&p, end, &bits) != 0 || p != end) return NULL;
+    return sp_ec_explicit_key(curve, false, bits.p, bits.len, NULL, 0);
+  }
+  unsigned char *body = p;
+  int version;
+  if (mbedtls_asn1_get_int(&p, end, &version) != 0) return NULL;
+  /* A SEC1 key is the ECPrivateKey itself: its reader takes the version. */
+  if (version == 1) return sp_ec_private_explicit(body, end, NULL);
+  if (version != 0) return NULL;
+  size_t alg_len;
+  if (mbedtls_asn1_get_tag(&p, end, &alg_len, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0)
+    return NULL;
+  const SpCurve *curve = sp_ec_alg_explicit(&p, p + alg_len);
+  if (!curve) return NULL;
+  size_t oct_len;
+  if (mbedtls_asn1_get_tag(&p, end, &oct_len, MBEDTLS_ASN1_OCTET_STRING) != 0 ||
+      (size_t)(end - p) != oct_len)
+    return NULL;
+  /* The OCTET STRING holds the DER-encoded ECPrivateKey. */
+  const unsigned char *oct_end = p + oct_len;
+  size_t inner_len;
+  if (mbedtls_asn1_get_tag(&p, oct_end, &inner_len, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0 ||
+      (size_t)(oct_end - p) != inner_len)
+    return NULL;
+  return sp_ec_private_explicit(p, oct_end, curve);
+}
+
 static SpKey *sp_parse_with(const unsigned char *data, size_t len, bool private_key, const ScrBytes *pass);
 
 static SpKey *sp_parse(const unsigned char *data, size_t len, bool private_key) {
@@ -3113,6 +3433,80 @@ static bool sp_dh_spki_shape(const unsigned char *der, size_t len) {
   return oid_len == sizeof sp_dh_oid && memcmp(p, sp_dh_oid, oid_len) == 0;
 }
 
+/* The DER payload of a traditional encrypted PEM (the base64 body after
+ * its Proc-Type/DEK-Info headers and their blank line), +1 malloc'd. */
+static unsigned char *sp_pem_encrypted_der(const unsigned char *data, size_t len, size_t *out_len) {
+  const char *text = (const char *)data;
+  const char *begin = NULL;
+  for (size_t i = 0; i + 11 <= len && !begin; i++)
+    if (memcmp(text + i, "-----BEGIN ", 11) == 0) begin = text + i;
+  if (!begin) return NULL;
+  const char *end = text + len, *line = memchr(begin, '\n', (size_t)(end - begin));
+  if (!line) return NULL;
+  line++;
+  for (;;) {
+    const char *eol = memchr(line, '\n', (size_t)(end - line));
+    size_t n = (size_t)((eol ? eol : end) - line);
+    if (n && line[n - 1] == '\r') n--;
+    if (n == 0) {
+      line = eol ? eol + 1 : end;
+      break;
+    }
+    if (!eol) return NULL;
+    line = eol + 1;
+  }
+  size_t room = (size_t)(end - line) + 1;
+  unsigned char *b64 = malloc(room), *raw = malloc(room);
+  if (!b64 || !raw) scr_trap("scriptc: out of memory\n");
+  size_t m = 0;
+  for (const char *p = line; p < end && *p != '-'; p++)
+    if (*p != '\n' && *p != '\r' && *p != ' ' && *p != '\t') b64[m++] = (unsigned char)*p;
+  size_t raw_len = 0;
+  bool ok = mbedtls_base64_decode(raw, room, &raw_len, b64, m) == 0;
+  free(b64);
+  if (!ok) {
+    free(raw);
+    return NULL;
+  }
+  *out_len = raw_len;
+  return raw;
+}
+
+/* A traditional encrypted PEM key mbedTLS decrypted but could not parse,
+ * which is how an explicit-parameter EC key arrives: decrypt it here and
+ * run the whole parse again, so the explicit reader sees the DER. NULL
+ * with the error pending (a passphrase that does not decrypt) or with
+ * nothing pending (the plaintext is not a key this unit reads). */
+static SpKey *sp_parse_encrypted_pem(const unsigned char *data, size_t len, const ScrBytes *pass,
+                                     bool private_key) {
+  char name[64];
+  unsigned char iv[16];
+  size_t iv_len = 0;
+  if (!sp_pem_dek_info(data, len, name, sizeof name, iv, &iv_len)) return NULL;
+  ScrStr *cipher_name = scr_str_new(name, strlen(name));
+  const SpKeyCipher *ci = NULL;
+  bool known = sp_key_cipher(cipher_name, &ci);
+  scr_str_release(cipher_name);
+  if (!known || ci == NULL || ci->type == MBEDTLS_CIPHER_NONE || ci->ecb || iv_len != ci->iv_len) return NULL;
+  size_t ct_len = 0;
+  unsigned char *ct = sp_pem_encrypted_der(data, len, &ct_len);
+  if (!ct) return NULL;
+  unsigned char key[32];
+  sp_bytes_to_key(pass->data, (size_t)scr_bytes_byte_len(pass), iv, key, ci->key_len);
+  size_t plain_len = 0;
+  unsigned char *plain = sp_key_cipher_run(ci, false, key, iv, ct, ct_len, &plain_len);
+  mbedtls_platform_zeroize(key, sizeof key);
+  free(ct);
+  if (!plain) {
+    sp_throw_bad_decrypt(2);
+    return NULL;
+  }
+  SpKey *k = sp_parse_with(plain, plain_len, private_key, NULL);
+  mbedtls_platform_zeroize(plain, plain_len);
+  free(plain);
+  return k;
+}
+
 /* sp_parse with a passphrase for an encrypted private key (NULL: none). */
 static SpKey *sp_parse_with(const unsigned char *data, size_t len, bool private_key, const ScrBytes *pass) {
   {
@@ -3158,6 +3552,15 @@ static SpKey *sp_parse_with(const unsigned char *data, size_t len, bool private_
       bool failed;
       SpKey *ed = sp_ed_from_der(der, der_len, private_key, &failed);
       if (!ed && !failed) ed = sp_pss_from_der(der, der_len, private_key, &failed);
+      if (!ed && !failed) ed = sp_ec_explicit_from_der(der, der_len, private_key);
+      /* createPublicKey also reads a private key's encodings. */
+      if (!ed && !failed && !private_key) {
+        SpKey *priv = sp_ec_explicit_from_der(der, der_len, true);
+        if (priv) {
+          ed = sp_public_of(priv);
+          sp_key_release(priv);
+        }
+      }
       /* A recognized ML-KEM SPKI whose key material the parse rejected (a
        * coefficient outside the field, say) answers Node's errors for the
        * input form. */
@@ -3230,7 +3633,17 @@ static SpKey *sp_parse_with(const unsigned char *data, size_t len, bool private_
     /* An encrypted traditional PEM key mbedTLS read. */
     if (private_rc == MBEDTLS_ERR_PK_PASSWORD_REQUIRED) sp_throw_passphrase_missing(false);
     else if (private_rc == MBEDTLS_ERR_PK_PASSWORD_MISMATCH) sp_throw_bad_decrypt(2);
-    else sp_unsupported_key_input(data, len);
+    else {
+      /* An encrypted traditional PEM key whose plaintext only this unit's
+       * explicit-parameter reader can read: mbedTLS decrypted it and its
+       * own parser (named curves only) failed. */
+      if (pem && pass) {
+        SpKey *again = sp_parse_encrypted_pem(data, len, pass, private_key);
+        if (again) return again;
+        if (scr_exc_pending()) return NULL;
+      }
+      sp_unsupported_key_input(data, len);
+    }
     return NULL;
   }
   if (!sp_key_supported(k)) {
@@ -3874,7 +4287,15 @@ static ScrDyn *sp_key_details(SpKey *k) {
 static int sp_identity_der(SpKey *k, unsigned char *buf, size_t size) {
   if (sp_is_okp(k) || sp_is_mlkem(k) || sp_is_dh(k))
     return k->private_key ? sp_write_pkcs8_der(k, buf, size) : sp_write_spki_der(k, buf, size);
-  return k->private_key ? sp_write_private_der(k, buf, size) : sp_write_spki_der(k, buf, size);
+  /* equals() compares the key, not its parameter encoding: an explicit and
+   * a named key of the same curve and point are equal, as Node's
+   * EVP_PKEY_eq compares them, so the named encoding is the canonical one
+   * here. */
+  bool explicit_params = sp_is_ec(k) && k->ec_explicit;
+  if (explicit_params) k->ec_explicit = false;
+  int n = k->private_key ? sp_write_private_der(k, buf, size) : sp_write_spki_der(k, buf, size);
+  if (explicit_params) k->ec_explicit = true;
+  return n;
 }
 
 static ScrDyn *sp_key_invoke(void *h, ScrDyn *self, const char *method, ScrDyn *const *args,
@@ -4157,6 +4578,7 @@ typedef struct {
   mbedtls_md_type_t md, mgf1;
   int salt;
   const SpCurve *curve;  /* EC */
+  bool ec_explicit;      /* EC: paramEncoding "explicit" */
   /* DH: a named group, explicit prime material (borrowed from the options
    * for the duration of the synchronous job; the asynchronous form copies
    * it), or a generated prime of primeLength bits; the generator defaults
@@ -4411,9 +4833,9 @@ static bool sp_keygen_check(const ScrDyn *type, const ScrDyn *options, SpKeyGen 
       return false;
     }
     const ScrDyn *param = sp_opt(options, "paramEncoding");
-    if (sp_is_str(param, "explicit")) {
-      if (!refusal) refusal = "generateKeyPair with paramEncoding 'explicit'";
-    } else if (!sp_absent(param) && param->kind != SCR_DYN_NULL && !sp_is_str(param, "named")) {
+    gen->ec_explicit = sp_is_str(param, "explicit");
+    if (!sp_absent(param) && param->kind != SCR_DYN_NULL && !gen->ec_explicit &&
+        !sp_is_str(param, "named")) {
       sp_property_invalid("options.paramEncoding", param);
       return false;
     }
@@ -4790,6 +5212,7 @@ static SpKey *sp_keygen_run(const SpKeyGen *gen, bool *job_error) {
     sp_unsupported_input();
     return NULL;
   }
+  k->ec_explicit = gen->ec_explicit;
   return k;
 }
 
@@ -7644,7 +8067,8 @@ static const char sp_dh_public_types[] =
 
 /* Node's message names: a KeyObject's asymmetricKeyType. */
 static const char *sp_type_name(const SpKey *k) {
-  return sp_is_mlkem(k) ? sp_mlkem_name(k->mlkem_level)
+  return sp_is_dh(k)      ? "dh"
+         : sp_is_mlkem(k) ? sp_mlkem_name(k->mlkem_level)
          : sp_is_ed(k)   ? "ed25519"
          : sp_is_x448(k) ? "x448"
          : sp_is_x(k)   ? "x25519"
@@ -7797,6 +8221,9 @@ static ScrDyn *sp_dh_agree(SpKey *priv, SpKey *pub, bool props) {
   const SpDhKnownGroup *known = sp_dh_known_group(priv);
   const char *check_code = NULL, *check_reason = NULL, *check_node = NULL;
   bool uncoded_failure = false;
+  /* OpenSSL rejects a zero private value before it derives. */
+  bool private_invalid = ok && mbedtls_mpi_cmp_int(&X, 0) == 0;
+  if (private_invalid) ok = false;
   if (ok && (mbedtls_mpi_cmp_int(&Y, 1) <= 0 || mbedtls_mpi_cmp_mpi(&Y, &bound) >= 0)) {
     ok = false;
     if (known && known->q_len == 0) {
@@ -7840,7 +8267,10 @@ static ScrDyn *sp_dh_agree(SpKey *priv, SpKey *pub, bool props) {
     free(peer);
   }
   if (!secret) {
-    if (uncoded_failure)
+    if (private_invalid)
+      sp_throw_openssl("02800080", "Diffie-Hellman routines", "invalid secret",
+                       "ERR_OSSL_DH_INVALID_SECRET", props);
+    else if (uncoded_failure)
       scr_throw_error_msg(SCR_ERR_ERROR, "Deriving bits failed", 20);
     else if (check_node)
       sp_throw_openssl(check_code, "Diffie-Hellman routines", check_reason, check_node, props);

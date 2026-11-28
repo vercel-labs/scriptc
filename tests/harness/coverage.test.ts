@@ -80,7 +80,9 @@ test("divergences report as warnings, never as blockers", async () => {
   const { coverage } = analyze(fixture("divergences.ts"));
   expect(coverage.diagnostics).toEqual([]);
   expect((coverage.divergences ?? []).map((d) => d.code)).toEqual([
-    "SC6001",
+    // The target that adds an optional property still copies. The narrower
+    // parameter and binding keep one object (a view), so they report
+    // nothing.
     "SC6001",
     "SC6002",
     "SC6003",
@@ -99,15 +101,14 @@ test("divergences report as warnings, never as blockers", async () => {
 test("record width copies report at every storing site", async () => {
   const { coverage } = analyze(fixture("width-copies.ts"));
   expect(coverage.diagnostics).toEqual([]);
-  // Three sites copy: a parameter that adds an optional property, a later
-  // assignment, and an array element. The empty record type has no field to
-  // copy into, so its binding holds the object itself and `===` is true, as
-  // under Node. The assertions report nothing either: `tagged as Labeled`
-  // and the union arm `blocks[0] as { text: string }` name only members the
-  // value itself stores, so the binding keeps the value's storage and its
-  // writes reach that object (as do the unknown-only views at the end of the
-  // fixture).
-  expect((coverage.divergences ?? []).map((d) => d.code)).toEqual(["SC6001", "SC6001", "SC6001"]);
+  // Two sites still copy: a parameter whose type adds an optional property,
+  // and an array element store (a collection holds the record by value).
+  // The empty record type has no field to copy into, so its binding holds
+  // the object itself and `===` is true, as under Node. The narrower
+  // parameter, the later assignment and the assertions keep one object: the
+  // narrower name is a view of the original record, so their writes reach it
+  // (as do the views at the end of the fixture).
+  expect((coverage.divergences ?? []).map((d) => d.code)).toEqual(["SC6001", "SC6001"]);
   await expect(report(fixture("width-copies.ts"))).toMatchFileSnapshot(
     "__snapshots__/coverage-width-copies.txt",
   );
@@ -561,11 +562,11 @@ test("CLI: build --print=diagnostics reports failures and divergence warnings as
     };
     expect(envelope.success).toBe(true);
     expect(envelope.artifact).toBe(join(outDir, "out.ir.json"));
-    expect(envelope.diagnostics.map((d) => d.severity)).toEqual(Array(6).fill("warning"));
+    expect(envelope.diagnostics.map((d) => d.severity)).toEqual(Array(5).fill("warning"));
     const human = build(fixture("divergences.ts"));
     expect(human.status).toBe(0);
     expect(human.stderr).toContain("warning SC6001");
-    expect(human.stderr).toContain("6 warnings: the program compiled");
+    expect(human.stderr).toContain("5 warnings: the program compiled");
   } finally {
     rmSync(outDir, { recursive: true, force: true });
   }

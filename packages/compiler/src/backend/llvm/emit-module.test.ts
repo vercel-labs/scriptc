@@ -1,6 +1,7 @@
 import { expect, test } from "vitest";
 import { VOID, type IrModule } from "../../ir/ir.js";
 import { LlEmitter } from "./emitter.js";
+import { textOfPart } from "../../text-parts.js";
 
 const loc = { file: "large-metadata.ts", start: 0, end: 0 };
 
@@ -95,7 +96,7 @@ function expectLargeFieldAliasTable(emitter: LlEmitter): void {
   const tags = 100_000;
   for (let i = 0; i < tags; i++) emitter.fieldAliasTags.set(`field:f${i}`, 2 + i * 2);
 
-  const lines = emitter.emitParts();
+  const lines = emitter.emitParts().map(textOfPart);
   expect(lines.join("\n").split('!0 = !{!"scriptc native fields"}').length - 1).toBe(1);
   const first = lines.findIndex((line) => line.includes('!"field:f0"'));
   const middle = lines.findIndex((line) => line.includes(`!"field:f${tags >> 1}"`));

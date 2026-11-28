@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/indexed-access-tsc-parity-unchecked/main.ts"
+ ],
+ "diags": []
+}

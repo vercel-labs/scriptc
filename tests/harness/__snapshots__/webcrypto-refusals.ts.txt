@@ -1,17 +1,26 @@
-webcrypto-refusals.ts:6:16 - error SC2020: 'crypto.subtle as a value' is part of the standard library types but has no scriptc lowering yet
+webcrypto-refusals.ts:7:7 - error SC2020: the stdlib-global snapshot 'subtle' ('crypto.subtle') cannot be used as a value: the declaration lowers to alias plumbing (no storage, no code), and a 'SubtleCrypto' is not a value scriptc can hold
 
-  5 | // (node-types/fenced.ts pins their fence under @types/node).
-  6 | const subtle = crypto.subtle;
-    |                ^~~~~~~~~~~~~
-  7 | console.log(typeof subtle);
+  6 | // under @types/node).
+  7 | const subtle = crypto.subtle;
+    |       ^~~~~~
+  8 | console.log(typeof subtle);
 
-  hint: the native WebCrypto surface is crypto.subtle's importKey, generateKey and exportKey for HMAC and AES keys (importKey also for PBKDF2 and HKDF keys), encrypt and decrypt with AES-GCM, AES-CBC, AES-CTR or RSA-OAEP, wrapKey and unwrapKey of secret and asymmetric keys with AES-KW, those ciphers, or RSA-OAEP, deriveBits and deriveKey with PBKDF2, HKDF, ECDH, X25519 or X448, sign and verify with HMAC, generateKey, importKey, exportKey, sign and verify for ECDSA, Ed25519, RSASSA-PKCS1-v1_5 and RSA-PSS, generateKey, importKey and exportKey for ECDH, X25519, X448 and RSA-OAEP, getPublicKey for an asymmetric private key, and digest with SHA-1, SHA-256, SHA-384 or SHA-512, each called directly on crypto.subtle
+  hint: read the members through the global directly ('crypto.subtle.member') instead of passing 'subtle' around as a value
 
-webcrypto-refusals.ts:9:20 - error SC2020: 'crypto.subtle.sign as a value' is part of the standard library types but has no scriptc lowering yet
+webcrypto-refusals.ts:8:20 - error SC2004: uses of 'subtle' inherit the blocker on its declaration
 
-   8 | 
-   9 | console.log(typeof crypto.subtle.sign);
+  7 | const subtle = crypto.subtle;
+  8 | console.log(typeof subtle);
+    |                    ^~~~~~
+  9 | 
+
+  hint: the declaration of 'subtle' did not compile — fix the diagnostic reported there and these sites clear with it
+
+webcrypto-refusals.ts:10:20 - error SC2020: 'crypto.subtle.sign as a value' is part of the standard library types but has no scriptc lowering yet
+
+   9 | 
+  10 | console.log(typeof crypto.subtle.sign);
      |                    ^~~~~~~~~~~~~~~~~~
-  10 | 
+  11 | 
 
   hint: the native WebCrypto surface is crypto.subtle's importKey, generateKey and exportKey for HMAC and AES keys (importKey also for PBKDF2 and HKDF keys), encrypt and decrypt with AES-GCM, AES-CBC, AES-CTR or RSA-OAEP, wrapKey and unwrapKey of secret and asymmetric keys with AES-KW, those ciphers, or RSA-OAEP, deriveBits and deriveKey with PBKDF2, HKDF, ECDH, X25519 or X448, sign and verify with HMAC, generateKey, importKey, exportKey, sign and verify for ECDSA, Ed25519, RSASSA-PKCS1-v1_5 and RSA-PSS, generateKey, importKey and exportKey for ECDH, X25519, X448 and RSA-OAEP, getPublicKey for an asymmetric private key, and digest with SHA-1, SHA-256, SHA-384 or SHA-512, each called directly on crypto.subtle

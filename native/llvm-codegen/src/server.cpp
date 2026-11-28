@@ -24,6 +24,7 @@ int serve(int, char **) {
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <fcntl.h>
@@ -210,10 +211,72 @@ bool readRequest(int Fd, std::string &Cwd, std::vector<std::string> &Args) {
   return true;
 }
 
+/** The socket path the server listens on, removed when it exits early. */
+std::string ListeningPath;
+
+/** Watches the client of the request the server is running. A client sends
+ * nothing while it waits for its answer, so the connection becomes readable
+ * only when the client is gone, as when the kernel kills a build that ran
+ * out of memory. A command cannot be stopped partway, and nothing would read
+ * its answer, so the server exits: it would otherwise keep every core it
+ * optimizes on busy for a build that no longer exists, and then wait out its
+ * idle period. The next build starts a server of its own. */
+class ClientWatch {
+public:
+  explicit ClientWatch(int Client) {
+    if (pipe(Stop) != 0) {
+      Stop[0] = Stop[1] = -1;
+      return;
+    }
+    Watcher = std::thread([this, Client] { watch(Client); });
+  }
+
+  ~ClientWatch() {
+    if (Stop[1] < 0) return;
+    char Byte = 0;
+    while (write(Stop[1], &Byte, 1) < 0 && errno == EINTR) {
+    }
+    Watcher.join();
+    close(Stop[0]);
+    close(Stop[1]);
+  }
+
+  ClientWatch(const ClientWatch &) = delete;
+  ClientWatch &operator=(const ClientWatch &) = delete;
+
+private:
+  void watch(int Client) {
+    for (;;) {
+      pollfd Fds[2] = {{Client, POLLIN, 0}, {Stop[0], POLLIN, 0}};
+      int Ready = poll(Fds, 2, -1);
+      if (Ready < 0 && errno == EINTR) continue;
+      if (Ready < 0 || Fds[1].revents != 0) return;
+      if (Fds[0].revents == 0) continue;
+      char Byte = 0;
+      ssize_t Peeked = recv(Client, &Byte, 1, MSG_PEEK | MSG_DONTWAIT);
+      if (Peeked < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK))
+        continue;
+      // Bytes ahead of the answer are the next request's: the client is
+      // still there, and the session reads them once this one is answered.
+      if (Peeked > 0) return;
+      if (!ListeningPath.empty()) unlink(ListeningPath.c_str());
+      _exit(0);
+    }
+  }
+
+  int Stop[2] = {-1, -1};
+  std::thread Watcher;
+};
+
 /** Answers one request and writes its captured output back. */
 void serveOne(int Fd, const std::string &Cwd, std::vector<std::string> &Args) {
   Captured Result;
-  if (!runCaptured(Cwd, Args, Result)) {
+  bool Ran;
+  {
+    ClientWatch Watch(Fd);
+    Ran = runCaptured(Cwd, Args, Result);
+  }
+  if (!Ran) {
     Result.Code = 70;  // EX_SOFTWARE: the capture itself failed.
     Result.Out.clear();
     Result.Err = "{\"code\":\"capture_failed\",\"message\":\"the codegen server "
@@ -289,6 +352,7 @@ int serve(int Argc, char **Argv) {
     unlink(Address.sun_path);
     return reportError("listen_failed", StringRef(strerror(ListenError)));
   }
+  ListeningPath = Address.sun_path;
   const long long IdleMilliseconds = static_cast<long long>(IdleSeconds) * 1000;
   for (;;) {
     pollfd Pending{Listener, POLLIN, 0};

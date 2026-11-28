@@ -406,6 +406,27 @@ declare module "node:fs" {
     readonly pending: boolean;
     close(callback?: () => void): void;
   }
+  /** fs.Utf8Stream([options]): Node's buffered file writer — an
+   * EventEmitter whose writes are buffered and flushed to a file. */
+  export interface Utf8StreamOptions {
+    fd?: number;
+    dest?: string;
+    append?: boolean;
+    contentMode?: "utf8" | "buffer";
+    fsync?: boolean;
+    maxLength?: number;
+    minLength?: number;
+    mkdir?: boolean;
+    mode?: number;
+    periodicFlush?: number;
+    sync?: boolean;
+  }
+  /** The class value: `new fs.Utf8Stream([options])` builds the stream.
+   * Its members are answered by the runtime's handle (Node's class is an
+   * EventEmitter rather than a Writable), so the instance is untyped here. */
+  export const Utf8Stream: {
+    new (options?: Utf8StreamOptions): any;
+  };
   export function createReadStream(
     path: string | Buffer | URL,
     options?: BufferEncoding | ReadStreamOptions,
@@ -573,6 +594,9 @@ declare module "node:fs" {
   export interface StatSyncOptions extends StatOptions {
     throwIfNoEntry?: boolean;
   }
+  /* The promise forms read both members: throwIfNoEntry: false resolves
+   * undefined for a missing entry instead of rejecting. */
+  export interface StatPromiseOptions extends StatSyncOptions {}
   export function statSync(path: string | URL, options?: undefined): Stats;
   export function statSync(
     path: string | URL,

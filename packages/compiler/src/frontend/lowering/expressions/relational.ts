@@ -54,6 +54,7 @@ import {
 import { nodeThrowExpr, numLit, strLit, varRef } from "../../../ir/build.js";
 import { lowerDisposableStackInstanceOf } from "../builtins/disposable-stack.js";
 import { lowerAbortSignalInstanceOf } from "../builtins/abort-signal.js";
+import { lowerWebSocketInstanceOf } from "../builtins/websocket.js";
 import { lowerBlobInstanceof } from "../builtins/blob.js";
 import { lowerReadlineInstanceof } from "../builtins/readline.js";
 import { lowerKeyObjectInstanceof } from "../builtins/key-object.js";
@@ -461,6 +462,9 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
   // instances, and the handle's tag answers the test (abort-signal.ts).
   const abortSignalTest = lowerAbortSignalInstanceOf(lowerer, expr);
   if (abortSignalTest !== null) return abortSignalTest;
+  // `value instanceof WebSocket`: only the runtime's socket handles are.
+  const webSocketTest = lowerWebSocketInstanceOf(lowerer, expr);
+  if (webSocketTest !== null) return webSocketTest;
   // A listed Node global's value is a constructor native code never created
   // an instance from, so `x instanceof X` is false for every value — an
   // ordinary function's [[Prototype]] included, which the generic walk
@@ -3266,6 +3270,35 @@ export function lowerInExpression(
         expr,
         `'in' with the key '${key}' on Error receivers (code answers from the error's code slot; message and name are always present)`,
       );
+    }
+    // A private name is not a property key: the string "#x" never reaches a
+    // class's private field, only a string property the program wrote under
+    // that exact name. The declaration cannot answer such a key, so the test
+    // reads the instance's runtime property state; an instance with no
+    // checked-dynamic view holds no such property.
+    if (key.startsWith("#")) {
+      if (lowerer.dynConvertible(recv.type)) {
+        return {
+          kind: "libCall",
+          fn: "dyn.in",
+          args: [
+            lowerer.coerceToExpected(recv, DYN),
+            { kind: "strLit", value: key, type: STRING, loc },
+          ],
+          type: BOOL,
+          loc,
+        };
+      }
+      const answer: IrExpr = { kind: "boolLit", value: false, type: BOOL, loc };
+      return isSafeToDiscard(recv)
+        ? answer
+        : {
+            kind: "seqExpr",
+            stmts: [{ kind: "exprStmt", expr: recv, loc }],
+            result: answer,
+            type: BOOL,
+            loc,
+          };
     }
     // A plain compiled class (no Error root): every instance carries its
     // declared fields and prototype members, so membership answers from the

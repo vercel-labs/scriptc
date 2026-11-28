@@ -744,6 +744,12 @@
   "code": "SC2020"
  },
  {
+  "file": "scr_fs_utf8_stream.c",
+  "function": "scr_u8_invoke",
+  "message": "fs.Utf8Stream member is not supported yet [SC2020]",
+  "code": "SC2020"
+ },
+ {
   "file": "scr_glob.c",
   "function": "scr_fs_glob",
   "message": "fs.glob exclude functions with withFileTypes have no native lowering",
@@ -843,6 +849,12 @@
   "file": "scr_http.c",
   "function": "scr_http_req_opts_fence",
   "message": "' has no static lowering — ",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_http2.c",
+  "function": "scr_http2_perform_server_handshake_opts",
+  "message": "http2 maxSessionMemory is not supported yet",
   "code": "SC2020"
  },
  {
@@ -1856,7 +1868,7 @@
  {
   "file": "scr_stream.c",
   "function": "scr_stream_dyn_stage_returned_stream",
-  "message": "pipeline function stages that return a stream are not supported yet",
+  "message": "a pipeline source function that returns a stream is not supported yet",
   "code": "SC2020"
  },
  {
@@ -2130,6 +2142,18 @@
   "code": "SC2020"
  },
  {
+  "file": "scr_websocket.c",
+  "function": "scr_ws_invoke",
+  "message": "Sending a Blob has no lowering yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_websocket.c",
+  "function": "scr_ws_invoke",
+  "message": "This WebSocket method is not implemented",
+  "code": "SC2020"
+ },
+ {
   "file": "scr_webstreams.c",
   "function": "ws_readable_from",
   "message": "ReadableStream.from of a function that is not iterable is not supported yet",
@@ -2137,7 +2161,7 @@
  },
  {
   "file": "scr_worker_events.c",
-  "function": "scr_worker_transfer_list",
+  "function": "scr_worker_transfer_list_form",
   "message": "This postMessage transfer argument is not supported yet",
   "code": "SC2020"
  },
@@ -2469,12 +2493,6 @@
   "file": "scr_stream.c",
   "function": "scr_stream_dynopt_unsupported",
   "message": "",
-  "code": "SC2020"
- },
- {
-  "file": "scr_stream.c",
-  "function": "scr_stream_on_dyn",
-  "message": "this stream event has no checked-dynamic listener adapter",
   "code": "SC2020"
  },
  {
